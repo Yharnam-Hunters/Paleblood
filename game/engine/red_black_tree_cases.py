@@ -13,6 +13,7 @@ so that every path runs: an empty tree, a black parent, red uncles (also up to t
 or missing uncles with the new node an outer or an inner child, on both sides. A remove case
 takes a node out of such a tree: every node of a few small trees, and random ones of bigger trees.
 """
+import copy
 import json
 import os
 import random
@@ -29,6 +30,7 @@ class Tree:
         self.root = None
         self.count = 0
         self.detached = set()  # deleted nodes: their slots stay in `nodes`, unlinked
+        self.trace = []  # red-sibling rotations the deletes took (note_red_sibling)
 
     def new(self, key):
         n = self.count
@@ -151,7 +153,8 @@ class Tree:
         while x != self.root and black(x):
             if x == self.left[xp]:
                 w = self.right[xp]
-                if not black(w):
+                red_sibling = not black(w)
+                if red_sibling:
                     self.black[w], self.black[xp] = True, False
                     self.rotate(xp, 'left')
                     w = self.right[xp]
@@ -159,6 +162,8 @@ class Tree:
                     self.black[w] = False
                     x, xp = xp, self.parent[xp]
                     continue
+                if red_sibling:
+                    self.note_red_sibling(w, 'left', 'right')
                 if black(self.right[w]):
                     self.black[self.left[w]], self.black[w] = True, False
                     self.rotate(w, 'right')
@@ -168,7 +173,8 @@ class Tree:
                 self.rotate(xp, 'left')
             else:
                 w = self.left[xp]
-                if not black(w):
+                red_sibling = not black(w)
+                if red_sibling:
                     self.black[w], self.black[xp] = True, False
                     self.rotate(xp, 'right')
                     w = self.left[xp]
@@ -176,6 +182,8 @@ class Tree:
                     self.black[w] = False
                     x, xp = xp, self.parent[xp]
                     continue
+                if red_sibling:
+                    self.note_red_sibling(w, 'right', 'left')
                 if black(self.left[w]):
                     self.black[self.right[w]], self.black[w] = True, False
                     self.rotate(w, 'left')
@@ -187,6 +195,19 @@ class Tree:
             break
         if x is not None:
             self.black[x] = True
+
+    def note_red_sibling(self, w, x_side, sibling_side):
+        """Records a red-sibling case that goes on to a rotation, as rebalance_red_sibling sees it:
+        the far or near red nephew, and whether the node hung below the old sibling (`inner`,
+        near case only) and the node moved under the parent (`moved`) exist."""
+        side = {'left': self.left, 'right': self.right}
+        far = side[sibling_side][w]
+        if far is not None and not self.black[far]:
+            shape = ('far', x_side, False, side[x_side][w] is not None)
+        else:
+            near = side[x_side][w]
+            shape = ('near', x_side, side[sibling_side][near] is not None, side[x_side][near] is not None)
+        self.trace.append(shape)
 
     def attached(self, n):
         return n not in self.detached
@@ -308,6 +329,49 @@ def remove_cases():
         deleted = rng.sample(keys, size // 2)
         rest = [k for k in keys if k not in deleted]
         out.append(remove_case(f'shaped_{i:02d}_{size}', keys, rng.choice(rest), deleted))
+    out += red_sibling_rotation_cases()
+    return out
+
+
+def red_sibling_rotation_cases(per_shape=2):
+    """Removals whose rebalance meets a red sibling and then rotates, at a black height where the
+    node hung below the old sibling (`inner`, near-red case) or the node moved under the parent
+    (`moved`) exists: both writes that re-parent them run. Found by a seeded search that removes
+    leaves (no successor choice) and reads the model's trace, two cases per shape and side."""
+    # A red near nephew's children are both present or both absent (equal black counts), so the
+    # near case with one of `inner` and `moved` only cannot occur.
+    wanted = {(kind, side, inner, moved): per_shape
+              for side in ('left', 'right')
+              for kind, inner, moved in (('far', False, True), ('near', True, True))}
+    out = []
+    rng = random.Random(0x763)
+    for attempt in range(4000):
+        if not any(wanted.values()):
+            break
+        size = rng.choice([24, 40, 64, 96])
+        keys = rng.sample(range(1, 2000), size)
+        deleted = rng.sample(keys, size // 2)
+        base = Tree()
+        for k in keys:
+            base.insert(k)
+        for k in deleted:
+            base.delete(k)
+        leaves = sorted(base.key[n] for n in base.key
+                        if base.attached(n) and base.left[n] is None and base.right[n] is None)
+        for leaf in leaves:
+            probe = copy.deepcopy(base)
+            probe.trace = []
+            probe.delete(leaf)
+            hits = [s for s in probe.trace if wanted.get(s)]
+            if hits:
+                shape = hits[0]
+                wanted[shape] -= 1
+                kind, side, inner, moved = shape
+                cid = f"red_sibling_{kind}_{side}{'_inner' if inner else ''}{'_moved' if moved else ''}_{wanted[shape]}"
+                out.append(remove_case(cid, keys, leaf, deleted))
+                break
+    missing = [s for s, n in wanted.items() if n]
+    assert not missing, f'no tree found for {missing}'
     return out
 
 
