@@ -1340,10 +1340,68 @@ static void multiple_targets(rt_executor *x)
     CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
 }
 
+/* Memory reused for a target of another format (YEBIS's post passes reuse theirs): the triangle drawn as
+   8_8_8_8, the same memory then drawn as an 8_8_8_8 target with the other component order keeping what is
+   there (blend ZERO + ONE), then as the first target again, keeping: the first target is written back, set
+   aside, and taken back loaded from the memory, so the triangle is still there; the memory too. */
+static void reshaped_target(rt_executor *x)
+{
+    enum { RESHAPE_BUFFER = 0xc0fd8000, RESHAPED = 0x3ec0000 };
+    char error[200] = "";
+    const uint64_t target = at(RESHAPED);
+    memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 4);
+    rt_render_forget();
+    CHECK(rt_executor_run(x, RESHAPE_BUFFER, record_draw(RESHAPE_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER), error, sizeof error) == 0);
+    check_triangle(x, target);
+    const uint32_t swaps[2] = {SWAP_ALT, SWAP_STD};
+    for (unsigned k = 0; k < 2; k++) {
+        rt_render_forget();
+        const uint32_t offset = record_setup(RESHAPE_BUFFER, target, COLOR_8_8_8_8, swaps[k], PERSP_CENTER);
+        CHECK(rt_render_record_register(RESHAPE_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0); /* ZERO + ONE */
+        const int ran = rt_executor_run(x, RESHAPE_BUFFER, record_triangle_draw(RESHAPE_BUFFER, offset + 0x10), error, sizeof error);
+        if (ran) fprintf(stderr, "reshaped target: %s\n", error);
+        CHECK(ran == 0);
+    }
+    check_triangle(x, target);
+    rt_render_forget();
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* pixel (0, 0): red 0.5 / 16, green 0.5 / 16, blue 0.25, red first */
+    CHECK(near(first & 0xff, 0.5f / SIZE) && near(first >> 8 & 0xff, 0.5f / SIZE) && near(first >> 16 & 0xff, 0.25f));
+}
+
+/* More render targets than the executor keeps (YEBIS moves its post targets through memory): 130 targets
+   drawn one after another, each written back at its buffer's end; the oldest are freed for the newest. The
+   first target's memory still holds its triangle, and drawn again keeping what is there, the target made
+   for it anew loads the triangle from the memory. */
+static void many_targets(rt_executor *x)
+{
+    enum { MANY_BUFFER = 0xc0fd4000, MANY_FIRST = 0x3800000, MANY = 130, TARGET_BYTES = SIZE * SIZE * 4 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    memset((void *)(uintptr_t)at(MANY_FIRST), 0, (size_t)MANY * TARGET_BYTES);
+    int drawn = 1;
+    for (unsigned k = 0; k < MANY; k++) {
+        rt_render_forget();
+        const int ran = rt_executor_run(x, MANY_BUFFER, record_draw(MANY_BUFFER, at(MANY_FIRST) + (uint64_t)k * TARGET_BYTES, COLOR_8_8_8_8, SWAP_STD,
+                                                                     PERSP_CENTER), error, sizeof error);
+        if (ran && drawn) fprintf(stderr, "target %u of many: %s\n", k, error);
+        drawn &= ran == 0;
+    }
+    CHECK(drawn);
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t first = *(const uint32_t *)(uintptr_t)at(MANY_FIRST); /* pixel (0, 0), red first */
+    CHECK(near(first & 0xff, 0.5f / SIZE) && near(first >> 8 & 0xff, 0.5f / SIZE) && near(first >> 16 & 0xff, 0.25f));
+    rt_render_forget();
+    const uint32_t offset = record_setup(MANY_BUFFER, at(MANY_FIRST), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_register(MANY_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0); /* ZERO + ONE */
+    CHECK(rt_executor_run(x, MANY_BUFFER, record_triangle_draw(MANY_BUFFER, offset + 0x10), error, sizeof error) == 0);
+    check_triangle(x, at(MANY_FIRST));
+}
+
 /* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
    pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
-   covers are 0 and the others keep the memory's pattern. One with base address 0 and other fields set
-   stops by name. */
+   covers are 0 and the others keep the memory's pattern. A read through one with base address 0 and other
+   fields set is a run-time stop. */
 static void null_image_descriptor(rt_executor *x)
 {
     enum { NULL_TARGET = 0x3e00000, PATTERN = 0x11223344u };
@@ -1360,16 +1418,18 @@ static void null_image_descriptor(rt_executor *x)
     int zero = 0, other = 0;
     for (int i = 0; i < SIZE * SIZE; i++) zero += bgra[i] == 0, other += bgra[i] != 0 && bgra[i] != shown;
     CHECK(zero > 0 && other == 0);
-    /* base address 0 with a format and type: not a null descriptor, and what the PS4 reads there is not known */
-    const uint32_t base_zero[8] = {0, 10u << 20, 0, 2u << 28 | 0xfac, 0, 0, 0, 0};
-    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "base address 0"));
+    /* base address 0 with a format and type (YEBIS's 1x1 8_8_8_8): not a null descriptor, and what the PS4 reads
+       there is not known, so the shader's read of it is a run-time stop */
+    const uint32_t base_zero[8] = {0, 10u << 20, 0, 9u << 28 | 0xfac, 0, 0, 0, 0};
+    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "read an image whose descriptor has base address 0"));
 }
 
 /* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
    (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
    a draw into the target
    that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
-   a clear by a 32_32_32_32 float image there stops the draw by name. An image of the target's width with
+   a clear by a 32_32_32_32 float image there is written to the memory as floats, and the target loads and
+   keeps those bytes. An image of the target's width with
    fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only; one with
    fewer columns (a 960-wide image under a target of pitch 1024) clears those columns only. A target already
    drawn (the triangle) and then cleared by the shader shows the clear too. */
@@ -1410,8 +1470,11 @@ static void compute_cleared_target(rt_executor *x)
         const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         CHECK(rt_render_record_register(DRAW_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0);
         const int ran = rt_executor_run(x, DRAW_BUFFER, record_triangle_draw(DRAW_BUFFER, offset + 0x10), error, sizeof error);
-        if (wide) {
-            CHECK(ran == -1 && strstr(error, "another format"));
+        if (wide) { /* the float image's bytes reach the memory, the target loads them and the draw keeps them */
+            if (ran) fprintf(stderr, "float image under an 8_8_8_8 target: %s\n", error);
+            CHECK(ran == 0);
+            const float *stored = (const float *)(uintptr_t)target;
+            CHECK(stored[0] == 0.25f && stored[1] == 0.5f && stored[2] == 0.75f && stored[3] == 1.0f);
             continue;
         }
         if (ran) fprintf(stderr, "compute-cleared target: %s\n", error);
@@ -2612,6 +2675,19 @@ static void guarded_targets(int fd, rt_executor *shared)
     /* written back (all zeros now: the background was, the triangle is black) and lifted */
     CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0 && guarded.unguards == 2 && guarded.unguarded == at(TILED_TARGET));
 
+    /* a 16_16_16_16 float target's guard spans its 8-byte texels' memory, not 4 bytes a texel's */
+    enum { HALVES_BUFFER = 0xc0fb8000, HALVES_TARGET = 0x3740000, HALVES_FORMAT = 0xc, NUMBER_FLOAT = 7, HALF_TEXELS = 8 };
+    rt_tiling halves;
+    CHECK(rt_tiling_layout(RECORDED_TILING, HALF_TEXELS, SIZE, SIZE, &halves, error, sizeof error) == 0);
+    rt_render_forget();
+    const uint32_t halves_offset = record_setup(HALVES_BUFFER, at(HALVES_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t halves_words[RT_COLOR_TARGET_WORDS];
+    color_target(halves_words, at(HALVES_TARGET), HALVES_FORMAT, SWAP_STD);
+    halves_words[4] |= NUMBER_FLOAT << 8, halves_words[5] = RECORDED_TILING;
+    CHECK(rt_render_record_color_target(HALVES_BUFFER, halves_offset, 0, halves_words, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, HALVES_BUFFER, record_triangle_draw(HALVES_BUFFER, halves_offset + 0x10), error, sizeof error) == 0);
+    CHECK(guarded.address == at(HALVES_TARGET) && guarded.length >= rt_tiling_size(&halves, 1));
+
     memset(memory, 0, rt_tiling_size(&layout, 1));
     guarded.answer = -1;
     CHECK(record_tiled_draw(x, error, sizeof error) == 0);
@@ -2996,6 +3072,8 @@ int main(void)
     multiple_targets(x);
     compute_cleared_target(x);
     null_image_descriptor(x);
+    reshaped_target(x);
+    many_targets(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);

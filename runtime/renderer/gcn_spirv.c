@@ -3774,6 +3774,19 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         return;
     }
     const gcn_image_binding *b = &t->layout->images[binding];
+    if (b->unmapped) { /* a read here would reach unmapped memory: a run-time stop, and the VGPRs read 0 */
+        if (op == MIMG_OP_STORE || !t->layout->error_address) {
+            fail(t, "%s: an image at address 0 %s", name, op == MIMG_OP_STORE ? "stored to" : "read, and there is no run-time stop word");
+            return;
+        }
+        const int compare = op == MIMG_OP_SAMPLE_C_LZ; /* a depth comparison writes one VGPR */
+        const uint32_t merge = begin_if(t, exec_bit(t));
+        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_UNMAPPED_IMAGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+        const unsigned written = compare ? 1 : (unsigned)__builtin_popcount(dmask);
+        for (unsigned i = 0; i < written; i++) write_vgpr(t, vdata + i, konst(t, 0));
+        end_if(t, merge);
+        return;
+    }
     if (sample) {
         const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
         image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L,
