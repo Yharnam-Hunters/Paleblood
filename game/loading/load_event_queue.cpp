@@ -18,6 +18,11 @@
 // (0x024c1530) and 0x024c6ee0, finds the transfer task loading the info in the file load queue's six
 // task lists (in order, under their read-write lock) and cancels it, all under the queue's lock.
 // A queue without its task lists is reported ("Invalid Parameter...", and the pointer read again).
+//
+// loading_load_queue_cancel_event_02a6abc0 (0x02a6abc0), the dispatch's handler of kind 3 events
+// (0x02a6a7f0): the same search for the task loading the event's info, in the given task lists
+// (asserted, not read again), and its cancel. It does not take the queue or its lock (the dispatch
+// holds it).
 #include <cstdint>
 
 #include "../engine/engine.h"
@@ -28,6 +33,8 @@ using frame_timing::job::JobLock;
 using frame_timing::job::wait_forever;
 
 namespace {
+
+constexpr int32_t cancel_event_line = 0x25e;
 
 void lock(JobLock *lock) { lock->vtable->lock(lock, wait_forever); }
 void unlock(JobLock *lock) { lock->vtable->unlock(lock); }
@@ -85,6 +92,20 @@ TransferTask *find_task(const engine::Array<TransferTask *> &list, const Resourc
     return nullptr;
 }
 
+// The first task loading `info` in the six lists, in order, under their read-write lock; or null.
+TransferTask *find_task_in_lists(TransferTasks *tasks, const ResourceInfo *info)
+{
+    read_write_lock_read(&tasks->lock, wait_forever);
+    TransferTask *found = nullptr;
+    for (const engine::Array<TransferTask *> &list : tasks->lists) {
+        found = find_task(list, info);
+        if (found)
+            break;
+    }
+    read_write_lock_unlock(&tasks->lock);
+    return found;
+}
+
 }  // namespace
 
 extern "C" ResourceHandle *bb_loading_load_queue_request_02a698e0(ResourceHandle *result, LoadEventQueue *queue,
@@ -108,15 +129,17 @@ extern "C" void bb_loading_load_queue_remove_02a6af30(LoadEventQueue *queue, Res
                             invalid_parameter_message.address());
         tasks = queue->transfer_tasks;
     }
-    read_write_lock_read(&tasks->lock, wait_forever);
-    TransferTask *found = nullptr;
-    for (const engine::Array<TransferTask *> &list : tasks->lists) {
-        found = find_task(list, info);
-        if (found)
-            break;
-    }
-    read_write_lock_unlock(&tasks->lock);
+    TransferTask *found = find_task_in_lists(tasks, info);
     if (found)
         transfer_task_cancel(found, false);
     unlock(&queue->lock);
+}
+
+extern "C" void bb_loading_load_queue_cancel_event_02a6abc0(void *, LoadEvent *event, TransferTasks *tasks)
+{
+    if (!tasks)
+        engine::fatal_error(load_queue_source_file.address(), cancel_event_line, invalid_parameter_message.address());
+    TransferTask *found = find_task_in_lists(tasks, reinterpret_cast<ResourceInfo *>(event->word_0x08));
+    if (found)
+        transfer_task_cancel(found, false);
 }
