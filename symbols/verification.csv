@@ -401,7 +401,9 @@ loading_mount_table_push_back_02470d50,edge,,11,11,0,0,56c29f3bfad4ccf6,2026-11-
 loading_mount_table_reallocate_024716d0,edge,,9,9,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_path_token_next_02a2aca0,recorded,,58,58,0,0,d7482430d506fc6c,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
+loading_request_pointer_array_push_back_02a6c690,edge,,17,17,0,0,b9766cf061acfc0c,2026-11-13
 loading_resource_info_release_024bd930,edge,,10,10,0,0,f16d991840b2b69e,2026-11-13
+loading_resource_manager_find_info_024c1630,edge,,34,34,0,0,b9766cf061acfc0c,2026-11-13
 loading_resource_manager_release_024c1530,edge,,11,11,0,0,78688d68204720c5,2026-11-13
 loading_resource_manager_remove_released_024c3260,edge,,21,21,0,0,78688d68204720c5,2026-11-13
 loading_stdio_close_files,edge,,9,9,0,0,66b528bb054522f0,2026-11-10
@@ -415,6 +417,7 @@ loading_stream_queue_request_02a6cd90,edge,,11,11,0,0,cbff2d9e5d2e1a99,2026-11-1
 loading_transfer_task_check_close_024ddf20,edge,,32,32,0,0,4f36e9d577c1e516,2026-11-13
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,4f36e9d577c1e516,2026-11-13
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,4f36e9d577c1e516,2026-11-13
+loading_transfer_task_list_push_back_02a6b340,edge,,17,17,0,0,b9766cf061acfc0c,2026-11-13
 menu_gaitem_select_entry_copy_into_pool,edge,,17,17,0,0,980b206a65ca492d,2026-11-12
 menu_gaitem_status_entry_copy,edge,,10,10,0,0,980b206a65ca492d,2026-11-12
 menu_text_input_close,edge,,18,18,0,0,076e6d850a523d38,2026-11-12
