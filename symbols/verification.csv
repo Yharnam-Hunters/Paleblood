@@ -699,6 +699,10 @@ param_row_name_gem_gen_2,edge,,37,37,0,0,c5f03adf370f96e3,2026-11-12
 param_row_name_holygrail_ex,edge,,37,37,0,0,c5f03adf370f96e3,2026-11-12
 param_row_name_weapon_gen,edge,,37,37,0,0,c5f03adf370f96e3,2026-11-12
 param_table_view,edge,,9,9,0,0,81240509ea85581e,2026-11-12
+physics_body_set_construct_00ae8700,edge,,16,16,0,0,185a13827bd89898,2026-11-13
+physics_controller_construct_00ae3fc0,edge,,10,10,0,0,185a13827bd89898,2026-11-13
+physics_ids_reserve_02bc1ca0,recorded,,11,11,0,0,185a13827bd89898,2026-11-13
+physics_ids_reserve_02bc1ca0,edge,,11,11,0,0,185a13827bd89898,2026-11-13
 physics_instance_construct_01c0c2b0,recorded,,119,119,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,recorded,30,119,119,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,recorded,60,119,119,0,0,ca3412adb293c909,2026-10-07
