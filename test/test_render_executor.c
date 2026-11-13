@@ -1075,11 +1075,11 @@ static void geometry_shader_draws(rt_executor *x)
 }
 
 /* Records the triangle with the vertex shader at code taking vgpr_inputs input VGPRs (VGPR_COMP_CNT), these
-   registers set, and a draw of 2 instances, into a cleared target, and runs it. */
+   registers set, and a draw of instances (NUM_INSTANCES), into a cleared target, and runs it. */
 static int run_instanced(rt_executor *x, uint64_t buffer, uint64_t target, uint64_t code, uint32_t vgpr_inputs, const uint32_t (*registers)[2],
-                         int count, char *error, size_t error_size)
+                         int count, uint32_t instances, char *error, size_t error_size)
 {
-    enum { VGPR_COMP_CNT_SHIFT = 24, INSTANCES = 2 };
+    enum { VGPR_COMP_CNT_SHIFT = 24 };
     memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 4);
     rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -1089,7 +1089,7 @@ static int run_instanced(rt_executor *x, uint64_t buffer, uint64_t target, uint6
     offset += 0x10;
     for (int i = 0; i < count; i++, offset += 0x10)
         CHECK(rt_render_record_register(buffer, offset, registers[i][0], registers[i][1], error, error_size) == 0);
-    CHECK(rt_render_record_instances(buffer, offset, INSTANCES, error, error_size) == 0);
+    CHECK(rt_render_record_instances(buffer, offset, instances, error, error_size) == 0);
     return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset + 0x10), error, error_size);
 }
 
@@ -1098,11 +1098,14 @@ static void unchanged(float c[4]) { (void)c; }
 /* Instancing (NUM_INSTANCES): 2 instances blended ONE + ONE double the colour. A vertex shader taking the
    instance index (v3) reads instance 1's colours past the triangle's, where they are 0: the colour is the
    triangle's, once. One taking the instance index over VGT_INSTANCE_STEP_RATE_0 (v1) stops by name with no
-   step rate set, and with a step rate of 2 reads instance 1's colours at the triangle's (1 / 2 = 0): doubled. */
+   step rate set, and with a step rate of 2 reads instance 1's colours at the triangle's (1 / 2 = 0): doubled.
+   NUM_INSTANCES 0 draws one instance (AMD's CIK 3D register reference, VGT_NUM_INSTANCES: zero is
+   interpreted as 1): the colour is the triangle's, once. */
 static void instanced_draws(rt_executor *x)
 {
     enum { INSTANCED = 0xc1050000, INSTANCE_CODE = 0x2c00, STEPPED_CODE = 0x2d00, TWICE = 0x2f00000, ONCE = 0x2f10000, STEPPED = 0x2f20000,
-           VERTEX_CODE_AT = VERTEX_CODE, PLAIN_INPUTS = 0, INSTANCE_INPUTS = 3, STEP_RATE_INPUTS = 1, COLOR_RECORDS = 3 };
+           ZERO = 0x2f30000, VERTEX_CODE_AT = VERTEX_CODE, PLAIN_INPUTS = 0, INSTANCE_INPUTS = 3, STEP_RATE_INPUTS = 1, COLOR_RECORDS = 3,
+           NO_INSTANCES = 0, TWO_INSTANCES = 2 };
     char error[200] = "";
     const uint32_t add[][2] = {{0xa1e0, 1u << 30 | 1 | 1u << 8}};
     const uint32_t add_stepped[][2] = {{0xa1e0, 1u << 30 | 1 | 1u << 8}, {0xa2a8, 2}};
@@ -1110,17 +1113,20 @@ static void instanced_draws(rt_executor *x)
     memset(later_colors, 0, COLOR_RECORDS * RECORD_STRIDE);
     memcpy((void *)(uintptr_t)at(INSTANCE_CODE), vertex_instance_color, sizeof vertex_instance_color);
     memcpy((void *)(uintptr_t)at(STEPPED_CODE), vertex_instance_color_stepped, sizeof vertex_instance_color_stepped);
-    int ran = run_instanced(x, INSTANCED, at(TWICE), at(VERTEX_CODE_AT), PLAIN_INPUTS, add, 1, error, sizeof error);
+    int ran = run_instanced(x, INSTANCED, at(TWICE), at(VERTEX_CODE_AT), PLAIN_INPUTS, add, 1, TWO_INSTANCES, error, sizeof error);
     if (ran) fprintf(stderr, "two instances: %s\n", error);
     CHECK(ran == 0 && blended_misses(x, at(TWICE), doubled) == 0);
-    ran = run_instanced(x, INSTANCED, at(ONCE), at(INSTANCE_CODE), INSTANCE_INPUTS, add, 1, error, sizeof error);
+    ran = run_instanced(x, INSTANCED, at(ONCE), at(INSTANCE_CODE), INSTANCE_INPUTS, add, 1, TWO_INSTANCES, error, sizeof error);
     if (ran) fprintf(stderr, "instance index: %s\n", error);
     CHECK(ran == 0 && blended_misses(x, at(ONCE), unchanged) == 0);
-    CHECK(run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add, 1, error, sizeof error) == -1 &&
+    CHECK(run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add, 1, TWO_INSTANCES, error, sizeof error) == -1 &&
           strstr(error, "VGT_INSTANCE_STEP_RATE_0"));
-    ran = run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add_stepped, 2, error, sizeof error);
+    ran = run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add_stepped, 2, TWO_INSTANCES, error, sizeof error);
     if (ran) fprintf(stderr, "instance index over a step rate: %s\n", error);
     CHECK(ran == 0 && blended_misses(x, at(STEPPED), doubled) == 0);
+    ran = run_instanced(x, INSTANCED, at(ZERO), at(VERTEX_CODE_AT), PLAIN_INPUTS, add, 1, NO_INSTANCES, error, sizeof error);
+    if (ran) fprintf(stderr, "NUM_INSTANCES 0: %s\n", error);
+    CHECK(ran == 0 && blended_misses(x, at(ZERO), unchanged) == 0);
 }
 
 static void indirect_draws(rt_executor *x)
@@ -1244,25 +1250,64 @@ static void multiple_targets(rt_executor *x)
     CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
 }
 
+/* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
+   pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
+   covers are 0 and the others keep the memory's pattern. One with base address 0 and other fields set
+   stops by name. */
+static void null_image_descriptor(rt_executor *x)
+{
+    enum { NULL_TARGET = 0x3e00000, PATTERN = 0x11223344u };
+    char error[300] = "";
+    uint32_t *const memory = (uint32_t *)(uintptr_t)at(NULL_TARGET);
+    for (int i = 0; i < SIZE * SIZE; i++) memory[i] = PATTERN;
+    const uint32_t null_image[8] = {0};
+    const int drawn = draw_texels(x, at(NULL_TARGET), null_image, error, sizeof error);
+    if (drawn) fprintf(stderr, "null image: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(NULL_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    const uint32_t shown = (PATTERN & 0xff00ff00u) | (PATTERN >> 16 & 0xffu) | (PATTERN & 0xffu) << 16; /* red first in memory, blue first read */
+    int zero = 0, other = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) zero += bgra[i] == 0, other += bgra[i] != 0 && bgra[i] != shown;
+    CHECK(zero > 0 && other == 0);
+    /* base address 0 with a format and type: not a null descriptor, and what the PS4 reads there is not known */
+    const uint32_t base_zero[8] = {0, 10u << 20, 0, 2u << 28 | 0xfac, 0, 0, 0, 0};
+    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "base address 0"));
+}
+
 /* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
    (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
    a draw into the target
    that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
-   a clear by a 32_32_32_32 float image there stops the draw by name. */
+   a clear by a 32_32_32_32 float image there stops the draw by name. An image of the target's width with
+   fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only; one with
+   fewer columns (a 960-wide image under a target of pitch 1024) clears those columns only. A target already
+   drawn (the triangle) and then cleared by the shader shows the clear too. */
 static void compute_cleared_target(rt_executor *x)
 {
-    enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, LINEAR_ALIGNED = 8 };
+    enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, SHORT_CLEARED = 0x3dc0000,
+           NARROW_CLEARED = 0x3e40000, DRAWN_CLEARED = 0x3e80000, LINEAR_ALIGNED = 8, PLAIN = 0, WIDE = 1, SHORT = 2, NARROW = 3, DRAWN = 4,
+           SHORT_ROWS = SIZE / 2,
+           NARROW_COLUMNS = SIZE / 2 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
-    for (int wide = 0; wide < 2; wide++) {
-        const uint64_t target = at(wide ? WIDE_CLEARED : CLEARED);
+    for (int kind = PLAIN; kind <= (int)DRAWN; kind++) {
+        const int wide = kind == WIDE;
+        const uint32_t rows = kind == SHORT ? SHORT_ROWS : SIZE, columns = kind == NARROW ? NARROW_COLUMNS : SIZE;
+        const uint64_t target = at(kind == WIDE ? WIDE_CLEARED : kind == SHORT ? SHORT_CLEARED : kind == NARROW ? NARROW_CLEARED : kind == DRAWN ? DRAWN_CLEARED : CLEARED);
         memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 16);
         rt_render_forget(), rt_executor_reset(x);
+        if (kind == DRAWN) { /* the triangle first: the target exists, drawn, when the shader writes its memory */
+            const uint32_t drawn_size = record_triangle_draw(DRAW_BUFFER, record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER));
+            CHECK(rt_executor_run(x, DRAW_BUFFER, drawn_size, error, sizeof error) == 0);
+            check_triangle(x, target);
+            rt_render_forget();
+        }
         const uint64_t code = at(CLEAR_CODE);
         const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
         CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
         uint32_t user[8];
-        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, SIZE, SIZE); /* 32_32_32_32 float, or 8_8_8_8 unorm */
+        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, columns, rows); /* 32_32_32_32 float, or 8_8_8_8 unorm */
         user[3] |= LINEAR_ALIGNED << 20;
         CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
         const uint32_t one[3] = {1, 1, 1};
@@ -1285,8 +1330,11 @@ static void compute_cleared_target(rt_executor *x)
         CHECK(rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error) == 0);
         /* blue first for the display: red 0.25, green 0.5, blue 0.75, alpha 1 (the store's rounding of 0.5 to 127 or 128 either way) */
         int cleared = 1;
-        for (int i = 0; i < SIZE * SIZE; i++)
-            cleared &= near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff;
+        for (int i = 0; i < SIZE * SIZE; i++) {
+            const int inside = i / SIZE < (int)rows && i % SIZE < (int)columns; /* the texels past the image keep the memory's 0 */
+            cleared &= inside ? near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff
+                              : bgra[i] == 0;
+        }
         if (!cleared) fprintf(stderr, "compute-cleared target: %08x\n", bgra[0]);
         CHECK(cleared);
         const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* written back to the memory: red first */
@@ -2182,11 +2230,23 @@ static int run_index_packet(rt_executor *x, uint64_t target, uint64_t indices, u
     return rt_executor_run(x, BUFFER, offset + 0x40, error, error_size);
 }
 
+/* The triangle drawn by DRAW_INDEX_2 with its indices at address: INDEX_TYPE set, no INDEX_BASE. */
+static int run_addressed_index_packet(rt_executor *x, uint64_t target, uint64_t address, uint32_t header, uint32_t max_size, uint32_t count,
+                                      uint32_t initiator, char *error, size_t error_size)
+{
+    enum { BUFFER = 0xc0fc0000 };
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_index_type(BUFFER, offset, 0, error, error_size) == 0);
+    CHECK(rt_render_record_draw_indexed(BUFFER, offset + 0x10, header, max_size, address, count, initiator, error, error_size) == 0);
+    return rt_executor_run(x, BUFFER, offset + 0x20, error, error_size);
+}
+
 /* A packet's MAX_SIZE applies independently of INDEX_BUFFER_SIZE. Unsupported
    packet fields stop before drawing; a valid packet draws the complete triangle. */
 static void indexed_packets(rt_executor *x, int fd)
 {
-    enum { INDICES = 0x12200, TARGET_PACKET = 0xd40000 };
+    enum { INDICES = 0x12200, TARGET_PACKET = 0xd40000, TARGET_ADDRESSED = 0x3d80000 };
     const uint32_t offset_header = 0xc0033500u;
     const uint16_t indices[] = {9, 9, 9, 0, 1, 2};
     memcpy((void *)(uintptr_t)at(INDICES), indices, sizeof indices);
@@ -2215,11 +2275,25 @@ static void indexed_packets(rt_executor *x, int fd)
         .u.draw_index = {.count = 3, .has_packet_fields = 2, .header = offset_header, .max_size = 3}};
     CHECK(rt_executor_run_calls(x, &bad_tag, 1, error, sizeof error) == -1 &&
           strstr(error, "invalid indexed packet field tag"));
-    rt_render_forget();
-    CHECK(rt_render_record_draw_indexed(0xc0fc0000, 0, 0xc0042700u, 3, at(INDICES), 3, 0,
-                                         error, sizeof error) == 0);
-    CHECK(rt_executor_run(x, 0xc0fc0000, 0x20, error, sizeof error) == -1 &&
-          strstr(error, "DRAW_INDEX_2 is not implemented"));
+    /* DRAW_INDEX_2 draws the indices at its own address (the triangle's, after the three 9s), with no
+       INDEX_BASE set; its unsupported fields stop before drawing */
+    const uint32_t addressed_header = 0xc0042700u;
+    CHECK(run_addressed_index_packet(x, at(TARGET_ADDRESSED), at(INDICES) + 3 * sizeof *indices, addressed_header, 3, 3, 0,
+                                     error, sizeof error) == 0);
+    check_triangle(x, at(TARGET_ADDRESSED));
+    const struct { uint32_t header, max_size, count, initiator; uint64_t address; const char *reason; } refused_addressed[] = {
+        {addressed_header | 1, 3, 3, 0, 6, "predicated indexed draws"},
+        {offset_header, 3, 3, 0, 6, "unsupported indexed packet header"},
+        {addressed_header, 3, 3, 1, 6, "unsupported indexed draw initiator"},
+        {addressed_header, 2, 3, 0, 6, "beyond MAX_SIZE"},
+        {addressed_header, 3, 3, 0, 7, "outside the GPU-visible memory"},
+    };
+    for (size_t i = 0; i < sizeof refused_addressed / sizeof *refused_addressed; i++) {
+        error[0] = '\0';
+        CHECK(run_addressed_index_packet(x, at(TARGET_ADDRESSED), at(INDICES) + refused_addressed[i].address, refused_addressed[i].header,
+                                         refused_addressed[i].max_size, refused_addressed[i].count, refused_addressed[i].initiator,
+                                         error, sizeof error) == -1 && strstr(error, refused_addressed[i].reason));
+    }
 
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
@@ -2797,6 +2871,7 @@ int main(void)
     depth_and_strips(x);
     multiple_targets(x);
     compute_cleared_target(x);
+    null_image_descriptor(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);

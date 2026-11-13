@@ -39,7 +39,6 @@ on:
       - 'test/test_syslib_locks.c'
       - 'test/syslib/timed_locks.c'
       - 'test/syslib_test.h'
-  merge_group:
 permissions:
   contents: read
 jobs:
