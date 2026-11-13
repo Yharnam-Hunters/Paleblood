@@ -110,11 +110,11 @@ extern "C" bool bb_loading_transfer_task_initialize_024dd540(TransferTask *task,
     task->open_status = open_status_none;
     task->close_status = 0;
     task->dword_0x7c = task->dword_0x80 = 0;
-    task->word_0x88 = 0;
+    task->dependent = nullptr;
     task->read_object = nullptr;
     task->chunk_size = task->word_0x110 = 0;
     task->chunk_limit = UINT64_MAX;
-    task->word_0x120 = 0;
+    task->read_size = 0;
     task->byte_0x128 = 0;
     task->chunk_flags = 0;
     task->size_left = task->size_pending = 0;
@@ -154,8 +154,10 @@ extern "C" bool bb_loading_file_task_initialize_024d6730(FileTransferTask *task,
                              info, heap_word, request->byte_0x40);
     task->queue = queue;
     task->base.flags_0x58 = (task->base.flags_0x58 & ~task_flag_from_file_argument) | flag;
-    task->byte_0x190 = 0;
-    task->word_0x170 = task->word_0x178 = task->word_0x180 = task->word_0x188 = 0;
+    task->owns_buffer = 0;
+    task->buffer = nullptr;
+    task->buffer_size = task->buffer_left = 0;
+    task->buffer_allocator = nullptr;
     task->base.file_word_0x140 = request->word_0x140;
     task->base.file_word_0x148 = request->word_0x20;
     task->base.state = state_idle;
@@ -226,7 +228,7 @@ extern "C" bool bb_loading_file_task_check_read_024d6e20(FileTransferTask *file_
     if (task->size_pending == 0 || steps_done) {
         task->size_left -= task->size_pending;
         task->size_pending = 0;
-        file_task->word_0x180 = 0;
+        file_task->buffer_left = 0;
         if (task->result_flags & result_flag_0x80)
             shift_to_working_state(task, state_read_done_9);
         else

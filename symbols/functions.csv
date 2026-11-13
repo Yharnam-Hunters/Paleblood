@@ -468,9 +468,12 @@ address,size,name,system,status,notes
 0x024be8e0,362,loading_load_request_construct_tail_024be8e0,loading,edge-verified,resource load request tail: two owning empty wide strings and an empty byte array on the default container heap (heap check each)
 0x024c1530,152,loading_resource_manager_release_024c1530,loading,edge-verified,DLResourceManagerImpl release of an info: initialized assert; without flag 0x40 leave the file queue and set the signal; under the lock mark released (0x80) and hand to 0x024c3260
 0x024d6730,283,loading_file_task_initialize_024d6730,loading,edge-verified,FileTransferTask initialize: copy request (keep heap word if none); invalid -> false; base initialize; queue; flag bit 0; request words
+0x024d6850,247,loading_file_task_reset_024d6850,loading,edge-verified,FileTransferTask reset: end slot unless ended; clear words; destroy+free chained objects; clear chain/heap word/state
 0x024d6950,197,loading_file_task_update_024d6950,loading,edge-verified,FileTransferTask update: under its lock run state handlers (member-function table) until a stop state
 0x024d6e20,275,loading_file_task_check_read_024d6e20,loading,edge-verified,FileTransferTask read step: open errors or cancel abort; count pending size; state 8 or 9
 0x024d7460,245,loading_file_task_start_024d7460,loading,edge-verified,FileTransferTask start: manager stop or cancel abort; prepare; chunk limit; begin read; state 6; start slot
+0x024d7e50,309,loading_file_task_end_024d7e50,loading,edge-verified,FileTransferTask end (once): manager hands over the info under its lock; completed -> info loaded + queue reports it; else info flag cleared
+0x024d8210,605,loading_file_task_prepare_024d8210,loading,edge-verified,FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks)
 0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,edge-verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
 0x024dde50,200,loading_transfer_task_check_read_024dde50,loading,edge-verified,TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4
 0x024ddf20,190,loading_transfer_task_check_close_024ddf20,loading,edge-verified,TransferTask close step: free read object; closed and not cancelled -> request close; else finish once
@@ -505,12 +508,16 @@ address,size,name,system,status,notes
 0x02a3baa0,378,engine_fast_fixed_allocator_initialize_02a3baa0,engine,edge-verified,"DLFastFixedAllocator set-up: chunk size rounded up to a power of two, chunks aligned to it; blocks rounded to the alignment (at least 8); reports bad sizes and alignment"
 0x02a3bc40,173,engine_fast_fixed_allocator_release_02a3bc40,engine,edge-verified,"DLFastFixedAllocator destructor body: every chunk of both chunk lists, then the spare chunk, freed to the backing allocator"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
+0x02a692d0,19,loading_load_queue_report_loaded_02a692d0,loading,edge-verified,load event queue: report a request through vtable slot 0 with code 1
 0x02a698e0,654,loading_load_queue_request_02a698e0,loading,edge-verified,DLResourceLoadEventQueue request (kind 0): validity; manager info or report -0xf8; info remembers the queue; under the lock append an event with a request copy; handle to the info
 0x02a69b70,340,loading_load_event_array_push_back_02a69b70,loading,edge-verified,resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable
 0x02a69cd0,654,loading_load_queue_request_kind_4_02a69cd0,loading,edge-verified,DLResourceLoadEventQueue request (kind 4): same code as 0x02a698e0
 0x02a69fb0,105,loading_finished_queue_front_02a69fb0,loading,edge-verified,Finished-entry list front: under the lock copy the first entry when the count is not 0
 0x02a6a020,140,loading_finished_queue_pop_02a6a020,loading,edge-verified,Finished-entry list pop: under the lock unlink the first node; destroy its entry; free; count one less
+0x02a6a7f0,448,loading_load_queue_dispatch_02a6a7f0,loading,edge-verified,file load event queue: under its lock hand each event to its kind handler (0 3 4); erase all
+0x02a6a9e0,465,loading_load_queue_start_file_task_02a6a9e0,loading,edge-verified,file load event queue: take a file task slot from the pool (new 32-slot block if none); initialize; append to transfer tasks
 0x02a6af30,423,loading_load_queue_remove_02a6af30,loading,edge-verified,DLResourceFileLoadEventQueue: under the queue lock find the transfer task loading an info in six task lists (read-write lock) and cancel it
+0x02a6b0e0,184,loading_finished_queue_post_02a6b0e0,loading,edge-verified,load event queue: under its lock append a finished entry (request words code word + info handle)
 0x02a6b520,395,loading_file_load_slots_construct_02a6b520,loading,edge-verified,file load event queue: construct its 32 slots (0x338 bytes each) in order with 0x024d63f0
 0x02a6bc50,618,loading_load_event_array_reallocate_02a6bc50,loading,edge-verified,load event array reallocate to exact capacity: copy events; destroy old (base vtable; data freed; three strings released); free old buffer
 0x02a6cd90,635,loading_stream_queue_request_02a6cd90,loading,edge-verified,DLResourceStreamLoadEventQueue request: validity; manager info or report -0xf8; stream handle; under the lock append an event with a request copy and its extra byte; handle copy
@@ -525,6 +532,9 @@ address,size,name,system,status,notes
 0x02a8c210,164,input_mouse_construct,input,edge-verified,"Mouse device constructor: base ctor with the third argument; vtable 0x056b7d00; clear 0x140..0x177; load sysmodule 0xa9; sceMouseInit; open via slot 32; handle 0 on any failure"
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,edge-verified,"Initializes or reinitializes mouse input for the initial user; closing a previous connection if necessary."
 0x02a9c790,84,input_pad_set_vibration,input,verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument; small from the second; true on success"
+0x02aa4a30,128,loading_finished_entry_construct_02aa4a30,loading,edge-verified,finished entry constructor: result base + handle to the info the manager finds for the request words
+0x02aa4ab0,75,loading_finished_entry_copy_construct_02aa4ab0,loading,edge-verified,finished entry copy constructor: result base copy + handle assign
+0x02aa4b40,46,loading_finished_entry_destroy_02aa4b40,loading,edge-verified,finished entry destructor: drop the handle then the result base
 0x02aa9d50,87,render_acquire_shader_upload_block_02aa9d50,render,edge-verified,"Under the manager lock (+0xd8, slots 0x18/0x28), one range from the allocator at 0x02aa9db0 with 16-byte alignment"
 0x02aa9db0,487,render_allocate_shader_upload_range_02aa9db0,render,edge-verified,First fit on the free list for size rounded to 16; splits off aligned padding and rest as free ranges when the node pool gives records; counts in use and free bytes
 0x02aaa5a0,124,render_release_present_finish_node,render,verified,"Release the finish node through the manager helper; retaining its head-match decision and reloading commands across retries."
