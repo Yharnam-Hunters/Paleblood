@@ -15,7 +15,9 @@
 #include "render_fixture.h"
 #include "runtime/tiling.h"
 
+#include <pthread.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* Every pixel of the target holds the triangle's colour. */
 static void check_triangle(rt_executor *x, uint64_t target)
@@ -72,23 +74,27 @@ static int draw_texels_as(rt_executor *x, uint64_t target, const uint32_t image[
 }
 
 /* A run-time stop in a submitted batch is found when the batch's slot is next opened: the work recorded
-   there then stops with the stop's own reason (not just "no command buffer"). The draw of texels past
-   the image is submitted without waiting, then triangle draws, one a batch, until one meets it. */
-static void stop_found_by_a_later_batch(rt_executor *x, uint64_t target, const uint32_t image[8])
+   there then stops with the stop's own reason (not just "no command buffer"). A draw whose pixel shader
+   reads VCC as a lane mask after a scalar write of its halves (a run-time stop) is submitted without
+   waiting, then triangle draws, one a batch, until one meets it. */
+static void stop_found_by_a_later_batch(rt_executor *x, uint64_t target)
 {
-    enum { TEXEL_BUFFER = 0xc0f00000, TEXEL_CODE = 0x2a00, LATER_BUFFER = 0xc0f40000, MOST_BATCHES = 8 };
+    enum { STOP_BUFFER = 0xc0f00000, STOP_CODE = 0x2a00, LATER_BUFFER = 0xc0f40000, MOST_BATCHES = 8 };
     char error[512] = "";
-    memcpy((void *)(uintptr_t)at(TEXEL_CODE), pixel_image_texel, sizeof pixel_image_texel);
+    static uint32_t read_after[64];
+    read_after[0] = 0xbeeb0380; /* s_mov_b32 vcc_hi, 0 */
+    read_after[1] = 0x00121280; /* v_cndmask_b32_e32 v9, 0, v9, vcc */
+    memcpy(read_after + 2, pixel_position_color, sizeof pixel_position_color);
+    memcpy((void *)(uintptr_t)at(STOP_CODE), read_after, sizeof read_after);
     rt_render_forget(), rt_executor_reset(x);
-    uint32_t offset = record_setup(TEXEL_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
-    const uint64_t code = at(TEXEL_CODE);
+    uint32_t offset = record_setup(STOP_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(STOP_CODE);
     const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
-    CHECK(rt_render_record_pixel_shader(TEXEL_BUFFER, offset, pixel, error, sizeof error) == 0);
-    CHECK(rt_render_record_user_data(TEXEL_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, image, 8, error, sizeof error) == 0);
-    const uint32_t size = record_triangle_draw(TEXEL_BUFFER, offset + 0x20);
+    CHECK(rt_render_record_pixel_shader(STOP_BUFFER, offset, pixel, error, sizeof error) == 0);
+    const uint32_t size = record_triangle_draw(STOP_BUFFER, offset + 0x10);
     size_t count = 0;
     uint64_t ticket = 0;
-    const rt_render_call *calls = rt_render_submitted(TEXEL_BUFFER, size, &count);
+    const rt_render_call *calls = rt_render_submitted(STOP_BUFFER, size, &count);
     CHECK(rt_executor_submit_calls(x, calls, count, &ticket, error, sizeof error) == 0);
     int stopped = 0;
     for (unsigned k = 0; k < MOST_BATCHES && !stopped; k++) {
@@ -96,8 +102,8 @@ static void stop_found_by_a_later_batch(rt_executor *x, uint64_t target, const u
         calls = rt_render_submitted(LATER_BUFFER, later, &count);
         stopped = rt_executor_submit_calls(x, calls, count, &ticket, error, sizeof error) != 0;
     }
-    if (!stopped || !strstr(error, "outside the image")) fprintf(stderr, "stop found by a later batch: %s\n", stopped ? error : "no stop");
-    CHECK(stopped && strstr(error, "no command buffer: ") && strstr(error, "outside the image"));
+    if (!stopped || !strstr(error, "lane mask")) fprintf(stderr, "stop found by a later batch: %s\n", stopped ? error : "no stop");
+    CHECK(stopped && strstr(error, "no command buffer: ") && strstr(error, "lane mask"));
     rt_executor_finish(x, error, sizeof error);
 }
 
@@ -120,6 +126,27 @@ static int differing_pixels(rt_executor *x, uint64_t target)
                         near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
         }
     return differ;
+}
+
+/* The pixels of target (drawn by pixel_image_texel from an 8 x 8 image of the reference image's
+   texels) that are wrong: inside the image the reference image, outside it the colour `outside`
+   (BGRA), the replacement texel a load outside an image reads (all of them on a failed read). */
+static int replacement_misses(rt_executor *x, uint64_t target, uint32_t outside)
+{
+    enum { INSIDE = 8 };
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return SIZE * SIZE;
+    int misses = 0;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            if (px < INSIDE && y < INSIDE)
+                misses += !(near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, ((float)y + 0.5f) / SIZE) &&
+                            near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
+            else misses += p != outside;
+        }
+    return misses;
 }
 
 /* A positive float as an unsigned small float of mantissa_bits (5-bit exponent, bias 15), or (with
@@ -455,10 +482,32 @@ static void sampled_images(rt_executor *x)
         if (drawn) fprintf(stderr, "split-tile image: %s\n", error);
         CHECK(drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
     }
-    image_descriptor(image, at(SMALL), 10, 0, 8, 8);
-    image[3] |= LINEAR_ALIGNED << 20;
-    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "outside the image"));
-    stop_found_by_a_later_batch(x, at(TEXEL_TARGET), image);
+    /* Texels outside the image read the replacement texel (0, 0, 0, 0) through DST_SEL, as under Vulkan's
+       robustImageAccess2: an 8 x 8 image drawn over the 16 x 16 target leaves the rest (0, 0, 0, 0)
+       with DST_SEL x, y, z, w and (0, 0, 0, 1) with x, y, z, 1. Mutant: the replacement's DST_SEL
+       ignored (alpha stays 0). */
+    {
+        enum { SMALL_SIZE = 8, OPAQUE_BLACK = 0xff000000u };
+        rt_tiling small;
+        CHECK(rt_tiling_layout(LINEAR_ALIGNED, 4, SMALL_SIZE, SMALL_SIZE, &small, error, sizeof error) == 0);
+        for (uint32_t y = 0; y < SMALL_SIZE; y++)
+            for (uint32_t px = 0; px < SMALL_SIZE; px++) {
+                const uint32_t texel = reference_texel(px, y);
+                memcpy(guest + SMALL + rt_tiling_offset(&small, px, y, 0), &texel, 4);
+            }
+        for (int alpha_one = 0; alpha_one < 2; alpha_one++) {
+            image_descriptor(image, at(SMALL), 10, 0, SMALL_SIZE, SMALL_SIZE);
+            image[3] |= LINEAR_ALIGNED << 20;
+            if (alpha_one) image[3] = (image[3] & ~(7u << 9)) | 1u << 9; /* DST_SEL_W 1 */
+            drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+            if (drawn) fprintf(stderr, "image read outside its texels: %s\n", error);
+            CHECK(drawn == 0);
+            const int misses = replacement_misses(x, at(TEXEL_TARGET), alpha_one ? OPAQUE_BLACK : 0);
+            if (misses) fprintf(stderr, "outside the image (alpha one %d): %d pixels wrong\n", alpha_one, misses);
+            CHECK(misses == 0);
+        }
+    }
+    stop_found_by_a_later_batch(x, at(TEXEL_TARGET));
     image[3] = (image[3] & ~(0x1fu << 20)) | 2u << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "tiling index 2"));
 }
@@ -881,6 +930,47 @@ static void buffers_in_one_submission(rt_executor *x)
     CHECK(blended_misses(x, at(JOINED), doubled) == 0);
 }
 
+/* A wait on another thread for a ticket still open (as the renderer's completion thread waits for a
+   deferred step's ticket) waits for the batch's handover, then gives the GPU its limit from there: with
+   a 200 ms limit, the batch handed over 600 ms after the wait began is waited for and drawn, not
+   reported as "a batch of 0 draws" the GPU never had. Mutant: the limit counted from the wait. */
+typedef struct {
+    rt_executor *x;
+    uint64_t ticket;
+    int result;
+    char error[300];
+} ticket_wait;
+
+static void *wait_on_other_thread(void *argument)
+{
+    ticket_wait *w = argument;
+    w->result = rt_executor_wait_ticket(w->x, w->ticket, w->error, sizeof w->error);
+    return NULL;
+}
+
+static void wait_before_handover(rt_executor *x)
+{
+    enum { WAIT_BUFFER = 0xc1040000, LATE = 0x2fc0000, LIMIT_NS = 200000000, HANDOVER_LATER_NS = 600000000 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t size = record_draw(WAIT_BUFFER, at(LATE), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(WAIT_BUFFER, size, &count);
+    ticket_wait w = {.x = x};
+    CHECK(rt_executor_record_calls(x, calls, count, &w.ticket, error, sizeof error) == 0 && w.ticket);
+    rt_executor_set_wait_limit(x, LIMIT_NS);
+    pthread_t waiter;
+    CHECK(pthread_create(&waiter, NULL, wait_on_other_thread, &w) == 0);
+    nanosleep(&(struct timespec){0, HANDOVER_LATER_NS}, NULL);
+    CHECK(rt_executor_submit(x, error, sizeof error) == 0);
+    pthread_join(waiter, NULL);
+    rt_executor_set_wait_limit(x, 0);
+    if (w.result) fprintf(stderr, "wait before the handover: %s\n", w.error);
+    CHECK(w.result == 0);
+    check_triangle(x, at(LATE));
+}
+
 /* Runs the triangle's state with these registers and a draw of `count` vertices (record_setup's). */
 static int run_counted(rt_executor *x, uint64_t buffer, uint64_t target, const uint32_t (*registers)[2], int n, uint32_t count, char *error,
                        size_t error_size)
@@ -1283,29 +1373,64 @@ static void multiple_targets(rt_executor *x)
     CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
 }
 
+/* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
+   pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
+   covers are 0 and the others keep the memory's pattern. One with base address 0 and other fields set
+   stops by name. */
+static void null_image_descriptor(rt_executor *x)
+{
+    enum { NULL_TARGET = 0x3e00000, PATTERN = 0x11223344u };
+    char error[300] = "";
+    uint32_t *const memory = (uint32_t *)(uintptr_t)at(NULL_TARGET);
+    for (int i = 0; i < SIZE * SIZE; i++) memory[i] = PATTERN;
+    const uint32_t null_image[8] = {0};
+    const int drawn = draw_texels(x, at(NULL_TARGET), null_image, error, sizeof error);
+    if (drawn) fprintf(stderr, "null image: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(NULL_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    const uint32_t shown = (PATTERN & 0xff00ff00u) | (PATTERN >> 16 & 0xffu) | (PATTERN & 0xffu) << 16; /* red first in memory, blue first read */
+    int zero = 0, other = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) zero += bgra[i] == 0, other += bgra[i] != 0 && bgra[i] != shown;
+    CHECK(zero > 0 && other == 0);
+    /* base address 0 with a format and type: not a null descriptor, and what the PS4 reads there is not known */
+    const uint32_t base_zero[8] = {0, 10u << 20, 0, 2u << 28 | 0xfac, 0, 0, 0, 0};
+    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "base address 0"));
+}
+
 /* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
    (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
    a draw into the target
    that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
    a clear by a 32_32_32_32 float image there stops the draw by name. An image of the target's width with
-   fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only. */
+   fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only; one with
+   fewer columns (a 960-wide image under a target of pitch 1024) clears those columns only. A target already
+   drawn (the triangle) and then cleared by the shader shows the clear too. */
 static void compute_cleared_target(rt_executor *x)
 {
     enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, SHORT_CLEARED = 0x3dc0000,
-           LINEAR_ALIGNED = 8, PLAIN = 0, WIDE = 1, SHORT = 2, SHORT_ROWS = SIZE / 2 };
+           NARROW_CLEARED = 0x3e40000, DRAWN_CLEARED = 0x3e80000, LINEAR_ALIGNED = 8, PLAIN = 0, WIDE = 1, SHORT = 2, NARROW = 3, DRAWN = 4,
+           SHORT_ROWS = SIZE / 2,
+           NARROW_COLUMNS = SIZE / 2 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
-    for (int kind = PLAIN; kind <= (int)SHORT; kind++) {
+    for (int kind = PLAIN; kind <= (int)DRAWN; kind++) {
         const int wide = kind == WIDE;
-        const uint32_t rows = kind == SHORT ? SHORT_ROWS : SIZE;
-        const uint64_t target = at(kind == WIDE ? WIDE_CLEARED : kind == SHORT ? SHORT_CLEARED : CLEARED);
+        const uint32_t rows = kind == SHORT ? SHORT_ROWS : SIZE, columns = kind == NARROW ? NARROW_COLUMNS : SIZE;
+        const uint64_t target = at(kind == WIDE ? WIDE_CLEARED : kind == SHORT ? SHORT_CLEARED : kind == NARROW ? NARROW_CLEARED : kind == DRAWN ? DRAWN_CLEARED : CLEARED);
         memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 16);
         rt_render_forget(), rt_executor_reset(x);
+        if (kind == DRAWN) { /* the triangle first: the target exists, drawn, when the shader writes its memory */
+            const uint32_t drawn_size = record_triangle_draw(DRAW_BUFFER, record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER));
+            CHECK(rt_executor_run(x, DRAW_BUFFER, drawn_size, error, sizeof error) == 0);
+            check_triangle(x, target);
+            rt_render_forget();
+        }
         const uint64_t code = at(CLEAR_CODE);
         const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
         CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
         uint32_t user[8];
-        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, SIZE, rows); /* 32_32_32_32 float, or 8_8_8_8 unorm */
+        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, columns, rows); /* 32_32_32_32 float, or 8_8_8_8 unorm */
         user[3] |= LINEAR_ALIGNED << 20;
         CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
         const uint32_t one[3] = {1, 1, 1};
@@ -1328,9 +1453,11 @@ static void compute_cleared_target(rt_executor *x)
         CHECK(rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error) == 0);
         /* blue first for the display: red 0.25, green 0.5, blue 0.75, alpha 1 (the store's rounding of 0.5 to 127 or 128 either way) */
         int cleared = 1;
-        for (int i = 0; i < SIZE * (int)rows; i++)
-            cleared &= near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff;
-        for (int i = SIZE * (int)rows; i < SIZE * SIZE; i++) cleared &= bgra[i] == 0; /* the rows past the image keep the memory's 0 */
+        for (int i = 0; i < SIZE * SIZE; i++) {
+            const int inside = i / SIZE < (int)rows && i % SIZE < (int)columns; /* the texels past the image keep the memory's 0 */
+            cleared &= inside ? near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff
+                              : bgra[i] == 0;
+        }
         if (!cleared) fprintf(stderr, "compute-cleared target: %08x\n", bgra[0]);
         CHECK(cleared);
         const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* written back to the memory: red first */
@@ -1471,6 +1598,38 @@ static void metadata_store_clears(rt_executor *x)
         CHECK(pass == 0 ? untouched : cleared);
         CHECK(expanded);
     }
+}
+
+/* PA_CL_CLIP_CNTL (0xa204): the triangle with its corners at z = -0.5 (w 1) lies wholly in front of the near
+   plane. With the register at its reset value (or set to 0) it is clipped away and nothing is drawn; with
+   ZCLIP_NEAR_DISABLE and ZCLIP_FAR_DISABLE (bits 26 and 27, as a shadow pass sets them) it is not clipped, its
+   depth is clamped to the viewport's range, and the whole triangle is drawn; CLIP_DISABLE (bit 16) alone does
+   the same. DX_RASTERIZATION_KILL (bit 22) stops by name. */
+static void clip_control(rt_executor *x)
+{
+    enum { CLIP_BUFFER = 0xc0f40000, CLIPPED = 0x3400000, UNCLIPPED = 0x3440000, CLIP_OFF = 0x3480000, KILLED = 0x34c0000, Z = 2, PA_CL_CLIP_CNTL = 0xa204 };
+    enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
+    char error[200] = "";
+    float *corners = (float *)(uintptr_t)at(CORNERS);
+    for (int i = 0; i < 3; i++) corners[i * 4 + Z] = -0.5f;
+    const uint32_t clipping[][2] = {{PA_CL_CLIP_CNTL, 0}};
+    int drawn = run_counted(x, CLIP_BUFFER, at(CLIPPED), clipping, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "clipped: %s\n", error);
+    CHECK(drawn == 0);
+    CHECK(nothing_drawn(x, at(CLIPPED)));
+    const uint32_t no_zclip[][2] = {{PA_CL_CLIP_CNTL, ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE}};
+    drawn = run_counted(x, CLIP_BUFFER, at(UNCLIPPED), no_zclip, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "z clipping off: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(UNCLIPPED));
+    const uint32_t clip_off[][2] = {{PA_CL_CLIP_CNTL, CLIP_DISABLE}};
+    drawn = run_counted(x, CLIP_BUFFER, at(CLIP_OFF), clip_off, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "clipping off: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(CLIP_OFF));
+    const uint32_t killed[][2] = {{PA_CL_CLIP_CNTL, DX_RASTERIZATION_KILL}};
+    CHECK(run_counted(x, CLIP_BUFFER, at(KILLED), killed, 1, 3, error, sizeof error) == -1 && strstr(error, "rasterization killed"));
+    for (int i = 0; i < 3; i++) corners[i * 4 + Z] = 0.0f;
 }
 
 /* Depth and stencil without a depth buffer, and triangle strips:
@@ -2861,13 +3020,16 @@ int main(void)
     tessellated_draws(x);
     geometry_shader_draws(x);
     buffers_in_one_submission(x);
+    wait_before_handover(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));
     const uint32_t line_strips[][2] = {{0xc242, 5}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
+    clip_control(x);
     multiple_targets(x);
     compute_cleared_target(x);
+    null_image_descriptor(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
@@ -3192,7 +3354,8 @@ int main(void)
         }
 
         /* image_load_mip from a storage image (bound as one level): at level 0 the copy pass reads each
-           texel as image_load does; at level 1 (past the only level) it stops at run time by name. */
+           texel as image_load does; at level 1 (past the only level) it reads the replacement texel
+           through the copy's DST_SEL x, 1, z, 1: (0, 1, 0, 1). */
         for (int level = 0; level < 2; level++) {
             enum { MIP_COPY_CODE = 0x4c00 }; /* a program each (compute pipelines are kept by code address) */
             const uint32_t *program = level ? image_copy_level_1 : image_copy_level_0;
@@ -3210,7 +3373,10 @@ int main(void)
                 CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
                 memset(user, 0, sizeof user);
                 if (pass == 0) memcpy(user + 8, image_a, sizeof image_a);
-                if (pass == 1) memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+                if (pass == 1) {
+                    memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+                    if (level) user[3] = (user[3] & ~0xfffu) | (4 | 1 << 3 | 6 << 6 | 1 << 9); /* DST_SEL x, 1, z, 1 */
+                }
                 if (pass == 2) descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
                 CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
                 CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
@@ -3218,15 +3384,19 @@ int main(void)
                 offset += 0x40;
             }
             const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+            if (ran) fprintf(stderr, "image_load_mip of a storage image at level %d: %s\n", level, error);
+            CHECK(ran == 0);
             if (level == 0) {
-                if (ran) fprintf(stderr, "image_load_mip of a storage image: %s\n", error);
-                CHECK(ran == 0);
                 int right = 1;
                 for (unsigned i = 0; i < LANES; i++)
                     right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
                 CHECK(right);
             } else {
-                CHECK(ran == -1 && strstr(error, "past its last level"));
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= back[i * 4] == 0.0f && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 0.0f && back[i * 4 + 3] == 1.0f;
+                if (!right) fprintf(stderr, "level past a storage image's: lane 0 read %g %g %g %g\n", back[0], back[1], back[2], back[3]);
+                CHECK(right);
             }
         }
 

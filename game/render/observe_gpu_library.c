@@ -79,6 +79,8 @@
    (top << 16) & 0x7fff0000, with bit 31 (WINDOW_OFFSET_DISABLE) set when the seventh argument is 0, and
    _BR (the next register) = right & 0x7fff | (bottom << 16) & 0x7fff0000, in one packet (from its
    disassembly). The deferred lights set each 128x128 screen tile as viewport 0's scissor before a draw.
+   The clip control setter 0x01476b30 (command buffer, value) writes PA_CL_CLIP_CNTL (0xa204) = the value & 0x0f7fe03f
+   in one SET_CONTEXT_REG packet (bbhost's notes name the function and mask, facts only; its disassembly agrees).
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
@@ -349,6 +351,14 @@ static void viewport_scissor(const uint64_t *frame)
     rt_observe_register(observed_buffer(frame), observed_offset(frame), first + 1, bottom_right);
 }
 
+enum { PA_CL_CLIP_CNTL = 0xa204, ARGUMENT_CLIP_CONTROL = 1 };
+static const uint32_t clip_control_mask = 0x0f7fe03f; /* the bits the setter keeps */
+
+static void clip_control(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_register(observed_buffer(args), observed_offset(args), PA_CL_CLIP_CNTL, (uint32_t)args[ARGUMENT_CLIP_CONTROL] & clip_control_mask);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
@@ -373,6 +383,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},
     {0x01476390, 133, "render_set_user_data_2_words", two_words},
     {0x01476420, 126, "render_set_user_data_1_word", one_word},
+    {0x01476b30, 93, "render_set_clip_control", clip_control},
     {0x014764a0, 184, "render_set_user_data_words", counted_words},
     {0x014766d0, 179, "render_set_viewport_scissor", viewport_scissor},
     {0x0148a350, 177, "render_dispatch_compute_buffer", dispatch},
