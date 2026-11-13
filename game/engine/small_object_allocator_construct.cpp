@@ -20,7 +20,6 @@ using namespace engine::small_object_allocator;
 RT_GLOBAL(0x0575b670, plain_vtable, const uint8_t);
 RT_GLOBAL(0x056b5dc0, placeholder_lock_vtable, const uint8_t);
 RT_GLOBAL(0x057b3240, locked_vtable, const uint8_t);
-RT_GLOBAL(0x057b2fa0, mutex_vtable, const uint8_t);
 // The mutex's own queries: whether it is set up, and the creation of its handle (0 on success).
 RT_ORIGINAL(0x0247ee80, mutex_is_initialized, bool(Mutex *));
 RT_ORIGINAL(0x02483fe0, mutex_create, int32_t(void **handle));
@@ -42,7 +41,7 @@ extern "C" void bb_engine_small_object_allocator_construct_locked_02fa22a0(Locke
                                                                           uint64_t smallest, uint64_t granularity)
 {
     allocator->vtable = locked_vtable.address();
-    allocator->lock.vtable = mutex_vtable.address();
+    allocator->lock.vtable = engine::pthread_mutex::mutex_vtable.address();
     allocator->lock.initialized = false;
     if (!mutex_is_initialized(&allocator->lock) && mutex_create(&allocator->lock.handle) == 0)
         allocator->lock.initialized = true;

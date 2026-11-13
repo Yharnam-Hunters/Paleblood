@@ -11,7 +11,7 @@
     .hidden rt_observe_entry
     .type rt_observe_entry, @function
 rt_observe_entry:
-    sub $200, %rsp                  /* 8 mod 16 at entry: the call below is aligned */
+    sub $200, %rsp                  /* 8 mod 16 at entry: the call below is aligned; RT_OBSERVED_ENTRY_FRAME_BYTES */
     mov %rdi, 0(%rsp)
     mov %rsi, 8(%rsp)
     mov %rdx, 16(%rsp)
