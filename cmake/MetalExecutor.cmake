@@ -38,6 +38,11 @@ target_compile_options(pbmetal_executor PRIVATE -fobjc-arc -fobjc-exceptions -fb
 target_link_libraries(pbmetal_executor PUBLIC pbgcn_spirv pbrender_calls pbtiling
     PRIVATE spirv-cross-msl ${PB_METAL_FRAMEWORK} ${PB_FOUNDATION_FRAMEWORK})
 if(PB_ENABLE_METAL_SMOKE_TEST)
+    add_executable(test_metal_depth_bounds test/test_metal_depth_bounds.c)
+    target_compile_options(test_metal_depth_bounds PRIVATE -ffp-contract=off -fno-fast-math)
+    target_link_libraries(test_metal_depth_bounds PRIVATE pbmetal_executor)
+    add_test(NAME metal_depth_bounds COMMAND test_metal_depth_bounds)
+    set_tests_properties(metal_depth_bounds PROPERTIES TIMEOUT 120 LABELS "gpu;metal")
     add_executable(test_metal_executor test/test_metal_executor.c)
     target_link_libraries(test_metal_executor PRIVATE pbmetal_executor)
     add_test(NAME metal_executor COMMAND test_metal_executor)
