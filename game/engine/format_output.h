@@ -27,10 +27,17 @@ static_assert(offsetof(Output, cursor) == 0x8 && offsetof(Output, room) == 0x10 
               offsetof(Output, width) == 0x1c && offsetof(Output, precision) == 0x20 &&
               offsetof(Output, length) == 0x26 && offsetof(Output, count_only) == 0x28);
 
-constexpr uint32_t flag_zero_pad = 0x01;
-constexpr uint32_t flag_left_justify = 0x10;
-// Set by the formatter's caller: with an 'h' length modifier, %s then reads a narrow string.
-constexpr uint32_t flag_h_selects_narrow = 0x40;
+constexpr uint32_t flag_zero_pad = 0x01;      // '0'
+constexpr uint32_t flag_signed = 0x02;        // set by %d / %i: the argument is signed
+constexpr uint32_t flag_plus = 0x04;          // '+': a plus sign before a non-negative number
+constexpr uint32_t flag_space = 0x08;         // ' ': a space before a non-negative number
+constexpr uint32_t flag_left_justify = 0x10;  // '-'
+constexpr uint32_t flag_alternate = 0x20;     // '#': a 0x / 0 prefix for hex / octal
+// Set by the formatter's caller for a capital conversion letter: upper-case digits (and 'X'),
+// and with an 'h' length modifier %s reads a narrow string.
+constexpr uint32_t flag_capital = 0x40;
+// Set by the integer conversion for %#o of zero: the lone "0" is still written at precision 0.
+constexpr uint32_t flag_keep_zero = 0x100;
 
 // The pad character: '0' with the zero-pad flag, else a space.
 inline char16_t pad_character(uint32_t flags)
