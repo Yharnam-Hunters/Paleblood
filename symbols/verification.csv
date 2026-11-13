@@ -261,6 +261,7 @@ frame_timing_request_7_0200e270,edge,60,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_request_7_02012a60,edge,,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_request_7_02012a60,edge,60,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_sleep_ms,edge,,10,10,0,0,b1ae2eead3597009,2026-10-26
+frame_timing_step_machine_count_step_01ec3000,recorded,,35,35,0,0,9e3c83e666421c7d,2026-11-13
 frame_timing_stopwatch_start,edge,,13,13,0,0,3b3f75b688e0d259,2026-11-10
 frame_timing_stopwatch_stop,edge,,16,16,0,0,3b3f75b688e0d259,2026-11-10
 frame_timing_task_013d3520,recorded,,208,208,0,0,c52608f510993456,2026-10-07
