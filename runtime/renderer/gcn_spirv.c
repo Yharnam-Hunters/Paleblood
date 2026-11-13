@@ -3431,9 +3431,35 @@ static uint32_t image_variable(translator *t, unsigned binding)
     return id;
 }
 
+/* An image's DST_SEL as four selectors (3 bits a component: 0 zero, 1 one, 4-7 texel x, y, z, w);
+   a binding's 0 is the identity. */
+enum { SEL_ZERO = 0, SEL_ONE = 1, SEL_X = 4, SEL_W = 7 };
+static void image_selectors(const gcn_image_binding *b, unsigned sel[4])
+{
+    for (unsigned k = 0; k < 4; k++) sel[k] = b->swizzle ? (b->swizzle >> (3 * k) & 7) : SEL_X + k;
+}
+
+/* What a load of a texel outside the image (or of a level past the last) gives: the texel (0, 0, 0, 0),
+   or (0, 0, 0, 1) for a format without alpha, through the image's DST_SEL, each component DMASK names
+   written in order from vdata. That is Vulkan's robustImageAccess2 texel replacement (the replaced
+   texel then takes the view's component swizzle), which Mesa's RADV exposes on AMD's hardware with no
+   bounds code in the shader: the hardware returns it. Ones are 1.0 for float data, 1 for integers. */
+static void replacement_texel(translator *t, const gcn_image_binding *b, unsigned dmask, unsigned vdata)
+{
+    enum { FLOAT_ONE = 0x3f800000 };
+    unsigned sel[4], next = vdata;
+    image_selectors(b, sel);
+    const uint32_t one = b->type == GCN_IMAGE_FLOAT ? FLOAT_ONE : 1;
+    for (unsigned i = 0; i < 4; i++) {
+        if (!(dmask >> i & 1)) continue;
+        const int is_one = sel[i] == SEL_ONE || (sel[i] == SEL_W && b->components < 4);
+        write_vgpr(t, next++, konst(t, is_one ? one : 0));
+    }
+}
+
 /* image_load and image_load_mip from a sampled image: OpImageFetch at the coordinates and level. A
-   texel outside the image, or a level past the view's last, is a run-time stop (and the load writes
-   nothing): what GCN returns there is not established here. */
+   texel outside the image, or a level past the view's last, reads the replacement texel
+   (replacement_texel): the fetch itself happens only in range, where Vulkan defines it. */
 static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t variable, uint32_t coordinate, unsigned coordinates,
                          uint32_t level, uint32_t texel_type, unsigned dmask, unsigned vdata)
 {
@@ -3444,10 +3470,6 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
         for (unsigned i = 0; i < 4; i++)
             if (dmask >> i & 1) write_vgpr(t, next++, konst(t, 0));
         end_if(t, merge);
-        return;
-    }
-    if (!t->layout->error_address) {
-        fail(t, "image_load from a sampled image: its range is checked at run time, and there is no run-time stop word");
         return;
     }
     const uint32_t image = load(t, image_type(t, b), variable);
@@ -3475,7 +3497,7 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
     }
     end_if(t, merge);
     merge = begin_if(t, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, active, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
-    runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_IMAGE_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+    replacement_texel(t, b, dmask, vdata);
     end_if(t, merge);
 }
 
@@ -3753,19 +3775,14 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: a store to a sampled image", name);
         return;
     }
-    if (!b->sampled && op == MIMG_OP_LOAD_MIP && !t->layout->error_address) { /* its level is checked at run time (below) */
-        fail(t, "%s: image_load_mip of a storage image (one level) without a run-time stop word", name);
-        return;
-    }
     const unsigned axes = b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3;
     const unsigned coordinates = axes + (b->arrayed ? 1 : 0);
     /* The storage image's DST_SEL (identity when the binding has none): shader component k is 0 (0), 1 (1)
        or texel component m (4 + m). A load swizzles by it, a store by its inverse, as shadPS4 does for
        storage images. DMASK names the shader components a store's VGPRs hold, in order; every texel
        component of the format must come from exactly one of them. */
-    enum { SEL_ZERO = 0, SEL_ONE = 1, SEL_X = 4 };
     unsigned sel[4], writer[4] = {0};
-    for (unsigned k = 0; k < 4; k++) sel[k] = b->swizzle ? (b->swizzle >> (3 * k) & 7) : SEL_X + k;
+    image_selectors(b, sel);
     if (op == MIMG_OP_STORE)
         for (unsigned m = 0; m < b->components; m++) {
             unsigned writers = 0;
@@ -3797,10 +3814,9 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         return;
     }
     /* A storage image access outside the image: a store writes nothing, as on the hardware and under
-       Vulkan's robustImageAccess2 (which shadPS4 requires for the same reason); a load stops at run
-       time, as a sampled one does (what it returns is not established; with no stop word it is not
-   checked). Without the check the access
-       is undefined in Vulkan, and the GPU faulted on the LUT pass's stores (0x20d1b00800). */
+       Vulkan's robustImageAccess2 (which shadPS4 requires for the same reason), and a load reads the
+       replacement texel (replacement_texel). Without the check the access is undefined in Vulkan, and
+       the GPU faulted on the LUT pass's stores (0x20d1b00800). */
     const uint32_t image = load(t, image_type(t, b), variable);
     const uint32_t uvec = coordinates == 1 ? t_uint(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), coordinates}, 2);
     const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
@@ -3808,18 +3824,16 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const uint32_t inside = value(t, SPV_OP_U_LESS_THAN, bvec, 2, value(t, SPV_OP_BITCAST, uvec, 1, coordinate), size);
     uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
     /* a storage image is bound as one level: image_load_mip reads it at level 0 (the VGPR after the
-       coordinates), and a level past it stops as a level past the last does for a sampled image */
+       coordinates), and a level past it reads the replacement texel, as past a sampled image's last */
     if (op == MIMG_OP_LOAD_MIP)
         in_range = both(t, in_range, equals(t, load(t, t_uint(t), vgpr(t, vaddr + coordinates)), konst(t, 0)));
     t->queries_images = 1;
-    const int load_checked = op != MIMG_OP_STORE && t->layout->error_address; /* stops need the stop word */
-    if (load_checked) {
-        const uint32_t outside = begin_if(t, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
-        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_IMAGE_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+    if (op != MIMG_OP_STORE) {
+        const uint32_t outside = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
+        replacement_texel(t, b, dmask, vdata);
         end_if(t, outside);
     }
-    const uint32_t merge = begin_if(t, op == MIMG_OP_STORE || load_checked ? value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), in_range)
-                                                                         : exec_bit(t));
+    const uint32_t merge = begin_if(t, both(t, exec_bit(t), in_range));
     if (op == MIMG_OP_STORE) {
         uint32_t texel[4];
         for (unsigned m = 0; m < 4; m++) {
