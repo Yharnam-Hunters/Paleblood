@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Regenerate main's progress text in one pull request, and queue it.
 
-Feature branches leave the generated progress text alone (the progress and status blocks of
-README.md, STATUS.md and CONTRIBUTING.md, and the status card docs/assets/status-*.svg), so
+Feature branches leave the generated progress text alone (the generated blocks of
+STATUS.md, CONTRIBUTING.md and docs/OVERVIEW.md), so
 parallel pull requests do not conflict on it. This tool brings main up to date instead: in a
 temporary worktree of origin/main it runs `tools/progress.py --update-readme`, commits the result
-to the branch auto/regenerate-progress, pushes it through the normal pre-push gate, opens a
+to the branch auto/regenerate-progress, builds the worktree (the pre-push gate's unit tests load
+build/), pushes it through the normal pre-push gate, opens a
 documentation-only pull request for it (or reuses the open one) and enables auto-merge, which
 puts it in the merge queue. Run it after any of your pull requests merges; .github/workflows/
 progress.yml fails while main is behind.
@@ -33,8 +34,7 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BRANCH = 'auto/regenerate-progress'
-GENERATED = ('README.md', 'STATUS.md', 'CONTRIBUTING.md',
-             'docs/assets/status-light.svg', 'docs/assets/status-dark.svg')
+GENERATED = ('STATUS.md', 'CONTRIBUTING.md', 'docs/OVERVIEW.md')     # tools/progress.py
 ATTEMPTS = 3
 
 
@@ -70,7 +70,7 @@ def open_pr(repo: str) -> int | None:
 
 
 def report_body(main_sha: str, paths: list[str]) -> str:
-    summary = (f'Regenerated the progress blocks and the status card from symbols/ on main {main_sha[:12]} '
+    summary = (f'Regenerated the progress blocks from symbols/ on main {main_sha[:12]} '
                '(tools/progress_pr.py). No other text changed.')
     report = {'schema': 1, 'track': 'documentation', 'pages': paths, 'summary': summary,
               'implementation_changes': False}
@@ -111,6 +111,14 @@ def prepare(wt: str, remote: str) -> tuple[str, list[str], bool]:
     changed = git('diff', '--cached', '--name-only', main_sha, '--', *GENERATED, cwd=wt).split()
     pending = bool(git('diff', '--cached', '--name-only', cwd=wt)) or continue_branch
     return main_sha, changed, pending and bool(changed)
+
+
+def build(wt: str) -> None:
+    """Configure and build the worktree as CONTRIBUTING.md says: the pre-push gate's unit tests
+    load the built runtime (build/runtime/libpbloader.so and the game library)."""
+    print('progress-pr: building the worktree for the pre-push gate', file=sys.stderr)
+    run(['cmake', '-S', '.', '-B', 'build'], cwd=wt)
+    run(['cmake', '--build', 'build', f'-j{os.cpu_count() or 4}'], cwd=wt)
 
 
 def commit_message(wt: str, main_sha: str, co_author: str | None) -> str:
@@ -157,11 +165,14 @@ def main() -> int:
                 f.write(commit_message(wt, main_sha, a.co_author))
             git('commit', '-q', '-F', msg_path, cwd=wt)
             head = git('rev-parse', 'HEAD', cwd=wt)
+            build(wt)  # incremental after a lost race merged a newer main
             pushed = run(['git', 'push', a.remote, f'HEAD:refs/heads/{BRANCH}'], cwd=wt, check=False)
             if pushed.returncode == 0:
                 break
             sys.stderr.write(pushed.stdout[-3000:] + pushed.stderr[-3000:])
-            if 'non-fast-forward' not in pushed.stderr and 'fetch first' not in pushed.stderr:
+            # Another session created or moved the branch first: retry from the new state.
+            lost_race = ('non-fast-forward', 'fetch first', 'reference already exists')
+            if not any(reason in pushed.stderr for reason in lost_race):
                 raise Failure('git push failed (see above); the pre-push gate output says why')
             print(f'progress-pr: lost a race for {BRANCH} (attempt {attempt}); retrying', file=sys.stderr)
         else:
