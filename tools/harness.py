@@ -36,6 +36,9 @@ IMAGE = 0x800000000         # host address of guest offset 0, as in the scaffold
 EBOOT_BASE = 0x400000       # PS4 virtual address of guest offset 0
 SANDBOX = 0x900000000       # case buffers
 SANDBOX_SIZE = 16 << 20
+# The runtime's guest mapping window (runtime/syslib/kernel_memory.c, MAP_WINDOW_START/END): a
+# buffer recorded there may be put back at its origin.
+GUEST_WINDOW = (0x2000000000, 0xe000000000)
 DATA = 0x910000000          # data imports, one page each
 CODE = 0x920000000          # trampoline and import stubs
 PAGE = 4096
@@ -128,6 +131,18 @@ libc.mmap.restype = ctypes.c_void_p
 libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
 libc.mprotect.restype = ctypes.c_int
 libc.mprotect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+libc.munmap.restype = ctypes.c_int
+libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+
+
+def map_page(address: int) -> bool:
+    """Maps one page at `address` when nothing is there yet; whether it did."""
+    got = libc.mmap(address, PAGE, PROT_RWX, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0)
+    if got == address:
+        return True
+    if got not in (None, ctypes.c_void_p(-1).value):
+        libc.munmap(got, PAGE)              # an old kernel ignoring NOREPLACE mapped it elsewhere
+    return False
 
 
 def mmap_fixed(address: int, size: int) -> None:
@@ -271,6 +286,51 @@ class Run:
             self.stub_scripts.setdefault(hexint(entry['address']), []).append(entry)
 
     # memory layout ---------------------------------------------------------------------
+    def origin_layout(self) -> dict[str, tuple[int, int]]:
+        """Buffers placed where they lay in the recorded run (their `origin`), as name -> (start,
+        end of their redzone). Code may depend on where its memory lies, not only on what it
+        holds: a heap block's size is the distance to the next block, which can be another
+        buffer, and a heap checks a block against its own recorded bounds. A buffer goes back to
+        its origin when that lies in the runtime's guest mapping window and its pages are free in
+        this process; otherwise it goes to the sandbox, as a case without origins does. Pages two
+        buffers share are mapped once; the page after each run of pages is a guard page when free."""
+        buffers = self.case.get('buffers', {})
+        wanted = []
+        for name in sorted(buffers):
+            spec = buffers[name]
+            if 'origin' not in spec:
+                continue
+            try:
+                start, size = int(str(spec['origin']), 16), int(spec['size'])
+            except ValueError as error:
+                raise BadInput(f'buffer {name}: origin is not a hex address') from error
+            if size >= 0 and GUEST_WINDOW[0] <= start and start + max(size, 1) <= GUEST_WINDOW[1]:
+                wanted.append((start, size, name))
+        wanted.sort()
+        for (a, sa, na), (b, _, nb) in zip(wanted, wanted[1:]):
+            if a + sa > b:
+                raise BadInput(f'buffers {na} and {nb} overlap at their origins')
+        mapped: set[int] = set()
+        placed: dict[str, tuple[int, int]] = {}
+        for i, (start, size, name) in enumerate(wanted):
+            first, last = start // PAGE * PAGE, (start + max(size, 1) + PAGE - 1) // PAGE * PAGE
+            pages = [p for p in range(first, last, PAGE) if p not in mapped]
+            if not all(map_page(p) for p in pages):
+                continue                            # taken in this process: the sandbox instead
+            mapped.update(pages)
+            following = wanted[i + 1][0] if i + 1 < len(wanted) else None
+            placed[name] = (start, min(last, following) if following is not None else last)
+            if (following is None or following >= last + PAGE) and last not in mapped and map_page(last):
+                libc.mprotect(last, PAGE, PROT_NONE)
+                mapped.add(last)
+        return placed
+
+    def add_redzone(self, name: str, start: int, end: int) -> None:
+        if end > start:
+            redzone = bytes((0xA5 ^ ((i * 29 + len(name)) & 0xff)) for i in range(end - start))
+            ctypes.memmove(start, redzone, len(redzone))
+            self.redzones.append((start, redzone, name))
+
     def setup(self, machine: 'Machine') -> None:
         """Lay out this case on a mapped machine: buffers, stubs, memory presets."""
         machine.current = self
@@ -301,6 +361,7 @@ class Run:
         if len(self.stub_scripts) > STUB_SLOTS:
             raise BadInput(f'more than {STUB_SLOTS} stubbed functions')
         off = 0
+        origins = self.origin_layout()
         for name in sorted(self.case.get('buffers', {})):
             spec = self.case['buffers'][name]
             size = int(spec['size'])
@@ -309,16 +370,17 @@ class Run:
             data = bytes.fromhex(spec.get('bytes', ''))
             if len(data) > size:
                 raise BadInput(f'buffer {name}: more bytes than its size')
+            if name in origins:
+                start, redzone_end = origins[name]
+                self.buffers[name] = (start, size)
+                ctypes.memmove(start, data + bytes(size - len(data)), size)
+                self.add_redzone(name, start + size, redzone_end)
+                continue
             start = SANDBOX + off
             self.buffers[name] = (start, size)
             ctypes.memmove(start, data + bytes(size - len(data)), size)
             payload_pages = max(1, (size + PAGE - 1) // PAGE)
-            redzone_start = start + size
-            redzone_end = start + payload_pages * PAGE
-            if redzone_end > redzone_start:
-                redzone = bytes((0xA5 ^ ((i * 29 + len(name)) & 0xff)) for i in range(redzone_end - redzone_start))
-                ctypes.memmove(redzone_start, redzone, len(redzone))
-                self.redzones.append((redzone_start, redzone, name))
+            self.add_redzone(name, start + size, start + payload_pages * PAGE)
             guard = start + payload_pages * PAGE
             if off + (payload_pages + 1) * PAGE > SANDBOX_SIZE:
                 raise BadInput('buffers and guard pages exceed the sandbox')

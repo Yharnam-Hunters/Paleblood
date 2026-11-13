@@ -193,6 +193,50 @@ far_thunk:
     mov 8(%rdi), %rcx
     movq $2, -8(%rsi,%rcx,8)
     ret
+/* 0x580: int32_t index_after(const char *table)
+   { const char *index = table + *(uint32_t *)table; return *(int32_t *)(index + 8); }
+   the index pointer is computed by adding a loaded size, as the param lookups do. */
+    .org 0x580
+    mov (%rdi), %eax
+    add %rdi, %rax
+    mov 8(%rax), %eax
+    ret
+/* 0x5c0: the same through lea: index = table + size, then index[2]. */
+    .org 0x5c0
+    mov (%rdi), %eax
+    lea (%rdi,%rax), %rcx
+    mov 8(%rcx), %eax
+    ret
+/* 0x600: int32_t offset_into(const int32_t *table, const char *other)
+   { return *(int32_t *)(other + table[0]); } with rax first pointing into the table: the 32-bit
+   load replaces rax, so the access through it is no reach from the table. */
+    .org 0x600
+    lea 16(%rdi), %rax
+    mov (%rdi), %eax
+    mov (%rax,%rsi), %eax
+    ret
+/* 0x640: int32_t zero_local(void) { int32_t local; zero(&local); return local; } where the
+   import writes 0, what a fresh stack already holds. */
+    .org 0x640
+    sub $24, %rsp
+    lea 8(%rsp), %rdi
+    call zero_thunk
+    mov 8(%rsp), %eax
+    add $24, %rsp
+    ret
+    .org 0x670
+zero_thunk:
+    jmp *zero_slot(%rip)
+/* 0x680: void nap(void) { sceKernelUsleep(10000); } */
+    .org 0x680
+    sub $8, %rsp
+    mov $10000, %edi
+    call usleep_thunk
+    add $8, %rsp
+    ret
+    .org 0x6b0
+usleep_thunk:
+    jmp *usleep_slot(%rip)
     .org 0x1000
 global:
     .long 1000
@@ -210,6 +254,10 @@ stale_slot:
 plain_slot:
     .quad 0
 far_slot:
+    .quad 0
+zero_slot:
+    .quad 0
+usleep_slot:
     .quad 0
     .org 0x2000
     .globl capture_trace_guest_end
