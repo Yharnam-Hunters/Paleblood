@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Regenerate main's progress text in one pull request, and queue it.
 
-Feature branches leave the generated progress text alone (the progress and status blocks of
-README.md, STATUS.md and CONTRIBUTING.md), so
+Feature branches leave the generated progress text alone (the generated blocks of
+STATUS.md, CONTRIBUTING.md and docs/OVERVIEW.md), so
 parallel pull requests do not conflict on it. This tool brings main up to date instead: in a
 temporary worktree of origin/main it runs `tools/progress.py --update-readme`, commits the result
 to the branch auto/regenerate-progress, builds the worktree (the pre-push gate's unit tests load
@@ -34,7 +34,7 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BRANCH = 'auto/regenerate-progress'
-GENERATED = ('README.md', 'STATUS.md', 'CONTRIBUTING.md')
+GENERATED = ('STATUS.md', 'CONTRIBUTING.md', 'docs/OVERVIEW.md')     # tools/progress.py
 ATTEMPTS = 3
 
 
