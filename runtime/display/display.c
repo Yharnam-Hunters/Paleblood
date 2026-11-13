@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 enum { MAX_PORTS = 4, MAX_FRAMES = 16 };
 enum { BYTES_PER_PIXEL = 4, PPM_MAX_CHANNEL = 255 };
@@ -26,6 +27,7 @@ static rt_display_mode display_mode = RT_DISPLAY_NONE;
 static const char *capture_dir;
 static display_port ports[MAX_PORTS + 1]; /* video out's handles count from 1 */
 static int window_open;
+static FILE *frame_log; /* rt_display_log_frames: a line per presented frame (display_lock) */
 
 int rt_display_configure(rt_display_mode mode, const char *capture)
 {
@@ -171,6 +173,18 @@ void rt_display_capture_wait(void)
     pthread_mutex_unlock(&capture_lock);
 }
 
+int rt_display_log_frames(const char *path)
+{
+    FILE *const log = path ? fopen(path, "w") : NULL;
+    if (path && !log) return -1;
+    if (log) setvbuf(log, NULL, _IOLBF, 0); /* each line reaches the file at once: a run that stops keeps its frames */
+    pthread_mutex_lock(&display_lock);
+    if (frame_log) fclose(frame_log);
+    frame_log = log;
+    pthread_mutex_unlock(&display_lock);
+    return 0;
+}
+
 void rt_display_present(int port, int buffer)
 {
     static const char fn[] = "rt_display_present";
@@ -180,6 +194,12 @@ void rt_display_present(int port, int buffer)
     if (buffer < 0 || buffer >= p->count) rt_fatal(fn, "a buffer the port did not attach");
     const uint32_t *const frame = p->frames[buffer];
     if (capture_dir) capture_frame(p, frame, p->presented);
+    if (frame_log) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        fprintf(frame_log, "%d %llu %llu\n", port, (unsigned long long)p->presented,
+                (unsigned long long)now.tv_sec * 1000000000ull + (unsigned long long)now.tv_nsec);
+    }
     __atomic_store_n(&p->presented, p->presented + 1, __ATOMIC_RELEASE);
     if (display_mode == RT_DISPLAY_WINDOW) rt_display_window_show(frame, p->width, p->height);
     pthread_mutex_unlock(&display_lock);

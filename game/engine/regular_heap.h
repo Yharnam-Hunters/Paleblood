@@ -150,3 +150,7 @@ inline void free_rest(Heap *heap, Block *rest, uintptr_t next_word)
 }
 
 }  // namespace engine::regular_heap
+
+// The regular heap's set-up (regular_heap_initialize.cpp), for the objects that inline it.
+extern "C" bool bb_engine_regular_heap_initialize_02485500(engine::regular_heap::Heap *heap, void *memory,
+                                                           uint64_t size);

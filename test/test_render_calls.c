@@ -353,6 +353,51 @@ static void checked_placed_calls(void)
     rt_render_forget();
 }
 
+/* With a reader, a buffer submitted again with no call recorded since is taken again only where its
+   memory still holds what it held at each call when first taken: the same commands submitted twice
+   run twice, but the game also rewrites a buffer from DMA and memory-write packets alone, which
+   record nothing, and the earlier use's user data and dispatch must not run with it. Without a reader
+   a second submission takes the calls unchecked. */
+static void resubmitted_calls(void)
+{
+    char error[128] = "";
+    const uint32_t user[2] = {0x43450070, 0x20}, one[3] = {1, 1, 1};
+    size_t count = 0;
+    rt_render_forget();
+    memset(checked_memory, 0, sizeof checked_memory);
+    rt_render_check_placed_calls(read_checked);
+    checked_memory[0x10 / 4] = 0xc0027602u, checked_memory[0x14 / 4] = 0x242; /* SET_SH_REG: user data 2-3 */
+    checked_memory[0x20 / 4] = 0xc0031502u, checked_memory[0x24 / 4] = 1;     /* DISPATCH_DIRECT */
+    CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 2, user, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 2);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count); /* the same commands again */
+    CHECK(count == 2);
+    checked_memory[0x24 / 4] = 0x00ff0000; /* the dispatch's second word changed: not its packet any more */
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 0);
+    checked_memory[0x24 / 4] = 1; /* forgotten, even where the words come back */
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 0);
+    /* a shorter submission of a rewritten buffer: a DMA packet over the user data's place */
+    CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 2, user, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 2);
+    checked_memory[0x10 / 4] = 0xc0055000u, checked_memory[0x14 / 4] = 0xc4004000u;
+    rt_render_submitted(CHECKED_BUFFER, 0x18, &count);
+    CHECK(count == 0);
+    /* without a reader nothing is checked */
+    rt_render_check_placed_calls(NULL);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    checked_memory[0x20 / 4] = 0;
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 1);
+    rt_render_forget();
+}
+
 /* A compute shader's register block and a dispatch. */
 static void compute_calls(void)
 {
@@ -469,6 +514,66 @@ static void indexed_draws(void)
     rt_render_forget();
 }
 
+/* The record at the clinic's scale: thousands of buffers, each found again by its address; placed
+   calls spread over pages, merged in address order after the recorded calls at their offsets and in
+   the order they were placed; a buffer's placed call still waiting after more than 4096 others; and
+   a list idle for 65536 submissions forgotten while one the game keeps submitting stays. */
+static void many_buffers(void)
+{
+    enum { LISTS = 3000, IDLE_SUBMISSIONS = 65536 };
+    const uint64_t first = 0x900000000ull, stride = 0x100;
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {0x11111111}, pixel[RT_PIXEL_SHADER_WORDS] = {0x22222222};
+    char error[128] = "";
+    size_t count = 0;
+    rt_render_forget();
+    for (uint32_t i = 0; i < LISTS; i++) CHECK(rt_render_record_draw_auto(first + i * stride, 0x10, i + 1, error, sizeof error) == 0);
+    int found = 1;
+    for (uint32_t i = 0; i < LISTS; i++) {
+        const rt_render_call *calls = rt_render_submitted(first + i * stride, 0x20, &count);
+        found &= count == 1 && calls[0].u.draw_auto.index_count == i + 1;
+    }
+    CHECK(found);
+
+    /* placed over three pages, out of order, two at one offset, one at a recorded call's offset */
+    const uint64_t buffer = 0xa00000000ull;
+    CHECK(rt_render_record_draw_auto(buffer, 0x1000, 3, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_auto(buffer, 0x2800, 6, error, sizeof error) == 0);
+    CHECK(rt_render_record_pixel_shader_at(buffer + 0x2800, pixel) == 0);
+    CHECK(rt_render_record_vertex_shader_at(buffer + 0x0040, vertex) == 0);
+    CHECK(rt_render_record_vertex_shader_at(buffer + 0x1800, vertex) == 0);
+    CHECK(rt_render_record_pixel_shader_at(buffer + 0x1800, pixel) == 0);
+    const rt_render_call *calls = rt_render_submitted(buffer, 0x3000, &count);
+    CHECK(count == 6);
+    if (count == 6) {
+        CHECK(calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x40);
+        CHECK(calls[1].kind == RT_CALL_DRAW_AUTO && calls[1].offset == 0x1000);
+        CHECK(calls[2].kind == RT_CALL_VERTEX_SHADER && calls[2].offset == 0x1800);
+        CHECK(calls[3].kind == RT_CALL_PIXEL_SHADER && calls[3].offset == 0x1800);
+        CHECK(calls[4].kind == RT_CALL_DRAW_AUTO && calls[4].offset == 0x2800);
+        CHECK(calls[5].kind == RT_CALL_PIXEL_SHADER && calls[5].offset == 0x2800);
+    }
+
+    /* a call placed before 5000 others in buffers never submitted still joins its buffer */
+    const uint64_t late = 0xb00000000ull;
+    CHECK(rt_render_record_vertex_shader_at(late + 0x80, vertex) == 0);
+    for (uint32_t i = 0; i < 5000; i++) CHECK(rt_render_record_pixel_shader_at(0xc00000000ull + i * 0x40ull, pixel) == 0);
+    calls = rt_render_submitted(late, 0x100, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x80);
+
+    /* idle lists are forgotten; a buffer submitted every 1000 submissions keeps its calls */
+    const uint64_t kept = 0xd00000000ull, busy = 0xe00000000ull;
+    CHECK(rt_render_record_draw_auto(kept, 0x10, 9, error, sizeof error) == 0);
+    for (uint32_t i = 0; i <= IDLE_SUBMISSIONS + 4096; i++) {
+        rt_render_submitted(busy, 0x10, &count);
+        if (i % 1000 == 0) rt_render_submitted(kept, 0x20, &count);
+    }
+    calls = rt_render_submitted(kept, 0x20, &count);
+    CHECK(count == 1 && calls[0].u.draw_auto.index_count == 9);
+    rt_render_submitted(first, 0x20, &count);
+    CHECK(count == 0);
+    rt_render_forget();
+}
+
 int main(void)
 {
     decoding();
@@ -481,7 +586,9 @@ int main(void)
     recording();
     placed_calls();
     checked_placed_calls();
+    resubmitted_calls();
     compute_calls();
+    many_buffers();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
 }
