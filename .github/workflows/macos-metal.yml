@@ -27,6 +27,7 @@ on:
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
       - 'test/test_gcn_spirv.c'
+      - 'test/pixel_constant_wqm_programs.h'
       - 'test/gcn_programs.h'
   pull_request:
     paths:
@@ -50,6 +51,7 @@ on:
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
       - 'test/test_gcn_spirv.c'
+      - 'test/pixel_constant_wqm_programs.h'
       - 'test/gcn_programs.h'
 
 permissions:
