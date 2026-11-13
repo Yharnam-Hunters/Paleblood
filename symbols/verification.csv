@@ -1,4 +1,8 @@
 function,cases,option,total,passed,failed,quarantined,source,date
+ai_debug_draw_axes_0135d810,edge,,8,8,0,0,e267bbf5ff2ac570,2026-11-13
+ai_draw_layer_color_02232a60,edge,,52,52,0,0,e267bbf5ff2ac570,2026-11-13
+ai_draw_world_021d6ea0,edge,,22,22,0,0,057632b510c654b1,2026-11-13
+ai_entity_point_029ae440,edge,,34,34,0,0,057632b510c654b1,2026-11-13
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,60,203,203,0,0,f6e94c85e455f408,2026-10-07
@@ -14,12 +18,17 @@ audio_fmod_string_copy,edge,,40,40,0,0,c17e74fefe35579f,2026-11-12
 audio_fmod_string_copy_counted,recorded,,71,71,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_string_copy_counted,edge,,54,54,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-11-03
+camera_axis_angle_quaternion_00848e80,edge,,866,866,0,0,5e1c5cd50cc93e2a,2026-11-13
 camera_follow_pitch,edge,,32,32,0,0,b597553f9e6c9fc4,2026-11-03
 camera_follow_yaw,edge,,30,30,0,0,8724717f0deed29b,2026-11-03
+camera_transform_matrix_0083d4d0,edge,,168,168,0,0,5e1c5cd50cc93e2a,2026-11-13
 camera_update_follow,edge,,72,72,0,0,3197f1903529bfe6,2026-11-13
 camera_update_follow,edge,30,72,72,0,0,3197f1903529bfe6,2026-11-13
 camera_update_follow,edge,60,72,72,0,0,3197f1903529bfe6,2026-11-13
 camera_update_follow,edge,uncapped,72,72,0,0,3197f1903529bfe6,2026-11-13
+character_ai_display_update_01cd92b0,edge,,8,8,0,0,84ffbaaca95d946f,2026-11-13
+character_counters_refill_01e5c440,edge,,18,18,0,0,84ffbaaca95d946f,2026-11-13
+character_event_request_update_01e59250,edge,,27,27,0,0,84ffbaaca95d946f,2026-11-13
 character_frame_update_01cbdb20,recorded,,457,457,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,recorded,30,457,457,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,recorded,60,457,457,0,0,b243fddb1ca6589a,2026-10-07
@@ -28,9 +37,11 @@ character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
+character_state_flags_update_01e4a490,edge,,40,40,0,0,84ffbaaca95d946f,2026-11-13
 engine_ascii_to_lower,edge,,291,291,0,0,576118df340da7d3,2026-11-05
 engine_ascii_to_lower_in_place,edge,,30,30,0,0,9e3258c3efe48d76,2026-11-03
 engine_ascii_to_upper_in_place,edge,,30,30,0,0,3eff33a1b86e2555,2026-11-03
+engine_byte_array_assign_02b4d100,edge,,20,20,0,0,a3d4dae702e65116,2026-11-13
 engine_compare_ascii_ignoring_case,edge,,49,49,0,0,c413999e90adaa80,2026-11-03
 engine_compare_signed_prefix,recorded,,10,10,0,0,8a6a903a0ad00ffa,2026-11-12
 engine_compare_signed_prefix,edge,,24,24,0,0,8a6a903a0ad00ffa,2026-11-12
@@ -164,6 +175,7 @@ engine_thread_construct_with_affinity_0248afe0,edge,,23,23,0,0,cd113196e8b733cb,
 engine_tree_insert_fixup_024f8350,recorded,,81,81,0,0,b9a813294ed1b1ac,2026-11-13
 engine_tree_remove_024f8460,recorded,,75,75,0,0,b9a813294ed1b1ac,2026-11-13
 engine_wide_string_construct_02bc0e00,recorded,,200,200,0,0,7a364f229445d8e0,2026-11-13
+engine_wide_string_construct_02bc0e00,edge,,17,17,0,0,7a364f229445d8e0,2026-11-13
 engine_wide_string_destroy,edge,,28,28,0,0,82e3fd837894b106,2026-11-03
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
 event_emk_add,recorded,,150,150,0,0,937b4dca128ba863,2026-10-07
@@ -173,6 +185,7 @@ event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
 event_flag_write,recorded,,101,101,0,0,1a46ef419f934205,2026-11-12
 event_flag_write,edge,,15,15,0,0,1a46ef419f934205,2026-11-12
 frame_timing_config_get_int_024eba00,recorded,,48,48,0,0,ddcaf2bc1351e4b0,2026-11-13
+frame_timing_config_get_int_024eba00,edge,,21,21,0,0,ddcaf2bc1351e4b0,2026-11-13
 frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_1000,edge,,22,22,0,0,cd53367af0bda73a,2026-10-31
@@ -218,6 +231,7 @@ frame_timing_gate_ritual_or_dungeon_ready,edge,,45,45,0,0,cd53367af0bda73a,2026-
 frame_timing_gate_ritual_or_dungeon_ready,edge,60,45,45,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_gate_ritual_slot_reset,edge,,37,37,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_gate_ritual_slot_reset,edge,60,37,37,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_gate_state_query_01ea5570,edge,,96,96,0,0,9e3c83e666421c7d,2026-11-13
 frame_timing_get_monotonic_ms,recorded,,1767,1767,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_ms,edge,,10,10,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_ms,option-recorded,60,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
@@ -264,6 +278,7 @@ frame_timing_request_7_02012a60,edge,,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_request_7_02012a60,edge,60,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_sleep_ms,edge,,10,10,0,0,b1ae2eead3597009,2026-10-26
 frame_timing_step_machine_count_step_01ec3000,recorded,,35,35,0,0,9e3c83e666421c7d,2026-11-13
+frame_timing_step_machine_count_step_01ec3000,edge,,42,42,0,0,9e3c83e666421c7d,2026-11-13
 frame_timing_stopwatch_start,edge,,13,13,0,0,3b3f75b688e0d259,2026-11-10
 frame_timing_stopwatch_stop,edge,,16,16,0,0,3b3f75b688e0d259,2026-11-10
 frame_timing_task_013d3520,recorded,,208,208,0,0,c52608f510993456,2026-10-07
@@ -334,6 +349,7 @@ kernel_light_mutex_initialize,recorded,,67,67,0,0,fe13301651d65f97,2026-11-13
 kernel_light_mutex_lock,recorded,,200,200,0,0,fe13301651d65f97,2026-11-13
 kernel_light_mutex_try_lock,recorded,,3,3,0,0,fe13301651d65f97,2026-11-13
 kernel_light_mutex_unlock,recorded,,200,200,0,0,fe13301651d65f97,2026-11-13
+kernel_memory_pool_free_011ab3a0,edge,,42,42,0,0,fd029e1e7f138872,2026-11-13
 kernel_mutex_create,recorded,,4,4,0,0,d1c4e643de20cba8,2026-11-12
 kernel_mutex_create,edge,,26,26,0,0,d1c4e643de20cba8,2026-11-12
 kernel_mutex_destroy,edge,,17,17,0,0,2916d74498255d53,2026-11-03
