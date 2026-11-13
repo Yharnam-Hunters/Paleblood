@@ -8,16 +8,10 @@
 
    The user-data writers each write a stage's user SGPRs from a slot on, as one SET_SH_REG packet at the
    base register of the stage's table entry (0x048d55c0) plus the slot; the library's stage numbers
-   are those of rt_shader_stage (docs/RENDERER.md). Their arguments, from their disassembly, are
-   (command buffer, stage, slot, then):
-     0x01476420  one 32-bit value                        one word;
-     0x01476390  one 64-bit value (a pointer), low first  two words;
-     0x014761a0  a pointer to four words, after a two-word NOP marker 0x68750004;
-     0x014762f0  the same, after the marker 0x68750006;
-     0x01476240  a pointer to eight words, after the marker 0x68750005;
-     0x014764a0  a pointer to words and their count (fifth argument), after the marker 0x6875000d.
-   GCN's buffer and sampler descriptors are four words and its image descriptors eight; which the
-   markers name is not established here.
+   are those of rt_shader_stage (docs/RENDERER.md). The one-word, two-word, four-word and eight-word
+   writers are replaced (game/render/shader_register_packets.cpp) and report themselves; the one left,
+   0x014764a0 (command buffer, stage, slot, a pointer to words, their count), writes them after a
+   two-word NOP marker 0x6875000d.
    The compute command buffer's writers (the class whose dispatch writer is 0x0148a350) take no stage:
    they always write COMPUTE_USER_DATA_0 (0x240) plus the slot, with the same packets and markers, and
    their arguments are (command buffer, slot, then the same):
@@ -52,8 +46,6 @@
    The observer reports the same registers.
    The depth bounds setter 0x01473520 (command buffer, min, max; two floats, in xmm0 and xmm1) writes
    DB_DEPTH_BOUNDS_MIN (0xa008) and DB_DEPTH_BOUNDS_MAX (0xa009) in one packet, the floats' bits as they are.
-   The shader stage setter 0x01476030 (command buffer, stages) writes VGT_SHADER_STAGES_EN (0xa2d5) with
-   the value when it is 0, 0x45, 0xad, 0xb0 or 0x200, and nothing otherwise.
    The stencil reference setters write DB_STENCILREFMASK (0xa10c) and DB_STENCILREFMASK_BF (0xa10d) in one
    packet: 0x01473190 (command buffer, value) writes the value to both, 0x014731f0 (command buffer,
    front, back) one to each.
@@ -221,20 +213,6 @@ static void depth_bounds(const uint64_t frame[RT_OBSERVED_FRAME_WORDS])
     rt_observe_register(buffer, offset, DB_DEPTH_BOUNDS_MAX, bits[FLOAT_MAX]);
 }
 
-enum { VGT_SHADER_STAGES_EN = 0xa2d5, ARGUMENT_STAGES = 1, STAGES_VERTEX = 0, STAGES_TESSELLATION = 0x45, STAGES_TESSELLATION_GEOMETRY = 0xad,
-       STAGES_GEOMETRY = 0xb0, STAGES_0X200 = 0x200 };
-
-static void shader_stages(const uint64_t args[RT_OBSERVED_ARGUMENTS])
-{
-    const uint32_t stages = (uint32_t)args[ARGUMENT_STAGES];
-    if (stages != STAGES_VERTEX && stages != STAGES_TESSELLATION && stages != STAGES_TESSELLATION_GEOMETRY && stages != STAGES_GEOMETRY &&
-        stages != STAGES_0X200)
-        return; /* the setter writes nothing */
-    const uint64_t buffer = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
-    const uint64_t cursor = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR);
-    rt_observe_register(buffer, (uint32_t)(cursor - buffer), VGT_SHADER_STAGES_EN, stages);
-}
-
 enum { ARGUMENT_INDEX_VALUE = 1, ARGUMENT_INDEX_COUNT = 2 };
 static const uint64_t index_base_mask = 0xfffffffffeull; /* bits 1-39 */
 
@@ -377,12 +355,6 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014756b0, 152, "render_set_gs_mode", gs_mode},
     {0x01475a90, 93, "render_set_esgs_ring_itemsize", esgs_itemsize},
     {0x01475af0, 279, "render_set_gs_ring_sizes", gs_ring_sizes},
-    {0x01476030, 140, "render_set_shader_stages", shader_stages},
-    {0x014761a0, 156, "render_set_user_data_4_words_marker_4", four_words},
-    {0x01476240, 172, "render_set_user_data_8_words", eight_words},
-    {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},
-    {0x01476390, 133, "render_set_user_data_2_words", two_words},
-    {0x01476420, 126, "render_set_user_data_1_word", one_word},
     {0x01476b30, 93, "render_set_clip_control", clip_control},
     {0x014764a0, 184, "render_set_user_data_words", counted_words},
     {0x014766d0, 179, "render_set_viewport_scissor", viewport_scissor},
