@@ -38,7 +38,24 @@ void gcn_spirv_set_survey(int on);
      address_offset        what is added to every guest address the shader forms (a buffer
                            descriptor's base, an SGPR pair) to reach the same bytes on the GPU: the
                            guest memory is one GPU buffer, at a fixed distance from the guest's view
-                           of it. 0 when the two coincide, as in the tests' own buffers. */
+                           of it. 0 when the two coincide, as in the tests' own buffers;
+     guest                 the guest memory's range and a sink (gcn_guest_memory, below), or all 0
+                           for no range check. */
+
+/* The guest memory the GPU can reach: guest addresses [base, base + bytes) (before address_offset is
+   added). With bytes set, every guest memory access a shader makes through an address it forms (a
+   scalar load's SGPR pair, a buffer descriptor's base plus offsets) is checked against it first: an
+   access reaching outside goes to sink instead (a GPU address of GCN_GUEST_SINK_BYTES bytes of scratch
+   memory: a load there reads what was stored there, a store changes nothing that counts) and writes
+   GCN_RUNTIME_STOP_GUEST_RANGE to the stop word. Without the check such an access reaches memory the
+   Vulkan device never gave the shader, which is undefined: an NVIDIA GPU stops the context (Xid 109)
+   and the work never finishes. On the console the same access would fault the GPU too (memory
+   outside what the game mapped for it), so it is an error, not a case to imitate. */
+enum { GCN_GUEST_SINK_BYTES = 256 };
+typedef struct {
+    uint64_t base, bytes;
+    uint64_t sink;
+} gcn_guest_memory;
 
 /* The run-time stop channel. Some of what a shader does is only known when it runs: a buffer
    access's data format comes from its descriptor. A shader meeting such a case it cannot do exactly
@@ -61,6 +78,9 @@ enum {
     /* a draw with a geometry shader of more vertices or primitives than its rings or strip buffer hold
        (gcn_geometry_layout); details: the draw's vertex count, its low 24 bits */
     GCN_RUNTIME_STOP_GEOMETRY_LIMIT = 5,
+    /* a guest memory access outside gcn_guest_memory's range; details: the access's guest address
+       >> 16, its low 24 bits (0 for an address within 64 KB of 0: a null pointer plus an offset) */
+    GCN_RUNTIME_STOP_GUEST_RANGE = 6,
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -203,6 +223,7 @@ typedef struct {
                                       order right after the user data (COMPUTE_PGM_RSRC2's TGID_X/Y/Z_EN) */
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     const gcn_image_binding *images;
     unsigned image_count;
@@ -235,6 +256,7 @@ typedef struct {
     uint32_t output_control;
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     /* the fetch shader the program calls (gcn_call_sgpr), read from the user data's address by the
        caller, and the program's own guest address (for the return address the call saves); NULL when
@@ -298,6 +320,7 @@ typedef struct {
     unsigned front_face_vgpr;
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     const gcn_image_binding *images;
     unsigned image_count;
@@ -361,6 +384,7 @@ typedef struct {
     uint32_t patches, input_points, output_points; /* VGT_LS_HS_CONFIG */
     uint32_t push_constant_offset;   /* the domain shader's; the local and hull shaders' user data is at 0 */
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;
     gcn_lds lds;                     /* the workgroups' LDS, in a buffer (address not 0) */
     uint32_t lds_workgroups;         /* the workgroups the LDS buffer holds */
@@ -462,6 +486,7 @@ typedef struct {
     uint64_t esgs_ring, esgs_ring_bytes, gsvs_ring, gsvs_ring_bytes; /* GPU addresses and sizes */
     uint64_t strip_buffer, strip_buffer_bytes;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;
     /* the export shader's fetch shader and its own guest address, as gcn_vertex_layout's */
     const uint32_t *callee;
