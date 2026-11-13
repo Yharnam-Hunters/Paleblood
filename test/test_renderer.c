@@ -100,13 +100,16 @@ static int steps_seen(void)
 
 /* The bound on how far submissions run ahead of the renderer (renderer.c's RENDER_LAG_LIMIT, 4): a
    thread submits buffers while the renderer's thread is held, counting the submits that returned. */
-enum { LAG_LIMIT = 4, LAG_BUFFER = 0xc0e70000 };
+/* The command buffers' addresses are in the guest memory: the renderer reads the words at a buffer's
+   calls (runtime/render_placed.h). */
+enum { LAG_LIMIT = 4 };
+#define LAG_BUFFER (GUEST_BASE + 0x3f40000ull)
 static int lag_returned, lag_flag;
 
 static void *submit_ahead(void *count)
 {
     for (int i = 0; i < *(const int *)count; i++) {
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(LAG_BUFFER + 0x1000u * (unsigned)i), 0x100, NULL, 0);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(LAG_BUFFER + 0x1000u * (unsigned)i), 0x100, NULL, 0);
         pthread_mutex_lock(&step_lock);
         lag_returned++;
         pthread_cond_broadcast(&step_changed);
@@ -152,7 +155,7 @@ static int stops(uint64_t buffer, uint32_t size)
 {
     const pid_t child = fork();
     if (child == 0) {
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)buffer, size, NULL, 0);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)buffer, size, NULL, 0);
         rt_renderer_wait_idle(); /* the stop comes from the renderer's thread */
         _exit(0);
     }
@@ -171,14 +174,14 @@ int main(void)
     { /* skipped without a device that can run the executor */
         rt_executor *probe = NULL;
         char error[256];
-        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0};
+        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL};
         if (rt_executor_open(&memory, &probe, error, sizeof error)) {
             fprintf(stderr, "skipped: %s\n", error);
             return 77;
         }
         rt_executor_close(probe);
     }
-    enum { BUFFER = 0xc0de0000, EMPTY = 0xc0df0000, BAD = 0xc0e00000 };
+    const uint64_t BUFFER = at(0x3f00000), EMPTY = at(0x3f10000), BAD = at(0x3f20000);
     uint32_t frame[SIZE * SIZE];
     rt_render_forget();
     const uint32_t size = record_draw(BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -186,7 +189,7 @@ int main(void)
     /* Off: the submit draws nothing and performs its steps at once; the flip's frame is left as it was. */
     rt_renderer_configure(0);
     const rt_gpu_step at_once = {note_step, "sceGnmSubmitCommandBuffers", 0, {7}, 0, NULL};
-    rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)BUFFER, size, &at_once, 1);
+    rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)BUFFER, size, &at_once, 1);
     CHECK(steps_seen() == 1 && step_order[0] == 7);
     step_count = 0;
     memset(frame, 0x5a, sizeof frame);
@@ -194,7 +197,7 @@ int main(void)
 
     /* On, but a buffer with no recorded calls: nothing opens, nothing is drawn. */
     rt_renderer_configure(1);
-    rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)EMPTY, 0x100, NULL, 0);
+    rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)EMPTY, 0x100, NULL, 0);
     CHECK(rt_renderer_frame(at(TARGET), frame, SIZE, SIZE) == 0 && frame[0] == 0x5a5a5a5au);
 
     /* A call the executor cannot run stops by the submitting function's name. */
@@ -202,7 +205,7 @@ int main(void)
     CHECK(stops(BAD, bad_size));
 
     /* On, with a drawn buffer: the flip's frame for the target's address gets the triangle. */
-    rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)BUFFER, size, NULL, 0);
+    rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)BUFFER, size, NULL, 0);
     CHECK(rt_renderer_frame(at(TARGET), frame, SIZE, SIZE) == 1);
     check_triangle_pixels(frame);
     CHECK(rt_renderer_frame(at(OTHER_TARGET), frame, SIZE, SIZE) == 0); /* nothing drawn there (yet) */
@@ -212,13 +215,13 @@ int main(void)
        submits have returned while neither step has. Opened, the steps run gate first. A step after a
        drawn buffer's calls sees what they drew (the calls ran before it). */
     {
-        enum { GATED = 0xc0e90000 };
+        const uint64_t GATED = at(0x3f50000);
         const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {9}, 0, NULL};
         const rt_gpu_step after = {note_step, "sceGnmSubmitCommandBuffers", 0, {1}, 0, NULL};
         const rt_gpu_step drawn = {frame_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {2, at(TARGET)}, 0, NULL};
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)GATED, 0x100, &gate, 1);
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(GATED + 0x1000), 0x100, &after, 1);
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)BUFFER, size, &drawn, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)GATED, 0x100, &gate, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(GATED + 0x1000), 0x100, &after, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)BUFFER, size, &drawn, 1);
         CHECK(steps_seen() == 0); /* returned before the work */
         pthread_mutex_lock(&step_lock);
         gate_open = 1;
@@ -229,12 +232,12 @@ int main(void)
         CHECK(step_saw_triangle);
         /* A step at the start of a buffer runs before its calls (a wait holds before the draws after
            it): the frame there is not drawn yet; a step after all of them sees it drawn. */
-        enum { FRESH = 0xc0ea0000 };
+        const uint64_t FRESH = at(0x3f60000);
         const uint32_t fresh_size = record_draw(FRESH, at(OTHER_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const rt_gpu_step around[] = {{frame_step, "sceGnmSubmitCommandBuffers", 0, {3, at(OTHER_TARGET)}, 0, NULL},
                                       {note_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {4}, 0, NULL}};
         step_saw_triangle = 1;
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)FRESH, fresh_size, around, 2);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)FRESH, fresh_size, around, 2);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 5 && step_order[3] == 3 && step_order[4] == 4 && !step_saw_triangle);
         CHECK(rt_renderer_frame(at(OTHER_TARGET), frame, SIZE, SIZE) == 1);
@@ -245,20 +248,21 @@ int main(void)
        them drawn; a deferrable step held closed (gate) keeps a later wait-like step (6) and a later
        deferrable one (7) behind it; rt_renderer_wait_idle waits for them all. */
     {
-        enum { DEFERRED = 0xc0eb0000, THIRD_TARGET = 0x300000 };
+        enum { THIRD_TARGET = 0x300000 };
+        const uint64_t DEFERRED = at(0x3f70000);
         step_count = 0, step_saw_triangle = 0;
         gate_open = 0;
         const uint32_t deferred_size = record_draw(DEFERRED, at(THIRD_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const rt_gpu_step seen = {frame_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {5, at(THIRD_TARGET)}, RT_GPU_STEP_DEFERRABLE, NULL};
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)DEFERRED, deferred_size, &seen, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &seen, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 1 && step_order[0] == 5 && step_saw_triangle);
         const rt_gpu_step held = {gate_step, "sceGnmSubmitCommandBuffers", 0, {8}, RT_GPU_STEP_DEFERRABLE, NULL};
         const rt_gpu_step waiting = {note_step, "sceGnmSubmitCommandBuffers", 0, {6}, 0, NULL};
         const rt_gpu_step later = {note_step, "sceGnmSubmitCommandBuffers", 0, {7}, RT_GPU_STEP_DEFERRABLE, NULL};
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)DEFERRED, deferred_size, &held, 1);
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &waiting, 1);
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(DEFERRED + 0x2000), 0x100, &later, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &held, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &waiting, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x2000), 0x100, &later, 1);
         CHECK(steps_seen() == 1);
         pthread_mutex_lock(&step_lock);
         gate_open = 1;
@@ -270,8 +274,8 @@ int main(void)
            still held: the GPU would pass it, so nothing waits for the work or the steps before it. */
         gate_open = 0;
         const rt_gpu_step passing = {note_step, "sceGnmSubmitCommandBuffers", 0, {10}, 0, already_holds};
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)DEFERRED, deferred_size, &held, 1);
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &passing, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &held, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &passing, 1);
         for (int tries = 0; tries < 2000 && steps_seen() < 5; tries++) usleep(1000);
         CHECK(steps_seen() == 5 && step_order[4] == 10);
         pthread_mutex_lock(&step_lock);
@@ -286,9 +290,9 @@ int main(void)
         const rt_gpu_step eleven = {gate_step, "sceGnmSubmitCommandBuffers", 0, {11}, RT_GPU_STEP_DEFERRABLE, NULL};
         const rt_gpu_step satisfied = {note_step, "sceGnmSubmitCommandBuffers", 0, {13}, 0, held_by_eleven};
         const rt_gpu_step twelve = {note_step, "sceGnmSubmitCommandBuffers", 0, {12}, 0, already_holds};
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)DEFERRED, deferred_size, &eleven, 1);
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &satisfied, 1);
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(DEFERRED + 0x2000), 0x100, &twelve, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &eleven, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &satisfied, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x2000), 0x100, &twelve, 1);
         for (int tries = 0; tries < 2000 && steps_seen() < 1; tries++) usleep(1000);
         CHECK(steps_seen() == 1 && step_order[0] == 12);
         pthread_mutex_lock(&step_lock);
@@ -304,18 +308,19 @@ int main(void)
        before it, and the renderer's thread does not wait for it. One whose target no draw has used is
        still performed, and shows nothing. */
     {
-        enum { FLIPPED = 0xc0ec0000, FOURTH_TARGET = 0x400000, NEVER_DRAWN = 0x500000 };
+        enum { FOURTH_TARGET = 0x400000, NEVER_DRAWN = 0x500000 };
+        const uint64_t FLIPPED = at(0x3f80000);
         step_count = 0, step_saw_triangle = 0;
         const uint32_t flipped_size = record_draw(FLIPPED, at(FOURTH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const rt_gpu_step flip = {frame_step, "sceGnmSubmitAndFlipCommandBuffers", RT_GPU_STEP_AFTER_ALL,
                                   {14, at(FOURTH_TARGET), 0, 0, at(FOURTH_TARGET), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL};
-        rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", (const void *)(uintptr_t)FLIPPED, flipped_size, &flip, 1);
+        rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)FLIPPED, flipped_size, &flip, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 1 && step_order[0] == 14 && step_saw_triangle);
         step_saw_triangle = 1;
         const rt_gpu_step blank = {frame_step, "sceGnmSubmitAndFlipCommandBuffers", RT_GPU_STEP_AFTER_ALL,
                                    {15, at(NEVER_DRAWN), 0, 0, at(NEVER_DRAWN), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL};
-        rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", (const void *)(uintptr_t)(FLIPPED + 0x1000), 0x100, &blank, 1);
+        rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(FLIPPED + 0x1000), 0x100, &blank, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 2 && step_order[1] == 15 && !step_saw_triangle);
     }
@@ -327,7 +332,7 @@ int main(void)
     {
         step_count = 0, gate_open = 0, lag_returned = 0, lag_flag = 0;
         const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {30}, 0, NULL};
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(LAG_BUFFER - 0x1000), 0x100, &gate, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(LAG_BUFFER - 0x1000), 0x100, &gate, 1);
         int count = LAG_LIMIT + 2;
         pthread_t thread;
         CHECK(pthread_create(&thread, NULL, submit_ahead, &count) == 0);
@@ -345,7 +350,7 @@ int main(void)
 
         step_count = 0, lag_returned = 0, lag_flag = 0;
         const rt_gpu_step waiting = {wait_for_flag, "sceGnmSubmitCommandBuffers", 0, {31}, 0, flag_set};
-        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(LAG_BUFFER - 0x2000), 0x100, &waiting, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(LAG_BUFFER - 0x2000), 0x100, &waiting, 1);
         count = 2 * LAG_LIMIT;
         CHECK(pthread_create(&thread, NULL, submit_ahead, &count) == 0);
         pthread_join(thread, NULL); /* without the exception this never returns */
@@ -359,6 +364,7 @@ int main(void)
        a graphics buffer submitted later over the same memory does not pick up its shader. */
     {
         enum { QUEUE = 0x30000, QUEUE_BYTES = 0x100, COMPUTE_CODE = 0x3000, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64 };
+        enum { COMPUTE_QUEUE_ID = 3 };
         const uint64_t QUEUE_BUFFER = at(QUEUE);
         char error[256] = "";
         /* the bind's place holds the NOP packet the GNM call writes there (runtime/render_placed.h) */
@@ -378,7 +384,7 @@ int main(void)
         CHECK(rt_render_record_dispatch(QUEUE_BUFFER, 0x30, one, error, sizeof error) == 0);
         step_count = 0;
         const rt_gpu_step done = {note_step, "sceGnmDingDong", 0x40, {21}, 0, NULL};
-        rt_renderer_submit("sceGnmDingDong", (const void *)(uintptr_t)QUEUE_BUFFER, QUEUE_BYTES, &done, 1);
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)QUEUE_BUFFER, QUEUE_BYTES, &done, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 1 && step_order[0] == 21);
         int right = 1;
@@ -387,6 +393,49 @@ int main(void)
         size_t calls = 1;
         rt_render_submitted(QUEUE_BUFFER + 0x08, QUEUE_BYTES, &calls);
         CHECK(calls == 0);
+    }
+
+    /* Each queue keeps its own compute state, as the console GPU's queues keep their own registers: the
+       game's compute-queue buffers dispatch again without binding the shader their queue bound last.
+       After the compute queue above bound scale_add, a graphics buffer binds reciprocals with other user
+       data; a compute-queue buffer of only a dispatch then runs scale_add on its queue's user data, and a
+       graphics buffer of only a dispatch runs reciprocals on the graphics queue's. */
+    {
+        enum { GRAPHICS = 0x31000, AGAIN = 0x32000, GRAPHICS_AGAIN = 0x33000, BYTES = 0x100, OTHER_CODE = 0x3400 };
+        enum { INPUT = 0x20000, OUTPUT = 0x21000, OTHER_OUTPUT = 0x22000, LANES = 64, COMPUTE_QUEUE_ID = 3 };
+        char error[256] = "";
+        uint32_t *graphics = (uint32_t *)(uintptr_t)at(GRAPHICS);
+        graphics[0x10 / 4] = 0xc0001000u, graphics[0x14 / 4] = 0; /* the bind's NOP packet */
+        memcpy((void *)(uintptr_t)at(OTHER_CODE), reciprocals, sizeof reciprocals);
+        const uint64_t other_code = at(OTHER_CODE);
+        const uint32_t other_shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(other_code >> 8), (uint32_t)(other_code >> 40), 0, 8 << 1, LANES, 1, 1};
+        uint32_t other_user[8];
+        descriptor(other_user, at(INPUT), 4);
+        descriptor(other_user + 4, at(OTHER_OUTPUT), 4);
+        CHECK(rt_render_record_compute_shader_at(at(GRAPHICS) + 0x10, other_shader) == 0);
+        CHECK(rt_render_record_user_data(at(GRAPHICS), 0x20, RT_STAGE_COMPUTE, 0, other_user, 8, error, sizeof error) == 0);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)at(GRAPHICS), BYTES, NULL, 0);
+
+        float *output = (float *)(uintptr_t)at(OUTPUT), *other = (float *)(uintptr_t)at(OTHER_OUTPUT);
+        for (unsigned i = 0; i < LANES; i++) output[i] = -1;
+        for (unsigned i = 0; i < 2 * LANES; i++) other[i] = -1;
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(at(AGAIN), 0x10, one, error, sizeof error) == 0);
+        const rt_gpu_step done = {note_step, "sceGnmDingDong", 0x20, {22}, 0, NULL}; /* performed once the dispatch has run */
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)at(AGAIN), BYTES, &done, 1);
+        rt_renderer_wait_idle();
+        int right = 1, untouched = 1;
+        for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
+        for (unsigned i = 0; i < 2 * LANES; i++) untouched &= other[i] == -1;
+        CHECK(right && untouched);
+
+        for (unsigned i = 0; i < LANES; i++) output[i] = -1;
+        CHECK(rt_render_record_dispatch(at(GRAPHICS_AGAIN), 0x10, one, error, sizeof error) == 0);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)at(GRAPHICS_AGAIN), BYTES, &done, 1);
+        rt_renderer_wait_idle();
+        untouched = 1;
+        for (unsigned i = 0; i < LANES; i++) untouched &= output[i] == -1;
+        CHECK(untouched && other[LANES + 2] == 0.5f && other[LANES + 4] == 0.25f); /* v_rcp_f32 of 2 and 4 */
     }
 
     rt_render_forget();
