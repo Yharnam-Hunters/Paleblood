@@ -639,7 +639,7 @@ int main(void)
     memcpy(pool + INDICES32, indices32, sizeof indices32);
     rt_executor *x = NULL;
     char error[1024] = "";
-    const rt_executor_memory memory = {fd, POOL_SIZE, guest_base, NULL, NULL, NULL, NULL, 0};
+    const rt_executor_memory memory = {fd, POOL_SIZE, guest_base, NULL, NULL, NULL, NULL, 0, NULL};
     int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "open: %s\n", error);
     CHECK(opened == 0);
@@ -1220,7 +1220,7 @@ int main(void)
         {0xa1e0, 0x40000000, "blending"}, {0xa200, 2, "depth or stencil"},
         {0xa202, 0, "colour mode"}, {0xa08e, 7, "write mask"},
         {0xc242, 5, "primitive type"}, {0xa000, 0, "does not interpret"},
-        {0xc242, 6, "primitive type"}, {0xa010, 0, "does not interpret"},
+        {0xc242, 7, "primitive type"}, {0xa010, 0, "does not interpret"},
     };
     for (unsigned i = 0; i < sizeof unsupported_registers / sizeof *unsupported_registers; ++i) {
         uint64_t buffer = 21 + i;

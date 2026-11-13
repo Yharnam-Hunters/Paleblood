@@ -42,9 +42,10 @@
 
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
-enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
+enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
+enum { IMAGE_BUCKETS = 4096 };
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
 enum { STOP_SINK_OFFSET = (STOP_SLOTS * 4 + GCN_GUEST_SINK_BYTES - 1) / GCN_GUEST_SINK_BYTES * GCN_GUEST_SINK_BYTES };
@@ -295,6 +296,7 @@ typedef struct {
     unsigned view_count;
     uint64_t used_ticket;            /* the batch that last used it (its ticket once submitted) */
     uint64_t used_call;              /* the draw or dispatch that last used it (call_serial) */
+    uint32_t bucket_next;            /* the next image of its address's bucket (image_buckets), index + 1; 0 none */
 } image_entry;
 
 /* A rect-list geometry stage (runtime/rect_list.h), for one vertex-shader output shape. */
@@ -526,6 +528,8 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
+    /* the images by address: each bucket's first image, index + 1 (0 none), chained by bucket_next */
+    uint32_t image_buckets[IMAGE_BUCKETS];
     /* the storage images the dispatch being recorded writes (their index in images, with the descriptor
        that named them, sRGB taken as UNORM): written back to the guest memory after it */
     struct {
@@ -555,6 +559,7 @@ struct rt_executor {
     uint64_t *chunk_outside;
     int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);
+    int (*cpu_writes_due)(void);
     int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
     void (*unguard)(uint64_t address, uint64_t length);
     /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
@@ -983,8 +988,16 @@ static uint32_t memory_type(rt_executor *x, uint32_t allowed, VkMemoryPropertyFl
     return UINT32_MAX;
 }
 
-/* Makes s hold at least bytes, mapped: host-visible and coherent memory, host-cached when the device has
-   it (reading uncached memory from the CPU is many times slower). Kept between uses; 0, or -1. */
+/* Host-visible and coherent memory, host-cached when the device has it (reading uncached memory from
+   the CPU is many times slower); UINT32_MAX when there is none. */
+static uint32_t host_memory_type(rt_executor *x, uint32_t allowed)
+{
+    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const uint32_t cached = memory_type(x, allowed, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    return cached != UINT32_MAX ? cached : memory_type(x, allowed, coherent);
+}
+
+/* Makes s hold at least bytes, mapped (host_memory_type). Kept between uses; 0, or -1. */
 static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
 {
     if (s->buffer && s->size >= bytes) return 0;
@@ -998,9 +1011,7 @@ static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
     if (vkCreateBuffer(x->device, &info, NULL, &s->buffer) != VK_SUCCESS) return -1;
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, s->buffer, &need);
-    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uint32_t type = memory_type(x, need.memoryTypeBits, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    if (type == UINT32_MAX) type = memory_type(x, need.memoryTypeBits, coherent);
+    const uint32_t type = host_memory_type(x, need.memoryTypeBits);
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size, .memoryTypeIndex = type};
     if (type == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &s->memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, s->buffer, s->memory, 0) != VK_SUCCESS ||
@@ -1237,6 +1248,7 @@ static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsage
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
     x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
+    x->cpu_writes_due = memory->cpu_writes_due;
     if (memory->guard && memory->unguard) x->guard = memory->guard, x->unguard = memory->unguard;
     x->chunk_changed = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_changed);
     x->chunk_outside = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_outside);
@@ -1259,7 +1271,9 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                        &x->gds_buffer, &x->gds_memory, &x->gds_address, "the GDS", error, error_size);
 }
 
-/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
+/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to, and
+   host-cached when the device has it: every finished batch reads all of them, and reading uncached
+   (write-combined) memory from the CPU costs a bus round trip per word. */
 static int open_stop_word(rt_executor *x, char *error, size_t error_size)
 {
     const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = STOP_SINK_OFFSET + GCN_GUEST_SINK_BYTES,
@@ -1269,8 +1283,7 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
     vkGetBufferMemoryRequirements(x->device, x->stop_buffer, &need);
     const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = need.size,
-                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits,
-                                                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
+                                           .memoryTypeIndex = host_memory_type(x, need.memoryTypeBits)};
     void *mapped = NULL;
     if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &x->stop_memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, x->stop_buffer, x->stop_memory, 0) != VK_SUCCESS ||
@@ -1840,6 +1853,7 @@ static void note_cpu_writes(rt_executor *x)
         all_changed_outside(x);
         return;
     }
+    if (x->cpu_writes_due && !x->cpu_writes_due()) return;
     size_t n = 0;
     for (size_t i = 0; i < x->image_count; i++) {
         const image_entry *e = &x->images[i];
@@ -2424,11 +2438,14 @@ static void depth_drawn(rt_executor *x, depth_entry *z)
     if (!z->guarded && x->guard && written_back) z->guarded = x->guard(z->z_address, depth_span(z)) == 0;
 }
 
+/* The bucket of an image's address (image_buckets). */
+static size_t image_bucket(uint64_t address) { return (size_t)((address >> 8) * 0x9e3779b97f4a7c15ull >> 52) & (IMAGE_BUCKETS - 1); }
+
 static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
 {
-    image_entry *e = NULL;
-    for (size_t i = 0; i < x->image_count && !e; i++)
-        if (x->images[i].address == t->address && x->images[i].gpu_written) e = &x->images[i];
+    image_entry *e = NULL; /* the first such image in the cache's order */
+    for (uint32_t i = x->image_buckets[image_bucket(t->address)]; i; i = x->images[i - 1].bucket_next)
+        if (x->images[i - 1].address == t->address && x->images[i - 1].gpu_written && (!e || &x->images[i - 1] < e)) e = &x->images[i - 1];
     if (!e) return 0;
     if (!target_takes_image(t->format, e->format, e->type) && e->written_back) {
         /* the memory holds its texels, and the target loads them (memory_changed_since); its draws then
@@ -2473,12 +2490,12 @@ static int one_dimensional(uint32_t type);
 
 static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_t error_size)
 {
-    const image_entry *w = NULL;
-    for (size_t i = 0; i < x->image_count && !w; i++) {
-        const image_entry *k = &x->images[i];
+    const image_entry *w = NULL; /* the first such image in the cache's order */
+    for (uint32_t i = x->image_buckets[image_bucket(e->address)]; i; i = x->images[i - 1].bucket_next) {
+        const image_entry *k = &x->images[i - 1];
         if (k != e && k->gpu_written && k->address == e->address && same_texel_bytes(k->format, e->format) && k->width == e->width &&
             k->height == e->height && k->layers == e->layers && k->depth == e->depth && k->type == e->type && k->levels == 1 &&
-            e->levels == 1)
+            e->levels == 1 && (!w || k < w))
             w = k;
     }
     if (!w) return 0;
@@ -4420,9 +4437,29 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
 /* The image the executor keeps for a descriptor, made on first use. A use that reads an image no
    shader has written loads the guest memory's texels first (each time: the guest may have changed
    them); a new image first written is cleared. VK_NULL_HANDLE after failing. */
+/* Enters an image in its address's bucket. */
+static void image_index_add(rt_executor *x, image_entry *e)
+{
+    uint32_t *first = &x->image_buckets[image_bucket(e->address)];
+    e->bucket_next = *first;
+    *first = (uint32_t)(e - x->images) + 1;
+}
+
+/* Takes an image out of its address's bucket (one never entered is not there: nothing changes). */
+static void image_index_remove(rt_executor *x, image_entry *e)
+{
+    const uint32_t index = (uint32_t)(e - x->images) + 1;
+    for (uint32_t *link = &x->image_buckets[image_bucket(e->address)]; *link; link = &x->images[*link - 1].bucket_next)
+        if (*link == index) {
+            *link = e->bucket_next;
+            return;
+        }
+}
+
 /* Frees what an image holds; its slot then matches no descriptor until it is reused. */
 static void image_release(rt_executor *x, image_entry *e)
 {
+    image_index_remove(x, e);
     for (unsigned v = 0; v < e->view_count; v++) vkDestroyImageView(x->device, e->views[v].view, NULL);
     vkDestroyImage(x->device, e->image, NULL);
     vkFreeMemory(x->device, e->memory, NULL);
@@ -4471,8 +4508,8 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         }
     }
     image_entry *e = NULL;
-    for (size_t i = 0; i < x->image_count && !e; i++) {
-        image_entry *k = &x->images[i];
+    for (uint32_t i = x->image_buckets[image_bucket(d->address)]; i && !e; i = x->images[i - 1].bucket_next) {
+        image_entry *k = &x->images[i - 1];
         if (k->address == d->address && k->format == f->format && k->width == d->width && k->height == d->height && k->layers == d->layers &&
             k->type == d->type && k->levels == d->last_level + 1 && k->pow2 == (int)d->pow2_pad && k->depth == image_depth(d))
             e = k;
@@ -4535,6 +4572,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
             return NULL;
         }
         if (!slot) x->image_count++;
+        image_index_add(x, e);
     }
     e->used_ticket = x->submitted + 1, e->used_call = x->call_serial;
     /* an image over a render target's memory loads it even to be written: a store may cover only part of

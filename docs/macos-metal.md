@@ -119,6 +119,22 @@ A zero colour mask disables attachment writes while still executing the draw. Th
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
 
+Triangle strips (`VGT_PRIMITIVE_TYPE` 6) select Metal's native triangle-strip primitive for
+auto draws and every admitted 16/32-bit direct or offset indexed route. Triangle lists retain
+their existing mapping and pipeline cache; topology is selected at each draw. Geometry shaders,
+rectangle expansion and other primitive types remain outside this backend's profile.
+
+Metal's [indexed draw contract](https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawindexedprimitives(type:indexcount:indextype:indexbuffer:indexbufferoffset:))
+always treats an index equal to the maximum of its width as a strip restart. Guest restart
+state is not modeled here, so an indexed strip containing that incompatible value is refused
+by name before encoding; this is an explicit backend limit, not a claim that AMD rejects it.
+The executor scans only the fetched range after the existing address, alignment and DMA-bound
+checks, freshly on every draw, with no fetch for zero count. `0xffff` is ordinary data for a
+32-bit index; its restart marker is `0xffffffff`. Restart-register writes retain their existing
+unknown-register refusal. No guest reset/default or complete primitive-restart support is claimed.
+The owned `metal_triangle_strips` fixture uses independent solid-square and gapped-column pixel
+goldens, fresh vertex stores and full-pool canaries across geometry, cache, indexing and refusals.
+
 Screen scissors use the existing register events for `PA_SC_SCREEN_SCISSOR_TL` and `_BR`.
 The [AMD CIK register manual](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
 defines their components as signed 16-bit values: negative coordinates clamp to zero, the top/left
