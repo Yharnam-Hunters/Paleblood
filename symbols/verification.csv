@@ -1117,6 +1117,7 @@ render_set_es_shader,edge,,199,199,0,0,aa1e8780742297e4,2026-11-13
 render_set_gds_oa,edge,,124,124,0,0,1f7b4a0a659b7c3b,2026-11-13
 render_set_gs_mode,edge,,371,371,0,0,8310151b447ce097,2026-11-14
 render_set_gs_onchip_control,edge,,335,335,0,0,b96dac2f5f4a6535,2026-11-14
+render_set_gs_shader,edge,,145,145,0,0,6780a88145eaed82,2026-11-14
 render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_discard_adjust,recorded,,79,79,0,0,d796d1a200c99651,2026-11-12
