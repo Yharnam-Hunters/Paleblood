@@ -145,6 +145,9 @@ def boot_image(stacked_imports=False):
     code[0xb80:0xb80 + len(repeated_import)] = repeated_import
     # Conditional paths with stable direct branch targets for CFG coverage tests.
     code[0xc00:0xc11] = bytes.fromhex('83ff00 7406 b801000000 c3 b802000000 c3')
+    # Copies a stack dword it never wrote into [rdi], as an original copies a struct field it
+    # never set: sub rsp, 0x18; mov eax, [rsp+4]; mov [rdi], eax; add rsp, 0x18; ret.
+    code[0xc11:0xc20] = bytes.fromhex('4883ec18 8b442404 8907 4883c418 c3')
     # A two-iteration loop covers both the taken and fallthrough outcomes of JNZ.
     code[0xc20:0xc2a] = bytes.fromhex('b902000000 ffc9 75fc c3')
     # Project-owned address arithmetic: an undeclared address expression is not a load.
@@ -636,6 +639,18 @@ class Harness(unittest.TestCase):
                '--address', '0x00400c78']
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         self.assertIn('xmm8', r.stdout + r.stderr)
+
+    def test_stack_bytes_never_written_are_the_fill_on_every_run(self):
+        sys.path.insert(0, TOOLS)
+        import harness
+        case = {'schema': 1, 'address': '0x00400c11', 'id': 'unset-field', 'returns': 'void',
+                'args': {'rdi': 'buf:out'}, 'buffers': {'out': {'size': 8}},
+                'memory': [], 'imports': [], 'stubs': []}
+        Path(self.case).write_text(json.dumps(case))
+        fill = bytes([harness.STACK_FILL]) * 4
+        for _ in range(2):
+            result = self.side_case(self.case, address='0x00400c11')
+            self.assertEqual(result['writes'], [{'addr': 'buf:out+0x0', 'bytes': fill.hex()}], result)
 
     def test_control_flow_coverage_reports_fixture_branch_paths(self):
         fixtures = [

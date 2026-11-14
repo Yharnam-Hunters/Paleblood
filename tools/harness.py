@@ -68,6 +68,17 @@ TRAMPOLINE = bytes.fromhex(
     _LOAD_XMM1, _LOAD_XMM1 + b''.join(                         # movdqu xmmN, [r11+disp32]
         bytes([0xf3, 0x41, 0x0f, 0x6f, 0x83 | n << 3]) + struct.pack('<i', XMM_ARGS[f'xmm{n}'])
         for n in range(2, 8)))
+# The stack below the call starts as STACK_FILL_SIZE bytes of STACK_FILL in both runs of a case
+# (docs/VERIFY.md, "Stack bytes the code never wrote"): the trampoline fills it before it loads
+# the arguments, so a byte a function copies out of its frame without writing it (a struct field
+# it never set) is the same in the original's run and the replacement's.
+STACK_FILL = 0xa5
+STACK_FILL_SIZE = 0x8000
+_SAVE_BLOCK = bytes.fromhex('4989fb')                           # mov r11, rdi (the block)
+TRAMPOLINE = TRAMPOLINE.replace(
+    _SAVE_BLOCK, _SAVE_BLOCK + bytes.fromhex('488dbc24') + struct.pack('<i', -STACK_FILL_SIZE)   # lea rdi, [rsp-size]
+    + b'\xb9' + struct.pack('<I', STACK_FILL_SIZE) + bytes([0xb0, STACK_FILL])                # mov ecx, size; mov al, fill
+    + bytes.fromhex('f3aa'), 1)                                                                 # rep stosb
 SENTINELS = {'rbx': 0x1111111111111111, 'rbp': 0x2222222222222222, 'r12': 0x3333333333333333,
              'r13': 0x4444444444444444, 'r14': 0x5555555555555555, 'r15': 0x6666666666666666}
 ARG_REGS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
