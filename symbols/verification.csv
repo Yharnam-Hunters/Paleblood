@@ -1526,6 +1526,7 @@ render_set_esgs_ring_itemsize,edge,,142,142,0,0,529c4831c9cb3cb9,2026-11-14
 render_set_gds_oa,edge,,124,124,0,0,1f7b4a0a659b7c3b,2026-11-13
 render_set_gs_mode,edge,,371,371,0,0,8310151b447ce097,2026-11-14
 render_set_gs_onchip_control,edge,,335,335,0,0,b96dac2f5f4a6535,2026-11-14
+render_set_gs_ring_sizes,edge,,445,445,0,0,65c106200dbd8922,2026-11-14
 render_set_gs_shader,edge,,145,145,0,0,6780a88145eaed82,2026-11-14
 render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12
