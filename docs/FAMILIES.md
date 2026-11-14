@@ -102,6 +102,15 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `reads_word_field` | `0f b7 47 {d8} c3` | getters of a 16-bit field, zero-extended |
 | `reads_byte_field` | `0f b6 47 {d8} c3` | getters of an 8-bit field, zero-extended (`mov al, [rdi+K]` is excluded) |
 | `field_address` | `48 8d 47 {d8} c3` | the address of a member or base-class part, K bytes into the object |
+| `tail_calls_virtual_function` | `48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object's virtual table with the same arguments |
+| `tail_jumps_through_virtual_slot` | `48 8b 07 ff 60 {d8}` | tail-call slot K of the object's virtual table with the same arguments (`jmp [rax+K]`) |
+| `passes_flag_to_virtual_function` | `48 8b 07 48 8b 40 {d8} ba 01 00 00 00 ff e0` | tail-call slot K of the object's virtual table with the third argument 1 |
+| `passes_part_at_0xe8_to_virtual_0x68` | `48 8b 07 48 8b 40 68 48 81 c6 e8 00 00 00 ff e0` | tail-call slot 0x68 with the second argument plus 0xe8 |
+| `adjusts_base_and_passes_part_at_0xe8` | `48 8b 47 e0 48 83 c7 e0 48 8b 40 68 48 81 c6 e8 00 00 00 ff e0` | from a base 0x20 into the object: tail-call its slot 0x68 with the second argument plus 0xe8 |
+| `tail_calls_member_at_0x10` | `48 8b 7f 10 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +0x10 points at, with the same other arguments |
+| `passes_dword_argument_to_member_at_8` | `8b 36 48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +8 points at, with the dword the second argument points at |
+| `calls_member_at_8_with_constant` | `55 48 89 e5 48 8b 7f 08 48 8b 07 be {u32} ff 50 40 5d c3` | call slot 0x40 of the object the pointer at +8 points at with a constant, and return its result |
+| `exports_member_at_0x20_and_tail_calls_it` | `48 8b 47 20 48 89 06 48 8b 7f 20 48 8b 07 ff 60 08` | store the pointer at +0x20 through the second argument, then tail-call slot 8 of that object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |

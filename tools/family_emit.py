@@ -341,6 +341,83 @@ MATCHING_TEMPLATES = {
     },
 }
 
+# Forwarding thunks (symbols/families.csv; game/leaf/virtual_call.h).
+TEMPLATES['tail_calls_virtual_function'] = {
+    'header': "// Forwarding thunks: every member of the tail_calls_virtual_function family (symbols/families.csv) is\n// `48 8b 07 48 8b 40 {d8} ff e0`: it tail-calls slot K of its object's virtual table with the arguments it got.\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_virtual_function'] = {
+    'header': '// Forwarding thunks: tail_calls_virtual_function.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_jumps_through_virtual_slot'] = {
+    'header': "// Forwarding thunks: every member of the tail_jumps_through_virtual_slot family (symbols/families.csv) is\n// `48 8b 07 ff 60 {d8}`: it tail-calls slot K of its object's virtual table with the arguments it got (`jmp [rax+K]`).\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_jumps_through_virtual_slot'] = {
+    'header': '// Forwarding thunks: tail_jumps_through_virtual_slot.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['passes_flag_to_virtual_function'] = {
+    'header': "// Forwarding thunks: every member of the passes_flag_to_virtual_function family (symbols/families.csv) is\n// `48 8b 07 48 8b 40 {d8} ba 01 00 00 00 ff e0`: it tail-calls slot K of its object's virtual table with the third argument set to 1.\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n\nconstexpr uint64_t flag_argument = 1;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    (void)third;\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, flag_argument, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['passes_flag_to_virtual_function'] = {
+    'header': '// Forwarding thunks: passes_flag_to_virtual_function.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { flag_argument = 1 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    (void)third;\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, flag_argument, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['passes_part_at_0xe8_to_virtual_0x68'] = {
+    'header': '// Forwarding thunks: passes_part_at_0xe8_to_virtual_0x68.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { part_slot = 0x68, part_offset = 0xe8 };\n',
+    'single': 'uint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[part_slot / sizeof(forwarded_function)](object, second + part_offset, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['adjusts_base_and_passes_part_at_0xe8'] = {
+    'header': '// Forwarding thunks: adjusts_base_and_passes_part_at_0xe8.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { part_slot = 0x68, part_offset = 0xe8, base_offset = 0x20 };\n',
+    'single': 'uint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *whole = (struct object_with_virtual_table *)((uint8_t *)object - base_offset);\n    return whole->virtual_table[part_slot / sizeof(forwarded_function)](whole, second + part_offset, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_calls_member_at_0x10'] = {
+    'header': '// Forwarding thunks: every member of the tail_calls_member_at_0x10 family (symbols/families.csv) is\n// `48 8b 7f 10 48 8b 07 48 8b 40 {d8} ff e0`: it tail-calls slot K of the object the pointer at +0x10 points at, with the other arguments it got.\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 0x10;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *member = member_at<member_offset>(object);\n    BB_TAIL_CALL return virtual_function<slot_{name}>(member)(member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_member_at_0x10'] = {
+    'header': '// Forwarding thunks: tail_calls_member_at_0x10.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 0x10 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return member->virtual_table[slot_{name} / sizeof(forwarded_function)](member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['passes_dword_argument_to_member_at_8'] = {
+    'header': '// Forwarding thunks: every member of the passes_dword_argument_to_member_at_8 family (symbols/families.csv) is\n// `8b 36 48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0`: it tail-calls slot K of the object the pointer at +8 points at, with the dword its second argument points at.\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 8;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *member = member_at<member_offset>(object);\n    const uint64_t value = *reinterpret_cast<const uint32_t *>(second);\n    BB_TAIL_CALL return virtual_function<slot_{name}>(member)(member, value, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['passes_dword_argument_to_member_at_8'] = {
+    'header': '// Forwarding thunks: passes_dword_argument_to_member_at_8.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 8 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return member->virtual_table[slot_{name} / sizeof(forwarded_function)](member, *(const uint32_t *)second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['calls_member_at_8_with_constant'] = {
+    'header': '// Forwarding thunks: every member of the calls_member_at_8_with_constant family (symbols/families.csv) is\n// `55 48 89 e5 48 8b 7f 08 48 8b 07 be {u32} ff 50 40 5d c3`: it calls slot 0x40 of the object the pointer at +8 points at with the constant K and returns its result.\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 8;\nconstexpr std::size_t constant_call_slot = 0x40;\n// The slot takes the object and one 32-bit integer.\nusing MethodTakingConstant = uint64_t (*)(void *object, uint32_t constant);\n',
+    'per_value': 'constexpr uint32_t constant_{name} = {value};\nextern "C" uint64_t {symbol}(void *object)\n{{\n    void *member = member_at<member_offset>(object);\n    return virtual_function<constant_call_slot, MethodTakingConstant>(member)(member, constant_{name});\n}}\n',
+}
+MATCHING_TEMPLATES['calls_member_at_8_with_constant'] = {
+    'header': '// Forwarding thunks: calls_member_at_8_with_constant.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 8, constant_call_slot = 0x40 };\ntypedef uint64_t (*method_taking_constant)(void *, uint32_t);\n',
+    'per_value': 'enum {{ constant_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return ((method_taking_constant)member->virtual_table[constant_call_slot / sizeof(forwarded_function)])(member, constant_{name});\n}}\n',
+}
+MATCHING_TEMPLATES['exports_member_at_0x20_and_tail_calls_it'] = {
+    'header': '// Forwarding thunks: exports_member_at_0x20_and_tail_calls_it.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { exported_member_offset = 0x20, exported_slot = 8 };\n',
+    'single': 'uint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + exported_member_offset);\n    *(struct object_with_virtual_table **)second = member;\n    return member->virtual_table[exported_slot / sizeof(forwarded_function)](member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+
 
 def matching_path(root: str, family: dict) -> str:
     return os.path.join(root, 'game', 'matching', family['system'], f"{family['family']}.c")

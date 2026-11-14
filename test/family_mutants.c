@@ -60,6 +60,33 @@ uint64_t bb_mutant_returns_second_argument(uint64_t first, uint64_t second)
     return second;
 }
 
+/* Slot 0x68 of the object's virtual table (or of the whole object, from a base 0x20 into it) with
+ * the second argument as it came: the part offset 0xe8 left out. */
+typedef uint64_t (*bb_mutant_forwarded)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+uint64_t bb_mutant_virtual_0x68_without_part(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                             uint64_t fifth, uint64_t sixth)
+{
+    const bb_mutant_forwarded *table = *(const bb_mutant_forwarded *const *)object;
+    return table[0x68 / 8](object, second, third, fourth, fifth, sixth);
+}
+
+uint64_t bb_mutant_base_virtual_0x68_without_part(uint8_t *base, uint64_t second, uint64_t third, uint64_t fourth,
+                                                  uint64_t fifth, uint64_t sixth)
+{
+    return bb_mutant_virtual_0x68_without_part(base - 0x20, second, third, fourth, fifth, sixth);
+}
+
+/* Tail-calls slot 8 of the object the pointer at +0x20 points at without storing that pointer
+ * through the second argument first. */
+uint64_t bb_mutant_tail_calls_member_at_0x20_without_export(uint8_t *object, uint64_t second, uint64_t third,
+                                                            uint64_t fourth, uint64_t fifth, uint64_t sixth)
+{
+    void *member = *(void **)(object + 0x20);
+    const bb_mutant_forwarded *table = *(const bb_mutant_forwarded *const *)member;
+    return table[1](member, second, third, fourth, fifth, sixth);
+}
+
 /* Stores the low 32 bits of its second argument at the start of its object: the wrong width for
    a 64-bit setter. */
 void bb_mutant_writes_first_dword(uint32_t *object, uint64_t value)
