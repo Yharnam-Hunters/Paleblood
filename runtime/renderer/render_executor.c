@@ -294,6 +294,8 @@ typedef struct {
     int pow2;                        /* the descriptor's POW2_PAD (where the levels lie) */
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
     int written_back;                /* its texels written since are in the guest memory too (write_back_image) */
+    int stored;                      /* a dispatch has stored to it: stored_as holds that dispatch's descriptor */
+    rt_image_descriptor stored_as;   /* how the memory under it lays its texels out, for a later write-back */
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
@@ -2562,12 +2564,19 @@ static void depth_drawn(rt_executor *x, depth_entry *z)
 /* The bucket of an image's address (image_buckets). */
 static size_t image_bucket(uint64_t address) { return (size_t)((address >> 8) * 0x9e3779b97f4a7c15ull >> 52) & (IMAGE_BUCKETS - 1); }
 
+static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descriptor *d, char *error, size_t error_size);
+
 static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
 {
     image_entry *e = NULL; /* the first such image in the cache's order */
     for (uint32_t i = x->image_buckets[image_bucket(t->address)]; i; i = x->images[i - 1].bucket_next)
         if (x->images[i - 1].address == t->address && x->images[i - 1].gpu_written && (!e || &x->images[i - 1] < e)) e = &x->images[i - 1];
     if (!e) return 0;
+    /* left in the image while a target of its texel size was at its address (write_back_image), and that
+       target has since been set aside for this one: the memory gets the image's texels now */
+    if (!target_takes_image(t->format, e->format, e->type) && !e->written_back && e->stored &&
+        write_back_image(x, e, &e->stored_as, error, error_size))
+        return -1;
     if (!target_takes_image(t->format, e->format, e->type) && e->written_back) {
         /* the memory holds its texels, and the target loads them (memory_changed_since); its draws then
            supersede the image, which loads the memory again at its next use */
@@ -4974,9 +4983,14 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
    clinic stores a 37x14 16_16_16_16 float image over another format's target) is written to the memory
    once the target's own draws are there, and the target loads the memory at its next draw
    (take_written_image), as the PS4's colour buffer reads whatever bytes were stored at its address.
+   The descriptor is kept (stored_as): an image left to a target of its texel size is written to the memory
+   when a target of another format takes that address instead (take_written_image). The clinic's respawn
+   load stopped once on a 480x270 16_16_16_16 float image under an 896x704 10_11_11 target; this order of
+   events gives that stop.
    0, or -1 with the reason. */
 static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descriptor *d, char *error, size_t error_size)
 {
+    if (d != &e->stored_as) e->stored = 1, e->stored_as = *d;
     texel_format f;
     const target_entry *target = find_target(x, d->address);
     if ((target && target_takes_image(target->format, e->format, e->type)) || e->type == RT_IMAGE_3D || image_format(d, &f, error, error_size))

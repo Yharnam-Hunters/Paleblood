@@ -146,8 +146,9 @@ engine_fast_small_object_allocator_delete_024846f0,edge,,3,3,0,0,c923dbe1731ec59
 engine_fast_small_object_allocator_delete_locked_024847d0,edge,,19,19,0,0,c923dbe1731ec595,2026-11-12
 engine_fast_small_object_allocator_destroy_02484760,edge,,3,3,0,0,c923dbe1731ec595,2026-11-12
 engine_fast_small_object_allocator_destroy_locked_02484910,edge,,19,19,0,0,c923dbe1731ec595,2026-11-12
-engine_fd4_handle_is_valid_013e9040,edge,,14,14,0,0,86c597f43e9cad82,2026-11-13
-engine_fd4_handle_less_01398290,edge,,16,16,0,0,86c597f43e9cad82,2026-11-13
+engine_fd4_handle_is_valid_013e9040,edge,,14,14,0,0,20f00d3f96af5ff2,2026-11-14
+engine_fd4_handle_less_01398290,edge,,16,16,0,0,20f00d3f96af5ff2,2026-11-14
+engine_fd4_handle_refresh_013e99b0,edge,,12,12,0,0,20f00d3f96af5ff2,2026-11-14
 engine_fixed_allocator_allocate_02484c70,edge,,24,24,0,0,594e26c134ef7897,2026-11-12
 engine_fixed_allocator_clear_02484c20,edge,,5,5,0,0,25c6012c4cce99b3,2026-11-12
 engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,1202125b79363097,2026-11-12
@@ -168,6 +169,8 @@ engine_format_wide_unbounded_024e3f50,edge,,18,18,0,0,c7d61df368f57c31,2026-11-1
 engine_format_write_integer_024e6f00,edge,,3638,3638,0,0,a91d93ba67f5f4aa,2026-11-13
 engine_format_write_wide_string_024e77f0,edge,,294,294,0,0,3561ac658366de1b,2026-11-13
 engine_heap_manager_register_area_0247c000,edge,,34,34,0,0,ed14d843507cea0a,2026-11-13
+engine_hk_array_reserve_00819040,edge,,21,21,0,0,ce7618cb8871ec1d,2026-11-14
+engine_hk_array_reserve_more_00819100,edge,,19,19,0,0,ce7618cb8871ec1d,2026-11-14
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
 engine_linear_heap_allocate_02485100,edge,,8,8,0,0,b9dafbeebf252424,2026-11-12
@@ -1094,6 +1097,7 @@ render_set_dispatch_draw_index,edge,,103,103,0,0,b82ebba1aafc0051,2026-11-13
 render_set_es_shader,edge,,199,199,0,0,aa1e8780742297e4,2026-11-13
 render_set_gds_oa,edge,,124,124,0,0,1f7b4a0a659b7c3b,2026-11-13
 render_set_gs_mode,edge,,371,371,0,0,8310151b447ce097,2026-11-14
+render_set_gs_onchip_control,edge,,335,335,0,0,b96dac2f5f4a6535,2026-11-14
 render_set_gs_shader,edge,,145,145,0,0,6780a88145eaed82,2026-11-14
 render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12

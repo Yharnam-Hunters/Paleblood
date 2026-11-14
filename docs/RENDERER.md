@@ -960,7 +960,10 @@ Instead:
         image over a target (a YEBIS pass in the clinic stores a 37x14 16_16_16_16 float image over another
         format's target) is instead tiled into the guest memory after its dispatch (`write_back_image`, the
         target's own draws written back first), and the target loads that memory at its next draw, as the
-        PS4's colour buffer reads whatever bytes a shader stored at its address. Pixel shaders' images
+        PS4's colour buffer reads whatever bytes a shader stored at its address. An image left to a target of
+        its own texel size is tiled into the memory later, when a target of another format takes that address
+        first (`target_for` sets the first target aside): the image keeps its dispatch's descriptor for that.
+        Pixel shaders' images
         are found the same way and bound as sampled images. A pixel shader's null image descriptor (all 8
         words 0) reads 0: Mesa's radeonsi writes 8 zero words for an unbound sampler view or image
         (`si_reset_sampler_view_slot`, `si_disable_shader_image`) and RADV zeroes the descriptor of a
