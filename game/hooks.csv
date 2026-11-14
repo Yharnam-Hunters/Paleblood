@@ -1,6 +1,8 @@
 address,replacement,system,returns
 0x00464b90,bb_loading_stdio_stream_open,loading,void
 0x00466810,bb_frame_timing_posix_sleep_ms,frame_timing,i8
+0x00829a90,bb_loading_allocator_free_headed_00829a90,loading,void
+0x00836840,bb_loading_tagged_string_release_00836840,loading,void
 0x0083d4d0,bb_camera_transform_matrix_0083d4d0,camera,void
 0x00848e80,bb_camera_axis_angle_quaternion_00848e80,camera,void
 0x0084d5a0,bb_loading_fios_directory_delete,loading,void
@@ -278,6 +280,8 @@ address,replacement,system,returns
 0x02232a60,bb_ai_draw_layer_color_02232a60,ai,vec
 0x02265170,bb_frame_timing_pass_on_in_local_mode_02265170,frame_timing,i8
 0x02265290,bb_frame_timing_lookup_session_object_02265290,frame_timing,i64
+0x02265580,bb_frame_timing_create_handle_from_levels_02265580,frame_timing,i64
+0x02265960,bb_frame_timing_pass_on_in_server_mode_02265960,frame_timing,i8
 0x02311c80,bb_param_find_row_equip_param_accessory,param,void
 0x02311da0,bb_param_row_name_equip_param_accessory,param,i64
 0x02312070,bb_param_next_row_id_equip_param_accessory,param,i32
@@ -353,6 +357,7 @@ address,replacement,system,returns
 0x0231f460,bb_param_find_row_hit_mtrl,param,void
 0x0231f720,bb_param_find_row_holygrail_ex,param,void
 0x0231f840,bb_param_row_name_holygrail_ex,param,i64
+0x0231fbc0,bb_frame_timing_fill_creation_part1_0231fbc0,frame_timing,i64
 0x0231ff00,bb_param_row_count_holygrail_ex,param,i32
 0x0231ff70,bb_param_holygrail_ex_row_number,param,i32
 0x02320020,bb_param_find_row_number_holygrail_ex,param,void
@@ -571,6 +576,8 @@ address,replacement,system,returns
 0x024bcfe0,bb_loading_result_copy_024bcfe0,loading,void
 0x024bd150,bb_frame_timing_job_take_result,frame_timing,i64
 0x024bd310,bb_loading_resource_handle_assign_024bd310,loading,i64
+0x024bd470,bb_loading_resource_handle_construct_024bd470,loading,void
+0x024bd4c0,bb_loading_resource_handle_destroy_024bd4c0,loading,void
 0x024bd930,bb_loading_resource_info_release_024bd930,loading,void
 0x024bdd40,bb_frame_timing_job_wait,frame_timing,void
 0x024be250,bb_loading_load_request_construct_024be250,loading,void
@@ -587,6 +594,7 @@ address,replacement,system,returns
 0x024d8210,bb_loading_file_task_prepare_024d8210,loading,i8
 0x024d8470,bb_loading_file_task_begin_read_024d8470,loading,void
 0x024dd540,bb_loading_transfer_task_initialize_024dd540,loading,i8
+0x024dd8a0,bb_loading_transfer_task_cancel_024dd8a0,loading,i8
 0x024dde50,bb_loading_transfer_task_check_read_024dde50,loading,i8
 0x024ddf20,bb_loading_transfer_task_check_close_024ddf20,loading,i8
 0x024de230,bb_loading_memory_stream_read_024de230,loading,i32

@@ -118,8 +118,10 @@ typedef struct {
     int has_input_controls;
     uint64_t tessellation;           /* a domain shader's tessellation settings (tessellation_key), 0 otherwise */
     vertex_instancing instancing;    /* a vertex shader's instancing inputs (vertex_instancing_of), zero otherwise */
-    VkShaderModule module;
+    VkShaderModule module;           /* VK_NULL_HANDLE: a slot freed (shader_slot), none kept there */
     uint32_t bucket_next;            /* the next shader of its bucket (shader_buckets), index + 1; 0 none */
+    uint64_t used_ticket;            /* the submission that last draws with it (shader_to_free) */
+    uint64_t used_call;              /* the draw that last used it (call_serial) */
 } shader_entry;
 
 /* A host-visible buffer that texels pass through between an image and the guest memory, kept for reuse:
@@ -2252,6 +2254,19 @@ static unsigned pipeline_bucket(VkShaderModule vertex, VkShaderModule pixel, VkR
     return (unsigned)((key * 0xc4ceb9fe1a85ec53ull) >> 40) & (TABLE_BUCKETS - 1);
 }
 
+/* Puts every kept shader in its bucket again, after one was freed (shader_slot). */
+static void index_shaders(rt_executor *x)
+{
+    memset(x->shader_buckets, 0, sizeof x->shader_buckets);
+    for (size_t i = 0; i < x->shader_count; i++) {
+        shader_entry *e = &x->shaders[i];
+        if (!e->module) continue;
+        const unsigned bucket = shader_bucket(e->code, e->stage);
+        e->bucket_next = x->shader_buckets[bucket];
+        x->shader_buckets[bucket] = (uint32_t)(i + 1);
+    }
+}
+
 /* Puts every pipeline in its bucket again, after pipelines were removed (the last moved into a gap). */
 static void index_pipelines(rt_executor *x)
 {
@@ -3110,6 +3125,52 @@ static gcn_tessellation_layout tessellation_layout(const rt_executor *x, const r
                                      .topology = h->topology};
 }
 
+/* The least recently used shader that no unfinished batch and not the draw being recorded draws with,
+   or -1. Its pipelines were last used no later than it (each draw asks for its shaders first). */
+static long shader_to_free(rt_executor *x)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return -1;
+    long pick = -1;
+    for (size_t i = 0; i < x->shader_count; i++) {
+        const shader_entry *e = &x->shaders[i];
+        if (!e->module || e->used_ticket > done || e->used_call == x->call_serial) continue;
+        if (pick < 0 || e->used_ticket < x->shaders[pick].used_ticket) pick = (long)i;
+    }
+    return pick;
+}
+
+/* The entry a new shader takes: the next unused one, a slot freed before, or, with all MAX_SHADERS kept
+   (walking a scene brings more shaders than that), the least recently used shader's once no unfinished
+   batch draws with it, waiting for the GPU's work when every one is in use. That shader's module goes
+   with the pipelines made from it: a module made later may get the same handle, and a pipeline found
+   by it would draw with the old shader. A shader keeps its entry (no other moves into it): its stop
+   word is the entry's (stop_slot), written into its code. The entry, or -1 with the reason. */
+static long shader_slot(rt_executor *x, char *error, size_t error_size)
+{
+    if (x->shader_count < MAX_SHADERS) return (long)x->shader_count;
+    for (size_t i = 0; i < x->shader_count; i++)
+        if (!x->shaders[i].module) return (long)i;
+    long pick = shader_to_free(x);
+    if (pick < 0 && batch_finish(x, error, error_size)) return -1;
+    if (pick < 0) pick = shader_to_free(x);
+    if (pick < 0) return failed(error, error_size, "more shaders than the executor keeps, all of them in draws still to run");
+    const VkShaderModule module = x->shaders[pick].module;
+    for (size_t k = 0; k < x->pipeline_count;) {
+        if (x->pipelines[k].vertex != module && x->pipelines[k].pixel != module) {
+            k++;
+            continue;
+        }
+        vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
+        x->pipelines[k] = x->pipelines[--x->pipeline_count];
+    }
+    index_pipelines(x);
+    vkDestroyShaderModule(x->device, module, NULL);
+    x->shaders[pick] = (shader_entry){0};
+    index_shaders(x);
+    return pick;
+}
+
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
                                  unsigned sampler_count, unsigned first_binding, uint64_t callee, const uint32_t *input_controls,
@@ -3123,13 +3184,14 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     const size_t control_bytes = GCN_PIXEL_INPUTS * sizeof *input_controls;
     const unsigned bucket = shader_bucket(code, stage);
     for (uint32_t i = x->shader_buckets[bucket]; i; i = x->shaders[i - 1].bucket_next) {
-        const shader_entry *s = &x->shaders[i - 1];
+        shader_entry *s = &x->shaders[i - 1];
         if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
             s->first_binding == first_binding && s->has_input_controls == (input_controls != NULL) &&
             (!input_controls || !memcmp(s->input_controls, input_controls, control_bytes)) &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
             s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers) && s->tessellation == tessellation &&
             !memcmp(&s->instancing, &instancing, sizeof instancing)) {
+            s->used_ticket = x->submitted + 1, s->used_call = x->call_serial;
             *user_read = s->user_read;
             return s->module;
         }
@@ -3139,10 +3201,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                (unsigned long long)code);
         return VK_NULL_HANDLE;
     }
-    if (x->shader_count == MAX_SHADERS) {
-        failed(error, error_size, "more shaders than the executor keeps");
-        return VK_NULL_HANDLE;
-    }
+    const long slot = shader_slot(x, error, error_size);
+    if (slot < 0) return VK_NULL_HANDLE;
     const uint32_t *words = (const uint32_t *)(uintptr_t)code;
     const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
     uint32_t *spirv = NULL;
@@ -3153,7 +3213,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
-                                          .error_address = stop_slot(x, 0, x->shader_count), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
+                                          .error_address = stop_slot(x, 0, (size_t)slot), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
                                           .code_address = code, .images = images, .image_count = image_count,
                                           .first_binding = first_binding, .user_data_read = user_read,
@@ -3162,7 +3222,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .step_rates_set = instancing.step_rates_set};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else if (stage == STAGE_DOMAIN) {
-        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, 0, x->shader_count));
+        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, 0, (size_t)slot));
         layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
         layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
         result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
@@ -3174,7 +3234,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
                                          .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
                                          .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, 0, x->shader_count),
+                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, 0, (size_t)slot),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .input_controls = input_controls,
                                          .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
@@ -3195,12 +3255,13 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         failed(error, error_size, "the device refused a translated shader");
         return VK_NULL_HANDLE;
     }
-    shader_entry *e = &x->shaders[x->shader_count++];
+    if ((size_t)slot == x->shader_count) x->shader_count++;
+    shader_entry *e = &x->shaders[slot];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
                         .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
                         .tessellation = tessellation, .instancing = instancing, .module = module,
-                        .bucket_next = x->shader_buckets[bucket]};
-    x->shader_buckets[bucket] = (uint32_t)x->shader_count;
+                        .bucket_next = x->shader_buckets[bucket], .used_ticket = x->submitted + 1, .used_call = x->call_serial};
+    x->shader_buckets[bucket] = (uint32_t)(slot + 1);
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;

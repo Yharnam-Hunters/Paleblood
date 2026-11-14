@@ -2,6 +2,8 @@ address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
 0x00464b90,215,loading_stdio_stream_open,loading,verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
 0x00466810,19,frame_timing_posix_sleep_ms,frame_timing,edge-verified,Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true
+0x00829a90,33,loading_allocator_free_headed_00829a90,loading,edge-verified,"Frees a block with a 16-byte header before its data: clears the header word, sized free of header and size+0x10 (32-bit); null ignored"
+0x00836840,70,loading_tagged_string_release_00836840,loading,edge-verified,Tagged string word: below 2 left alone; odd frees word-1 through the thread allocator (0x00829a90); then cleared
 0x0083d4d0,237,camera_transform_matrix_0083d4d0,camera,edge-verified,"4x4 transform from position, rotation quaternion and per-axis scale: quaternion rows times the diagonal scale, position last, affine w lanes"
 0x00848e80,354,camera_axis_angle_quaternion_00848e80,camera,edge-verified,"Quaternion (axis * sin(angle/2), cos(angle/2)) from the octant sine/cosine polynomial, clamped to 1 (NaN angle gives 1)"
 0x0084d5a0,158,loading_fios_directory_delete,loading,edge-verified,"FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator"
@@ -183,7 +185,7 @@ address,size,name,system,status,notes
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
 0x016243a0,74,ai_character_negated_third_column,ai,edge-verified,"AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character"
 0x01624760,35,ai_character_id,ai,edge-verified,"AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character"
-0x01624e50,109,ai_character_flag_module_set,ai,edge-verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
+0x01624e50,109,ai_character_flag_module_set,ai,verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
 0x0162d840,897,ai_target_speed_record_update,ai,edge-verified,"Target speed record: 30-sample ring of the followed target's speed along the line to the character, weighted average"
 0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
 0x01657b20,90,ai_func_get_random_int,ai,edge-verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
@@ -198,7 +200,7 @@ address,size,name,system,status,notes
 0x0165b010,28,ai_func_is_finish_timer,ai,edge-verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
 0x0165b030,26,ai_func_get_number,ai,edge-verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
 0x0165baf0,22,ai_func_is_battle_state,ai,edge-verified,AI script binding IsBattleState: perception target state == 3 (battle)
-0x0165bb10,27,ai_func_is_change_state,ai,edge-verified,AI script binding IsChangeState: target state differs from last frame's
+0x0165bb10,27,ai_func_is_change_state,ai,verified,AI script binding IsChangeState: target state differs from last frame's
 0x0165bb30,22,ai_func_is_caution_state,ai,edge-verified,AI script binding IsCautionState: perception target state == 1 (caution)
 0x0165bb50,22,ai_func_is_find_state,ai,edge-verified,AI script binding IsFindState: perception target state == 2 (find)
 0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
@@ -212,13 +214,13 @@ address,size,name,system,status,notes
 0x0167f880,26,ai_goal_func_get_number,ai,edge-verified,"AI goal script binding GetNumber: goal script number 0..63, 0.0 above"
 0x01693850,1175,ai_is_inside_direction,ai,edge-verified,"Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series)"
 0x0169acf0,114,ai_character_has_effect_state,ai,edge-verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
-0x0169ad80,134,ai_character_gather_effect_states,ai,edge-verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
+0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,edge-verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
-0x0169fad0,155,ai_character_link_ids,ai,edge-verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
+0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
 0x016ad400,287,ai_perception_target_visible,ai,edge-verified,"Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11"
 0x016b30a0,368,ai_target_list_mark_main_matches,ai,verified,"Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
-0x01708410,168,ai_pending_event_fire,ai,edge-verified,"Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index"
+0x01708410,168,ai_pending_event_fire,ai,verified,"Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index"
 0x017cfcc0,177,event_flag_write,event,verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183ac60,20077,camera_update_follow,camera,edge-verified,"Updates subject-relative camera position and orientation through input; chase; collision avoidance and territory constraints; applies selected frame-rate gains"
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
@@ -279,6 +281,8 @@ address,size,name,system,status,notes
 0x02232a60,104,ai_draw_layer_color_02232a60,ai,edge-verified,"Draw colour callback: default (0x04d17e50) when the requested mask is 0, else the mean of palette 0x04b35040 colours for bits 0-19 set in both masks, alpha 1"
 0x02265170,243,frame_timing_pass_on_in_local_mode_02265170,frame_timing,edge-verified,"Gate handle pass-on in the local modes: when FrpgNetMan's four bytes allow it, a request from its object at +0xca8 gets the handle and kind (0x02269d40); else the handle's +0x11c/+0x120 are set to 2"
 0x02265290,470,frame_timing_lookup_session_object_02265290,frame_timing,edge-verified,"Finds the entry for an id in FrpgNetMan's object's list (else allocates, builds and appends one), gives it to a new request and stores it with a reference; null when FrpgNetMan's bytes refuse"
+0x02265580,563,frame_timing_create_handle_from_levels_02265580,frame_timing,edge-verified,"When FrpgNetMan allows: makes a date-stamped handle (0x130 bytes), lists it at FrpgNetMan+0xca8, starts a new entry with it and the four flag levels, returns a reference; else null"
+0x02265960,116,frame_timing_pass_on_in_server_mode_02265960,frame_timing,edge-verified,"Gate handle pass-on in the server modes: when the handle is set, makes a request from FrpgNetMan's object at +0xca8 (0x02264640) and gives it the handle and kind (0x02269e30); false otherwise"
 0x02311c80,283,param_find_row_equip_param_accessory,param,edge-verified,SoloParamRepository row lookup for EquipParamAccessory (type 2): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02311da0,284,param_row_name_equip_param_accessory,param,edge-verified,SoloParamRepository row name lookup for EquipParamAccessory (type 2): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x02312070,309,param_next_row_id_equip_param_accessory,param,edge-verified,SoloParamRepository id of the row after id in EquipParamAccessory (type 2) file order; negative id: first row; -1 when none
@@ -354,6 +358,7 @@ address,size,name,system,status,notes
 0x0231f460,283,param_find_row_hit_mtrl,param,edge-verified,SoloParamRepository row lookup for HitMtrlParam (type 35): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231f720,283,param_find_row_holygrail_ex,param,edge-verified,SoloParamRepository row lookup for HolygrailExParam (type 52): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231f840,284,param_row_name_holygrail_ex,param,edge-verified,SoloParamRepository row name lookup for HolygrailExParam (type 52): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231fbc0,371,frame_timing_fill_creation_part1_0231fbc0,frame_timing,edge-verified,"Packs a decimal number (the record word at +0x18, or one built from its +2 value and +5 count when negative) as four two-digit bytes; all ones without a record"
 0x0231ff00,96,param_row_count_holygrail_ex,param,edge-verified,SoloParamRepository row count of HolygrailExParam (type 52); 0 when not loaded
 0x0231ff70,168,param_holygrail_ex_row_number,param,edge-verified,SoloParamRepository HolygrailExParam (type 52): index row number of a lookup id; -1 when none
 0x02320020,212,param_find_row_number_holygrail_ex,param,edge-verified,SoloParamRepository HolygrailExParam (type 52): row number n looked up again by its id
@@ -572,6 +577,8 @@ address,size,name,system,status,notes
 0x024bcfe0,89,loading_result_copy_024bcfe0,loading,edge-verified,"Load result base copy constructor: vtable, request words cleared then copied, code and word"
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bd310,65,loading_resource_handle_assign_024bd310,loading,edge-verified,"Resource handle assignment: unless the infos match, drops the old info reference, takes the source info and adds a reference; returns the handle"
+0x024bd470,28,loading_resource_handle_construct_024bd470,loading,edge-verified,"Base resource handle constructor: stores its vtable and the info, takes a reference (0x02a3a300) when the info is not null"
+0x024bd4c0,25,loading_resource_handle_destroy_024bd4c0,loading,edge-verified,"Base resource handle destructor: stores its vtable, releases the info (0x024bd930) when not null"
 0x024bd930,249,loading_resource_info_release_024bd930,loading,edge-verified,DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls"
 0x024be250,343,loading_load_request_construct_024be250,loading,edge-verified,resource load request base constructor: clear words; keep the third argument at +0x20; name string on the request heap (heap check) from wcslen; tail via 0x024be8e0
@@ -588,6 +595,7 @@ address,size,name,system,status,notes
 0x024d8210,605,loading_file_task_prepare_024d8210,loading,edge-verified,FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks)
 0x024d8470,755,loading_file_task_begin_read_024d8470,loading,edge-verified,FileTransferTask read start: build the 0xb0-byte read request and queue it to the task reader under its lock; close status 3 for a held read object or info read flag bit 0
 0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,edge-verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
+0x024dd8a0,40,loading_transfer_task_cancel_024dd8a0,loading,edge-verified,Atomically sets bit 0 (and bit 1 with the flag) of the state at +0x160 unless bit 2 is set; returns true
 0x024dde50,200,loading_transfer_task_check_read_024dde50,loading,edge-verified,TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4
 0x024ddf20,190,loading_transfer_task_check_close_024ddf20,loading,edge-verified,TransferTask close step: free read object; closed and not cancelled -> request close; else finish once
 0x024de230,116,loading_memory_stream_read_024de230,loading,edge-verified,VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20
