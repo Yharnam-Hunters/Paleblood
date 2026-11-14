@@ -122,9 +122,18 @@ static void *submit_ahead(void *count)
     return NULL;
 }
 
-static int returned_after(int milliseconds)
+/* The submits that returned once `count` have, or once `seconds` have passed (a loaded machine may
+   take a long time to run the submitting thread at all), and then `settle_ms` more: a bound that let
+   more through shows in the settle time, however late the first ones came. */
+static int returned_settled(int count, int seconds, int settle_ms)
 {
-    const struct timespec pause = {0, milliseconds * 1000000L};
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += seconds;
+    pthread_mutex_lock(&step_lock);
+    while (lag_returned < count && pthread_cond_timedwait(&step_changed, &step_lock, &deadline) == 0) {}
+    pthread_mutex_unlock(&step_lock);
+    const struct timespec pause = {settle_ms / 1000, settle_ms % 1000 * 1000000L};
     nanosleep(&pause, NULL);
     pthread_mutex_lock(&step_lock);
     const int n = lag_returned;
@@ -327,8 +336,10 @@ int main(void)
 
     /* Submissions run at most LAG_LIMIT buffers ahead of the renderer's thread: with it held in a step
        (gate), the first LAG_LIMIT submits after the gated one return and the next waits until the gate
-       opens. A wait step (holds) does not hold submissions: one waiting for memory the submitting thread
-       writes only after more than LAG_LIMIT further submits still ends. */
+       opens (counted once LAG_LIMIT have returned and a while after, not at a fixed time: under load the
+       submitting thread was late and the count came short). A wait step (holds) does not hold
+       submissions: one waiting for memory the submitting thread writes only after more than LAG_LIMIT
+       further submits still ends. */
     {
         step_count = 0, gate_open = 0, lag_returned = 0, lag_flag = 0;
         const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {30}, 0, NULL};
@@ -336,7 +347,7 @@ int main(void)
         int count = LAG_LIMIT + 2;
         pthread_t thread;
         CHECK(pthread_create(&thread, NULL, submit_ahead, &count) == 0);
-        const int held = returned_after(300);
+        const int held = returned_settled(LAG_LIMIT, 30, 500);
         if (held != LAG_LIMIT) fprintf(stderr, "lag: %d submits returned while the renderer was held\n", held);
         CHECK(held == LAG_LIMIT);
         pthread_mutex_lock(&step_lock);
