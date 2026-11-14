@@ -1078,6 +1078,31 @@ target again at every submitted buffer.
    target or image loads again only when its span changed since its last load, instead of at
    every submitted buffer and after every dispatch.
 
+### Device-local twins: tried, slower (November 2026)
+
+Before the whole mirror, a smaller step was tried on a local branch: device-local copies ("twins")
+of only the 64 KB chunks the shaders read. Each translated guest load looked its chunk up in a
+device-local table and read the twin when there was one (else marked the chunk wanted); stores and
+atomics went to both copies; the CPU's writes (the write watch) and the executor's own writes
+(write-backs, fills) copied the twins again. Steps the renderer performs in the GPU's place (a
+constant engine dump, a WRITE_DATA, a DMA copy) reported the memory they wrote, and a twin the CPU
+wrote in 3 frames of 60 was dropped and held off for a while (LanternEngine's
+`memory_model_fps_sink.md` rule for its 64 KiB blocks, as facts). bbhost's twins, whose particle
+result suggested this, are found at each buffer binding, on the CPU (its `docs/rendering.md`), not
+by a lookup in every access.
+
+Measured in Iosefka's Clinic with `tools/ab_bench.py` (two rounds each, 60 s settle then 180 s from
+frame 800, the same save; main at 875e3995 against the twins branch on fc89c005 (the commits between add two small game-function replacements), both with the same local input
+driver): main 7.99 and 7.80 fps, twins 5.16 and 5.15 fps; the 2.74 fps difference is far beyond the
+noise floor (0.20 fps). Other programs kept CPUs busy during every window (medians of 3-4 CPUs,
+peaks of 6-12), over the tool's default limit; the difference is large enough to stand anyway. The twins' own copies were small
+(500-730 chunks, 30-45 MB, and 80-140 drops per 60 frames, with about 2,700 of the pool's 2,970
+slots in use), so the cost is most likely the per-access table lookup in every shader's loads and the doubled
+stores, not the uploads. An earlier version that collected all of the CPU's writes after every
+step was slower still. The branch is kept unmerged. A mirror for read-mostly memory needs a fixed
+offset (one device-local buffer for the whole span, step 1 above, or per-buffer device-local
+bindings), not a lookup per access.
+
 ### Tests for each step
 
 - A CPU write after a GPU write: the next draw sees the CPU's bytes.
