@@ -321,7 +321,8 @@ typedef struct {
    (they stop the run). */
 typedef struct {
     uint64_t code, callee;
-    int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan, 3 the read scan */
+    int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan, 3 the read scan,
+                                        4 the memory-write scan (count: 1 when the program writes memory) */
     int unknown;                     /* the buffer-store scan: some store's descriptor has no known origin; the read scan: some load's */
     uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
     size_t dwords, callee_dwords;
@@ -612,6 +613,14 @@ struct rt_executor {
     unsigned next_snapshot;
     unsigned current;
     int batch_open;
+    /* Draws in a row share a render pass and need no barrier between them (draw): open_pass is the
+       render pass the open batch is inside (VK_NULL_HANDLE outside one), and draws_synced is 1 while
+       nothing but draws that store no memory has been recorded since a draw's barrier made earlier
+       work visible to draws. Every other recording goes through batch_commands or commands_outside_pass,
+       which leave the pass and clear draws_synced. */
+    VkRenderPass open_pass;
+    VkFramebuffer open_framebuffer;
+    int draws_synced;
     VkSemaphore timeline;
     uint64_t submitted;
     uint64_t call_serial;            /* counts the draws and dispatches recorded (an image they use stays) */
@@ -1723,6 +1732,15 @@ static int slot_retire(rt_executor *x, batch_slot *b, char *error, size_t error_
     return check_stop_words(x, error, error_size);
 }
 
+/* The open batch's command buffer for work other than a draw: outside the render pass the last draws
+   left open, with the draws that follow ordered after this work by their barrier (draws_synced). */
+static VkCommandBuffer commands_outside_pass(rt_executor *x, batch_slot *b)
+{
+    if (x->open_pass) vkCmdEndRenderPass(b->commands);
+    x->open_pass = VK_NULL_HANDLE, x->open_framebuffer = VK_NULL_HANDLE, x->draws_synced = 0;
+    return b->commands;
+}
+
 /* The open batch, begun on first use in the next slot (which waits for that slot's earlier batch
    to have run); NULL when it cannot begin. */
 static batch_slot *open_batch(rt_executor *x, char *error, size_t error_size)
@@ -1747,7 +1765,7 @@ static VkCommandBuffer batch_commands(rt_executor *x, char *error, size_t error_
     char reason[256];
     batch_slot *b = open_batch(x, reason, sizeof reason);
     if (!b) failed(error, error_size, "no command buffer: %s", reason);
-    return b ? b->commands : VK_NULL_HANDLE;
+    return b ? commands_outside_pass(x, b) : VK_NULL_HANDLE;
 }
 
 /* Submits the open batch without waiting for it: its writes reach guest memory (visible to the CPU)
@@ -1757,6 +1775,7 @@ static int batch_submit(rt_executor *x, char *error, size_t error_size)
     if (!x->batch_open) return 0;
     x->batch_open = 0;
     batch_slot *b = &x->slots[x->current];
+    commands_outside_pass(x, b);
     const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
                                      .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(b->commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
@@ -3071,8 +3090,19 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
     pass_entry *p = &x->passes[x->pass_count];
     *p = (pass_entry){.depth = z};
     memcpy(p->color, c, sizeof c);
+    /* The targets' writes by earlier passes come before this pass's reads and writes of them: draws in a
+       row go without a barrier between them (draw), and without this the implicit dependency on what
+       came before orders nothing (the Vulkan specification's render pass chapter, "implicit subpass
+       dependency"). */
+    const VkPipelineStageFlags attachment_stages =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    const VkSubpassDependency earlier_passes = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0, .srcStageMask = attachment_stages, .dstStageMask = attachment_stages,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
     const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = count, .pAttachments = attachments,
-                                         .subpassCount = 1, .pSubpasses = &subpass};
+                                         .subpassCount = 1, .pSubpasses = &subpass, .dependencyCount = 1, .pDependencies = &earlier_passes};
     const uint32_t width = first ? first->width : depth->width, height = first ? first->height : depth->height;
     if (vkCreateRenderPass(x->device, &pass, NULL, &p->pass) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a render pass");
@@ -4039,6 +4069,46 @@ static int geometry_passes(rt_executor *x, VkCommandBuffer commands, const draw_
     return 0;
 }
 
+static scan_entry *scan_for(rt_executor *x, uint64_t code, uint64_t callee, int samplers);
+static void scan_keep(rt_executor *x, scan_entry *e, unsigned count, const gcn_image_resource *images, const gcn_resource_origin *samplers);
+
+/* Whether a program may write memory: a buffer, image, flat or GDS instruction that stores or is atomic
+   (an atomic writes too), by name. The answer is kept with the program's scans (kind 4). 0 with *writes,
+   or -1 with the reason. */
+static int program_writes_memory(rt_executor *x, const char *stage, uint64_t code, int *writes, char *error, size_t error_size)
+{
+    scan_entry *scan = scan_for(x, code, 0, 4);
+    if (scan && scan->used) {
+        *writes = scan->count != 0;
+        return 0;
+    }
+    const uint32_t *words = (const uint32_t *)(uintptr_t)code;
+    const long program = gcn_program_dwords(words, (size_t)((x->guest_base + x->size - code) / 4));
+    if (program < 0) return failed(error, error_size, "%s shader at %#llx: no program end found", stage, (unsigned long long)code);
+    *writes = 0;
+    for (long at = 0; at < program && !*writes;) {
+        gcn_instruction ins;
+        if (gcn_decode(words + at, (size_t)(program - at), &ins) || !ins.name)
+            return failed(error, error_size, "%s shader at %#llx, dword %ld: an instruction the decoder cannot name", stage, (unsigned long long)code,
+                          at);
+        const int memory = ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF || ins.encoding == GCN_MIMG || ins.encoding == GCN_FLAT;
+        const int gds = ins.encoding == GCN_DS && (!strcmp(ins.name, "ds_append") || !strcmp(ins.name, "ds_consume") || strstr(ins.name, "gws"));
+        *writes = (memory && (strstr(ins.name, "store") || strstr(ins.name, "atomic"))) || gds;
+        at += ins.dwords;
+    }
+    if (scan) scan_keep(x, scan, (unsigned)*writes, NULL, NULL);
+    return 0;
+}
+
+/* Whether a draw's shaders may write memory (program_writes_memory): its vertex shader (a fetch shader
+   it calls only loads) and its pixel shader. 0 with *stores, or -1 with the reason. */
+static int draw_stores(rt_executor *x, const draw_state *s, int depth_only, int *stores, char *error, size_t error_size)
+{
+    if (program_writes_memory(x, "vertex", s->vertex.code, stores, error, error_size)) return -1;
+    if (*stores || depth_only) return 0;
+    return program_writes_memory(x, "pixel", s->pixel.code, stores, error, error_size);
+}
+
 /* A draw of index_count vertices (indices, when given, index them), or, with `indirect` not 0, of the
    counts in guest memory there (draw_indirect_arguments). */
 static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uint32_t colours, uint32_t index_count, const index_range *indices,
@@ -4196,19 +4266,29 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                              vertex_image_count, &set, error, error_size))
         return -1;
 
-    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    int stores = 0;
+    if (draw_stores(x, s, depth_only, &stores, error, error_size)) return -1;
+    /* Since the last draw's barrier only draws that store nothing were recorded: what earlier work wrote
+       is visible to this draw already, and a draw into the same targets goes on in the same render pass
+       (its targets' accesses are in order there; across passes the pass's dependency orders them). A
+       draw that records work of its own first (indirect arguments, the tessellation and geometry
+       passes) leaves the pass and takes the barrier. */
+    const int synced = x->draws_synced && !indirect && !tess && !gs;
+    const int same_pass = synced && x->open_pass == render_pass && x->open_framebuffer == framebuffer;
+    VkCommandBuffer commands = same_pass ? x->slots[x->current].commands : batch_commands(x, error, error_size);
     if (!commands) return -1;
     const int64_t indirect_entry = indirect ? draw_indirect_arguments(x, commands, indirect, error, error_size) : 0;
     if (indirect_entry < 0) return -1;
     /* what earlier work wrote (images, guest memory, the indirect arguments) is visible to this draw */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT};
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | (tess ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                                                                                 VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT : 0) |
-                             (gs ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0),
-                         0, 1, &earlier, 0, NULL, 0, NULL);
+    if (!synced)
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | (tess ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                                                                     VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT : 0) |
+                                 (gs ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0),
+                             0, 1, &earlier, 0, NULL, 0, NULL);
     VkDeviceSize strip_draw = 0; /* the strips' draw in the batch's indirect buffer (geometry_passes) */
     if (tess || gs) { /* an indexed draw's indices are read by the local or export pass, at their GPU address */
         const uint64_t index_address = indices ? x->guest_base + indices->offset + x->address_offset : 0;
@@ -4219,7 +4299,10 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     }
     const VkRenderPassBeginInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = render_pass,
                                         .framebuffer = framebuffer, .renderArea = {{0, 0}, {width, height}}};
-    vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    if (!same_pass) {
+        vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        x->open_pass = render_pass, x->open_framebuffer = framebuffer;
+    }
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const float sx = s->viewport_scale[0], sy = s->viewport_scale[1], sz = s->viewport_scale[2];
     const float tx = s->viewport_translate[0], ty = s->viewport_translate[1], tz = s->viewport_translate[2];
@@ -4262,7 +4345,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     } else {
         vkCmdDraw(commands, index_count, instances, 0, 0);
     }
-    vkCmdEndRenderPass(commands);
+    x->draws_synced = !stores && !tess && !gs; /* the pass stays open for the next draw (commands_outside_pass ends it) */
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
         if (targets[slot]) target_drawn(x, targets[slot]);
     if (z && plan_writes(plan)) depth_drawn(x, z);
@@ -4578,7 +4661,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     const VkDeviceSize linear_bytes = (VkDeviceSize)columns * rows * e->layers * bytes;
     if (staging_ready(x, &b->upload, linear_bytes)) return failed(error, error_size, "no staging memory for a %ux%u image", e->width, rows);
     rt_tiling_detile(&layout, guest, b->upload.mapped, columns, rows, e->layers);
-    VkCommandBuffer commands = b->commands;
+    VkCommandBuffer commands = commands_outside_pass(x, b);
     /* the image stays in the general layout; earlier work on it finishes before the copy, and the copy
        before later work */
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
@@ -4682,7 +4765,7 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
                                         .imageExtent = {level_width, level_height, 1}};
         at += (VkDeviceSize)levels[m].columns * levels[m].rows * e->layers * bytes;
     }
-    VkCommandBuffer commands = b->commands;
+    VkCommandBuffer commands = commands_outside_pass(x, b);
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
