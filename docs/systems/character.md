@@ -72,7 +72,7 @@ the other per-frame updates.
 | `0x01e59250` | 477 | `character_event_request_update_01e59250` | edge-verified | Chr modules +0x58: fires the pending numbered event (formatted wide string on the thread heap) unless suppressed, clears it, and clears chr +0x20 field +4 for one record id |
 | `0x01e5c440` | 282 | `character_counters_refill_01e5c440` | edge-verified | Stepped module: five counters gain a global per-second rate * frame time each (fractions carried, truncation), clamped to 0..their maximum |
 | `0x01e88da0` | 242 | `character_gaitem_resolve_handle_01e88da0` | verified | SprjGaitem handle resolve through the manager's index table (slot handle; zero when out of range); reports a missing table / busy / not ready and goes on |
-| `0x01e8bae0` | 132 | `character_gaitem_handle_copy_01e8bae0` | edge-verified | SprjGaitem handle copy: one more reference on the live slot it names (bit 23 managed, low 16 bits slot index) |
+| `0x01e8bae0` | 132 | `character_gaitem_handle_copy_01e8bae0` | verified | SprjGaitem handle copy: one more reference on the live slot it names (bit 23 managed, low 16 bits slot index) |
 | `0x01e8bb70` | 132 | `character_gaitem_handle_copy_01e8bb70` | verified | SprjGaitem handle copy, second copy of the same code |
 | `0x01e8bc00` | 164 | `character_gaitem_handle_release_01e8bc00` | verified | SprjGaitem handle release: one reference less on its live slot; the last frees the item (0x01e86e60) |
 | `0x01e8bcb0` | 202 | `character_gaitem_handle_move_assign_01e8bcb0` | verified | SprjGaitem handle move assignment: releases the old handle, takes the source's, clears the source |

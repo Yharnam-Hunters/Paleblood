@@ -252,6 +252,8 @@ def bin_free_cases():
     return [
         c('neighbours_allocated', 'l', 1, low=[(1, 'u'), (4, 'u'), (1, 'u')]),
         c('neighbours_allocated_bin_nonempty', 'l', 1, low=[(1, 'u'), (4, 'u'), (1, 'u'), (4, 'f'), (1, 'u')]),
+        c('neighbours_allocated_bin_two', 'l', 1,
+          low=[(1, 'u'), (4, 'u'), (1, 'u'), (4, 'f'), (1, 'u'), (4, 'f'), (1, 'u')]),
         c('one_unit', 'l', 1, low=[(1, 'u'), (1, 'u'), (1, 'u')]),
         c('two_units', 'l', 1, low=[(1, 'u'), (2, 'u'), (1, 'u')]),
         c('six_units', 'l', 1, low=[(1, 'u'), (6, 'u'), (1, 'u')]),

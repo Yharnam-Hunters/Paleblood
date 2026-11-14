@@ -65,6 +65,8 @@ static int install_family_hooks(const rt_host *host)
 {
     if (!game_family_hooks || !&game_family_hook_count || rt_capture_original_mode())
         return 0;
+    /* Before the members are overwritten: traced calls follow their original code. */
+    rt_capture_families_prepare(host->image, host->image_size, game_family_hooks, game_family_hook_count);
     unsigned installed = 0, skipped_count = 0;
     for (unsigned i = 0; i < game_family_hook_count; i++) {
         const rt_family_hook *h = &game_family_hooks[i];

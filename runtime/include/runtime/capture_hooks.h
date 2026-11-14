@@ -21,6 +21,14 @@ extern "C" {
 int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt_hook_entry *table, size_t count,
                              const void **targets);
 
+/* Called after rt_capture_hooks_prepare and before the family hooks are installed, while the
+   members are intact: copies each member's original code, so a traced call that reaches a member
+   runs (and records) the game's own code there instead of leaving the traced code for the shared
+   native replacement. Untraced calls still reach the replacement. Returns how many members a
+   trace can follow (0 when nothing is recorded or with BB_CAPTURE_ORIGINAL=1, where the members
+   are not hooked). */
+int rt_capture_families_prepare(unsigned char *image, uint64_t image_size, const rt_family_hook *table, size_t count);
+
 /* Capture is on with BB_CAPTURE_ORIGINAL=1: only originals run (family hooks are left out too). */
 int rt_capture_original_mode(void);
 
