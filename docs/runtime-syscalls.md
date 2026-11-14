@@ -1028,6 +1028,40 @@ python3 tools/boot.py --no-record --display headless --input-script "45:down,47:
 A malformed event, an unknown control, a hold on the other clock, more than 256 events or a script
 file over 64 KiB is refused before the boot, naming the event.
 
+**Walks: closed-loop driving.** Timed stick presses drift from run to run (a slower frame, a door
+that opens later), so a route walked on a clock ends against a wall. A walk steers instead, from
+where the game says the character is:
+
+```
+20:walk -10 4.5 within 1.5 every 6*90    # towards (-10, 4.5) until within 1.5, at most 90 s
++1:cross                                 # 1 s after that walk finished: open the door there
++3:walk -12 0                            # 3 s later, the next leg
+```
+
+- `walk X Z [within R] [every N]` pushes the left stick at full deflection towards the ground
+  position (X, Z), re-aiming every N presented frames (default 6), until the character is within R
+  (default 1, the game's units). `*LIMIT` is the walk's time limit (default 60 s or 600 frames); a
+  walk that reaches it gives up and the script goes on.
+- Walks run in script order: a walk starts at its `WHEN`, or when the walk before it finished if
+  that is later. `+SECONDS` as `WHEN` counts from the end of the walk before the event, so presses
+  that belong to a place (a door, a lever) follow the walk that leads there.
+- The stick is camera-relative and the walk is not told the camera: each aim it compares the
+  stick's direction with the way the character actually moved since the last aim, and corrects
+  for the difference (headings are `atan2(dx, dz)`, the stick's angle clockwise from up). A walk
+  starts from what the walk before it learned. A
+  character that moved less than 0.2 in an aim is stuck: the walk sidesteps 60, 120, then 180
+  degrees off the target's direction, alternating sides, three aims each, until the character is 1
+  closer to the target than it has been.
+- The position comes from the game library: pbboot looks up `bbgame_player_position` (`int
+  (float position[3])`, 0 with X, Y, Z or nonzero when there is no character) after loading it,
+  and refuses a script with a walk when the library has none. This game's is
+  `game/input/player_position.cpp`. While it reports no character, the walk waits with the stick
+  at rest.
+
+pbboot logs each walk's start, every sidestep, its arrival or giving up, and the character's
+position every tenth aim (`pbboot: input script: walk 1: arrived at (-9.42, 4.10), 0.70 from the
+target, at 61.20 s, frame 812`), so a route's legs can be tuned from one run's log.
+
 Fields the executable does not read are left zero. **Not modelled:** motion. The accelerometer
 and gyroscope are not forwarded, because the units and axes the system reports them in are not
 established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
@@ -1937,7 +1971,9 @@ holding no attribute is `EINVAL`.
 
 The title's saves live in the host folder given to `pbboot --savedata`. `tools/boot.py` gives
 each run a new empty one, so boots start alike, unless `--savedata DIR` names a folder to keep
-them in. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
+them in. `--savedata-from DIR` (with `--no-record`) starts the new folder as a copy of a checkpoint
+in the runtime's layout (`<user id>/<directory>/`, below), which the run never changes: a boot can
+load a save the game wrote in an earlier run and start where it left off. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
 the same file calls as `/app0` and `/data`, read-only or writable as mounted.
 
 **Sources.** shadPS4's `libSceSaveData` (`savedata.cpp`, `savedata.h`, `savedata_error.h`,
@@ -2606,3 +2642,15 @@ metadata.
 - [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
 - [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's
 - FreeBSD 9.0 [`mkdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`rmdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2); FreeBSD [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9) (stable/9 and main: `kern_mkdirat` and its mode, `kern_rmdirat`/`kern_frmdirat`, `kern_unlinkat`/`kern_funlinkat` and `EPERM` for a directory) and [`vfs_lookup.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_lookup.c?h=stable/9) (stable/9 and main: the read-only checks and the `.` check, and their order); [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) and [`_types/kernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h) (`OrbisKernelMode`) for the shapes
+
+## Occlusion query counts (Gnm, a stand-in)
+
+The game's occlusion queries reach the command processor as `EVENT_WRITE` packets with the `ZPASS_DONE`
+index: `PIXEL_PIPE_STAT_CONTROL` before each dump, then `PIXEL_PIPE_STAT_DUMP` with an address, where the
+GPU stores each of its 8 depth blocks' running count of samples that passed the depth test (a 64-bit begin
+and end pair per block, bit 63 the valid bit; the game sums end - begin). `runtime/syslib/gnm.c` skips the
+control event and, for a dump, stores an invented running count (0x10000 more per dump, the same in every
+block, valid bit set), so **every query reads visible**. This is a stand-in, not the GPU's behavior: real
+counts need Vulkan occlusion queries over the draws between two dumps, copied into the game's 8-block
+layout (follow-up). Until then, anything the game decides from visibility (flares, culling of hidden
+objects) behaves as if everything were visible.

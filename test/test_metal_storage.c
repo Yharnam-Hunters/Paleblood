@@ -33,7 +33,7 @@ static World open_world(void)
     unsigned char *pool = mmap(NULL,POOL,PROT_READ | PROT_WRITE,MAP_SHARED,fd,0);
     if (pool == MAP_FAILED) exit(1);
     memset(pool,CANARY,POOL);
-    rt_executor_memory memory = {fd,POOL,guest_base,NULL}; rt_executor *executor = NULL;
+    rt_executor_memory memory = {.fd = fd, .size = POOL, .guest_base = guest_base}; rt_executor *executor = NULL;
     if (rt_executor_open(&memory,&executor,error,sizeof error)) { fprintf(stderr,"open: %s\n",error); exit(1); }
     CHECK(close(fd) == 0); return (World){pool,executor,16,RT_STAGE_COMPUTE};
 }
@@ -327,8 +327,17 @@ static void slots_and_bounds(void)
     rt_image_descriptor d; rt_tiling layout = layout_for(user + 8,&d); const size_t span = (size_t)rt_tiling_size(&layout,1);
     unsigned char *before = malloc(span); if (!before) exit(1); memcpy(before,world.pool + IMAGE,span); user[6] = WIDTH;
     execute(&world,storage_store_2d,sizeof storage_store_2d,user,1,0xffff,NULL); CHECK(memcmp(world.pool + IMAGE,before,span) == 0); free(before);
-    buffer_descriptor(user,OUTPUT); execute(&world,storage_load_2d,sizeof storage_load_2d,user,1,0xffff,"image access is outside");
-    user[6] = 0; const unsigned offset = POOL - (unsigned)span;
+    /* An out-of-view R32 load substitutes zero RGB and unit alpha, without touching the output tail. */
+    buffer_descriptor(user,OUTPUT);
+    if (!execute(&world,storage_load_2d,sizeof storage_load_2d,user,1,0xffff,NULL)) {
+        const uint32_t *actual = (const uint32_t *)(world.pool + OUTPUT);
+        for (unsigned i = 0; i < 64; ++i)
+            CHECK(actual[i] == (i == 3 ? bits(1) : i < 4 ? 0 : 0xa5a5a5a5u));
+    }
+    user[6] = 0;
+    if (!execute(&world,storage_load_2d,sizeof storage_load_2d,user,1,0xffff,NULL))
+        check_load(&world,formats + 2,&d,&layout,0,0,0,1);
+    const unsigned offset = POOL - (unsigned)span;
     image_descriptor(user + 8,formats + 2,RT_IMAGE_2D,31,offset); layout = layout_for(user + 8,&d); fill_image(&world,formats + 2,&d,&layout,9);
     if (!execute(&world,storage_load_2d,sizeof storage_load_2d,user,1,0xffff,NULL)) check_load(&world,formats + 2,&d,&layout,0,0,0,1);
     user[8] += 1; execute(&world,storage_load_2d,sizeof storage_load_2d,user,1,0xffff,"compute image is outside");
