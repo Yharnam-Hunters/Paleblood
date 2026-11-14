@@ -704,12 +704,16 @@ Instead:
           At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
           Once the target is written back, an image that took its texels since its last draw stays loaded
           (its memory changed in no other way since the copy) instead of loading the same bytes again.
-        - **Depth straight to images:** a 32-bit image over a depth target's depth drawn since its
+        - **Depth straight to images:** an image of the depth's texel size (32 bits for Z_32_FLOAT, 16
+          for Z_16) over a depth target's depth drawn since its
           write-back (the same address, tiling index and pitch, slice 0; 2D, one level and layer; no other
           unwritten target over it) takes the depth on the GPU through the depth target's linear rows
           (`image_from_depth`) instead of a write-back and a load, again after the depth's next draws. In
           Iosefka's Clinic that was about two depth write-backs and loads a frame, some 35 MB each way
           through host memory. bbhost and shadPS4 copy depth into an R32 image on the GPU too (facts only).
+          Both depth formats are written back to memory the same way, 2 or 4 bytes a texel; the clinic
+          beast's encounter reads a 512x512 Z_16 depth as a 16-bit unorm image, which
+          stopped by name while only 32-bit depth was handled.
         - **Compute fills on the target:** the game clears render targets with a compute program that
           stores one value from a constant buffer into every element of a buffer descriptor spanning the
           target's memory (compute shader `0x20d1b00500`, about ten a frame in Iosefka's Clinic). Each

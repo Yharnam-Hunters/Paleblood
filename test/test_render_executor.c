@@ -2029,6 +2029,47 @@ static void depth_and_strips(rt_executor *x)
         CHECK(draw_texels(x, at(WB_SAMPLED), image, error, sizeof error) == -1 && strstr(error, "also a depth target"));
 #undef WB_TARGET
     }
+    /* A 16-bit depth target (Z_16, no stencil, no HTILE) written back the same way, 2 bytes a texel, and read
+       as a 16-bit unorm image of its layout, as the clinic beast's encounter reads one: a draw writing the triangle's
+       depth (0) leaves 0 under the triangle; elsewhere the memory holds the depth image's other texels, no
+       longer the 0x5a bytes; each sampled pixel's red is the depth under it. */
+    {
+        enum { Z16 = 0x2d80000, Z16_COLOUR = 0x2de0000, Z16_SAMPLED = 0x2dc0000, Z16_SIZE = 256, DATA_16 = 2, NUM_UNORM = 0 };
+        const uint32_t wz = (uint32_t)(at(Z16) >> 8), z16_size = (Z16_SIZE / 8 - 1) | (Z16_SIZE / 8 - 1) << 11;
+        uint16_t *depth = (uint16_t *)(uintptr_t)at(Z16);
+        memset(depth, 0x5a, Z16_SIZE * Z16_SIZE * 2);
+        const uint32_t write_depth[][2] = {{0xa010, 0x80000001}, {0xa011, 0}, {0xa012, wz}, {0xa014, wz}, {0xa016, z16_size}, {0xa017, 0},
+                                           {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(Z16_COLOUR), write_depth, 8, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "16-bit depth write-back: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t image[8];
+        image_descriptor(image, at(Z16), DATA_16, NUM_UNORM, Z16_SIZE, Z16_SIZE);
+        image[3] = (image[3] & ~0xfffu) | (4 | 0 << 3 | 0 << 6 | 1 << 9); /* x, 0, 0, 1; tiling index 0 */
+        drawn = draw_texels(x, at(Z16_SAMPLED), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "16-bit depth read as an image: %s\n", error);
+        CHECK(drawn == 0);
+        rt_tiling layout;
+        char reason[160];
+        CHECK(rt_tiling_layout(0, 2, Z16_SIZE, Z16_SIZE, &layout, reason, sizeof reason) == 0);
+        int zeros = 1;
+        for (unsigned i = 0; i < 16 * 16; i++)
+            zeros &= *(const uint16_t *)((const uint8_t *)depth + rt_tiling_offset(&layout, i % 16, i / 16, 0)) == 0;
+        CHECK(zeros);
+        CHECK(*(const uint16_t *)((const uint8_t *)depth + rt_tiling_offset(&layout, Z16_SIZE - 1, Z16_SIZE - 1, 0)) != 0x5a5a);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(Z16_SAMPLED), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int as_depth = 1, near_zeros = 0;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                if (!(p >> 24)) continue; /* outside the sampling triangle */
+                const uint16_t under = *(const uint16_t *)((const uint8_t *)depth + rt_tiling_offset(&layout, (uint32_t)px, (uint32_t)y, 0));
+                as_depth &= near(p >> 16 & 0xff, under / 65535.0f);
+                near_zeros += (p >> 16 & 0xff) == 0;
+            }
+        CHECK(as_depth && near_zeros > 0);
+    }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
        writes slice 1 only, written back to slice 1's memory (DB_DEPTH_SLICE: 256 x 256 floats per
        slice) with slice 0's left as it was: LESS on slice 1 then draws nothing, a test reading slice 0
@@ -2913,10 +2954,12 @@ static void guarded_targets(int fd, rt_executor *shared)
 }
 
 /* With a guard, a depth target drawn into keeps its depth in its image (its memory keeps the 0x5a bytes it
-   held); a 32-bit float image over its memory laid out the same way gets the depth on the GPU
-   (image_from_depth): each pixel's red is the depth under it, and the memory still holds the 0x5a bytes.
-   rt_executor_resolve then writes the depth back: the memory holds what the image showed. */
-static void guarded_depth_read(int fd)
+   held); an image over its memory laid out the same way, of the depth's texel size, gets the depth on the
+   GPU (image_from_depth): each pixel's red is the depth under it, and the memory still holds the 0x5a
+   bytes. rt_executor_resolve then writes the depth back: the memory holds what the image showed. With
+   `bytes` 4 the depth is 32-bit float (Z_32_FLOAT with stencil) read as a 32-bit float image; with 2 it is
+   16-bit unorm (Z_16, no stencil) read as a 16-bit unorm image, as the clinic beast's encounter does. */
+static void guarded_depth_read(int fd, unsigned bytes)
 {
     enum { DEPTH_BUFFER = 0xc0f48000, GD_Z = 0x2700000, GD_HTILE = 0x2780000, GD_COLOUR = 0x2790000, GD_SAMPLED = 0x27a0000, GD_SIZE = 256,
            GD_WORDS = (GD_SIZE / 8) * (GD_SIZE / 8) };
@@ -2931,8 +2974,9 @@ static void guarded_depth_read(int fd)
     uint32_t *htile_words = (uint32_t *)(uintptr_t)at(GD_HTILE);
     for (unsigned i = 0; i < GD_WORDS; i++) htile_words[i] = 0xfffffff0u;
     uint8_t *depth = (uint8_t *)(uintptr_t)at(GD_Z);
-    memset(depth, 0x5a, GD_SIZE * GD_SIZE * 4);
-#define GD_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, gz}, {0xa013, gst}, {0xa014, gz}, {0xa015, gst}, \
+    memset(depth, 0x5a, GD_SIZE * GD_SIZE * bytes);
+    const uint32_t z_info = bytes == 4 ? 0xa0000003 : 0xa0000001, stencil_info = bytes == 4 ? 0x20000001 : 0;
+#define GD_TARGET {0xa010, z_info}, {0xa011, stencil_info}, {0xa012, gz}, {0xa013, gst}, {0xa014, gz}, {0xa015, gst}, \
                   {0xa016, gd_size}, {0xa017, 0}, {0xa002, 0}, {0xa005, gh}, {0xa00b, 0x3f800000u}
     const uint32_t write_depth[][2] = {GD_TARGET, {0xa200, 0x2 | 0x4 | 0x7u << 4}}; /* fast-cleared to 1.0, the triangle's depth (0) written */
 #undef GD_TARGET
@@ -2949,10 +2993,10 @@ static void guarded_depth_read(int fd)
     if (drawn) fprintf(stderr, "guarded depth draw: %s\n", error);
     CHECK(drawn == 0);
     int kept = 1;
-    for (unsigned i = 0; i < GD_SIZE * GD_SIZE * 4; i++) kept &= depth[i] == 0x5a;
+    for (unsigned i = 0; i < GD_SIZE * GD_SIZE * bytes; i++) kept &= depth[i] == 0x5a;
     CHECK(kept);
     uint32_t image[8];
-    image_descriptor(image, at(GD_Z), 4, 7, GD_SIZE, GD_SIZE);
+    image_descriptor(image, at(GD_Z), bytes == 4 ? 4 : 2, bytes == 4 ? 7 : 0, GD_SIZE, GD_SIZE); /* 32 float or 16 unorm */
     image[3] = (image[3] & ~0xfffu) | (4 | 0 << 3 | 0 << 6 | 1 << 9); /* x, 0, 0, 1; tiling index 0 */
     drawn = draw_texels_as(x, at(GD_SAMPLED), image, 1, error, sizeof error); /* recorded: nothing written back after it */
     if (drawn) fprintf(stderr, "guarded depth read as an image: %s\n", error);
@@ -2960,18 +3004,19 @@ static void guarded_depth_read(int fd)
     uint32_t bgra[SIZE * SIZE];
     CHECK(rt_executor_read_target(x, at(GD_SAMPLED), bgra, SIZE, SIZE, error, sizeof error) == 0);
     kept = 1;
-    for (unsigned i = 0; i < GD_SIZE * GD_SIZE * 4; i++) kept &= depth[i] == 0x5a;
+    for (unsigned i = 0; i < GD_SIZE * GD_SIZE * bytes; i++) kept &= depth[i] == 0x5a;
     CHECK(kept);
     CHECK(rt_executor_resolve(x, at(GD_Z), 4, error, sizeof error) == 0);
     rt_tiling layout;
     char reason[160];
-    CHECK(rt_tiling_layout(0, 4, GD_SIZE, GD_SIZE, &layout, reason, sizeof reason) == 0);
+    CHECK(rt_tiling_layout(0, bytes, GD_SIZE, GD_SIZE, &layout, reason, sizeof reason) == 0);
     int as_depth = 1, zeros = 0;
     for (int y = 0; y < SIZE; y++)
         for (int px = 0; px < SIZE; px++) {
             const uint32_t p = bgra[y * SIZE + px];
             if (!(p >> 24)) continue; /* outside the sampling triangle */
-            const float under = *(const float *)(depth + rt_tiling_offset(&layout, (uint32_t)px, (uint32_t)y, 0));
+            const uint8_t *texel = depth + rt_tiling_offset(&layout, (uint32_t)px, (uint32_t)y, 0);
+            const float under = bytes == 4 ? *(const float *)texel : *(const uint16_t *)texel / 65535.0f;
             as_depth &= near(p >> 16 & 0xff, under);
             zeros += (p >> 16 & 0xff) == 0;
         }
@@ -4158,7 +4203,8 @@ int main(void)
     target_memory(x);
     tiled_target_memory(x);
     guarded_targets(fd, x);
-    guarded_depth_read(fd);
+    guarded_depth_read(fd, 4);
+    guarded_depth_read(fd, 2);
     guarded_target_fill(fd);
     float_targets(x);
     compressed_image(x);
