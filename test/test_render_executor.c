@@ -1833,6 +1833,57 @@ static void compute_cleared_target(rt_executor *x)
     }
 }
 
+/* An image a compute shader stored while a render target of its texel size was at its address is left to
+   that target (write_back_image). When a target of another format takes the address before that target
+   draws again, the image's texels reach the memory then, and the new target loads them: a 16_16_16_16
+   float target is drawn, the shader stores (0.25, 0.5, 0.75, 1) as 16_16_16_16 float over it, and an
+   8_8_8_8 target that keeps what is there (blend ZERO + ONE) is drawn at the same address. Its first two
+   texels are the stored halves' bytes, half(0.25) | half(0.5) << 16 and half(0.75) | half(1) << 16. */
+static void image_left_to_set_aside_target(rt_executor *x)
+{
+    enum { HALVES_BUFFER = 0xc10b0000, CLEAR_BUFFER = 0xc10c0000, DRAW_BUFFER = 0xc10d0000, CLEAR_CODE = 0x3200, LEFT_TARGET = 0x3fe0000,
+           HALVES_FORMAT = 0xc, NUMBER_FLOAT = 7, LINEAR_ALIGNED = 8, HALF_QUARTER = 0x3400, HALF_HALF = 0x3800, HALF_THREE_QUARTERS = 0x3a00,
+           HALF_ONE = 0x3c00 };
+    char error[200] = "";
+    const uint64_t target = at(LEFT_TARGET);
+    memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 8);
+    memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t halves_offset = record_setup(HALVES_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t halves[RT_COLOR_TARGET_WORDS];
+    color_target(halves, target, HALVES_FORMAT, SWAP_STD);
+    halves[4] |= NUMBER_FLOAT << 8;
+    CHECK(rt_render_record_color_target(HALVES_BUFFER, halves_offset, 0, halves, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, HALVES_BUFFER, record_triangle_draw(HALVES_BUFFER, halves_offset + 0x10), error, sizeof error) == 0);
+
+    rt_render_forget();
+    const uint64_t code = at(CLEAR_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
+    CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
+    uint32_t user[8];
+    image_descriptor(user, target, HALVES_FORMAT, NUMBER_FLOAT, SIZE, SIZE);
+    user[3] |= LINEAR_ALIGNED << 20;
+    CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(CLEAR_BUFFER, 0x30, one, error, sizeof error) == 0);
+    const int stored = rt_executor_run(x, CLEAR_BUFFER, 0x40, error, sizeof error);
+    if (stored) fprintf(stderr, "halves stored over a halves target: %s\n", error);
+    CHECK(stored == 0);
+
+    rt_render_forget();
+    const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_register(DRAW_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0); /* ZERO + ONE */
+    const int drawn = rt_executor_run(x, DRAW_BUFFER, record_triangle_draw(DRAW_BUFFER, offset + 0x10), error, sizeof error);
+    if (drawn) fprintf(stderr, "8_8_8_8 target over a stored halves image: %s\n", error);
+    CHECK(drawn == 0);
+    rt_render_forget();
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t *texels = (const uint32_t *)(uintptr_t)target;
+    if (texels[0] != (HALF_QUARTER | HALF_HALF << 16) || texels[1] != (HALF_THREE_QUARTERS | (uint32_t)HALF_ONE << 16))
+        fprintf(stderr, "8_8_8_8 target over a stored halves image: %08x %08x\n", texels[0], texels[1]);
+    CHECK(texels[0] == (HALF_QUARTER | HALF_HALF << 16) && texels[1] == (HALF_THREE_QUARTERS | (uint32_t)HALF_ONE << 16));
+}
+
 /* Fast clears: a target with CB_COLOR_INFO's FAST_CLEAR whose 128-byte CMASK (TILE_MAX 0) is all 0 is
    cleared to CB_COLOR0_CLEAR_WORD0 (0xff336699: red 0x99 first) before a draw that keeps what is there
    (blend ZERO + ONE), and its CMASK becomes all ones; the next draw (the triangle) draws over it as
@@ -3686,6 +3737,7 @@ int main(void)
     clip_control(x);
     multiple_targets(x);
     compute_cleared_target(x);
+    image_left_to_set_aside_target(x);
     null_image_descriptor(x);
     reshaped_target(x);
     many_targets(x);
