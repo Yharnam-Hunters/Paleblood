@@ -292,20 +292,25 @@ static void routes_and_guards(Fixture *f)
     }
     Calls c = {0}; reg(&c, DEPTH_CONTROL, 0); scene(&c, 0, 15);
     success(f, "enabled/words-recovery", &c, AUTO, 0, 0, RUN);
-    /* The adjacent words are not in this base backend's supported profile. */
-    const uint32_t adjacent[] = {0xa007, 0xa00a};
+    /* These words remain outside the supported depth/stencil register profile. */
+    const uint32_t adjacent[] = {0xa007, 0xa00e};
     for (unsigned i = 0; i < 2; ++i) {
         c = (Calls){0}; reg(&c, adjacent[i], 0); scene(&c, i, 15); draw(&c, AUTO);
         char id[80], reason[32]; snprintf(id, sizeof id, "unknown/%04x", adjacent[i]);
         snprintf(reason, sizeof reason, "register %#x:", adjacent[i]); unchanged(f, id, &c, RUN, reason);
         c = (Calls){0}; scene(&c, i, 15); success(f, i ? "unknown/upper-recovery" : "unknown/lower-recovery", &c, AUTO, i, 0, RUN);
     }
+    /* DB_STENCIL_CLEAR is modeled by the admitted depth/stencil path. Its inactive
+       value must not prevent a full colour draw with fresh vertex writes. */
+    c = (Calls){0}; scene(&c, 1, 15); reg(&c, 0xa00a, 0);
+    success(f, "inactive-stencil-clear", &c, AUTO, 1, 0, RUN);
     const uint32_t old_depth[] = {1, 2, 4};
     for (unsigned i = 0; i < 3; ++i) {
         c = (Calls){0}; scene(&c, i & 1, 15); reg(&c, BOUNDS_MIN, 0); reg(&c, BOUNDS_MAX, UINT32_MAX);
-        reg(&c, DEPTH_CONTROL, old_depth[i]); draw(&c, AUTO);
-        char id[80]; snprintf(id, sizeof id, "legacy-depth/%u", old_depth[i]);
-        unchanged(f, id, &c, RUN, "depth or stencil");
+        reg(&c, DEPTH_CONTROL, old_depth[i]);
+        char id[80]; snprintf(id, sizeof id, "depth-control/%u", old_depth[i]);
+        if (old_depth[i] == 4) success(f, id, &c, AUTO, i & 1, 0, RUN);
+        else { draw(&c, AUTO); unchanged(f, id, &c, RUN, "depth or stencil"); }
     }
     c = (Calls){0}; reg(&c, DEPTH_CONTROL, 0); scene(&c, 1, 15);
     success(f, "legacy-depth/recovery", &c, AUTO, 1, 0, RUN);
@@ -347,7 +352,7 @@ int main(void)
             success(f, warm ? "cache/warm" : "cache/fresh", &c, AUTO, warm, 0, RUN);
         }
         raw_words(f); ordering(f); routes_and_guards(f);
-        CHECK(cases == 231); CHECK(data_draws == 203); CHECK(refusals == 24); CHECK(api_calls == cases); CHECK(pool_scans == cases);
+        CHECK(cases == 232); CHECK(data_draws == 205); CHECK(refusals == 23); CHECK(api_calls == cases); CHECK(pool_scans == cases);
         CHECK(readbacks == data_draws); CHECK(ticket_waits == 4); CHECK(explicit_submits == 1);
         const int finished = rt_executor_finish(f->executor, error, sizeof error);
         printf("depth-bounds FINISH actual=%d\n", finished); CHECK(finished == 0); rt_executor_close(f->executor);
