@@ -10,6 +10,9 @@ ai_character_link_ids,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
 ai_character_negated_third_column,edge,,6,6,0,0,f963cbb2620dee66,2026-11-13
 ai_character_ready_check,edge,,61,61,0,0,f963cbb2620dee66,2026-11-13
 ai_debug_draw_axes_0135d810,edge,,8,8,0,0,e267bbf5ff2ac570,2026-11-13
+ai_debug_end_0163bb50,edge,,32,32,0,0,e3c2894811c316e5,2026-11-14
+ai_debug_flush_01633ac0,edge,,17,17,0,0,e3c2894811c316e5,2026-11-14
+ai_debug_set_position_016334b0,edge,,45,45,0,0,e3c2894811c316e5,2026-11-14
 ai_draw_layer_color_02232a60,edge,,52,52,0,0,e267bbf5ff2ac570,2026-11-13
 ai_draw_world_021d6ea0,edge,,22,22,0,0,057632b510c654b1,2026-11-13
 ai_entity_point_029ae440,edge,,34,34,0,0,057632b510c654b1,2026-11-13
@@ -39,6 +42,7 @@ ai_goal_func_is_finish_timer,edge,,76,76,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_is_finish_turn_timer,edge,,12,12,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
+ai_group_reset_02224090,edge,,31,31,0,0,e3c2894811c316e5,2026-11-14
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,60,203,203,0,0,f6e94c85e455f408,2026-10-07
@@ -120,8 +124,8 @@ engine_fast_small_object_allocator_delete_024846f0,edge,,3,3,0,0,c923dbe1731ec59
 engine_fast_small_object_allocator_delete_locked_024847d0,edge,,19,19,0,0,c923dbe1731ec595,2026-11-12
 engine_fast_small_object_allocator_destroy_02484760,edge,,3,3,0,0,c923dbe1731ec595,2026-11-12
 engine_fast_small_object_allocator_destroy_locked_02484910,edge,,19,19,0,0,c923dbe1731ec595,2026-11-12
-engine_fd4_handle_is_valid_013e9040,edge,,14,14,0,0,b8680cee67fe9d18,2026-11-13
-engine_fd4_handle_less_01398290,edge,,16,16,0,0,b8680cee67fe9d18,2026-11-13
+engine_fd4_handle_is_valid_013e9040,edge,,14,14,0,0,86c597f43e9cad82,2026-11-13
+engine_fd4_handle_less_01398290,edge,,16,16,0,0,86c597f43e9cad82,2026-11-13
 engine_fixed_allocator_allocate_02484c70,edge,,24,24,0,0,594e26c134ef7897,2026-11-12
 engine_fixed_allocator_clear_02484c20,edge,,5,5,0,0,25c6012c4cce99b3,2026-11-12
 engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,1202125b79363097,2026-11-12
@@ -432,6 +436,10 @@ frame_timing_until_idle_020128f0,edge,,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_020128f0,edge,60,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_02012bf0,edge,,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_02012bf0,edge,60,5,5,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_worker_lane_finish_014675a0,edge,,7,7,0,0,63c2f40e56bce67a,2026-11-14
+frame_timing_worker_lane_run_01467530,edge,,14,14,0,0,63c2f40e56bce67a,2026-11-14
+frame_timing_worker_lane_start_on_caller_01467500,edge,,13,13,0,0,63c2f40e56bce67a,2026-11-14
+frame_timing_worker_lane_start_on_thread_01467300,edge,,25,25,0,0,63c2f40e56bce67a,2026-11-14
 input_initialize_mouse_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
 input_mouse_b_open_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
 input_mouse_construct,edge,,10,10,0,0,49e10b4c3d13f225,2026-11-10
