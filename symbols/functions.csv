@@ -172,6 +172,7 @@ address,size,name,system,status,notes
 0x014759d0,83,render_set_gs_shader,render,edge-verified,Reserve 29 DWORDs; forward the opaque full register pointer including null to sceGnmSetGsShader; zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry
 0x01475a30,83,render_update_gs_shader,render,edge-verified,Reserve 29 DWORDs; forward the opaque register pointer to sceGnmUpdateGsShader; a zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry
 0x01475a90,93,render_set_esgs_ring_itemsize,render,edge-verified,Write the low 15 bits to VGT_ESGS_RING_ITEMSIZE after three-word admission; publish from the captured cursor and retain final-packet observation
+0x01475af0,279,render_set_gs_ring_sizes,render,edge-verified,Reserve 17 DWORDs; write four GS item sizes and GSVS offsets with masked maximum and total; retain live cursor reloads and late descriptor reads
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
@@ -264,6 +265,10 @@ address,size,name,system,status,notes
 0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
 0x0165bb90,18,ai_func_get_previous_target_state,ai,verified,AI script binding GetPrevTargetState: the perception's target state last frame
 0x0165ca50,130,ai_func_is_visible_target,ai,edge-verified,"IsVisibleTarget: stores the player's set entry; selectors -2,-1,20-22,24,25 and points 100-123 are visible, else the current target's visible flag"
+0x0167b6b0,93,ai_func_register_goal_no_update,ai,edge-verified,"REGISTER_GOAL_NO_UPDATE: sets the no-update option of a goal id's definition"
+0x0167b710,118,ai_func_register_goal_update_time,ai,edge-verified,"REGISTER_GOAL_UPDATE_TIME: sets the range of a goal id's script Update interval"
+0x0167b790,93,ai_func_register_goal_no_interrupt,ai,edge-verified,"REGISTER_GOAL_NO_INTERUPT: sets the no-interrupt option of a goal id's definition"
+0x0167b7f0,81,ai_func_enable_combo_attack_cancel,ai,edge-verified,"ENABLE_COMBO_ATK_CANCEL: enables combo attack cancel for a goal id"
 0x0167f2a0,22,ai_goal_func_set_timer,ai,edge-verified,AI goal script binding SetTimer: goal timer 0..15 (index checked signed)
 0x0167f2d0,22,ai_goal_func_set_number,ai,edge-verified,AI goal script binding SetNumber: goal script number 0..63 (index checked unsigned)
 0x0167f820,26,ai_goal_func_get_timer,ai,edge-verified,"AI goal script binding GetTimer: goal timer 0..15, 0.0 above"
@@ -274,8 +279,11 @@ address,size,name,system,status,notes
 0x0169acf0,114,ai_character_has_effect_state,ai,verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
+0x0169cef0,607,ai_hearing_check_sound,ai,edge-verified,"Hearing: who made a sound (character or object by handle, or neither) and whether the listener's team hears the maker's; calls the hearing test with the maker's size"
+0x0169d160,2248,ai_hearing_test,ai,edge-verified,"Hearing: whether the enemy hears one sound (range less the sound-cut distance against the gap; otherwise the ear's reach by width and height angle) and remembers it"
 0x0169da30,763,ai_hearing_in_ear_range,ai,edge-verified,"Hearing: does a sphere around a sound point reach the ear (within the ear height angle: reach plus radius; beyond it: the sphere surface crosses the angle edge segment)"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
+0x016a3be0,154,ai_update_time_scheduler_reserve,ai,edge-verified,"AI update-time scheduler: books an update in a 100-frame ring, moving it to the first later frame below the per-frame limit"
 0x016a5050,218,engine_array64_push_back_016a5050,engine,edge-verified,"Engine array push_back, 8-byte elements: inside check first; full grows to 1.5x count via 0x016a5130, inside item re-read at its index; stores unless no buffer; end += 8"
 0x016a5130,251,engine_array64_reserve_016a5130,engine,edge-verified,"Engine array reserve, 8-byte elements: allocates capacity*8 (align 8) from the allocator at +0x20, copies the elements (skipped while the buffer is null), frees the old buffer, sets the three pointers"
 0x016a52b0,1936,ai_sight_test,ai,verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"
