@@ -14,7 +14,8 @@ usage: instance_update_cases.py OUT_DIR object|map|register
   index -1, kept inside the buffer); an empty list with an earlier item (count -1); a list that
   becomes full (the grow stub 0x00819100, compared with the list allocator, the list and 8, writes
   a new item pointer, so the appended item lands in the new storage); flags in the capacity word's
-  top bits; negative counts.
+  top bits; negative counts; a count above the capacity (the list grows only when the count equals
+  the capacity, so it does not, and the item lands past the end).
 Generated fixtures, not inputs recorded in a game run.
 """
 import json
@@ -133,6 +134,7 @@ def register_cases():
         register_case('negative_count', [a, b], None, count=-1, capacity=4),
         register_case('negative_count_with_earlier', [a, b], a, count=-2, capacity=4, slack=4),
         register_case('count_above_items', [a, b], 0x1000f, count=3, capacity=8),
+        register_case('count_above_capacity', [a, b, d], None, capacity=2),
     ]
 
 
