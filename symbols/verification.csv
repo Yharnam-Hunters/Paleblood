@@ -439,6 +439,10 @@ frame_timing_until_idle_020128f0,edge,,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_020128f0,edge,60,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_02012bf0,edge,,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_02012bf0,edge,60,5,5,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_worker_lane_finish_014675a0,edge,,7,7,0,0,63c2f40e56bce67a,2026-11-14
+frame_timing_worker_lane_run_01467530,edge,,14,14,0,0,63c2f40e56bce67a,2026-11-14
+frame_timing_worker_lane_start_on_caller_01467500,edge,,13,13,0,0,63c2f40e56bce67a,2026-11-14
+frame_timing_worker_lane_start_on_thread_01467300,edge,,25,25,0,0,63c2f40e56bce67a,2026-11-14
 input_initialize_mouse_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
 input_mouse_b_open_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
 input_mouse_construct,edge,,10,10,0,0,49e10b4c3d13f225,2026-11-10
