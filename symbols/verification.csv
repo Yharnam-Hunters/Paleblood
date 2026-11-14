@@ -142,6 +142,10 @@ engine_linear_heap_walk_02485340,edge,,10,10,0,0,9e4e9d179edbb6de,2026-11-12
 engine_locked_regular_heap_construct_0247c590,edge,,3,3,0,0,d86ef37204a20cc9,2026-11-13
 engine_locked_regular_heap_initialize_0247c5e0,recorded,,1,1,0,0,d86ef37204a20cc9,2026-11-13
 engine_locked_regular_heap_initialize_0247c5e0,edge,,24,24,0,0,d86ef37204a20cc9,2026-11-13
+engine_mutex_construct_02a3a840,recorded,,51,51,0,0,9b92bcbacef4a2e3,2026-11-13
+engine_mutex_construct_02a3a840,edge,,4,4,0,0,9b92bcbacef4a2e3,2026-11-13
+engine_mutex_initialize_02a3a920,recorded,,51,51,0,0,9b92bcbacef4a2e3,2026-11-13
+engine_mutex_initialize_02a3a920,edge,,16,16,0,0,9b92bcbacef4a2e3,2026-11-13
 engine_narrow_string_assign_02a2d8e0,recorded,,66,66,0,0,2a14e8f9aadabcba,2026-11-13
 engine_narrow_string_assign_02a2d8e0,edge,,29,29,0,0,2a14e8f9aadabcba,2026-11-13
 engine_regular_heap_allocate_02485730,recorded,,200,200,0,0,5fb76586890b3d2a,2026-11-13
@@ -531,12 +535,14 @@ loading_mount_table_reallocate_024716d0,edge,,9,9,0,0,56c29f3bfad4ccf6,2026-11-1
 loading_owned_object_release_02479710,edge,,6,6,0,0,248aedbec805f26d,2026-11-14
 loading_path_token_next_02a2aca0,recorded,,58,58,0,0,d7482430d506fc6c,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
+loading_request_pointer_array_push_back_02a6c690,edge,,17,17,0,0,9baf056c92fddc18,2026-11-13
 loading_resource_handle_assign_024bd310,edge,,8,8,0,0,248aedbec805f26d,2026-11-14
 loading_resource_handle_construct_024bd470,recorded,,2,2,0,0,113e786783d3cc08,2026-11-14
 loading_resource_handle_destroy_024bd4c0,recorded,,1,1,0,0,113e786783d3cc08,2026-11-14
 loading_resource_info_drop_reference_02a3a2a0,edge,,10,10,0,0,272d54091b9fc428,2026-11-14
 loading_resource_info_reference_count_02a3a1b0,edge,,10,10,0,0,272d54091b9fc428,2026-11-14
 loading_resource_info_release_024bd930,edge,,10,10,0,0,7af34104bc184d6e,2026-11-14
+loading_resource_manager_find_info_024c1630,edge,,34,34,0,0,9baf056c92fddc18,2026-11-13
 loading_resource_manager_release_024c1530,edge,,11,11,0,0,0ee15f7eaa080aac,2026-11-14
 loading_resource_manager_remove_released_024c3260,edge,,21,21,0,0,0ee15f7eaa080aac,2026-11-14
 loading_result_construct_024bcfa0,recorded,,50,50,0,0,248aedbec805f26d,2026-11-14
@@ -556,6 +562,7 @@ loading_transfer_task_cancel_024dd8a0,recorded,,3,3,0,0,113e786783d3cc08,2026-11
 loading_transfer_task_check_close_024ddf20,edge,,32,32,0,0,57fb66e79062e48d,2026-11-14
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,57fb66e79062e48d,2026-11-14
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,57fb66e79062e48d,2026-11-14
+loading_transfer_task_list_push_back_02a6b340,edge,,17,17,0,0,9baf056c92fddc18,2026-11-13
 menu_file_set_loader_build_02387650,edge,,12,12,0,0,322c6d9d466fab2b,2026-11-13
 menu_file_set_loader_wait_02387050,edge,,11,11,0,0,322c6d9d466fab2b,2026-11-13
 menu_gaitem_select_entry_copy_into_pool,edge,,17,17,0,0,980b206a65ca492d,2026-11-12
