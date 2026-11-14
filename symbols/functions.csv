@@ -2,6 +2,8 @@ address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
 0x00464b90,215,loading_stdio_stream_open,loading,verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
 0x00466810,19,frame_timing_posix_sleep_ms,frame_timing,edge-verified,Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true
+0x00819040,190,engine_hk_array_reserve_00819040,engine,edge-verified,"hkArray reserve: count*size bytes (32-bit) reallocated (slot 0x30) or allocated and copied; capacity = answered bytes / size; failure: no buffer, 1"
+0x00819100,169,engine_hk_array_reserve_more_00819100,engine,edge-verified,"hkArray reserve more: twice the size (1 when empty) times the element size, reallocated or allocated and copied, unchecked; capacity = bytes / size"
 0x00829a90,33,loading_allocator_free_headed_00829a90,loading,edge-verified,"Frees a block with a 16-byte header before its data: clears the header word, sized free of header and size+0x10 (32-bit); null ignored"
 0x00829b00,138,camera_quaternion_rotation_rows_00829b00,camera,edge-verified,"Camera math: a quaternion's three rotation rows (the first two rows' w lanes carry the third's x and y), in the original's lane operations"
 0x00836840,70,loading_tagged_string_release_00836840,loading,edge-verified,Tagged string word: below 2 left alone; odd frees word-1 through the thread allocator (0x00829a90); then cleared
@@ -82,6 +84,7 @@ address,size,name,system,status,notes
 0x013e6ff0,91,loading_resource_base_construct_013e6ff0,loading,edge-verified,"Resource base: builds the object base with the heap reference, then its vtable, an empty file handle, its state bytes and the heap reference's word"
 0x013e7090,56,loading_resource_base_destroy_013e7090,loading,edge-verified,"Resource base: writes its vtable back, lets go of the handle's file, destroys the handle and then the object base"
 0x013e9040,113,engine_fd4_handle_is_valid_013e9040,engine,edge-verified,"FD4 handle check: nonzero handle, index <= table's last index (inclusive), entry (0xe0 B) generation byte at +0x2c equals the handle's"
+0x013e99b0,126,engine_fd4_handle_refresh_013e99b0,engine,edge-verified,"FD4 handle refresh: when the reference's handle is valid, copies the table's version (+0x60) and the entry's value into the reference"
 0x013e9ee0,8,engine_fd4_handle_is_set_013e9ee0,engine,original,"FD4 handle is set: the 8-byte handle is nonzero as a whole; called out of line by the handle check 0x013e9040; too short to hook, matched byte-exact instead"
 0x01401720,34,menu_named_resource_handle_release_01401720,menu,edge-verified,"Scaleform glue: a resource handle with an owner is let go of by the owner (vtable slot 16), returning its answer; 0 without an owner"
 0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
