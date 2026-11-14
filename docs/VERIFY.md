@@ -363,7 +363,10 @@ A case that can't be used goes in `symbols/quarantine.csv` (function, case set, 
 file name without `.json`, reason, date), and only when it can't be fixed: for example a
 recording made under an earlier version of an option, which lacks inputs the current option
 needs. A quarantined case that fails counts as quarantined, not failed. Quarantine is not for a
-mismatch between the original and the replacement: that is a bug to fix.
+mismatch between the original and the replacement: that is a bug to fix. The session report
+(`tools/session_report.py --verify`, given the summary of the `--record` run) shows such cases in a
+Quarantined column with their reasons; its CI check accepts them only when the run's counts match
+the function's row in `symbols/verification.csv`.
 
 `tools/validate_functions.py` (CI) refuses `verified` for a function without current `recorded`
 and `edge` results without an option, with any failure that is not quarantined in any of its
