@@ -52,7 +52,7 @@
 #include "runtime/nid.h"
 #include "runtime/trace.h"
 
-enum { HOOK_JUMP = 14, THUNK_SIZE = 32, MAX_HOOKS = 1024, REACH = 0x70000000, GIVE_UP = 3 };
+enum { HOOK_JUMP = 14, THUNK_SIZE = 32, REACH = 0x70000000, GIVE_UP = 3 };
 
 /* rt_capture_frame: the layout runtime/capture_entry.S builds on the stack. */
 typedef struct {
@@ -250,7 +250,8 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
                              const void **targets)
 {
     for (size_t i = 0; i < count; i++) targets[i] = (const void *)table[i].fn;
-    if (!capture_requested() || !count || count > MAX_HOOKS) return 0;
+    /* Every table here is sized by the registry: any number of hooks can be recorded. */
+    if (!capture_requested() || !count) return 0;
     const int original_only = rt_capture_original_mode();
     if (original_only)
         for (size_t i = 0; i < count; i++) targets[i] = NULL;
