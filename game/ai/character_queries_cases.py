@@ -440,6 +440,8 @@ TARGET_LISTS = [
      node(kind=2, place=(1.0, 2.0, 2.6)), node(kind=2, place=(1.0, 1.4, 3.0), matches=1)],
     [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0, 5.0)), node(kind=2, place=(0.0, 0.0, 0.0, -7.0)),
      node(kind=2, place=(0.1, 0.0, 0.0, 0.0), matches=1), node(kind=2, place=(0.0, 0.0, 0.0, 0.3))],
+    # A place not yet valid never matches, even 0.1 m from the main target.
+    [node(kind=2, priority=1.0, place=(0, 0, 0)), node(kind=2, valid=0, place=(0.1, 0, 0))],
     # Each lane alone is within half a metre, together they are not (0.27 squared).
     [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0)), node(kind=2, place=(0.3, 0.3, 0.3), matches=1),
      node(kind=2, place=(0.0, 0.3, 0.3)), node(kind=2, place=(0.3, 0.0, 0.3)), node(kind=2, place=(0.3, 0.3, 0.0))],
