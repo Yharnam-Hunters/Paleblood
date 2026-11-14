@@ -3,10 +3,13 @@ ai_character_flag_module_set,recorded,,46,46,0,0,f963cbb2620dee66,2026-11-13
 ai_character_flag_module_set,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
 ai_character_gather_effect_states,recorded,,40,40,0,0,f963cbb2620dee66,2026-11-13
 ai_character_gather_effect_states,edge,,31,31,0,0,f963cbb2620dee66,2026-11-13
+ai_character_has_effect_state,recorded,,1500,1500,0,0,f963cbb2620dee66,2026-11-14
 ai_character_has_effect_state,edge,,71,71,0,0,f963cbb2620dee66,2026-11-13
+ai_character_id,recorded,,352,352,0,0,f963cbb2620dee66,2026-11-14
 ai_character_id,edge,,7,7,0,0,f963cbb2620dee66,2026-11-13
 ai_character_link_ids,recorded,,69,69,0,0,f963cbb2620dee66,2026-11-13
 ai_character_link_ids,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
+ai_character_negated_third_column,recorded,,1503,1503,0,0,f963cbb2620dee66,2026-11-14
 ai_character_negated_third_column,edge,,6,6,0,0,f963cbb2620dee66,2026-11-13
 ai_character_ready_check,edge,,61,61,0,0,f963cbb2620dee66,2026-11-13
 ai_debug_draw_axes_0135d810,edge,,8,8,0,0,e267bbf5ff2ac570,2026-11-13
@@ -15,11 +18,13 @@ ai_debug_flush_01633ac0,edge,,17,17,0,0,e3c2894811c316e5,2026-11-14
 ai_debug_set_position_016334b0,edge,,45,45,0,0,e3c2894811c316e5,2026-11-14
 ai_draw_layer_color_02232a60,edge,,52,52,0,0,e267bbf5ff2ac570,2026-11-13
 ai_draw_world_021d6ea0,edge,,22,22,0,0,057632b510c654b1,2026-11-13
+ai_entity_point_029ae440,recorded,,5,5,0,0,057632b510c654b1,2026-11-14
 ai_entity_point_029ae440,edge,,34,34,0,0,057632b510c654b1,2026-11-13
 ai_func_get_current_target_state,edge,,198,198,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_hp,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_hp_rate,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_mp,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
+ai_func_get_number,recorded,,2,2,0,0,6e8620fd37a797bc,2026-11-14
 ai_func_get_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_previous_target_state,recorded,,9,9,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_previous_target_state,edge,,33,33,0,0,6e8620fd37a797bc,2026-11-13
@@ -27,6 +32,7 @@ ai_func_get_random_float,edge,,104,104,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_random_int,recorded,,37,37,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_random_int,edge,,73,73,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_sp,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
+ai_func_get_timer,recorded,,12,12,0,0,6e8620fd37a797bc,2026-11-14
 ai_func_get_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_battle_state,recorded,,6,6,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_battle_state,edge,,33,33,0,0,6e8620fd37a797bc,2026-11-13
@@ -36,10 +42,13 @@ ai_func_is_change_state,recorded,,31,31,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_change_state,edge,,33,33,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_find_state,recorded,,3,3,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_find_state,edge,,33,33,0,0,6e8620fd37a797bc,2026-11-13
+ai_func_is_finish_timer,recorded,,3,3,0,0,6e8620fd37a797bc,2026-11-14
 ai_func_is_finish_timer,edge,,76,76,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_inside_target_ex,edge,,43,43,0,0,962565c5970bd876,2026-11-13
 ai_func_is_visible_target,edge,,50,50,0,0,962565c5970bd876,2026-11-13
+ai_func_set_number,recorded,,12,12,0,0,6e8620fd37a797bc,2026-11-14
 ai_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
+ai_func_set_timer,recorded,,1,1,0,0,6e8620fd37a797bc,2026-11-14
 ai_func_set_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_get_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_get_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
@@ -1109,6 +1118,7 @@ render_set_guard_band_discard_adjust,edge,,13,13,0,0,d796d1a200c99651,2026-11-12
 render_set_hs_shader,edge,,245,245,0,0,0384de3e1c830f13,2026-11-13
 render_set_instance_step_rates,edge,,102,102,0,0,0579bf8a165662dc,2026-11-13
 render_set_ls_shader,edge,,199,199,0,0,8964f529294cbf35,2026-11-13
+render_set_multi_vgt_param,edge,,310,310,0,0,f8a97e02e45ca528,2026-11-14
 render_set_pa_cl_vte_cntl,recorded,,83,83,0,0,70ef1c91ed183e42,2026-11-12
 render_set_pa_cl_vte_cntl,edge,,45,45,0,0,70ef1c91ed183e42,2026-11-12
 render_set_pa_sc_mode_cntl_0,recorded,,98,98,0,0,9fcd7c9fe8cf9923,2026-11-13
