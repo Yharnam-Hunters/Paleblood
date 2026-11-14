@@ -223,6 +223,7 @@ typedef struct {
     uint64_t span;                   /* its depth's bytes in memory (depth_span), worked out once */
     int drawn;
     int unwritten;                   /* its depth changed since it was last written back */
+    uint64_t drawn_serial;           /* counts the draws and clears into it (image_from_depth) */
     int guarded;                     /* as a colour target's */
     tile_plan plan;                  /* its write-backs */
     VkFormat format;
@@ -253,6 +254,7 @@ typedef struct {
     uint32_t patch_points;           /* its control points a patch */
     VkPipeline pipeline;
     uint32_t bucket_next;            /* the next pipeline of its bucket (pipeline_buckets), index + 1; 0 none */
+    uint64_t used_ticket;            /* the submission that last draws with it (pipeline_slot_to_free) */
 } pipeline_entry;
 
 /* A compute shader translated for one workgroup size and starting-register layout, and its pipeline. */
@@ -285,7 +287,8 @@ typedef struct {
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
-    const void *copied_from;         /* the render target whose texels it holds (image_from_target), and its draws then */
+    const void *copied_from;         /* the render target or depth target whose texels it holds (image_from_target,
+                                        image_from_depth), and its draws then */
     uint64_t copied_serial;
     tile_plan plan;                  /* its loads on the GPU (tile_copy_moves) */
     tile_plan *level_plans;          /* the same for each mip level of a mip-mapped image (load_levels), or NULL */
@@ -2494,7 +2497,7 @@ static uint64_t depth_layout_span(const depth_entry *z);
 
 static void depth_drawn(rt_executor *x, depth_entry *z)
 {
-    z->drawn = 1, z->unwritten = 1;
+    z->drawn = 1, z->unwritten = 1, z->drawn_serial++;
     const int written_back = z->format == VK_FORMAT_D32_SFLOAT || z->format == VK_FORMAT_D32_SFLOAT_S8_UINT; /* write_back_depths */
     if (!z->guarded && x->guard && written_back) z->guarded = x->guard(z->z_address, depth_span(z)) == 0;
 }
@@ -3204,6 +3207,33 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     return module;
 }
 
+/* The least recently used pipeline whose last batch has run, or -1 (every one is in a batch still to run). */
+static long pipeline_to_free(rt_executor *x)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return -1;
+    long pick = -1;
+    for (size_t i = 0; i < x->pipeline_count; i++)
+        if (x->pipelines[i].used_ticket <= done && (pick < 0 || x->pipelines[i].used_ticket < x->pipelines[pick].used_ticket)) pick = (long)i;
+    return pick;
+}
+
+/* Makes room for one more pipeline when all MAX_PIPELINES are kept (walking a scene brings more shader,
+   pass and state combinations than that): the least recently used one goes, once no unfinished batch
+   draws with it, waiting for the GPU's work when every one is in use. The last pipeline moves into its
+   place and the buckets are filled again. 0, or -1 with the reason. */
+static int free_pipeline_slot(rt_executor *x, char *error, size_t error_size)
+{
+    long pick = pipeline_to_free(x);
+    if (pick < 0 && batch_finish(x, error, error_size)) return -1;
+    if (pick < 0) pick = pipeline_to_free(x);
+    if (pick < 0) return failed(error, error_size, "more pipelines than the executor keeps, all of them in batches still to run");
+    vkDestroyPipeline(x->device, x->pipelines[pick].pipeline, NULL);
+    x->pipelines[pick] = x->pipelines[--x->pipeline_count];
+    index_pipelines(x);
+    return 0;
+}
+
 /* With control set, a tessellation pipeline: the empty vertex shader, control, then vertex (the domain shader)
    as the evaluation shader, over patches of patch_points points. */
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
@@ -3213,16 +3243,15 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
 {
     const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
     for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
-        const pipeline_entry *p = &x->pipelines[i - 1];
+        pipeline_entry *p = &x->pipelines[i - 1];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
             p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
-            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points)
+            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points) {
+            p->used_ticket = x->submitted + 1;
             return p->pipeline;
+        }
     }
-    if (x->pipeline_count == MAX_PIPELINES) {
-        failed(error, error_size, "more pipelines than the executor keeps");
-        return VK_NULL_HANDLE;
-    }
+    if (x->pipeline_count == MAX_PIPELINES && free_pipeline_slot(x, error, error_size)) return VK_NULL_HANDLE;
     /* the vertex stage, then the pixel stage unless the draw has none (a depth-only pass), then the
        rect-list geometry stage if any */
     VkPipelineShaderStageCreateInfo stages[4];
@@ -3299,7 +3328,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
-                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket]};
+                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket], .used_ticket = x->submitted + 1};
     memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
     x->pipeline_buckets[bucket] = (uint32_t)x->pipeline_count;
     return pipeline;
@@ -4359,6 +4388,72 @@ static int image_from_target(rt_executor *x, image_entry *e, const rt_image_desc
     return 1;
 }
 
+/* The same for a 32-bit image over a depth target's depth drawn since its write-back, laid out the same
+   way (the same address, tiling index and pitch, within slice 0 of the target), as the game reads its
+   depth (a shadow map, the scene's depth for the light passes): the depth is copied into the image on the
+   GPU through the target's linear rows, again after each new draw, instead of being tiled into the guest
+   memory and detiled back. The memory still lacks the depth (written back when something else reads
+   it). 1 when copied (or already holding it), 0 when the image is not one, -1 with the reason. */
+static int image_from_depth(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, uint64_t span, char *error,
+                            size_t error_size)
+{
+    if (f->block != 1 || f->bytes != 4 || e->layers != 1 || e->levels != 1 || d->type != RT_IMAGE_2D) return 0;
+    depth_entry *z = NULL;
+    for (size_t i = 0; i < x->depth_count && !z; i++) {
+        depth_entry *o = &x->depths[i];
+        if (o->z_address == d->address && o->slice == 0 && o->unwritten) z = o;
+    }
+    if (!z || (z->format != VK_FORMAT_D32_SFLOAT && z->format != VK_FORMAT_D32_SFLOAT_S8_UINT) || d->tiling_index != z->tile_index ||
+        d->pitch != z->width || e->width > z->width || e->height > z->height)
+        return 0;
+    for (size_t i = 0; i < x->target_count; i++) { /* the depth alone holds unwritten texels there */
+        const target_entry *o = &x->targets[i];
+        if (o->drawn && o->address < d->address + span && d->address < o->address + target_span(o)) return 0;
+    }
+    for (size_t i = 0; i < x->depth_count; i++) {
+        const depth_entry *o = &x->depths[i];
+        if (o != z && o->unwritten && o->z_address < d->address + span && d->address < o->z_address + depth_span(o)) return 0;
+    }
+    if (e->copied_from == z && e->copied_serial == z->drawn_serial) return 1;
+    rt_tiling layout;
+    char reason[160];
+    if (rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason)) return 0;
+    if (!z->plan.table.buffer && tile_plan_make(x, &z->plan, &layout, z->width, z->height, 1, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkImageSubresourceRange depth = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = z->image, .subresourceRange = depth};
+    /* earlier reads and writes of the linear rows (a write-back's tiling) finish first */
+    const VkMemoryBarrier rows_free = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+                                       .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &rows_free, 0, NULL, 1, &barrier);
+    const VkBufferImageCopy to_rows = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {e->width, e->height, 1}};
+    vkCmdCopyImageToBuffer(commands, z->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, z->plan.linear.buffer, 1, &to_rows);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    /* the rows are written before the image copy reads them, and what read the image before (as a shader's
+       texels) is done before it is replaced */
+    const VkMemoryBarrier rows = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                                  .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 1, &rows, 0, NULL, 1, &barrier);
+    const VkBufferImageCopy from_rows = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {e->width, e->height, 1}};
+    vkCmdCopyBufferToImage(commands, z->plan.linear.buffer, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &from_rows);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+                                   .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    /* once the depth is written back, its memory holds what the image now does: it loads again then */
+    e->copied_from = z, e->copied_serial = z->drawn_serial, e->loaded_change = x->change_count, e->loaded_span = span;
+    e->tiling_index = d->tiling_index, e->pitch = d->pitch;
+    return 1;
+}
+
 /* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
    the GPU for elements the GPU copy moves (tile_copy_moves), again whenever the memory may have changed
    since (memory_changed_since); by the CPU for others, again when the memory differs from what it last
@@ -4382,7 +4477,8 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
     /* a render target drawn into since it was written back holds texels the memory lacks: those over
        the image are written back first (write_back_targets_in) */
-    const int from_target = image_from_target(x, e, d, f, span, error, error_size);
+    int from_target = image_from_target(x, e, d, f, span, error, error_size);
+    if (!from_target) from_target = image_from_depth(x, e, d, f, span, error, error_size);
     if (from_target) return from_target < 0 ? -1 : 0;
     e->copied_from = NULL;
     const memory_span image_memory = {d->address, span};
