@@ -62,6 +62,7 @@ address,replacement,system,returns
 0x0138a370,bb_frame_timing_task_dispatch_0138a370,frame_timing,void
 0x01398290,bb_engine_fd4_handle_less_01398290,engine,i8
 0x013d3520,bb_frame_timing_task_013d3520,frame_timing,void
+0x013d5440,bb_frame_timing_part_0x10_update_013d5440,frame_timing,void
 0x013daac0,bb_frame_timing_listener_list_notify_013daac0,frame_timing,void
 0x013e68f0,bb_loading_path_table_find_013e68f0,loading,i64
 0x013e9040,bb_engine_fd4_handle_is_valid_013e9040,engine,i8
@@ -84,6 +85,10 @@ address,replacement,system,returns
 0x01456eb0,bb_frame_timing_profile_start_01456eb0,frame_timing,void
 0x01456ed0,bb_frame_timing_profile_stop_01456ed0,frame_timing,void
 0x01456ef0,bb_frame_timing_profile_frame_end_01456ef0,frame_timing,void
+0x01467300,bb_frame_timing_worker_lane_start_on_thread_01467300,frame_timing,void
+0x01467500,bb_frame_timing_worker_lane_start_on_caller_01467500,frame_timing,void
+0x01467530,bb_frame_timing_worker_lane_run_01467530,frame_timing,void
+0x014675a0,bb_frame_timing_worker_lane_finish_014675a0,frame_timing,void
 0x01471270,bb_render_command_buffer_init,render,void
 0x014712d0,bb_render_compose_record_encoding_fields,render,i32
 0x01471310,bb_render_pack_record_mapping_word,render,i64
@@ -193,10 +198,14 @@ address,replacement,system,returns
 0x014a1e80,bb_render_initialize_record_level_descriptor,render,i32
 0x014a27c0,bb_render_get_record_descriptor_size,render,i32
 0x014a2c40,bb_render_calculate_record_descriptor_level_offset,render,i32
+0x014a3410,bb_render_copy_initial_level_014a3410,render,i32
 0x016243a0,bb_ai_character_negated_third_column,ai,vec
 0x01624760,bb_ai_character_id,ai,i32
 0x01624e50,bb_ai_character_flag_module_set,ai,i8
 0x0162d840,bb_ai_target_speed_record_update,ai,void
+0x016334b0,bb_ai_debug_set_position_016334b0,ai,void
+0x01633ac0,bb_ai_debug_flush_01633ac0,ai,void
+0x0163bb50,bb_ai_debug_end_0163bb50,ai,void
 0x01657ac0,bb_ai_func_get_random_float,ai,f32
 0x01657b20,bb_ai_func_get_random_int,ai,i32
 0x01657b80,bb_ai_func_set_timer,ai,void
@@ -247,6 +256,7 @@ address,replacement,system,returns
 0x01c92e90,bb_param_lock_cam_range,param,f32
 0x01cbdb20,bb_character_frame_update_01cbdb20,character,void
 0x01cd92b0,bb_character_ai_display_update_01cd92b0,character,void
+0x01e19e20,bb_character_throw_event_01e19e20,character,void
 0x01e4a490,bb_character_state_flags_update_01e4a490,character,void
 0x01e59250,bb_character_event_request_update_01e59250,character,void
 0x01e5c440,bb_character_counters_refill_01e5c440,character,void
@@ -300,6 +310,7 @@ address,replacement,system,returns
 0x0206ecc0,bb_param_menu_property_spec,param,i64
 0x0217ffb0,bb_engine_initialize_static_wide_string_0217ffb0,engine,void
 0x021d6ea0,bb_ai_draw_world_021d6ea0,ai,void
+0x02224090,bb_ai_group_reset_02224090,ai,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
 0x02232a60,bb_ai_draw_layer_color_02232a60,ai,vec
 0x02265170,bb_frame_timing_pass_on_in_local_mode_02265170,frame_timing,i8
@@ -459,7 +470,9 @@ address,replacement,system,returns
 0x02360d80,bb_menu_tex_repository_require_02360d80,menu,void
 0x02363c00,bb_menu_work_holder_destroy_02363c00,menu,void
 0x02363d20,bb_menu_work_holder_destroy_02363d20,menu,void
+0x02373850,bb_render_object_update_02373850,render,i8
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
+0x02379d60,bb_render_list_prepare_02379d60,render,void
 0x0237e640,bb_loading_file_copy_construct_0237e640,loading,void
 0x0237e6d0,bb_loading_file_copy_delete_0237e6d0,loading,void
 0x0237e780,bb_loading_file_copy_destroy_0237e780,loading,void
