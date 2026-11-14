@@ -3245,6 +3245,39 @@ static long last_sgpr_writer(const uint32_t *code, size_t program, const callee_
     return writer;
 }
 
+/* A load's pointer pair s[pointer : pointer + 1] restored from SGPR spill slots before the load at dword
+   `at`: each SGPR last written by a v_readlane_b32 of a constant lane whose slot one v_writelane_b32 in the
+   whole program fills, before it, from that same SGPR. The pair then holds at the load what it held when
+   spilled, whatever was written to it in between (a clinic-beast pixel shader spills its user-data
+   pointer, reuses those SGPRs for a descriptor, and restores the pointer for its next load). The later of
+   the two writelanes, or -1 when the pair is not so restored. */
+static long pointer_spilled_at(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned pointer)
+{
+    long spilled = -1;
+    for (unsigned d = 0; d < 2; d++) {
+        const long reader = last_sgpr_writer(code, program, callee, at, pointer + d);
+        gcn_instruction ins;
+        if (reader < 0 || gcn_decode(code + reader, program - (size_t)reader, &ins) || ins.encoding != GCN_VOP2 ||
+            strcmp(ins.name, "v_readlane_b32"))
+            return -1;
+        const uint32_t *r = code + reader;
+        const unsigned lane = spill_lane_of(r), vgpr_field = r[0] & 0x1ff;
+        long writer = -1;
+        int writes = 0;
+        for (size_t p = 0; p < program && lane >= LANE_SELECT_CONSTANT;) {
+            gcn_instruction w;
+            if (gcn_decode(code + p, program - p, &w) || !w.name) break;
+            if (w.encoding == GCN_VOP2 && !strcmp(w.name, "v_writelane_b32") && spill_lane_of(code + p) == lane &&
+                OPERAND_VGPR + ((code[p] >> 17) & 0xff) == vgpr_field)
+                writes++, writer = (long)p;
+            p += w.dwords;
+        }
+        if (writes != 1 || writer > reader || (code[writer] & 0x1ff) != pointer + d) return -1;
+        if (writer > spilled) spilled = writer;
+    }
+    return spilled;
+}
+
 /* A descriptor restored from SGPR spill slots (spill_lane): each of its SGPRs last written, before the use
    at dword `at`, by a v_readlane_b32 of a constant lane, whose slot one v_writelane_b32 in the whole program
    fills, before it, from s[source + d] for the descriptor's dword d. Its origin is then that of s[source :
@@ -3418,12 +3451,14 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
     const size_t checked_end = loops_to_load && last_loop_back > (size_t)writer ? last_loop_back : (size_t)writer;
+    /* writes to a pointer spilled and restored before the load (pointer_spilled_at) are undone after the spill */
+    const long spilled = loops_to_load ? -1 : pointer_spilled_at(code, program, callee, (size_t)writer, pointer);
     for (size_t p = 0; p < checked_end;) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
-        const int the_load = p == (size_t)writer && !loops_to_load;
-        if (writes_sgprs(code + p, &before, callee, pointer, 2) && !the_load) {
+        const int the_load = p == (size_t)writer && !loops_to_load, undone = spilled >= 0 && (long)p > spilled;
+        if (writes_sgprs(code + p, &before, callee, pointer, 2) && !the_load && !undone) {
             snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded through s[%u:%u], which the program writes (%s at dword %zu): "
                      "not done yet", first, first + width - 1, pointer, pointer + 1, before.name, p);
             return -1;
