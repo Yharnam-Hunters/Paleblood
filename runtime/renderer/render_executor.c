@@ -235,6 +235,14 @@ typedef struct {
     metadata_state htile;
 } depth_entry;
 
+/* The bytes of a depth target's depth texel, as its memory holds it and a copy of its depth aspect gives
+   it: 2 for 16-bit unorm depth, 4 for 32-bit float depth, 0 for a stencil-only target. */
+static unsigned depth_texel_bytes(VkFormat format)
+{
+    if (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D16_UNORM_S8_UINT) return 2;
+    return format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D32_SFLOAT_S8_UINT ? 4 : 0;
+}
+
 /* A render pass and framebuffer for the colour targets in slots 0-7 and a depth target (indices, or -1
    for none). */
 typedef struct {
@@ -2528,11 +2536,20 @@ static void target_drawn(rt_executor *x, target_entry *t)
 
 static uint64_t depth_span(const depth_entry *z);
 static uint64_t depth_layout_span(const depth_entry *z);
+static int tile_copy_moves(const rt_executor *x, unsigned bytes);
+
+/* Whether a depth target's depth is written back to its memory (write_back_depths): 16-bit and 32-bit
+   depth, when the GPU copy moves elements of that size. */
+static int depth_written_back(const rt_executor *x, const depth_entry *z)
+{
+    const unsigned bytes = depth_texel_bytes(z->format);
+    return bytes && tile_copy_moves(x, bytes);
+}
 
 static void depth_drawn(rt_executor *x, depth_entry *z)
 {
     z->drawn = 1, z->unwritten = 1, z->drawn_serial++;
-    const int written_back = z->format == VK_FORMAT_D32_SFLOAT || z->format == VK_FORMAT_D32_SFLOAT_S8_UINT; /* write_back_depths */
+    const int written_back = depth_written_back(x, z);
     if (!z->guarded && x->guard && written_back) z->guarded = x->guard(z->z_address, depth_span(z)) == 0;
 }
 
@@ -2834,7 +2851,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
        back reaches its own memory */
     enum { SLICE_TILE_MAX_MASK = 0x3fffff, TILE_ELEMENTS = 64 };
     const uint64_t slice_elements = (uint64_t)slice * ((r[DEPTH_SLICE] & SLICE_TILE_MAX_MASK) + 1) * TILE_ELEMENTS;
-    const uint32_t depth_bytes = format == VK_FORMAT_S8_UINT ? 0 : format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
+    const uint32_t depth_bytes = depth_texel_bytes(format);
     const uint32_t stencil_bytes = format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : 1;
     const uint64_t z_address = ((uint64_t)r[Z_WRITE_BASE] << 8) + slice_elements * depth_bytes,
                    stencil_address = ((uint64_t)r[STENCIL_WRITE_BASE] << 8) + slice_elements * stencil_bytes;
@@ -2970,17 +2987,19 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
 
 /* Writes the depth of every depth target changed since back to the guest memory under it, laid out by
    its tile mode (runtime/tiling.h): copied into linear rows and tiled into place on the GPU, with the
-   batch, as colour targets are (write_back_targets calls it first). Depth targets of 32-bit floats only,
-   in a layout runtime/tiling.h has; others keep their memory as it was (nothing read it so far). The
-   stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
-/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid
-   out here. Worked out when the depth target is made (depth_layout_span), as a colour target's. */
+   batch, as colour targets are (write_back_targets calls it first). Depth targets of 16-bit unorm or
+   32-bit float depth (depth_written_back), in a layout runtime/tiling.h has; others keep their memory as
+   it was (nothing read it so far). The stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
+/* The bytes of a depth target's depth in memory: its tile mode's size, or its texels' bytes (4 for a
+   stencil-only target) when that is not laid out here. Worked out when the depth target is made
+   (depth_layout_span), as a colour target's. */
 static uint64_t depth_layout_span(const depth_entry *z)
 {
+    const unsigned bytes = depth_texel_bytes(z->format) ? depth_texel_bytes(z->format) : 4;
     rt_tiling layout;
     char reason[160];
-    return rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason) ? (uint64_t)z->width * z->height * 4
-                                                                                                   : rt_tiling_size(&layout, 1);
+    return rt_tiling_layout(z->tile_index, bytes, z->width, z->height, &layout, reason, sizeof reason) ? (uint64_t)z->width * z->height * bytes
+                                                                                                       : rt_tiling_size(&layout, 1);
 }
 
 static uint64_t depth_span(const depth_entry *z)
@@ -2994,13 +3013,14 @@ static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned 
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *z = &x->depths[i];
         if (!z->unwritten) continue;
+        const unsigned bytes = depth_texel_bytes(z->format) ? depth_texel_bytes(z->format) : 4;
         rt_tiling layout;
         char reason[160];
-        const int laid_out = !rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason);
-        const uint64_t span = laid_out ? rt_tiling_size(&layout, 1) : (uint64_t)z->width * z->height * 4;
+        const int laid_out = !rt_tiling_layout(z->tile_index, bytes, z->width, z->height, &layout, reason, sizeof reason);
+        const uint64_t span = laid_out ? rt_tiling_size(&layout, 1) : (uint64_t)z->width * z->height * bytes;
         if (spans && !spans_overlap(spans, span_count, z->z_address, span)) continue;
         z->unwritten = 0;
-        if ((z->format != VK_FORMAT_D32_SFLOAT && z->format != VK_FORMAT_D32_SFLOAT_S8_UINT) || !laid_out) continue;
+        if (!depth_written_back(x, z) || !laid_out) continue;
         if (z->z_address < x->guest_base || z->z_address - x->guest_base > x->size || span > x->size - (z->z_address - x->guest_base))
             return failed(error, error_size, "depth target %#llx is outside the GPU-visible memory", (unsigned long long)z->z_address);
         if (!z->plan.table.buffer && tile_plan_make(x, &z->plan, &layout, z->width, z->height, 1, error, error_size)) return -1;
@@ -4532,7 +4552,8 @@ static int image_from_target(rt_executor *x, image_entry *e, const rt_image_desc
     return 1;
 }
 
-/* The same for a 32-bit image over a depth target's depth drawn since its write-back, laid out the same
+/* The same for an image over a depth target's depth drawn since its write-back, of the depth's texel size
+   (16 or 32 bits), laid out the same
    way (the same address, tiling index and pitch, within slice 0 of the target), as the game reads its
    depth (a shadow map, the scene's depth for the light passes): the depth is copied into the image on the
    GPU through the target's linear rows, again after each new draw, instead of being tiled into the guest
@@ -4541,13 +4562,13 @@ static int image_from_target(rt_executor *x, image_entry *e, const rt_image_desc
 static int image_from_depth(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, uint64_t span, char *error,
                             size_t error_size)
 {
-    if (f->block != 1 || f->bytes != 4 || e->layers != 1 || e->levels != 1 || d->type != RT_IMAGE_2D) return 0;
+    if (f->block != 1 || e->layers != 1 || e->levels != 1 || d->type != RT_IMAGE_2D) return 0;
     depth_entry *z = NULL;
     for (size_t i = 0; i < x->depth_count && !z; i++) {
         depth_entry *o = &x->depths[i];
         if (o->z_address == d->address && o->slice == 0 && o->unwritten) z = o;
     }
-    if (!z || (z->format != VK_FORMAT_D32_SFLOAT && z->format != VK_FORMAT_D32_SFLOAT_S8_UINT) || d->tiling_index != z->tile_index ||
+    if (!z || !depth_texel_bytes(z->format) || f->bytes != depth_texel_bytes(z->format) || d->tiling_index != z->tile_index ||
         d->pitch != z->width || e->width > z->width || e->height > z->height)
         return 0;
     for (size_t i = 0; i < x->target_count; i++) { /* the depth alone holds unwritten texels there */
@@ -4561,7 +4582,7 @@ static int image_from_depth(rt_executor *x, image_entry *e, const rt_image_descr
     if (e->copied_from == z && e->copied_serial == z->drawn_serial) return 1;
     rt_tiling layout;
     char reason[160];
-    if (rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason)) return 0;
+    if (rt_tiling_layout(z->tile_index, f->bytes, z->width, z->height, &layout, reason, sizeof reason)) return 0;
     if (!z->plan.table.buffer && tile_plan_make(x, &z->plan, &layout, z->width, z->height, 1, error, error_size)) return -1;
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
@@ -4836,14 +4857,14 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
     /* a render target's memory is kept current (write_back_targets), so reading it as an image reads that; an
        image a shader writes over a target first takes the target's texels (load_texels: over_target below),
        and the target takes the image's at its next draw (take_written_image) */
-    /* a depth target's 32-bit float depth is written back to its memory (write_back_depths) before an image
-       over it loads (unwritten_target_over), so a shader may read it as an image of the same layout; its
-       stencil is not written back, and nothing writes a depth target's memory as an image */
+    /* a depth target's 16-bit unorm or 32-bit float depth is written back to its memory (write_back_depths)
+       before an image over it loads (unwritten_target_over), so a shader may read it as an image of the same
+       layout and texel size; its stencil is not written back, and nothing writes a depth target's memory as
+       an image */
     for (size_t i = 0; i < x->depth_count; i++) {
         const depth_entry *z = &x->depths[i];
         if (z->z_address != d->address && (!z->stencil_address || z->stencil_address != d->address)) continue; /* 0: no stencil buffer */
-        const int written_back = z->format == VK_FORMAT_D32_SFLOAT || z->format == VK_FORMAT_D32_SFLOAT_S8_UINT;
-        if (z->z_address != d->address || (access & GCN_IMAGE_WRITE) || !written_back || f->bytes != 4 || f->block != 1 ||
+        if (z->z_address != d->address || (access & GCN_IMAGE_WRITE) || !depth_written_back(x, z) || f->bytes != depth_texel_bytes(z->format) || f->block != 1 ||
             d->tiling_index != z->tile_index) {
             failed(error, error_size, "an image at %#llx that is also a depth target (%s, tiling index %u, the depth's %u): not done yet",
                    (unsigned long long)d->address, z->z_address != d->address ? "its stencil" : (access & GCN_IMAGE_WRITE) ? "written" : "read",
