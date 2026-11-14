@@ -80,6 +80,10 @@ recorded from a real game run, so none is `verified`.
 | `0x02416040` | 574 | `menu_text_input_close` | edge-verified | Text input dialog: waits for an open dialog to end, then empties its text and resets the state |
 | `0x024162a0` | 94 | `menu_text_input_open` | edge-verified | Text input dialog: opens the system keyboard dialog with the given settings once no other is open |
 | `0x02416300` | 482 | `menu_text_input_update` | edge-verified | Text input dialog per-frame poll: takes a finished dialog's text (markup characters swapped for glyphs) and how it ended |
+| `0x02d03420` | 46 | `menu_system_text_dialog_status_02d03420` | edge-verified | Dantelion text dialog: the dialog backend's status while the system dialog is open, -1 otherwise (the backend made on first use) |
+| `0x02d03450` | 60 | `menu_system_text_dialog_open_02d03450` | edge-verified | Dantelion text dialog: unless open, asks the dialog backend to open the system dialog with the settings and records the answer as the open flag |
+| `0x02d03490` | 105 | `menu_system_text_dialog_take_text_02d03490` | edge-verified | Dantelion text dialog: once the backend's status is 2 or 3, closes the object and asks the backend for the text; false while closed or running |
+| `0x02d03500` | 26 | `menu_system_text_dialog_set_up_02d03500` | edge-verified | Dantelion text dialog: unless the system dialog is open, copies the settings into the object (0x02d03520) and returns true |
 
 ## Structs and globals
 
