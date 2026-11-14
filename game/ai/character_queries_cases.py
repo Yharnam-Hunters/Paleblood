@@ -444,9 +444,10 @@ TARGET_LISTS = [
     [node(kind=2, priority=1.0, place=(0, 0, 0)), node(kind=2, valid=0, place=(0.1, 0, 0))],
     # Node kind 0x41 is not a target entry (only the low seven bits are compared, against 1).
     [node(priority=1.0, ident=2), node(node_kind=0x41, priority=5.0, ident=3), node(ident=3)],
-    # Just under half a metre, where adding the squares in another order rounds differently.
+    # Just under half a metre, where (x+z)+y or x+(y+z) rounds differently from (x+y)+z.
     [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0)),
-     node(kind=2, place=(0.2291375697, 0.3826622963, 0.2259768248))],
+     node(kind=2, place=(0.2291375697, 0.3826622963, 0.2259768248)),
+     node(kind=2, place=(0.33681029081344604, 0.33434823155403137, 0.15738511085510254))],
     # Each lane alone is within half a metre, together they are not (0.27 squared).
     [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0)), node(kind=2, place=(0.3, 0.3, 0.3), matches=1),
      node(kind=2, place=(0.0, 0.3, 0.3)), node(kind=2, place=(0.3, 0.0, 0.3)), node(kind=2, place=(0.3, 0.3, 0.0))],
