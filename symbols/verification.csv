@@ -113,6 +113,7 @@ character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
+character_gaitem_handle_copy_01e8bae0,recorded,,12,12,0,0,36e8791f83975c74,2026-11-14
 character_gaitem_handle_copy_01e8bae0,edge,,54,54,0,0,36e8791f83975c74,2026-11-13
 character_gaitem_handle_copy_01e8bb70,recorded,,64,64,0,0,36e8791f83975c74,2026-11-14
 character_gaitem_handle_copy_01e8bb70,edge,,54,54,0,0,36e8791f83975c74,2026-11-14
@@ -204,7 +205,8 @@ engine_narrow_string_assign_02a2d8e0,recorded,,66,66,0,0,2a14e8f9aadabcba,2026-1
 engine_narrow_string_assign_02a2d8e0,edge,,29,29,0,0,2a14e8f9aadabcba,2026-11-13
 engine_obj_ins_request_update_019a7090,recorded,,50,50,0,0,a1383b50e0b9446d,2026-11-14
 engine_obj_ins_request_update_019a7090,edge,,21,21,0,0,a1383b50e0b9446d,2026-11-14
-engine_obj_ins_set_registration_01c44210,edge,,22,22,0,0,a1383b50e0b9446d,2026-11-13
+engine_obj_ins_set_registration_01c44210,recorded,,20,20,0,0,a1383b50e0b9446d,2026-11-14
+engine_obj_ins_set_registration_01c44210,edge,,23,23,0,0,a1383b50e0b9446d,2026-11-14
 engine_regular_heap_allocate_02485730,recorded,,200,200,0,0,5fb76586890b3d2a,2026-11-13
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,5fb76586890b3d2a,2026-11-13
 engine_regular_heap_allocate_aligned_02485a60,recorded,,400,400,0,0,729b0b3f1bb7da0b,2026-11-13
@@ -438,6 +440,7 @@ frame_timing_task_batch_add_0143d7c0,edge,,10,10,0,0,0f7b1a925e8b299c,2026-11-13
 frame_timing_task_batch_take_next_0143d760,edge,,14,14,0,0,ed327b76e9bdca03,2026-11-14
 frame_timing_task_clear_items_0143ec40,recorded,,200,200,0,0,2d603cbb0c70b1c4,2026-11-13
 frame_timing_task_clear_items_0143ec40,edge,,14,14,0,0,2d603cbb0c70b1c4,2026-11-13
+frame_timing_task_debug_menu_add_013894f0,recorded,,1,1,0,0,777b1a52583fa7f8,2026-11-14
 frame_timing_task_debug_menu_add_013894f0,edge,,6,6,0,0,777b1a52583fa7f8,2026-11-13
 frame_timing_task_dispatch_0138a370,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_dispatch_0138a370,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
@@ -449,6 +452,7 @@ frame_timing_task_flush_queue_0143e490,edge,,4,4,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_frame_024512a0,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_frame_024512a0,edge,,2,2,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_lookup_0143f720,edge,,36,36,0,0,0f7b1a925e8b299c,2026-11-13
+frame_timing_task_manager_add_01381580,recorded,,6,6,0,0,777b1a52583fa7f8,2026-11-14
 frame_timing_task_manager_add_01381580,edge,,13,13,0,0,777b1a52583fa7f8,2026-11-13
 frame_timing_task_record_close_0143c450,recorded,,51,51,0,0,0f7b1a925e8b299c,2026-11-13
 frame_timing_task_record_close_0143c450,edge,,12,12,0,0,0f7b1a925e8b299c,2026-11-13
@@ -693,6 +697,7 @@ menu_gaitem_select_move_cursor_01ed0dd0,edge,,17,17,0,0,0b11e7c3d7dfcdd7,2026-11
 menu_gaitem_select_text_pair_copy_into_vector_01ed7950,recorded,,6,6,0,0,6086d9a71e809c43,2026-11-14
 menu_gaitem_select_text_pair_copy_into_vector_01ed7950,edge,,16,16,0,0,6086d9a71e809c43,2026-11-14
 menu_gaitem_status_entry_copy,edge,,10,10,0,0,e6a0e8f8fb2451f9,2026-11-14
+menu_gaitem_status_label_push_back_01f2c200,recorded,,8,8,0,0,6086d9a71e809c43,2026-11-14
 menu_gaitem_status_label_push_back_01f2c200,edge,,10,10,0,0,6086d9a71e809c43,2026-11-14
 menu_heap_adapter_free_023411d0,edge,,6,6,0,0,99d14ad81370e4cc,2026-11-14
 menu_heap_adapter_reallocate_02341330,edge,,14,14,0,0,99d14ad81370e4cc,2026-11-14

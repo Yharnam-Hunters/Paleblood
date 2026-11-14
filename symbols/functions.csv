@@ -65,10 +65,10 @@ address,size,name,system,status,notes
 0x0132c590,49,engine_release_owner_storage,engine,edge-verified,Free nonnull owner storage through its allocator before clearing the field; wider role unknown; caller 0x02713870
 0x0132c6c0,81,engine_resize_owner_storage,engine,edge-verified,Free old owner storage before clearing; reload allocator after callback and allocate requested low32 byte count aligned to 16; caller 0x02713870
 0x0135d810,81,ai_debug_draw_axes_0135d810,ai,edge-verified,"Takes the renderer lock (+0x28 slot 3, wait forever), calls renderer slot 5, draws the axis frame into the current slot (0x0135ec80), then tail-calls the lock release (slot 5)"
-0x01381580,139,frame_timing_task_manager_add_01381580,frame_timing,edge-verified,"Task add: with both wait objects set: state 2 and hand to 0x013e7170; else group in bits 2-4 of +0x79, queue (manager+0xd8)[group] add, optional order after"
+0x01381580,139,frame_timing_task_manager_add_01381580,frame_timing,verified,"Task add: with both wait objects set: state 2 and hand to 0x013e7170; else group in bits 2-4 of +0x79, queue (manager+0xd8)[group] add, optional order after"
 0x01388c60,16,frame_timing_task_run_all_01388c60,frame_timing,verified,task manager: run the tasks of every group (0x01388c70 with -1)
 0x01388c70,171,frame_timing_task_run_01388c70,frame_timing,verified,"task manager run: prepare the frame; dispatch through +0x40 (virtual +0x30) with +0x38 set; finish"
-0x013894f0,108,frame_timing_task_debug_menu_add_013894f0,frame_timing,edge-verified,"Adds the ""Task"" debug menu node once (+0x58) and its settings node with the +0x39 switch; the final call (task manager +0x30, node) goes to an empty leaf"
+0x013894f0,108,frame_timing_task_debug_menu_add_013894f0,frame_timing,verified,"Adds the ""Task"" debug menu node once (+0x58) and its settings node with the +0x39 switch; the final call (task manager +0x30, node) goes to an empty leaf"
 0x01389df0,19,frame_timing_task_entry_count_01389df0,frame_timing,edge-verified,"Number of the dispatcher's registered task entries (vector of 0x88-byte entries), cut to 32 bits"
 0x01389e10,59,frame_timing_task_entry_at_01389e10,frame_timing,edge-verified,Registered task entry at an index; null for a negative index or one past the end (unsigned count)
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
@@ -287,7 +287,7 @@ address,size,name,system,status,notes
 0x019f8d70,217,param_protector_id_array_push_back_019f8d70,param,edge-verified,"Id array (int32) push_back: grow 1.5x when full (0x02bc1ca0), re-find an id inside the array, store unless no buffer; the end moves on regardless"
 0x01b0d5f0,217,param_weapon_id_array_push_back_01b0d5f0,param,edge-verified,"Id array (int32) push_back: grow 1.5x when full (0x016da780), re-find an id inside the array, store unless no buffer; the end moves on regardless"
 0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners"
-0x01c44210,212,engine_obj_ins_set_registration_01c44210,engine,edge-verified,"ObjInsUpdateHelper: move a registration to a new item in the owner's pointer array (swap-remove the old, append, grow 0x00819100 when full)"
+0x01c44210,212,engine_obj_ins_set_registration_01c44210,engine,verified,"ObjInsUpdateHelper: move a registration to a new item in the owner's pointer array (swap-remove the old, append, grow 0x00819100 when full)"
 0x01c92e90,372,param_lock_cam_range,param,edge-verified,"SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924"
 0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event; points stat regeneration (stamina-like; -50..max); time-step descriptor; the 30/60 FPS patches fix its frame time"
 0x01cd92b0,218,character_ai_display_update_01cd92b0,character,edge-verified,"Chr +0x1f8 module: if its ready check (0x01cd9390) passes, gives ai_debug_set_position the two positions of the state module; if it still passes, points its two objects at its markers"
@@ -296,7 +296,7 @@ address,size,name,system,status,notes
 0x01e59250,477,character_event_request_update_01e59250,character,edge-verified,"Chr modules +0x58: fires the pending numbered event (formatted wide string on the thread heap) unless suppressed, clears it, and clears chr +0x20 field +4 for one record id"
 0x01e5c440,282,character_counters_refill_01e5c440,character,edge-verified,"Stepped module: five counters gain a global per-second rate * frame time each (fractions carried, truncation), clamped to 0..their maximum"
 0x01e88da0,242,character_gaitem_resolve_handle_01e88da0,character,verified,"SprjGaitem handle resolve through the manager's index table (slot handle; zero when out of range); reports a missing table / busy / not ready and goes on"
-0x01e8bae0,132,character_gaitem_handle_copy_01e8bae0,character,edge-verified,"SprjGaitem handle copy: one more reference on the live slot it names (bit 23 managed, low 16 bits slot index)"
+0x01e8bae0,132,character_gaitem_handle_copy_01e8bae0,character,verified,"SprjGaitem handle copy: one more reference on the live slot it names (bit 23 managed, low 16 bits slot index)"
 0x01e8bb70,132,character_gaitem_handle_copy_01e8bb70,character,verified,"SprjGaitem handle copy, second copy of the same code"
 0x01e8bc00,164,character_gaitem_handle_release_01e8bc00,character,verified,"SprjGaitem handle release: one reference less on its live slot; the last frees the item (0x01e86e60)"
 0x01e8bcb0,202,character_gaitem_handle_move_assign_01e8bcb0,character,verified,"SprjGaitem handle move assignment: releases the old handle, takes the source's, clears the source"
@@ -329,7 +329,7 @@ address,size,name,system,status,notes
 0x01f03210,307,frame_timing_holygrail_wait_for_dungeon_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate (event flags 9020..9026 pick it) one fixed step while busy; then report whether it is in a dungeon mode; not reached by the routes yet"
 0x01f03680,296,frame_timing_holygrail_wait_for_ritual_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate one fixed step while busy; then report whether it is in a ritual mode; not reached by the routes yet"
 0x01f1bca0,235,menu_gaitem_status_entry_copy,menu,edge-verified,"GaitemStatusDialog list entry copy of entries[index] (0x90 B: two words and wide strings, a ref-counted pointer at +0x80 (count +8 up), a byte)"
-0x01f2c200,196,menu_gaitem_status_label_push_back_01f2c200,menu,edge-verified,"GaitemStatusDialog two-slot label vector push_back (kind byte, word, wide string; count at +0x98); full: reported, still appended"
+0x01f2c200,196,menu_gaitem_status_label_push_back_01f2c200,menu,verified,"GaitemStatusDialog two-slot label vector push_back (kind byte, word, wide string; count at +0x98); full: reported, still appended"
 0x01f6a9f0,121,frame_timing_until_idle_01f6a9f0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
 0x01f82cc0,457,param_find_rows_new_menu_color_table,param,edge-verified,NewMenuColorTableParam run of consecutive ids from an id: first row (a built-in default row when none) and count
 0x01f83130,457,param_find_rows_char_make_menu_list_item,param,edge-verified,Character creation menu list items: first CharMakeMenuListItemParam row of an id and the count of rows with consecutive ids after it
@@ -490,7 +490,7 @@ address,size,name,system,status,notes
 0x0232c930,283,param_find_row_reinforce_param_weapon,param,edge-verified,SoloParamRepository row lookup for ReinforceParamWeapon (type 4): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023392d0,1121,engine_scaleform_heap_reallocate_023392d0,engine,edge-verified,Scaleform MemoryHeapPT realloc: small-page block resized in place under 0x800 (else moved) / large block found in the page manager's radix tree; heap lock then page-manager lock
 0x0233a7f0,803,engine_scaleform_heap_bin_allocate_0233a7f0,engine,edge-verified,Scaleform small-block allocation: bins' best fit; page from the block or its page header; rest binned; bitset marked
-0x0233ab20,680,engine_scaleform_heap_bin_free_0233ab20,engine,edge-verified,Scaleform small-block free: length from the bitset; a free neighbour unit tail-jumps to the merge; else to the head of its bin
+0x0233ab20,680,engine_scaleform_heap_bin_free_0233ab20,engine,verified,Scaleform small-block free: length from the bitset; a free neighbour unit tail-jumps to the merge; else to the head of its bin
 0x0233ae40,1188,engine_scaleform_heap_bin_allocate_aligned_0233ae40,engine,edge-verified,Scaleform aligned small-block allocation: aligned best fit; front and back remainders binned; bitset marked
 0x0233b2f0,1551,engine_scaleform_heap_bin_reallocate_0233b2f0,engine,edge-verified,Scaleform in-place small-block resize: shrink binning the end (joined with a free next block); grow from a free next block within the page half; bin unlink moves the head to prev
 0x0233bbe0,313,engine_scaleform_heap_add_page_0233bbe0,engine,edge-verified,"Scaleform engine page add: limit handler asked when a page would pass the limit; under the page-manager lock a page gets its table location, goes to the bins and the page ring; retry set"
@@ -542,7 +542,7 @@ address,size,name,system,status,notes
 0x0246cf50,549,loading_disk_device_resolve_root_0246cf50,loading,verified,Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title"
 0x0246d180,558,loading_disk_device_resolve_alias_0246d180,loading,verified,Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80)
 0x0246d550,530,loading_disk_device_open_0246d550,loading,edge-verified,Ps4DiskFileDevice open: keep the requested path (thread heap); resolve aliases/roots in rounds; open only if an alias matched; through the named device or each unnamed one; under the device lock
-0x0246e3d0,573,loading_disk_file_device_locate_0246e3d0,loading,edge-verified,"Where a path is found: resolves a copy of its mount prefixes (rounds or roots only), asks the named device (slot 0x20) or each unnamed one until not 2; under the device lock"
+0x0246e3d0,573,loading_disk_file_device_locate_0246e3d0,loading,verified,"Where a path is found: resolves a copy of its mount prefixes (rounds or roots only), asks the named device (slot 0x20) or each unnamed one until not 2; under the device lock"
 0x0246e630,467,loading_disk_device_find_named_device_0246e630,loading,verified,Ps4DiskFileDevice: device registered under the path mount name (token at ":"; wcslen+wcsncmp); under the device lock
 0x0246e810,390,loading_disk_device_open_on_device_0246e810,loading,edge-verified,Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy
 0x0246e9a0,714,loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,edge-verified,Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock
