@@ -375,6 +375,22 @@ int self_test()
     check(log.incomplete != nullptr && r.rax == 6 && trace_stale_counter == 6,
           "written memory changed during the call: incomplete, and the call still ran");
     rt_trace_log_free(&log);
+    /* A word read only through `test m, r` is an input. */
+    static int32_t tested = 6;
+    r = trace(0x800, arguments(reinterpret_cast<uint64_t>(&tested)), log);
+    check(!log.incomplete && r.rax == 1 && read_input(log, &tested, 6), "test m, r: the word it reads is an input");
+    rt_trace_log_free(&log);
+    /* Entry relocation: a short je past the copied bytes moves in its 32-bit form and the
+       relocated entry runs the function; one into the copied bytes does not relocate. */
+    size_t copied = 0, written = 0;
+    const bool widened = rt_trace_relocate(at(0x780), 14, image + 0x1900, &copied, &written) == 0 &&
+                         copied == 17 && written == 17 + 4 + 14;
+    check(widened, "relocate: a short je past the copied bytes is widened");
+    auto *relocated_nonzero = reinterpret_cast<int32_t (*)(int32_t)>(image + 0x1900);
+    check(widened && relocated_nonzero(0) == 0 && relocated_nonzero(-5) == 1,
+          "relocate: the relocated entry runs the function");
+    check(rt_trace_relocate(at(0x7c0), 14, image + 0x1900, &copied, &written) != 0,
+          "relocate: a short je into the copied bytes is refused");
     setenv("BB_TRACE_STEP_LIMIT", "100", 1);
     trace(0x240, arguments(), log);
     check(log.incomplete != nullptr, "instruction limit: incomplete");

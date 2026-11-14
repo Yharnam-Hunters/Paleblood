@@ -120,9 +120,10 @@ enum { RT_RELOCATE_MAX = 64 };   /* bytes of relocated entry code, including the
 /* Copies whole instructions from `src` covering at least `min_bytes` to `dst` (writable, and
    within 2 GB of `src`), rewriting RIP-relative operands and 32-bit relative calls and jumps to
    keep their targets, then appends an absolute jump back to the first byte not copied. Writes
-   the number of source bytes copied to *copied and the bytes written to *written. Returns -1,
-   copying nothing, when an instruction cannot be moved (a short branch, a branch into the copied
-   bytes, an operand out of reach) or decoding fails. */
+   the number of source bytes copied to *copied and the bytes written to *written. A short
+   conditional or unconditional jump is rewritten in its 32-bit form. Returns -1, copying nothing,
+   when an instruction cannot be moved (loop or jrcxz, a branch into the copied bytes, an operand
+   out of reach) or decoding fails. */
 int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copied, size_t *written);
 
 /* 1 when a direct branch inside the function [fn, fn + size) targets (fn, fn + n): the first n

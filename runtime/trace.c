@@ -757,8 +757,11 @@ static void step(trace_state *t, ucontext_t *uc)
     }
     for (unsigned i = 0; i < x->op_count; i++) {
         const cs_x86_op *op = &x->operands[i];
-        if (op->type != X86_OP_MEM || !(op->access & (CS_AC_READ | CS_AC_WRITE)))
+        if (op->type != X86_OP_MEM)
             continue;
+        /* Capstone marks some memory sources with no access at all (`test m, r`, a bitmap test
+           in the heaps); they are reads. lea, nop and prefetch never reach here (no_access). */
+        const uint8_t access = op->access & (CS_AC_READ | CS_AC_WRITE) ? op->access : CS_AC_READ;
         /* gs is the guest's thread pointer block; fs would be the host's own. */
         uint64_t segment_base = 0;
         if (op->mem.segment == X86_REG_GS && t->thread_base)
@@ -784,7 +787,7 @@ static void step(trace_state *t, ucontext_t *uc)
         if (op->mem.base != X86_REG_INVALID && op->mem.base != X86_REG_RIP && op->mem.base != X86_REG_RSP &&
             (note_link(t, base, ea) || (i < 8 && base_origin[i] && note_link(t, base_origin[i], ea))))
             return stop(t, uc, "too many far reaches from base pointers");
-        if (op->access & CS_AC_READ) {
+        if (access & CS_AC_READ) {
             int input = 0;
             const int noted = note(t, ea, n, 0, &input);
             if (noted == NOTE_CHANGED)
@@ -797,7 +800,7 @@ static void step(trace_state *t, ucontext_t *uc)
                 t->qword[t->qwords++] = ea;
             }
         }
-        if (op->access & CS_AC_WRITE) {
+        if (access & CS_AC_WRITE) {
             if (note(t, ea, n, 1, NULL) || t->pending >= PENDING_LIMIT)
                 return stop(t, uc, "a write the tracer cannot note (limit)");
             t->pending_addr[t->pending] = ea;
@@ -1044,29 +1047,41 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
     size_t n = 0, done = 0;
     int ok = in != NULL;
     const uint64_t base = (uint64_t)(uintptr_t)src, to = (uint64_t)(uintptr_t)dst;
+    uint64_t targets[RT_RELOCATE_MAX];     /* the copied branches' targets, checked at the end */
+    size_t branches = 0;
     while (ok && done < min_bytes) {
         const uint8_t *code = (const uint8_t *)src + done;
         size_t size = 16;
         uint64_t address = base + done;
-        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 14 > sizeof out) {
+        /* + 4: a short branch grows to its 32-bit form; + 14: the jump back. */
+        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 4 + 14 > sizeof out) {
             ok = 0;
             break;
         }
         uint8_t *p = out + n;
         memcpy(p, in->bytes, in->size);
+        size_t length = in->size;
         const cs_x86 *x = &in->detail->x86;
         const int64_t shift = (int64_t)(base + done) - (int64_t)(to + n);
         if (is_relative_branch(in)) {
             const uint64_t target = branch_target(in);
-            /* Only rel32 moves; a branch into the copied bytes would run the hook's jump. */
-            if (x->encoding.imm_size != 4 || (target > base && target < base + min_bytes + 16)) {
-                ok = 0;
+            size_t imm_offset = x->encoding.imm_offset;
+            if (x->encoding.imm_size == 1 && in->size == 2 && (in->bytes[0] & 0xf0) == 0x70) {
+                /* jcc rel8 -> jcc rel32 (0f 80+cc) */
+                p[0] = 0x0f, p[1] = (uint8_t)(0x80 | (in->bytes[0] & 0x0f));
+                length = 6, imm_offset = 2;
+            } else if (x->encoding.imm_size == 1 && in->size == 2 && in->bytes[0] == 0xeb) {
+                p[0] = 0xe9;                     /* jmp rel8 -> jmp rel32 */
+                length = 5, imm_offset = 1;
+            } else if (x->encoding.imm_size != 4) {
+                ok = 0;                          /* loop, jrcxz: no 32-bit form */
                 break;
             }
-            const int64_t rel = (int64_t)target - (int64_t)(to + n + in->size);
+            const int64_t rel = (int64_t)target - (int64_t)(to + n + length);
             if (!fits_int32(rel)) { ok = 0; break; }
             const int32_t r32 = (int32_t)rel;
-            memcpy(p + x->encoding.imm_offset, &r32, 4);
+            memcpy(p + imm_offset, &r32, 4);
+            targets[branches++] = target;
         }
         for (uint8_t i = 0; ok && i < x->op_count; i++) {
             if (x->operands[i].type != X86_OP_MEM || x->operands[i].mem.base != X86_REG_RIP) continue;
@@ -1078,9 +1093,12 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
             disp = (int32_t)moved;
             memcpy(p + x->encoding.disp_offset, &disp, 4);
         }
-        n += in->size;
+        n += length;
         done += in->size;
     }
+    /* A branch into the copied bytes would run the hook's jump. */
+    for (size_t i = 0; ok && i < branches; i++)
+        if (targets[i] > base && targets[i] < base + done) ok = 0;
     if (ok) {
         /* jmp qword ptr [rip]; .quad src + done */
         const uint8_t jump[6] = {0xff, 0x25, 0, 0, 0, 0};

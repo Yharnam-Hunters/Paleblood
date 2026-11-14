@@ -287,6 +287,42 @@ usleep_thunk:
     pop %r12
     pop %rbx
     ret
+/* 0x780: int32_t nonzero(int32_t x) { return x != 0; } with a short je in its first 14 bytes,
+   whose target lies past them: its entry relocates, the je in its 32-bit form. */
+    .org 0x780
+    push %rbp
+    mov %rsp, %rbp
+    push %rbx
+    push %rax
+    mov %edi, %ebx
+    test %edi, %edi
+    je 1f
+    mov $1, %eax
+    jmp 2f
+1:  xor %eax, %eax
+2:  add $8, %rsp
+    pop %rbx
+    pop %rbp
+    ret
+/* 0x7c0: int32_t plus_three(int32_t x) with a short je into its first 14 bytes: its entry does
+   not relocate (the je would run the hook's jump). */
+    .org 0x7c0
+    test %edi, %edi
+    je 1f
+    nop
+1:  mov %edi, %eax
+    add $1, %eax
+    add $1, %eax
+    add $1, %eax
+    ret
+/* 0x800: int32_t bit_set(const int32_t *p) { return (*p & 4) != 0; } reading *p only through
+   `test m, r`, whose memory operand Capstone marks with no access: still an input. */
+    .org 0x800
+    xor %eax, %eax
+    mov $4, %ecx
+    test %ecx, (%rdi)
+    setne %al
+    ret
     .org 0x1000
 global:
     .long 1000
@@ -312,6 +348,10 @@ usleep_slot:
 /* 0x1838: thread_counter's variable, 4 KiB below the thread pointer (TLS variant II). */
 tls_offset:
     .quad -0x1000
+/* 0x1900: room for the relocated entries of 0x780 and 0x7c0 (within reach of the image). */
+    .org 0x1900
+relocated_entry:
+    .skip 64
     .org 0x2000
     .globl capture_trace_guest_end
 capture_trace_guest_end:

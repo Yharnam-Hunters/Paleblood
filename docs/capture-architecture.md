@@ -14,7 +14,9 @@ calling thread with the trap flag set, on a private stack holding a copy of the 
 arguments. The kernel delivers SIGTRAP after each instruction; the handler decodes the next
 instruction with Capstone before it runs, computes each memory operand's effective address from
 the saved registers, and notes the bytes: the first value of a byte read before it is written is an
-input, and every written byte is noted so the case gives it somewhere to land. String instructions
+input, and every written byte is noted so the case gives it somewhere to land. A memory operand
+Capstone marks with no access at all (the source of `test m, r`, as a heap's bitmap test has one)
+counts as a read. String instructions
 with `rep` cover `rcx` elements in the direction flag's direction. The function's own frame is left
 out; reads of its stack arguments are counted. The handler allocates nothing (tables are mapped
 before the call) and reads values with `process_vm_readv` on its own process, so an address that
@@ -87,7 +89,9 @@ arguments, a float argument and result, a call between guest functions, `rep mov
 4 KiB apart through one pointer, and imports that leave a register pointing at memory they change,
 write through two registers at once, change memory far past what they wrote, or write a zero into
 the frame, a table index reached through a computed pointer (add and lea forms, and a register a
-load replaced), and a sleep whose length is compared. It checks
+load replaced), and a sleep whose length is compared; and an entry whose short `je` past the copied
+bytes relocates in its 32-bit form and runs, while one into the copied bytes does not; and a word
+read only through `test m, r` is an input. It checks
 the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
 (one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
 read it), and that an `xmm2` read, an `fs` access, a call into native code, an input changed
@@ -102,12 +106,14 @@ fails.
 before installing it, while the original is still intact:
 
 1. The original's first instructions (at least the 14 bytes the hook's jump overwrites) are copied
-   into a block mapped within reach of the image, with RIP-relative operands and 32-bit relative
-   calls and jumps rewritten to keep their targets, followed by a jump back into the rest of the
-   original (`rt_trace_relocate`).
+   into a block mapped within reach of the image, with RIP-relative operands and relative calls
+   and jumps rewritten to keep their targets (a short `jcc` or `jmp` in its 32-bit form, as an early
+   null check has one), followed by a jump back into the rest of the original
+   (`rt_trace_relocate`).
 2. A function whose own branches jump back into those first bytes (a loop at its very start) is not
-   recorded: its original can no longer run once hooked (`rt_trace_branches_into`). Nor is one that
-   short branches or out-of-reach operands keep from relocating, or one without a return class.
+   recorded: its original can no longer run once hooked (`rt_trace_branches_into`). Nor is one whose
+   copied bytes branch into themselves, hold a `loop` or `jrcxz` (no 32-bit form) or an
+   out-of-reach operand, or one without a return class.
 3. The hook's target becomes a small thunk that loads the hook's record and enters
    `rt_capture_entry`, which saves every argument register (and `al`, for variadic calls) and the
    caller's stack pointer, then asks `rt_capture_dispatch` what to do.
