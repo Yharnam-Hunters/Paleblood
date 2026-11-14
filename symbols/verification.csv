@@ -1,8 +1,11 @@
 function,cases,option,total,passed,failed,quarantined,source,date
+ai_character_flag_module_set,recorded,,46,46,0,0,f963cbb2620dee66,2026-11-13
 ai_character_flag_module_set,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
+ai_character_gather_effect_states,recorded,,40,40,0,0,f963cbb2620dee66,2026-11-13
 ai_character_gather_effect_states,edge,,31,31,0,0,f963cbb2620dee66,2026-11-13
 ai_character_has_effect_state,edge,,71,71,0,0,f963cbb2620dee66,2026-11-13
 ai_character_id,edge,,7,7,0,0,f963cbb2620dee66,2026-11-13
+ai_character_link_ids,recorded,,69,69,0,0,f963cbb2620dee66,2026-11-13
 ai_character_link_ids,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
 ai_character_negated_third_column,edge,,6,6,0,0,f963cbb2620dee66,2026-11-13
 ai_character_ready_check,edge,,61,61,0,0,f963cbb2620dee66,2026-11-13
@@ -22,6 +25,7 @@ ai_func_get_sp,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_battle_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_caution_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
+ai_func_is_change_state,recorded,,31,31,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_change_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_find_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_finish_timer,edge,,76,76,0,0,6e8620fd37a797bc,2026-11-13
@@ -44,6 +48,7 @@ ai_hk_frame_update_0222bc10,edge,30,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,60,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_is_inside_direction,edge,,442,442,0,0,c6caf9cb1a9ffc34,2026-11-13
+ai_pending_event_fire,recorded,,33,33,0,0,f963cbb2620dee66,2026-11-13
 ai_pending_event_fire,edge,,21,21,0,0,f963cbb2620dee66,2026-11-13
 ai_perception_target_visible,edge,,109,109,0,0,c6caf9cb1a9ffc34,2026-11-13
 ai_target_list_mark_main_matches,edge,,12,12,0,0,f963cbb2620dee66,2026-11-13
