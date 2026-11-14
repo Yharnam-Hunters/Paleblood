@@ -896,6 +896,26 @@ static const uint32_t pixel_face_bits[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A pixel shader that stores to memory: after a scalar loop of 2^20 steps (a multiply-add chain the
+   compiler cannot fold away, so the store comes late), every pixel stores 2.0 (or the next float up, by
+   the chain's low bit) at byte 16 of the buffer in s[4:7], and exports white. */
+static const uint32_t pixel_late_store[] = {
+    0xbe880380, /*  0: s_mov_b32 s8, 0 */
+    0xbe8903ff, 0x12345678, /*  1: s_mov_b32 s9, 0x12345678 */
+    0x9309ff09, 0x0019660d, /*  3: s_mul_i32 s9, s9, 0x19660d */
+    0x8009ff09, 0x3c6ef35f, /*  5: s_add_u32 s9, s9, 0x3c6ef35f */
+    0x80088108, /*  7: s_add_u32 s8, s8, 1 */
+    0xbf0aff08, 0x00100000, /*  8: s_cmp_lt_u32 s8, 0x100000 */
+    0xbf85fff8, /* 10: s_cbranch_scc1 -8 (to 3) */
+    0x87098109, /* 11: s_and_b32 s9, s9, 1 */
+    0x8809f409, /* 12: s_or_b32 s9, s9, 2.0 */
+    0x7e020209, /* 13: v_mov_b32_e32 v1, s9 */
+    0xe0700010, 0x80010100, /* 14: buffer_store_dword v1, off, s[4:7], 0 offset:16 */
+    0x7e0402f2, /* 16: v_mov_b32_e32 v2, 1.0 */
+    0xf800180f, 0x02020202, /* 17: exp mrt0, v2, v2, v2, v2 done vm */
+    0xbf810000, /* 19: s_endpgm */
+};
+
 /* pixel_color writing its colour to colour targets 0 and 2 (two exports, the second done). */
 static const uint32_t pixel_color_two_targets[] = {
     0xbefc0300, /* s_mov_b32 m0, s0 */
