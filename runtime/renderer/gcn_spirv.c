@@ -2632,6 +2632,8 @@ static void instance_registers(translator *t, const stage_layout *layout)
 }
 static void geometry_registers(translator *t, const stage_layout *layout);
 
+/* The starting registers: user data in the first SGPRs, the workgroup index, and the enabled
+   thread-ID VGPRs starting at v0 for compute (stage-specific inputs for vertex and pixel). */
 static void starting_registers(translator *t, const stage_layout *layout)
 {
     t->writing = 1; /* the hardware's starting values, not the program's reads or writes */

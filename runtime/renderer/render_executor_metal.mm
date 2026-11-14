@@ -1148,8 +1148,6 @@ static int shader_runtime_stop(rt_executor *x, char *error, size_t size)
             stop & 7, stop & 0x80 ? "store" : "load", stop >> 8 & 15, stop >> 4 & 7, stop & 8 ? ", nonidentity swizzle" : "");
     if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
         return failed(error, size, "shader runtime stop: VCC lane mask is unknown after a scalar half write");
-    if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_IMAGE_RANGE)
-        return failed(error,size,"shader runtime stop: image access is outside its view");
     if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_WAVE_PC)
         return failed(error, size, "shader runtime stop: logical wave invocations disagree on the program counter");
     if (stop) return failed(error, size, "shader runtime stop with unknown code %#x", stop);
@@ -1218,7 +1216,7 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : d.type == RT_IMAGE_3D ? GCN_IMAGE_3D : GCN_IMAGE_2D,
             d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || d.type == RT_IMAGE_CUBE,format->type,format->components,0,0,
-            format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0};
+            format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0,0,0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],&out.volumes[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {
