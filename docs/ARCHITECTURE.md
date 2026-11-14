@@ -68,7 +68,7 @@ losing the current run capability. The project-owned runtime roadmap is:
    macOS support (Rosetta on Apple Silicon) is in progress, and its code must not affect Linux.
 
 How far the executable boots on the runtime is measured by the boot harness (`runtime/boot.c`,
-`tools/boot.py`) and shown in the README; the work is split into claimable issues per system
+`tools/boot.py`) and shown in [STATUS.md](../STATUS.md); the work is split into claimable issues per system
 call group (label `runtime`).
 
 ## Progress

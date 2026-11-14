@@ -137,7 +137,7 @@ typedef struct {
     decoded_sound sounds[AUDIO_AHEAD];
     int picture_head, picture_count, sound_head, sound_count;
     int video_ended, audio_ended, looping, started, paused, stopped, stop_reported;
-    uint64_t loop_offset_ms, paused_ms;
+    uint64_t loop_offset_ms, paused_ns;
     struct timespec start, pause_start;
     pthread_t decoder;
     int decoder_running, quit;
@@ -147,20 +147,22 @@ typedef struct {
 static pthread_mutex_t players_lock = PTHREAD_MUTEX_INITIALIZER;
 static char path_buffer[4096]; /* guest stacks are small: the host path is built here, under players_lock */
 
-static uint64_t elapsed_ms(const struct timespec *since)
+static uint64_t nanoseconds_between(const struct timespec *from, const struct timespec *to)
 {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (uint64_t)(now.tv_sec - since->tv_sec) * 1000 + (uint64_t)((now.tv_nsec - since->tv_nsec) / 1000000);
+    return (uint64_t)((int64_t)(to->tv_sec - from->tv_sec) * 1000000000 + (to->tv_nsec - from->tv_nsec));
 }
 
-/* The movie's clock: milliseconds played since Start, standing still while paused. */
+/* The movie's clock: milliseconds played since Start, standing still while paused. It is read at one
+   instant: the host's clock now, or the moment of the pause while paused, so a paused clock gives the
+   same value at every read (two reads of the host's clock, one for the time since Start and one for
+   the time since the pause, drift apart by however long the thread waited between them). */
 static uint64_t clock_ms(const player *p)
 {
     if (!p->started) return 0;
-    const uint64_t total = elapsed_ms(&p->start);
-    const uint64_t paused = p->paused_ms + (p->paused ? elapsed_ms(&p->pause_start) : 0);
-    return total > paused ? total - paused : 0;
+    struct timespec at = p->pause_start;
+    if (!p->paused) clock_gettime(CLOCK_MONOTONIC, &at);
+    const uint64_t total = nanoseconds_between(&p->start, &at);
+    return total > p->paused_ns ? (total - p->paused_ns) / 1000000 : 0;
 }
 
 static player *checked(const char *fn, void *handle)
@@ -488,7 +490,9 @@ static int32_t player_resume(void *handle)
     pthread_mutex_lock(&p->lock);
     const int changed = p->paused;
     if (changed) {
-        p->paused_ms += elapsed_ms(&p->pause_start);
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        p->paused_ns += nanoseconds_between(&p->pause_start, &now);
         p->paused = 0;
     }
     pthread_mutex_unlock(&p->lock);
