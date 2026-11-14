@@ -53,7 +53,7 @@ int main(int argc, char **argv)
             if (cooperative[at+3]==SPV_SCOPE_DEVICE) device=cooperative[at+2];
             if (cooperative[at+3]==0) relaxed=cooperative[at+2];
             if (cooperative[at+3]==SPV_SCOPE_WORKGROUP) scope=cooperative[at+2];
-            if (cooperative[at+3]==SPV_MEMORY_ACQUIRE_RELEASE_WORKGROUP) semantics=cooperative[at+2];
+            if (cooperative[at+3]==(SPV_SEMANTICS_ACQUIRE_RELEASE | SPV_SEMANTICS_WORKGROUP_MEMORY)) semantics=cooperative[at+2];
         }
     }
     CHECK(scope && semantics && device && relaxed);
