@@ -343,6 +343,22 @@ leaf_field:
     add $1, %eax
     ret
 
+/* 0x8c0: int32_t store_reread(float *p, uint8_t *flag)
+   { *p += *p; int32_t v = (int32_t)*p; *flag = v != 0; return v + *flag; }
+   Stores through a VEX `vmovss m, xmm` and a `seta m` (after `test`, the same as setne), then
+   reads each stored value back. Capstone marks both destinations as reads; they are writes, so
+   the reads see the code's own values and give a case. */
+    .org 0x8c0
+    vmovss (%rdi), %xmm0
+    vaddss %xmm0, %xmm0, %xmm0
+    vmovss %xmm0, (%rdi)
+    vmovss (%rdi), %xmm1
+    vcvttss2si %xmm1, %eax
+    test %eax, %eax
+    seta (%rsi)
+    movzbl (%rsi), %ecx
+    add %ecx, %eax
+    ret
     .org 0x1000
 global:
     .long 1000

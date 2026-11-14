@@ -16,7 +16,12 @@ instruction with Capstone before it runs, computes each memory operand's effecti
 the saved registers, and notes the bytes: the first value of a byte read before it is written is an
 input, and every written byte is noted so the case gives it somewhere to land. A memory operand
 Capstone marks with no access at all (the source of `test m, r`, as a heap's bitmap test has one)
-counts as a read. String instructions
+counts as a read. Capstone 5 also marks the destination of most vector and x87 stores
+(`vmovss m, xmm`, `movups m, xmm`, `vextractps`, `fstp m`, most `setcc m`) as a read, and that of
+`rol m` or `cmpxchg m` as a read only; the tracer classifies those itself (`memory_access`).
+Before it did, a store's destination became an input holding its old value, and reading the stored
+value back looked like another thread's write, so the perception update (which stores its timer
+with `vmovss` and stores it again later) never gave a case. String instructions
 with `rep` cover `rcx` elements in the direction flag's direction. The function's own frame is left
 out; reads of its stack arguments are counted. The handler allocates nothing (tables are mapped
 before the call) and reads values with `process_vm_readv` on its own process, so an address that
@@ -91,7 +96,8 @@ arguments, a float argument and result, a call between guest functions, `rep mov
 4 KiB apart through one pointer, and imports that leave a register pointing at memory they change,
 write through two registers at once, change memory far past what they wrote, or write a zero into
 the frame, a table index reached through a computed pointer (add and lea forms, and a register a
-load replaced), a sleep whose length is compared, and a word read only through `test m, r`. It checks
+load replaced), a sleep whose length is compared, a word read only through `test m, r`, and a `vmovss` store and a `seta` store each read back.
+It checks
 the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
 (one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
 read it), and that an `xmm2` read, an `fs` access, a call into native code, an input changed
