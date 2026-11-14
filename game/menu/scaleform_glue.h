@@ -27,13 +27,19 @@ static_assert(offsetof(HeapAdapter, heaps) == 0x10);
 // The memory copy (memcpy).
 RT_ORIGINAL(0x02a1a1b0, copy_memory, void *(void *to, const void *from, uint64_t size));
 
-// SprjScaleform, the game's Scaleform singleton: its player, when one exists.
+// SprjScaleform, the game's Scaleform singleton: its player, when one exists, and the three
+// request flags its queue (0x0233ef00) steps.
 struct ScaleformPlayer;
 struct SprjScaleform {
     uint64_t unknown_0x00;
     ScaleformPlayer *player;
+    uint8_t unknown_0x10[0x10];
+    uint8_t requested_before;    // the flag below as the last queue found it
+    uint8_t requested;           // set elsewhere; every queue moves it to requested_before and clears it
+    uint8_t skip_next_request;   // the next queue leaves the player alone (and clears this)
 };
 static_assert(offsetof(SprjScaleform, player) == 0x8);
+static_assert(offsetof(SprjScaleform, requested_before) == 0x20 && offsetof(SprjScaleform, skip_next_request) == 0x22);
 RT_GLOBAL(0x05940368, sprj_scaleform_instance, SprjScaleform *);
 // "SprjScaleform"
 RT_GLOBAL(0x04d3b2b3, sprj_scaleform_name, const char);
@@ -151,7 +157,14 @@ RT_ORIGINAL(0x02bd5620, file_set_build, int32_t(const void *data, uint64_t size,
 
 // An entry a named resource holder keeps in the named resource registry (0x058b3570), with a
 // handle of its own.
-struct NamedResourceRegistry;
+// The registry answers only while it is active and has its table (scaleform_glue.cpp).
+struct NamedResourceTable;
+struct NamedResourceRegistry {
+    int32_t active;
+    uint8_t unknown_0x04[0x14];
+    NamedResourceTable *table;
+};
+static_assert(offsetof(NamedResourceRegistry, table) == 0x18);
 RT_GLOBAL(0x058b3570, named_resource_registry, NamedResourceRegistry *);
 RT_ORIGINAL(0x013a2a00, registry_find, void *(NamedResourceRegistry *, const char16_t *name));
 RT_ORIGINAL(0x013a33c0, registry_release, void(NamedResourceRegistry *, void *entry, int32_t, int32_t));
