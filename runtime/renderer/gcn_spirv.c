@@ -3227,7 +3227,8 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
-   s_cbranch_execz around both). 0, or -1 with the reason. */
+   s_cbranch_execz around both). A use that no write reaches on any path (written_on_a_path_to: the
+   writes sit in blocks that branch past it) reads the user data's descriptor. 0, or -1 with the reason. */
 static int descriptor_origin(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width,
                              gcn_resource_origin *origin, char *error, size_t error_size);
 
@@ -3300,6 +3301,49 @@ static int restored_origin(const uint32_t *code, size_t program, const callee_co
     return 1;
 }
 
+/* Whether an instruction that writes any of s[first : first + width - 1] can run before the instruction at
+   dword `at` on some path through the program: a search back from `at` along fall-throughs and branches,
+   stopping at each writer. 1 when one can; 0 when only the program's start reaches `at` without one, so
+   the user data's descriptor holds there (a write in a block that ends in an s_branch past the use, as a
+   clinic-beast pixel shader's is, never reaches it); -1 when a branch's target is not known. */
+static int written_on_a_path_to(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width)
+{
+    long *target = malloc(program * sizeof *target), *previous = malloc(program * sizeof *previous);
+    size_t *pending = malloc(program * sizeof *pending);
+    unsigned char *seen = calloc(program, 1), *falls = calloc(program, 1), *starts = calloc(program, 1);
+    int result = target && previous && pending && seen && falls && starts ? 0 : -1;
+    long last = -1;
+    for (size_t p = 0; p < program && result == 0;) { /* each instruction's branch target and whether it runs on into the next */
+        gcn_instruction ins;
+        if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
+        starts[p] = 1, previous[p] = last, last = (long)p;
+        target[p] = -1;
+        const int ends = !strcmp(ins.name, "s_endpgm");
+        long to = -1;
+        if (!ends && leaves_straight_line(code + p, &ins, p, callee, &to)) {
+            if (to < 0 || (size_t)to >= program) result = -1;
+            target[p] = to;
+        }
+        falls[p] = !ends && strcmp(ins.name, "s_branch") != 0;
+        p += ins.dwords;
+    }
+    size_t count = 0;
+    if (result == 0 && at < program && starts[at]) pending[count++] = at, seen[at] = 1;
+    while (result == 0 && count) {
+        const size_t i = pending[--count];
+        /* the instructions that may run just before i: the one before it, if it runs on, and the branches to it */
+        for (size_t j = 0; j < program && result == 0; j++) {
+            if (!starts[j] || seen[j] || !((falls[j] && previous[i] == (long)j) || target[j] == (long)i)) continue;
+            gcn_instruction ins;
+            gcn_decode(code + j, program - j, &ins);
+            if (writes_sgprs(code + j, &ins, callee, first, width)) result = 1;
+            else seen[j] = 1, pending[count++] = j;
+        }
+    }
+    free(target), free(previous), free(pending), free(seen), free(falls), free(starts);
+    return result;
+}
+
 static int descriptor_origin(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width,
                              gcn_resource_origin *origin, char *error, size_t error_size)
 {
@@ -3316,7 +3360,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
         }
         p += ins.dwords;
     }
-    if (!written) return 0;
+    if (!written || written_on_a_path_to(code, program, callee, at, first, width) == 0) return 0;
     int loops_to_load = 0; /* a branch back to the load or before it */
     size_t last_loop_back = 0; /* the last such branch */
     long loop_end = -1;    /* the last branch from after the load back to between it and the use */

@@ -275,6 +275,13 @@ static void image_programs(void)
     /* a loop back to the load whose pass writes the descriptor's SGPRs after the use (the same shader reuses
        s[72:79] after its image load, and its loop loads them again before the next one): from memory */
     static const uint32_t reloaded_in_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffb, 0xbf810000};
+    /* a load in a block that ends with an s_branch past the use, which only the branch from before the load
+       reaches (the clinic beast's pixel shader at 0x20d5372100 has this shape): the load never runs before
+       the use, which reads the user data's descriptor */
+    static const uint32_t load_branched_past[] = {0xbf840002, 0xc0c00904, 0xbf820002, 0xf0000f00, 0x00000401, 0xbf810000};
+    const int branched_past = gcn_image_resources(PROGRAM(load_branched_past), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (branched_past) fprintf(stderr, "load_branched_past: %s\n", error);
+    CHECK(branched_past == 0 && count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(skipped_load), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
