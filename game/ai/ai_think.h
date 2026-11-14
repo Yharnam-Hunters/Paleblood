@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../engine/vector.h"
+#include "ai_character.h"
 #include "runtime/original.h"
 
 namespace ai {
@@ -32,23 +34,38 @@ enum class TargetState : int32_t {
     battle = 3,
 };
 
-// The perception record of a character's think (target state now and last frame, target type).
+// The perception record of a character's think: the target list (what it has noticed), the
+// target state now and last frame, and the target type.
 struct ThinkPerception {
-    uint8_t unknown_0x00[0xc4];
+    uint8_t unknown_0x00[0x10];
+    TargetList targets;
+    uint8_t unknown_0x20[0xa4];
     TargetState current_state;
     TargetState previous_state;
     int32_t current_target_type;
 };
-static_assert(offsetof(ThinkPerception, current_state) == 0xc4);
+static_assert(offsetof(ThinkPerception, targets) == 0x10 && offsetof(ThinkPerception, current_state) == 0xc4);
 static_assert(offsetof(ThinkPerception, previous_state) == 0xc8);
 static_assert(offsetof(ThinkPerception, current_target_type) == 0xcc);
 
 // A forced target state of -1 means none: the perception's own state applies.
 constexpr int32_t no_forced_target_state = -1;
 
+// The character a think belongs to, as the think sees it: where it stands.
+struct ThinkSelf;
+struct ThinkSelfVtable {
+    void *unknown_slots[0x40 / 8];
+    engine::Vec4 (*position)(ThinkSelf *);
+};
+static_assert(offsetof(ThinkSelfVtable, position) == 0x40);
+struct ThinkSelf {
+    const ThinkSelfVtable *vtable;
+};
+
 // One character's think (the object the "ai:" bindings act on).
 struct AiThink {
-    uint8_t unknown_0x000[0x28];
+    ThinkSelf *self;
+    uint8_t unknown_0x008[0x20];
     int32_t think_param_id;   // the NpcThinkParam row in use
     uint8_t unknown_0x02c[0x50];
     float timers[think_timer_count];
@@ -58,7 +75,7 @@ struct AiThink {
     uint8_t unknown_0x568[0x440];
     int32_t forced_target_state;
 };
-static_assert(offsetof(AiThink, think_param_id) == 0x28);
+static_assert(offsetof(AiThink, self) == 0x0 && offsetof(AiThink, think_param_id) == 0x28);
 static_assert(offsetof(AiThink, timers) == 0x7c && offsetof(AiThink, numbers) == 0xbc);
 static_assert(offsetof(AiThink, perception) == 0x560);
 static_assert(offsetof(AiThink, forced_target_state) == 0x9a8);
@@ -89,7 +106,8 @@ struct GoalFunc {
 };
 static_assert(offsetof(GoalFunc, context) == 0x8);
 
-// A character as the bindings see it: its stats through virtual calls.
+// A character as the bindings see it: its stats, where it stands and which way it faces, through
+// virtual calls.
 struct AiCharacter;
 struct AiCharacterVtable {
     void *unknown_slots[11];
@@ -98,9 +116,14 @@ struct AiCharacterVtable {
     int32_t (*mp)(AiCharacter *);
     int32_t (*sp)(AiCharacter *);
     float (*hp_rate)(AiCharacter *);
+    engine::Vec4 (*position)(AiCharacter *);
+    engine::Vec4 (*forward)(AiCharacter *);   // the direction it faces
+    engine::Vec4 (*side)(AiCharacter *);      // sideways: headings near +90 degrees use it, near -90 its opposite
 };
 static_assert(offsetof(AiCharacterVtable, hp) == 0x58 && offsetof(AiCharacterVtable, mp) == 0x68);
 static_assert(offsetof(AiCharacterVtable, sp) == 0x70 && offsetof(AiCharacterVtable, hp_rate) == 0x78);
+static_assert(offsetof(AiCharacterVtable, position) == 0x80 && offsetof(AiCharacterVtable, forward) == 0x88);
+static_assert(offsetof(AiCharacterVtable, side) == 0x90);
 struct AiCharacter {
     const AiCharacterVtable *vtable;
 };
