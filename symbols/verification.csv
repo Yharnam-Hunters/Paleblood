@@ -59,6 +59,7 @@ ai_goal_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
 ai_group_reset_02224090,recorded,,1500,1500,0,0,e3c2894811c316e5,2026-11-14
 ai_group_reset_02224090,edge,,31,31,0,0,e3c2894811c316e5,2026-11-14
+ai_hearing_in_ear_range,edge,,449,449,0,0,0b6eb0582caefa8b,2026-11-14
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,60,203,203,0,0,f6e94c85e455f408,2026-10-07
@@ -350,6 +351,7 @@ engine_fast_small_object_allocator_delete_locked_024847d0,edge,,19,19,0,0,c923db
 engine_fast_small_object_allocator_destroy_02484760,edge,,3,3,0,0,c923dbe1731ec595,2026-11-12
 engine_fast_small_object_allocator_destroy_locked_02484910,edge,,19,19,0,0,c923dbe1731ec595,2026-11-12
 engine_fd4_handle_is_valid_013e9040,edge,,14,14,0,0,20f00d3f96af5ff2,2026-11-14
+engine_fd4_handle_less_01398290,recorded,,6,6,0,0,20f00d3f96af5ff2,2026-11-14
 engine_fd4_handle_less_01398290,edge,,16,16,0,0,20f00d3f96af5ff2,2026-11-14
 engine_fd4_handle_refresh_013e99b0,edge,,12,12,0,0,20f00d3f96af5ff2,2026-11-14
 engine_fixed_allocator_allocate_02484c70,edge,,24,24,0,0,594e26c134ef7897,2026-11-12
@@ -1408,6 +1410,7 @@ render_swap_chain_present_mode,edge,,19,19,0,0,e1616a0a330d07b9,2026-11-03
 render_swap_chain_submit,edge,,53,53,0,0,8424f6556ab52ba2,2026-11-03
 render_translate_record_secondary_02ab7720,edge,,72,72,0,0,cfe70ede045a3fa9,2026-11-13
 render_translate_record_tertiary_02ab78a0,edge,,72,72,0,0,cfe70ede045a3fa9,2026-11-13
+render_update_gs_shader,edge,,145,145,0,0,61823ab0de1ac84a,2026-11-14
 render_update_hs_shader,edge,,245,245,0,0,1174a8774473cb56,2026-11-13
 render_update_model_wind,edge,,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10

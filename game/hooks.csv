@@ -168,6 +168,7 @@ address,replacement,system,returns
 0x01475900,bb_render_set_primitive_id_enable,render,void
 0x01475960,bb_render_set_multi_vgt_param,render,void
 0x014759d0,bb_render_set_gs_shader,render,void
+0x01475a30,bb_render_update_gs_shader,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x01475e10,bb_render_emit_shader_preparation_range_01475e10,render,void
 0x01476030,bb_render_set_shader_stages_01476030,render,void
@@ -270,6 +271,7 @@ address,replacement,system,returns
 0x0169acf0,bb_ai_character_has_effect_state,ai,i8
 0x0169ad80,bb_ai_character_gather_effect_states,ai,void
 0x0169af00,bb_ai_character_ready_check,ai,i8
+0x0169da30,bb_ai_hearing_in_ear_range,ai,i8
 0x0169fad0,bb_ai_character_link_ids,ai,i64
 0x016a5050,bb_engine_array64_push_back_016a5050,engine,void
 0x016a52b0,bb_ai_sight_test,ai,i8

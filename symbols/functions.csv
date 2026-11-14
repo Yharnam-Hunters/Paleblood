@@ -78,7 +78,7 @@ address,size,name,system,status,notes
 0x01391c60,457,input_key_assign_held_01391c60,input,edge-verified,"Key assign held: any combination of the key in the multimap at +0x38 whose four parts pass (key -1 passes; 0 pressed, 1 released, 2 analog > 0; other tests repeat the previous part)"
 0x01391e30,299,input_key_assign_pressed_01391e30,input,verified,"Key assign pressed: mapper (+0x28) button index; enabled +0x20; key state map +0x40 enabled and not suppressed; pressed bit, else alternate input in the held set"
 0x01391f60,215,input_key_assign_analog_value_01391f60,input,verified,"Key assign analog value: as the pressed query (no mapper null check), then the input state float at the button index; 0 otherwise"
-0x01398290,127,engine_fd4_handle_less_01398290,engine,edge-verified,"FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed)"
+0x01398290,127,engine_fd4_handle_less_01398290,engine,verified,"FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed)"
 0x013983e0,202,input_key_assign_first_free_id_013983e0,input,verified,"Smallest id 0-7 that no assignment (id at +0x24) of table +0x38[table] uses, every entry visited per id; 0xffffffff when all taken"
 0x013994a0,87,input_held_set_contains_013994a0,input,edge-verified,"Held input set: std::map<int32,bool> find (head at +0x18); 1 when present with a nonzero flag, else 0"
 0x013a2a00,22,menu_named_resource_registry_find_013a2a00,menu,edge-verified,"Scaleform glue: while the named resource registry is active and has its table, the table finds the entry by name (0x013abad0); null otherwise"
@@ -170,6 +170,7 @@ address,size,name,system,status,notes
 0x01475900,89,render_set_primitive_id_enable,render,edge-verified,Write the complete input byte to VGT_PRIMITIVEID_EN after three-word admission; preserve noncanonical byte values and publish from the captured cursor.
 0x01475960,109,render_set_multi_vgt_param,render,edge-verified,Emit IA_MULTI_VGT_PARAM from a primitive group size byte and the low PARTIAL_VS_WAVE_ON input bit; reserve three DWORDs with AL callback admission and captured cursor publication
 0x014759d0,83,render_set_gs_shader,render,edge-verified,Reserve 29 DWORDs; forward the opaque full register pointer including null to sceGnmSetGsShader; zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry
+0x01475a30,83,render_update_gs_shader,render,edge-verified,Reserve 29 DWORDs; forward the opaque register pointer to sceGnmUpdateGsShader; a zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
@@ -272,6 +273,7 @@ address,size,name,system,status,notes
 0x0169acf0,124,ai_character_has_effect_state,ai,verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,144,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
+0x0169da30,763,ai_hearing_in_ear_range,ai,edge-verified,"Hearing: does a sphere around a sound point reach the ear (within the ear height angle: reach plus radius; beyond it: the sphere surface crosses the angle edge segment)"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
 0x016a5050,218,engine_array64_push_back_016a5050,engine,edge-verified,"Engine array push_back, 8-byte elements: inside check first; full grows to 1.5x count via 0x016a5130, inside item re-read at its index; stores unless no buffer; end += 8"
 0x016a52b0,1937,ai_sight_test,ai,verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"

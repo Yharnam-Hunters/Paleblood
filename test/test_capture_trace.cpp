@@ -384,6 +384,16 @@ int self_test()
     r = trace(0x840, arguments(reinterpret_cast<uint64_t>(&tested)), log);
     check(!log.incomplete && r.rax == 1 && read_input(log, &tested, 6), "test m, r: the word it reads is an input");
     rt_trace_log_free(&log);
+    /* Stores Capstone marks as reads (`vmovss m, xmm`, `seta m`) are writes: the code reads its
+       own stored values back, and the trace is complete. */
+    alignas(4) static float stored = 1.5f;
+    static uint8_t flag = 0;
+    r = trace(0x8c0, arguments(reinterpret_cast<uint64_t>(&stored), reinterpret_cast<uint64_t>(&flag)), log);
+    check(!log.incomplete && r.rax == 4 && stored == 3.0f && flag == 1, "vector and setcc stores: traced, read back");
+    check(read_input(log, reinterpret_cast<const uint8_t *>(&stored) + 3, 0x3f) && written(log, &stored) &&
+              written(log, &flag) && !read_input(log, &flag, 0),
+          "vector and setcc stores: the float's first value is the input, the flag is only written");
+    rt_trace_log_free(&log);
     setenv("BB_TRACE_STEP_LIMIT", "100", 1);
     trace(0x240, arguments(), log);
     check(log.incomplete != nullptr, "instruction limit: incomplete");
@@ -523,11 +533,23 @@ int emit(const char *dir)
          arguments(reinterpret_cast<uint64_t>(f.dst), reinterpret_cast<uint64_t>(f.src), sizeof f.src)},
         {{"capture_trace_use_import", 0x4002c0, "i32", at(0x2c0)}, arguments(reinterpret_cast<uint64_t>(&f.filled))},
     };
+    alignas(4) static float stored = 1.5f;
+    static uint8_t flag = 0;
+    const Call stores = {{"capture_trace_store_reread", 0x4008c0, "i32", at(0x8c0)},
+                         arguments(reinterpret_cast<uint64_t>(&stored), reinterpret_cast<uint64_t>(&flag))};
     for (const Call &c : calls) {
         const int number = rt_capture_begin(c.function.function);
         rt_trace_result result;
         if (number < 0 || rt_capture_traced_call(&c.function, number, &c.args, whole, &whole, 1, &result) != 1) {
             std::fprintf(stderr, "capture trace: no case for %s\n", c.function.function);
+            return 1;
+        }
+    }
+    {
+        const int number = rt_capture_begin(stores.function.function);
+        rt_trace_result result;
+        if (number < 0 || rt_capture_traced_call(&stores.function, number, &stores.args, whole, &whole, 1, &result) != 1) {
+            std::fprintf(stderr, "capture trace: no case for %s\n", stores.function.function);
             return 1;
         }
     }
