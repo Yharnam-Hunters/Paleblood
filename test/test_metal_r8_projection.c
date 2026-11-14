@@ -363,7 +363,7 @@ static World open_world(unsigned number)
     char path[]="/tmp/paleblood-r8-projection-XXXXXX",error[512]="";int fd=mkstemp(path);require(fd>=0,"temporary pool");
     CHECK(unlink(path)==0);require(ftruncate(fd,POOL)==0,"pool size");
     uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);require(pool!=MAP_FAILED,"pool mmap");memset(pool,CANARY,POOL);
-    rt_executor_memory memory={fd,POOL,guest_base,NULL,NULL,NULL,NULL,0};rt_executor *executor=NULL;
+    rt_executor_memory memory={.fd=fd,.size=POOL,.guest_base=guest_base};rt_executor *executor=NULL;
     if(rt_executor_open(&memory,&executor,error,sizeof error)){fprintf(stderr,"R8 open: %s\n",error);exit(1);}CHECK(close(fd)==0);
     World w={pool,malloc(POOL),malloc(POOL),malloc(RAW_CAPACITY),executor,number};require(w.before&&w.expected&&w.raw_snapshot,"oracle storage");
     const R8Program *raw=program_for(0,0,OP_RAW,0);require(raw->dwords*4<CODE,"raw program bound");memcpy(pool+RAW_CODE,raw->words,raw->dwords*4);++worlds;return w;

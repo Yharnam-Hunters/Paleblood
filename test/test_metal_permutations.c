@@ -91,7 +91,7 @@ static World open_world(void)
         if (programs[i].bytes > CODE_STEP) exit(1);
         memcpy(pool + CODE + i * CODE_STEP,programs[i].words,programs[i].bytes);
     }
-    rt_executor_memory memory = {fd,POOL,guest_base,NULL,NULL,NULL,NULL,0}; rt_executor *executor = NULL;
+    rt_executor_memory memory = {.fd=fd,.size=POOL,.guest_base=guest_base}; rt_executor *executor = NULL;
     if (rt_executor_open(&memory,&executor,error,sizeof error)) {
         fprintf(stderr,"open: %s\n",error); close(fd); munmap(pool,POOL); exit(1);
     }
