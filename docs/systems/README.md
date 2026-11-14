@@ -24,18 +24,18 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,404 |
-| Replaced | 835 (0.53%) | 276,831 (0.65%) |
-| Edge-verified (includes verified) | 835 (0.53%) | 276,831 (0.65%) |
-| Verified | 154 (0.10%) | 41,216 (0.10%) |
+| Replaced | 838 (0.53%) | 277,316 (0.65%) |
+| Edge-verified (includes verified) | 838 (0.53%) | 277,316 (0.65%) |
+| Verified | 156 (0.10%) | 41,977 (0.10%) |
 
 Counts are cumulative: verified functions are included in edge-verified and replaced totals.
 
 | With function families | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Members of 19 function families | 18,019 (11.42%) | 62,426 (0.15%) |
-| Replaced, with family members | 18,854 (11.95%) | 339,257 (0.80%) |
-| Edge-verified, with family members | 18,854 (11.95%) | 339,257 (0.80%) |
-| Verified, with family members | 18,173 (11.52%) | 103,642 (0.24%) |
+| Replaced, with family members | 18,857 (11.95%) | 339,742 (0.80%) |
+| Edge-verified, with family members | 18,857 (11.95%) | 339,742 (0.80%) |
+| Verified, with family members | 18,175 (11.52%) | 104,403 (0.25%) |
 
 Family members are tiny functions (one to a few bytes each) that share one replacement per family: they add far more to the function count than to the bytes.
 
@@ -43,17 +43,17 @@ Matching tier: 127 functions compile byte for byte to the original from their ow
 
 | System | Tracked | Replaced | Edge-verified (includes verified) | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|---:|
-| ai | 51 | 51 | 51 | 18 | 15,264 |
+| ai | 51 | 51 | 51 | 19 | 15,264 |
 | audio | 5 | 5 | 5 | 2 | 413 |
 | camera | 8 | 8 | 8 | 0 | 21,151 |
 | character | 11 | 11 | 11 | 5 | 3,511 |
-| engine | 159 | 158 | 158 | 10 | 55,088 |
+| engine | 162 | 161 | 161 | 10 | 55,573 |
 | event | 2 | 2 | 2 | 2 | 545 |
 | frame_timing | 96 | 95 | 95 | 14 | 22,684 |
 | input | 9 | 9 | 9 | 6 | 1,738 |
 | kernel | 39 | 39 | 39 | 6 | 4,385 |
 | loading | 93 | 93 | 93 | 7 | 24,807 |
-| menu | 30 | 30 | 30 | 4 | 4,830 |
+| menu | 30 | 30 | 30 | 5 | 4,830 |
 | param | 141 | 141 | 141 | 0 | 44,134 |
 | physics | 10 | 10 | 10 | 1 | 4,711 |
 | render | 183 | 183 | 183 | 79 | 73,570 |

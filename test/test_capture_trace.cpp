@@ -24,7 +24,7 @@
 
 extern "C" const unsigned char capture_trace_guest_start[], capture_trace_guest_end[];
 
-/* Native imports for the guest functions at 0x400..0x4c0, 0x640 and 0x680 (test/capture_trace_guest.S). */
+/* Native imports for the guest functions at 0x400..0x4c0, 0x640, 0x680, 0x700 and 0x740 (test/capture_trace_guest.S). */
 extern "C" {
 int32_t trace_stale_counter;
 void trace_stale_import(int32_t *out);
@@ -371,6 +371,18 @@ int self_test()
     r = trace(0x700, arguments(reinterpret_cast<uint64_t>(reread_out)), log);
     check(log.incomplete != nullptr && static_cast<int32_t>(r.rax) == stale_before + 2,
           "an input changed during the call: incomplete, and the call still ran");
+    rt_trace_log_free(&log);
+    /* Memory the code wrote, changed behind its back (by the import, as by another thread) and
+       read again: a replay would read the code's own write. */
+    alignas(8) int32_t rewrite_out[2] = {0, 0};
+    r = trace(0x740, arguments(reinterpret_cast<uint64_t>(rewrite_out)), log);
+    check(log.incomplete != nullptr && r.rax == 6 && trace_stale_counter == 6,
+          "written memory changed during the call: incomplete, and the call still ran");
+    rt_trace_log_free(&log);
+    /* A word read only through `test m, r` is an input. */
+    static int32_t tested = 6;
+    r = trace(0x840, arguments(reinterpret_cast<uint64_t>(&tested)), log);
+    check(!log.incomplete && r.rax == 1 && read_input(log, &tested, 6), "test m, r: the word it reads is an input");
     rt_trace_log_free(&log);
     setenv("BB_TRACE_STEP_LIMIT", "100", 1);
     trace(0x240, arguments(), log);
