@@ -107,6 +107,16 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
 | `writes_word_field` | `66 89 77 {d8} c3` | setters of a 16-bit field |
+| `calls_delegate_with_argument_field_0x10` | 50 exact bytes | when set: the delegate at +8 with the qword at +0x10 of the second argument and the dword at +0x28 |
+| `calls_delegate_with_argument_field_8` | 50 exact bytes | when set: the delegate at +8 with the qword at +8 of the second argument and the dword at +0x28 |
+| `calls_delegate_with_dword_at_0x20` | 46 exact bytes | when set: the delegate at +8 with the dword at +0x20 |
+| `calls_delegate_at_0x18_with_dword_at_0x40` | 39 exact bytes | when set: the delegate at +0x18 with the second argument and the dword at +0x40 |
+| `calls_flagged_delegate_with_dword_at_0x18` | 40 exact bytes | when the flag 0x40 at +0xb is set: the method at +0x20 on the object at +0x10 with the dword at +0x18 |
+| `calls_delegate_with_part_of_argument_target` | 57 exact bytes | when set: the delegate at +8 with the part 0x28 into what the second argument points at, and the dword at +0x20 |
+| `forwards_to_delegate_at_0x10` | 30 exact bytes | tail-call the delegate at +0x10 with the same other arguments |
+| `forwards_to_delegate_at_0x18` | 30 exact bytes | tail-call the delegate at +0x18 with the same other arguments |
+| `forwards_to_delegate_at_0x20` | 30 exact bytes | tail-call the delegate at +0x20 with the same other arguments |
+| `calls_delegate_at_0x50_when_argument_flagged` | 40 exact bytes | when the flag 0x10 at +0x3d of the second argument is set: the delegate at +0x50 with the dword at +0x68 |
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |
 | `writes_first_qword` | `48 89 37 c3` | setters of the 64-bit field at the start of the object |
 | `writes_first_dword` | `89 37 c3` | setters of the 32-bit field at the start of the object |

@@ -74,6 +74,25 @@ void bb_mutant_writes_first_qword(uint64_t *object, uint64_t value)
     *object = value;
 }
 
+/* Delegates (object pointer at OBJECT, pointer to member function at METHOD) whose method is called
+ * as a plain function pointer, whatever the guard, with the arguments as they came. */
+typedef uint64_t (*bb_mutant_delegate_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+#define BB_MUTANT_DELEGATE_CALLED_DIRECTLY(name, object_at, method_at) \
+    uint64_t name(uint8_t *record, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, \
+                  uint64_t sixth) \
+    { \
+        uint8_t *object = *(uint8_t **)(record + (object_at)); \
+        const uint64_t *method = (const uint64_t *)(record + (method_at)); \
+        return ((bb_mutant_delegate_function)method[0])(object + method[1], second, third, fourth, fifth, \
+                                                        sixth); \
+    }
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x8_0x10_called_directly, 0x8, 0x10)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x10_0x18_called_directly, 0x10, 0x18)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x10_0x20_called_directly, 0x10, 0x20)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x18_0x20_called_directly, 0x18, 0x20)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x20_0x28_called_directly, 0x20, 0x28)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x50_0x58_called_directly, 0x50, 0x58)
+
 /* Clears its second argument register and returns: wrong for a body that must leave the
    argument registers alone (the cases compare them after the call). */
 __attribute__((naked)) void bb_mutant_clobbers_second_argument(void)

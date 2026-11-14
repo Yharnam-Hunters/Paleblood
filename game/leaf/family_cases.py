@@ -27,6 +27,105 @@ def probe_bytes(seed: int, size: int = PROBE_SIZE) -> str:
     return bytes(((seed + 37 * i) % 255) + 1 for i in range(size)).hex()
 
 
+# Delegate calls (game/leaf/delegates.cpp): a record holds an object pointer and a pointer to
+# member function (Itanium C++ ABI: an address, or one plus a virtual slot's offset, then the
+# adjustment added to the object). Each family's layout: the record offsets it reads, its guard,
+# what it passes after the target, and which argument registers its call compares.
+DELEGATE_LAYOUTS = {
+    'calls_delegate_with_argument_field_0x10': {'object': 8, 'method': 16, 'value': 40, 'guard': 'method_object', 'argument': ('qword', 16), 'passes': ('argument', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_delegate_with_argument_field_8': {'object': 8, 'method': 16, 'value': 40, 'guard': 'method_object', 'argument': ('qword', 8), 'passes': ('argument', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_delegate_with_dword_at_0x20': {'object': 8, 'method': 16, 'value': 32, 'guard': 'method_object', 'passes': ('value', 'third'), 'compare': [0, 1, 4, 5]},
+    'calls_delegate_at_0x18_with_dword_at_0x40': {'object': 24, 'method': 32, 'value': 64, 'guard': 'method', 'passes': ('second', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_flagged_delegate_with_dword_at_0x18': {'object': 16, 'method': 32, 'value': 24, 'guard': ('record_flag', 11, 64), 'passes': ('value', 'third'), 'compare': [0, 1, 4, 5]},
+    'calls_delegate_with_part_of_argument_target': {'object': 8, 'method': 16, 'value': 32, 'guard': 'argument_target', 'argument': ('part', 8, 40), 'passes': ('argument', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'forwards_to_delegate_at_0x10': {'object': 16, 'method': 24, 'passes': ('second', 'third'), 'compare': [0, 1, 2, 4, 5]},
+    'forwards_to_delegate_at_0x18': {'object': 24, 'method': 32, 'passes': ('second', 'third'), 'compare': [0, 1, 2, 4, 5]},
+    'forwards_to_delegate_at_0x20': {'object': 32, 'method': 40, 'passes': ('second', 'third'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_delegate_at_0x50_when_argument_flagged': {'object': 80, 'method': 88, 'value': 104, 'guard': ('argument_flag', 61, 16), 'passes': ('value', 'third'), 'compare': [0, 1, 4, 5]},
+}
+DELEGATE_RECORD_SIZE = 0x80
+DELEGATE_OBJECT_SIZE = 0x40
+DELEGATE_SLOTS = 8
+DELEGATE_SLOT = 5                # the virtual slot the virtual cases call
+DELEGATE_ADJUSTMENT = 0x10       # where the method's target lies in the object, virtual cases
+DIRECT_ADJUSTMENT = 8            # the same for a plain function
+DELEGATE_STUB_BASE = 0x00501000  # fake function addresses: virtual slot i at base + 0x10 * i
+DELEGATE_FUNCTION = 0x00501800   # the plain function the direct cases call
+DELEGATE_PART = 0x40             # the size of what a part argument points at
+
+
+def delegate_stub(slot: int) -> str:
+    return f'0x{DELEGATE_STUB_BASE + 0x10 * slot:08x}'
+
+
+def delegate_case(address: str, family: str, case_id: str, seed: int, path: str) -> dict:
+    """One call of a delegate family. PATH: 'virtual' (the method is slot DELEGATE_SLOT of the
+    target's virtual table, the target 0x10 into the object), 'direct' (a plain function, the
+    target 8 into the object), or a path the guard stops: 'no_method', 'no_object',
+    'flag_clear' (every other bit of the flag byte set), 'no_argument', 'no_argument_target'.
+    Every slot and the plain function are stubs returning their own values and comparing the
+    registers the family's call passes; xmm0 enters seeded and its float is compared. Calls
+    return the stub's rax (i64); a stopped call is compared as void (the original leaves rax)."""
+    layout = DELEGATE_LAYOUTS[family]
+    calls = path in ('virtual', 'direct')
+    case = base_case(address, case_id, 'i64' if calls else 'void')
+    record = bytearray.fromhex(probe_bytes(seed, DELEGATE_RECORD_SIZE))
+    obj, method = layout['object'], layout['method']
+    record[obj:obj + 8] = bytes(8)
+    adjustment = DIRECT_ADJUSTMENT if path == 'direct' else DELEGATE_ADJUSTMENT
+    function = 0 if path in ('no_method', 'direct') else 8 * DELEGATE_SLOT + 1
+    record[method:method + 16] = function.to_bytes(8, 'little') + adjustment.to_bytes(8, 'little')
+    guard = layout.get('guard')
+    if isinstance(guard, tuple) and guard[0] == 'record_flag':
+        record[guard[1]] = 0xff & ~guard[2] if path == 'flag_clear' else 0xff
+    case['buffers'] = {'record': {'size': DELEGATE_RECORD_SIZE, 'bytes': record.hex()},
+                       'object': {'size': DELEGATE_OBJECT_SIZE, 'bytes': probe_bytes(seed + 2, DELEGATE_OBJECT_SIZE)},
+                       'table': {'size': 8 * DELEGATE_SLOTS}}
+    memory = case['memory']
+    if path != 'no_object':
+        memory.append({'addr': f'buf:record+0x{obj:x}', 'pointer': 'object'})
+    memory.append({'addr': f'buf:object+0x{DELEGATE_ADJUSTMENT:x}', 'pointer': 'table'})
+    if path == 'direct':
+        memory.append({'addr': f'buf:record+0x{method:x}', 'guest': f'0x{DELEGATE_FUNCTION:08x}'})
+    stub = {'argc': FORWARDED_DELEGATE_ARGUMENTS, 'argi': layout['compare'], 'argf32': [0]}
+    for slot in range(DELEGATE_SLOTS):
+        memory.append({'addr': f'buf:table+0x{8 * slot:x}', 'guest': delegate_stub(slot)})
+        case['stubs'].append(dict(stub, address=delegate_stub(slot), ret=seed << 32 | slot))
+    case['stubs'].append(dict(stub, address=f'0x{DELEGATE_FUNCTION:08x}', ret=seed << 32 | 0xff))
+    for i, reg in enumerate(ARGUMENT_REGISTERS[1:]):
+        case['args'][reg] = hex((seed * 0x9e3779b97f4a7c15 + 0x0123456789abcdef * (i + 1)) & (2**64 - 1))
+    argument = layout.get('argument')
+    if argument or (isinstance(guard, tuple) and guard[0] == 'argument_flag'):
+        pattern = bytearray.fromhex(probe_bytes(seed + 1))
+        if isinstance(guard, tuple) and guard[0] == 'argument_flag':
+            pattern[guard[1]] = 0xff & ~guard[2] if path == 'flag_clear' else 0xff
+        if argument and argument[0] == 'part':
+            pattern[argument[1]:argument[1] + 8] = bytes(8)
+            if path != 'no_argument_target':
+                case['buffers']['part'] = {'size': DELEGATE_PART, 'bytes': probe_bytes(seed + 3, DELEGATE_PART)}
+                memory.append({'addr': f'buf:argument+0x{argument[1]:x}', 'pointer': 'part'})
+        case['buffers']['argument'] = {'size': PROBE_SIZE, 'bytes': pattern.hex()}
+        case['args']['rsi'] = '0x0' if path == 'no_argument' else 'buf:argument'
+    case['args'].update({'rdi': 'buf:record', 'rax': hex(RAX_SEED), 'xmm0': XMM0_SEED})
+    return case
+
+
+FORWARDED_DELEGATE_ARGUMENTS = 6
+STOPPED_PATHS = {'method_object': ('no_method', 'no_object'), 'method': ('no_method',),
+                 'argument_target': ('no_argument', 'no_argument_target', 'no_object')}
+
+
+def delegate_cases(address: str, family: str) -> list[dict]:
+    """The method as a virtual function (two seeds) and as a plain function, and every way the
+    family's guard stops the call."""
+    guard = DELEGATE_LAYOUTS[family].get('guard')
+    stopped = ('flag_clear',) if isinstance(guard, tuple) else STOPPED_PATHS.get(guard, ())
+    cases = [delegate_case(address, family, 'virtual_a', 13, 'virtual'),
+             delegate_case(address, family, 'virtual_b', 89, 'virtual'),
+             delegate_case(address, family, 'direct', 47, 'direct')]
+    return cases + [delegate_case(address, family, path, 61, path) for path in stopped]
+
+
 def base_case(address: str, case_id: str, returns: str) -> dict:
     return {'schema': 1, 'address': address, 'id': case_id, 'returns': returns, 'args': {},
             'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
@@ -131,6 +230,16 @@ CASES = {
     'writes_qword_field': setter_cases,
     'writes_dword_field': setter_cases,
     'writes_word_field': setter_cases,
+    'calls_delegate_with_argument_field_0x10': lambda address, value: delegate_cases(address, 'calls_delegate_with_argument_field_0x10'),
+    'calls_delegate_with_argument_field_8': lambda address, value: delegate_cases(address, 'calls_delegate_with_argument_field_8'),
+    'calls_delegate_with_dword_at_0x20': lambda address, value: delegate_cases(address, 'calls_delegate_with_dword_at_0x20'),
+    'calls_delegate_at_0x18_with_dword_at_0x40': lambda address, value: delegate_cases(address, 'calls_delegate_at_0x18_with_dword_at_0x40'),
+    'calls_flagged_delegate_with_dword_at_0x18': lambda address, value: delegate_cases(address, 'calls_flagged_delegate_with_dword_at_0x18'),
+    'calls_delegate_with_part_of_argument_target': lambda address, value: delegate_cases(address, 'calls_delegate_with_part_of_argument_target'),
+    'forwards_to_delegate_at_0x10': lambda address, value: delegate_cases(address, 'forwards_to_delegate_at_0x10'),
+    'forwards_to_delegate_at_0x18': lambda address, value: delegate_cases(address, 'forwards_to_delegate_at_0x18'),
+    'forwards_to_delegate_at_0x20': lambda address, value: delegate_cases(address, 'forwards_to_delegate_at_0x20'),
+    'calls_delegate_at_0x50_when_argument_flagged': lambda address, value: delegate_cases(address, 'calls_delegate_at_0x50_when_argument_flagged'),
     'writes_byte_field': setter_cases,
     'writes_first_qword': setter_cases,
     'writes_first_dword': setter_cases,
@@ -163,6 +272,18 @@ MUTANTS = {
     'writes_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_word_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    # Delegate calls: no call, and the method called as a plain function pointer whatever the
+    # guard, with the arguments as they came (a virtual method then jumps to an odd address).
+    'calls_delegate_with_argument_field_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'calls_delegate_with_argument_field_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'calls_delegate_with_dword_at_0x20': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'calls_delegate_at_0x18_with_dword_at_0x40': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x18_0x20_called_directly'],
+    'calls_flagged_delegate_with_dword_at_0x18': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x10_0x20_called_directly'],
+    'calls_delegate_with_part_of_argument_target': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'forwards_to_delegate_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x10_0x18_called_directly'],
+    'forwards_to_delegate_at_0x18': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x18_0x20_called_directly'],
+    'forwards_to_delegate_at_0x20': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x20_0x28_called_directly'],
+    'calls_delegate_at_0x50_when_argument_flagged': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x50_0x58_called_directly'],
     'writes_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword', 'bb_mutant_returns_zero',
                            'bb_mutant_writes_first_qword_clears_eax'],
