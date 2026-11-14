@@ -209,7 +209,7 @@ address,size,name,system,status,notes
 0x01633ac0,734,ai_debug_flush_01633ac0,ai,edge-verified,"Marks (debug flag 2) the objects of the entities the display object links to (+0x150, 0x60 apart): ids copied to a temporary std::list from the default allocator first"
 0x0163bb50,626,ai_debug_end_0163bb50,ai,edge-verified,Debug view end of frame: draws its marks (and the world marks) when asked; then the subject bounding box (vtable +0x60) through 0x0135dca0 with the bounds render state
 0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
-0x01657b20,90,ai_func_get_random_int,ai,edge-verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
+0x01657b20,90,ai_func_get_random_int,ai,verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
 0x01657b80,19,ai_func_set_timer,ai,edge-verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
 0x01657ba0,22,ai_func_set_number,ai,edge-verified,AI script binding SetNumber: think script number 0..63 (index checked unsigned)
 0x01658770,205,ai_func_is_inside_target_ex,ai,edge-verified,"IsInsideTargetEx: finds both characters, direction number -> heading (table) and target-line flag (5-8), then the inside test"
@@ -220,12 +220,12 @@ address,size,name,system,status,notes
 0x0165aff0,23,ai_func_get_timer,ai,edge-verified,"AI script binding GetTimer: think timer 0..15, 0.0 above"
 0x0165b010,28,ai_func_is_finish_timer,ai,edge-verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
 0x0165b030,26,ai_func_get_number,ai,edge-verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
-0x0165baf0,22,ai_func_is_battle_state,ai,edge-verified,AI script binding IsBattleState: perception target state == 3 (battle)
+0x0165baf0,22,ai_func_is_battle_state,ai,verified,AI script binding IsBattleState: perception target state == 3 (battle)
 0x0165bb10,27,ai_func_is_change_state,ai,verified,AI script binding IsChangeState: target state differs from last frame's
-0x0165bb30,22,ai_func_is_caution_state,ai,edge-verified,AI script binding IsCautionState: perception target state == 1 (caution)
-0x0165bb50,22,ai_func_is_find_state,ai,edge-verified,AI script binding IsFindState: perception target state == 2 (find)
+0x0165bb30,22,ai_func_is_caution_state,ai,verified,AI script binding IsCautionState: perception target state == 1 (caution)
+0x0165bb50,22,ai_func_is_find_state,ai,verified,AI script binding IsFindState: perception target state == 2 (find)
 0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
-0x0165bb90,18,ai_func_get_previous_target_state,ai,edge-verified,AI script binding GetPrevTargetState: the perception's target state last frame
+0x0165bb90,18,ai_func_get_previous_target_state,ai,verified,AI script binding GetPrevTargetState: the perception's target state last frame
 0x0165ca50,130,ai_func_is_visible_target,ai,edge-verified,"IsVisibleTarget: stores the player's set entry; selectors -2,-1,20-22,24,25 and points 100-123 are visible, else the current target's visible flag"
 0x0167f2a0,22,ai_goal_func_set_timer,ai,edge-verified,AI goal script binding SetTimer: goal timer 0..15 (index checked signed)
 0x0167f2d0,22,ai_goal_func_set_number,ai,edge-verified,AI goal script binding SetNumber: goal script number 0..63 (index checked unsigned)
@@ -783,6 +783,10 @@ address,size,name,system,status,notes
 0x02bc0e00,196,engine_wide_string_construct_02bc0e00,engine,edge-verified,"Wide string from null-terminated text: default allocator (created on first use), container heap check, empty inline string, counted assign 0x02a2a720 with wcslen (0 for empty)"
 0x02bc1ca0,218,physics_ids_reserve_02bc1ca0,physics,edge-verified,"Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept"
 0x02c6d580,149,frame_timing_thread_random,frame_timing,edge-verified,This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds
+0x02d03420,46,menu_system_text_dialog_status_02d03420,menu,edge-verified,"Dantelion text dialog: the dialog backend's status while the system dialog is open, -1 otherwise (the backend made on first use)"
+0x02d03450,60,menu_system_text_dialog_open_02d03450,menu,edge-verified,"Dantelion text dialog: unless open, asks the dialog backend to open the system dialog with the settings and records the answer as the open flag"
+0x02d03490,105,menu_system_text_dialog_take_text_02d03490,menu,edge-verified,"Dantelion text dialog: once the backend's status is 2 or 3, closes the object and asks the backend for the text; false while closed or running"
+0x02d03500,26,menu_system_text_dialog_set_up_02d03500,menu,edge-verified,"Dantelion text dialog: unless the system dialog is open, copies the settings into the object (0x02d03520) and returns true"
 0x02e61140,67,frame_timing_time_of_day_us,frame_timing,edge-verified,Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored
 0x02e61280,101,frame_timing_time_seed_words,frame_timing,edge-verified,"Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call"
 0x02e67d20,80,loading_stdio_close_files,loading,edge-verified,"fclose and clear the FILE pointers at +0x10; +0x8 and +0x0 in that order; skipping null ones"
