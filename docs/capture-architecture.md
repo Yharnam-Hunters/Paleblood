@@ -30,7 +30,10 @@ it (cases give only `xmm0` and `xmm1`), a stack argument past the 70th, code out
 ranges (an import or other native code), unreadable memory, an input byte that a later read sees
 with another value although neither the traced code nor a scripted import write changed it
 (another thread wrote it; a case gives each input one value, so the replay would take another
-path), the instruction limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
+path), a byte the traced code or a scripted import wrote that a later read sees with another value
+(another thread changed it between the write and the read, as when a heap's lock is released
+between two allocations; the replay would read the value written, so it would take another path:
+the tracer reads each written byte's value once the writing instruction has run), the instruction limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
 
 **Case** (`runtime/capture_trace.cpp`). A complete trace becomes a schema-1 case:
 
@@ -88,7 +91,8 @@ load replaced), and a sleep whose length is compared. It checks
 the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
 (one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
 read it), and that an `xmm2` read, an `fs` access, a call into native code, an input changed
-between two reads and the instruction limit give no case while the call still completes.
+between two reads, memory the code wrote changed before it read it again and the instruction limit
+give no case while the call still completes.
 `test/capture_trace_integration.py` then replays every recorded case with `tools/verify.py`: each
 passes against a native replacement, and a replacement with one deliberate change per function
 fails.

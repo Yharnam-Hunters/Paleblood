@@ -268,6 +268,25 @@ usleep_thunk:
     pop %r12
     pop %rbx
     ret
+/* 0x740: int32_t rewritten_counter(int32_t *a) { int32_t *c = stale(a); *c = 5; stale(a); return *c; }
+   the counter is written, then changed by the second call behind a register the first call left,
+   as another thread might change memory the code wrote, and read again: a replay would read the
+   5 it wrote, so no case. */
+    .org 0x740
+    push %rbx
+    push %r12
+    sub $8, %rsp
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rdx, %r12
+    movl $5, (%r12)
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%r12), %eax
+    add $8, %rsp
+    pop %r12
+    pop %rbx
+    ret
     .org 0x1000
 global:
     .long 1000

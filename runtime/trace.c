@@ -62,7 +62,13 @@ void rt_trace_landing(void);
 typedef struct {
     uint64_t addr;
     uint8_t value, flags;
+    uint8_t now;                         /* a written byte's value after its last write (KNOWN) */
 } slot;
+
+/* Slot flags beyond rt_trace_log's RT_TRACE_READ and RT_TRACE_WRITTEN. */
+enum { KNOWN = 4 };
+
+enum { PENDING_LIMIT = 8 };              /* memory operands one instruction writes */
 
 typedef struct {
     csh cs;
@@ -89,6 +95,9 @@ typedef struct {
     uint64_t thread_pointer;           /* the value the code read at gs:[0], once it has */
     uint64_t thread_lo, thread_hi;     /* [lo, hi): bytes reached through gs or the thread pointer */
     unsigned stale_args;               /* bit n: argument register n (rdi..r9) is what an import left */
+    /* The bytes the last instruction wrote: their values are read once it has run. */
+    uint64_t pending_addr[PENDING_LIMIT], pending_len[PENDING_LIMIT];
+    unsigned pending;
     const char *incomplete;
     pid_t pid;
     /* The import running now (between its entry and the return pad). */
@@ -245,11 +254,45 @@ static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input
                 s->flags |= RT_TRACE_WRITTEN;
             } else if (!(s->flags & RT_TRACE_WRITTEN) && s->value != value[i]) {
                 return NOTE_CHANGED;
+            } else if ((s->flags & KNOWN) && s->now != value[i]) {
+                /* The traced code (or a scripted import) wrote it, and something else has changed
+                   it since: a replay would read what was written. */
+                return NOTE_CHANGED;
             }
         }
         done += chunk;
     }
     return 0;
+}
+
+/* Keeps the value now in memory of each noted byte among the n at `addr`, as what a later read
+   must see: the traced code's own write, or the scripted write of an import. */
+static void remember_written(trace_state *t, uint64_t addr, uint64_t n)
+{
+    uint8_t value[64];
+    for (uint64_t done = 0; done < n;) {
+        const uint64_t chunk = n - done < sizeof value ? n - done : sizeof value;
+        const int readable = !read_self(t, addr + done, value, chunk);
+        for (uint64_t i = 0; i < chunk; i++) {
+            slot *s = find(t, addr + done + i);
+            if (s->addr != addr + done + i) continue;   /* the private stack has no slots */
+            if (readable) {
+                s->now = value[i];
+                s->flags |= KNOWN;
+            } else {
+                s->flags &= (uint8_t)~KNOWN;
+            }
+        }
+        done += chunk;
+    }
+}
+
+/* Reads what the last instruction wrote, now that it has run. */
+static void settle_writes(trace_state *t)
+{
+    for (unsigned i = 0; i < t->pending; i++)
+        remember_written(t, t->pending_addr[i], t->pending_len[i]);
+    t->pending = 0;
 }
 
 static int xmm_index(x86_reg r)
@@ -538,6 +581,7 @@ static void import_return(trace_state *t, ucontext_t *uc)
                 c->writes++;
                 /* Later reads of these bytes see what the import wrote, which the case scripts. */
                 note(t, at + off, end - off, 1, NULL);
+                remember_written(t, at + off, end - off);
                 reach = end;
             }
             off = done = run_end;
@@ -659,6 +703,7 @@ static int note_thread_local(trace_state *t, uint64_t addr, uint64_t n)
 static void step(trace_state *t, ucontext_t *uc)
 {
     greg_t *g = uc->uc_mcontext.gregs;
+    settle_writes(t);
     const void *to = redirected((uint64_t)g[REG_RIP]);
     if (to)
         g[REG_RIP] = (greg_t)(uintptr_t)to;
@@ -743,7 +788,7 @@ static void step(trace_state *t, ucontext_t *uc)
             int input = 0;
             const int noted = note(t, ea, n, 0, &input);
             if (noted == NOTE_CHANGED)
-                return stop(t, uc, "an input changed during the call (written outside the traced code)");
+                return stop(t, uc, "memory the call reads changed during it (written outside the traced code)");
             if (noted)
                 return stop(t, uc, "a read the tracer cannot note (limit, or unreadable memory)");
             if (input && op->size == 8 && count == 1) {
@@ -752,8 +797,12 @@ static void step(trace_state *t, ucontext_t *uc)
                 t->qword[t->qwords++] = ea;
             }
         }
-        if ((op->access & CS_AC_WRITE) && note(t, ea, n, 1, NULL))
-            return stop(t, uc, "a write the tracer cannot note (limit)");
+        if (op->access & CS_AC_WRITE) {
+            if (note(t, ea, n, 1, NULL) || t->pending >= PENDING_LIMIT)
+                return stop(t, uc, "a write the tracer cannot note (limit)");
+            t->pending_addr[t->pending] = ea;
+            t->pending_len[t->pending++] = n;
+        }
     }
 }
 
@@ -815,7 +864,7 @@ static int collect(trace_state *t, rt_trace_log *log)
     for (size_t i = 0; i < n; i++) {
         const slot *s = find(t, log->addr[i]);
         log->value[i] = s->value;
-        log->flags[i] = s->flags;
+        log->flags[i] = s->flags & (RT_TRACE_READ | RT_TRACE_WRITTEN);
     }
     memcpy(log->qword, t->qword, t->qwords * sizeof *t->qword);
     log->link = malloc((t->links ? t->links : 1) * sizeof *log->link);
