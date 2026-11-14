@@ -1418,7 +1418,7 @@ class Readable(unittest.TestCase):
     def test_readable_code_passes(self):
         code = (
             '// a comment with 0x1234 and rec. in it\n'
-            'RT_ORIGINAL(0x02224090, ai_group_reset, void(AiGroup *, int32_t, int32_t));\n'
+            'RT_ORIGINAL(0x00412340, ai_group_reset, void(AiGroup *, int32_t, int32_t));\n'
             'RT_GLOBAL(0x059401a0, ai_manager_instance, AiManager *);\n'
             'constexpr uint32_t debug_mark = 2,\n'
             '                   other = 0x40;\n'

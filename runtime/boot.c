@@ -990,6 +990,7 @@ int main(int argc, char **argv)
     }
 
     rt_thread_register_main(stack, STACK_SIZE);
+    rt_input_position_source position_source = NULL;
     if (game_library_path) {
         /* Retain this library until process exit: installed jumps and optional probes refer to
            its code for the whole guest lifetime. Import listing returned before this point. */
@@ -1011,6 +1012,14 @@ int main(int argc, char **argv)
             fprintf(stderr, "pbboot: game library %s initialization failed; guest not entered\n", game_library_path);
             return 3;
         }
+        /* Optional: where the game's character stands, for an input script's walks. */
+        position_source = (rt_input_position_source)dlsym(game_library, "bbgame_player_position");
+        rt_input_script_set_position_source(position_source);
+    }
+    if (input_script && rt_input_script_needs_position() && !position_source) {
+        fputs("pbboot: --input-script: a walk steers from the game library's bbgame_player_position, and there is "
+              "none\n", stderr);
+        return 2;
     }
 
     static unsigned char alt[1 << 16];
