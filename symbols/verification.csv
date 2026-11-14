@@ -59,7 +59,7 @@ ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_is_inside_direction,edge,,442,442,0,0,962565c5970bd876,2026-11-13
 ai_pending_event_fire,recorded,,33,33,0,0,f963cbb2620dee66,2026-11-13
 ai_pending_event_fire,edge,,21,21,0,0,f963cbb2620dee66,2026-11-13
-ai_perception_current_handle,recorded,,1500,1500,0,0,74aec38450ccd6b7,2026-11-14
+ai_perception_current_handle,recorded,,3001,3001,0,0,74aec38450ccd6b7,2026-11-14
 ai_perception_current_handle,edge,,145,145,0,0,74aec38450ccd6b7,2026-11-14
 ai_perception_target_visible,edge,,109,109,0,0,962565c5970bd876,2026-11-13
 ai_perception_update,edge,,802,802,0,0,74aec38450ccd6b7,2026-11-14
