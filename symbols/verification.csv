@@ -151,7 +151,8 @@ engine_narrow_string_assign_02a2d8e0,recorded,,66,66,0,0,2a14e8f9aadabcba,2026-1
 engine_narrow_string_assign_02a2d8e0,edge,,29,29,0,0,2a14e8f9aadabcba,2026-11-13
 engine_regular_heap_allocate_02485730,recorded,,200,200,0,0,5fb76586890b3d2a,2026-11-13
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,5fb76586890b3d2a,2026-11-13
-engine_regular_heap_allocate_aligned_02485a60,edge,,25,25,0,0,433b759023d0daac,2026-11-13
+engine_regular_heap_allocate_aligned_02485a60,recorded,,400,400,0,0,729b0b3f1bb7da0b,2026-11-13
+engine_regular_heap_allocate_aligned_02485a60,edge,,43,43,0,0,729b0b3f1bb7da0b,2026-11-13
 engine_regular_heap_check_block_02485e20,edge,,35,35,0,0,df8c99890db78683,2026-11-13
 engine_regular_heap_free_024858a0,edge,,28,28,0,0,4a194391f64650f8,2026-11-13
 engine_regular_heap_initialize_02485500,edge,,15,15,0,0,8020198830a03f61,2026-11-13
@@ -310,7 +311,7 @@ frame_timing_get_monotonic_ms,option-recorded,60,91,91,0,0,3a73b48ae6f6d5e8,2026
 frame_timing_get_monotonic_ms,option-recorded,uncapped,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_ms,option-recorded,wait-sleep,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_ms,option-recorded,wait-spin,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
-frame_timing_get_monotonic_us,recorded,,732,731,1,0,4e1059aed1298996,2026-11-12
+frame_timing_get_monotonic_us,recorded,,400,400,0,0,4e1059aed1298996,2026-11-13
 frame_timing_get_monotonic_us,edge,,20,20,0,0,4e1059aed1298996,2026-11-04
 frame_timing_holygrail_until_idle_0200f970,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_until_idle_0200f970,edge,60,59,59,0,0,cd53367af0bda73a,2026-10-31
