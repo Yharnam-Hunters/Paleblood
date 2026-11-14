@@ -3,7 +3,7 @@
 """Edge cases for the engine's thread object's constructors (game/engine/thread_construct.cpp), for
 tools/verify.py run.
 
-usage: thread_construct_cases.py OUT_DIR default|sized|with_affinity
+usage: thread_construct_cases.py OUT_DIR default|sized|with_affinity|create
 
 Each case constructs a thread object over a filled buffer (`thread`), so the bytes the constructor
 leaves alone are compared too. The default allocator exists or is made by its (stubbed) creation;
@@ -13,13 +13,17 @@ constructor has just cleared, so the mutex is always created (the query's functi
 a stub's 14-byte jump); mutex creation, the condition signal's creation (which writes its
 created flag or not), the mutex lock, the thread creation, the name assignment and the reports are
 stubs, and strlen is a scripted import.
+
+create (engine_thread_create_02a3b4d0) passes its arguments to the stubbed thread creation with
+affinity (with a spare scripted call), with every core and 0 in place of its fifth argument.
 """
 import json
 import os
 import struct
 import sys
 
-ADDRESSES = {'default': '0x0248adc0', 'sized': '0x0248b200', 'with_affinity': '0x0248afe0'}
+ADDRESSES = {'default': '0x0248adc0', 'sized': '0x0248b200', 'with_affinity': '0x0248afe0',
+             'create': '0x02a3b4d0'}
 LINES = {'default': (0x60, 0x61, 0x62), 'sized': (0xb2, 0xb3, 0xb4), 'with_affinity': (0x8d, 0x8e, 0x8f)}
 FATAL_ERROR, DEFAULT_ALLOCATOR, DEFAULT_ALLOCATOR_CREATE = '0x024b55b0', '0x05940670', '0x02fa2b10'
 INFO = '0x02484110'                 # any game function: the fake vtable points at it, stubbed
@@ -81,7 +85,25 @@ def case(kind, cid, name='Worker', allocator=True, info=0x21, mutex_result=0,
             'buffers': buffers, 'memory': memory, 'stubs': stubs, 'imports': imports}
 
 
+def create_case(cid, dropped=0x7, name='Worker', handle=0x5550000000000042, unused=0x3f, stack_size=0x20000):
+    buffers = {'system_thread': {'size': 0x10, 'bytes': '5a' * 0x10}, 'thread': {'size': 0x10}}
+    if name is not None:
+        buffers['name'] = {'size': len(name) + 1, 'bytes': (name.encode() + b'\0').hex()}
+    args = {'rdi': 'buf:system_thread', 'rsi': 'buf:thread', 'rdx': unused, 'rcx': stack_size, 'r8': dropped,
+            'r9': 'buf:name' if name is not None else 0}
+    stubs = [{'address': CREATE_WITH_AFFINITY, 'argc': 7, 'ret': hex(handle)},
+             {'address': CREATE_WITH_AFFINITY, 'argc': 7, 'ret': 0}]
+    return {'schema': 1, 'address': ADDRESSES['create'], 'id': cid, 'returns': 'i64', 'args': args,
+            'buffers': buffers, 'memory': [], 'stubs': stubs, 'imports': []}
+
+
 def make(kind):
+    if kind == 'create':
+        return [create_case('created'), create_case('not_created', handle=0),
+                create_case('dropped_upper_bits', dropped=0xffffffff12345678),
+                create_case('dropped_all_bits', dropped=0xffffffffffffffff), create_case('null_name', name=None),
+                create_case('stack_size_zero', stack_size=0),
+                create_case('unused_upper_bits', unused=0xffffffff00000007)]
     out = [
         case(kind, 'named'),
         case(kind, 'null_name', name=None),

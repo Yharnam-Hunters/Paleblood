@@ -91,6 +91,57 @@ static const uint32_t table_copy[] = TABLE_COPY(0xe03c2000, 0);
 static const uint32_t table_copy_format[] = TABLE_COPY(0xe0082000, 0);
 static const uint32_t table_copy_store_offset[] = TABLE_COPY(0xe03c2000, 4);
 
+/* Constant fills (gcn_fill_shape): the value loaded from the constant buffer s[8:11] into s[16:19],
+   stored through the descriptor s[0:3] at element lane + workgroup (s12) x 64; at lane + workgroup x 128
+   and 64 past it; and at the same two elements built from the thread's global id ((id >> 6) << 7 plus
+   id - (id >> 6) << 6, which holds for workgroups of up to 64 lanes). One storing the lane id (not the
+   loaded value) is not one. */
+#define FILL_VALUE_LOAD 0xc2880900, /* s_buffer_load_dwordx4 s[16:19], s[8:11], 0x0 */ \
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */                                             \
+    0x7e020210, /* v_mov_b32 v1, s16 */                                                \
+    0x7e040211, /* v_mov_b32 v2, s17 */                                                \
+    0x7e060212, /* v_mov_b32 v3, s18 */                                                \
+    0x7e080213  /* v_mov_b32 v4, s19 */
+static const uint32_t fill_one_store[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_two_stores[] = {
+    0x8f0d870c, /* s_lshl_b32 s13, s12, 7 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0x4a0a00c0, /* v_add_i32 v5, vcc, 64, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xe01c2000, 0x80000105, /* buffer_store_format_xyzw v[1:4], v5, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_from_global_id[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0: the global id */
+    0x2c0c0086, /* v_lshrrev_b32 v6, 6, v0 */
+    0x340e0c86, /* v_lshlrev_b32 v7, 6, v6 */
+    0x4c0e0f00, /* v_sub_i32 v7, vcc, v0, v7: the lane */
+    0x340c0c87, /* v_lshlrev_b32 v6, 7, v6 */
+    0x4a000d07, /* v_add_i32 v0, vcc, v7, v6 */
+    FILL_VALUE_LOAD,
+    0x4a0a00c0, /* v_add_i32 v5, vcc, 64, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xe01c2000, 0x80000105, /* buffer_store_format_xyzw v[1:4], v5, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_of_lanes[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0x7e020300, /* v_mov_b32 v1, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+#undef FILL_VALUE_LOAD
+
 /* out[i] = v_min_i32(-3, in[i]), out[64 + i] = v_max_i32(-3, in[i]), out[128 + i] = v_min_u32(7, in[i]),
    out[192 + i] = v_max_u32(7, in[i]). */
 static const uint32_t integer_min_max[] = {
@@ -845,6 +896,26 @@ static const uint32_t pixel_face_bits[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A pixel shader that stores to memory: after a scalar loop of 2^20 steps (a multiply-add chain the
+   compiler cannot fold away, so the store comes late), every pixel stores 2.0 (or the next float up, by
+   the chain's low bit) at byte 16 of the buffer in s[4:7], and exports white. */
+static const uint32_t pixel_late_store[] = {
+    0xbe880380, /*  0: s_mov_b32 s8, 0 */
+    0xbe8903ff, 0x12345678, /*  1: s_mov_b32 s9, 0x12345678 */
+    0x9309ff09, 0x0019660d, /*  3: s_mul_i32 s9, s9, 0x19660d */
+    0x8009ff09, 0x3c6ef35f, /*  5: s_add_u32 s9, s9, 0x3c6ef35f */
+    0x80088108, /*  7: s_add_u32 s8, s8, 1 */
+    0xbf0aff08, 0x00100000, /*  8: s_cmp_lt_u32 s8, 0x100000 */
+    0xbf85fff8, /* 10: s_cbranch_scc1 -8 (to 3) */
+    0x87098109, /* 11: s_and_b32 s9, s9, 1 */
+    0x8809f409, /* 12: s_or_b32 s9, s9, 2.0 */
+    0x7e020209, /* 13: v_mov_b32_e32 v1, s9 */
+    0xe0700010, 0x80010100, /* 14: buffer_store_dword v1, off, s[4:7], 0 offset:16 */
+    0x7e0402f2, /* 16: v_mov_b32_e32 v2, 1.0 */
+    0xf800180f, 0x02020202, /* 17: exp mrt0, v2, v2, v2, v2 done vm */
+    0xbf810000, /* 19: s_endpgm */
+};
+
 /* pixel_color writing its colour to colour targets 0 and 2 (two exports, the second done). */
 static const uint32_t pixel_color_two_targets[] = {
     0xbefc0300, /* s_mov_b32 m0, s0 */
@@ -963,6 +1034,18 @@ static const uint32_t pixel_level_zero[] = {
     0xf09c0f00, 0x00610704, /* image_sample_lz v[7:10], v[4:5], s[4:11], s[12:15] dmask:0xf */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xf800180f, 0x0a090807, /* exp mrt0, v7, v8, v9, v10 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* image_sample_lz with a texel offset (image_sample_lz_o): the image in s[4:11] at (x / 16, y / 16) of the
+   pixel's position moved 2 texels right and 1 up (the offset VGPR, first: x 2 in bits 5:0, y -1 in 13:8). */
+static const uint32_t pixel_level_zero_offset[] = {
+    0x7e0c02ff, 0x00003f02, /* v_mov_b32_e32 v6, 0x3f02 */
+    0x100e04ff, 0x3d800000, /* v_mul_f32_e32 v7, 0x3d800000 (1/16), v2 */
+    0x101006ff, 0x3d800000, /* v_mul_f32_e32 v8, 0x3d800000 (1/16), v3 */
+    0xf0dc0f00, 0x00610906, /* image_sample_lz_o v[9:12], v[6:8], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0c0b0a09, /* exp mrt0, v9, v10, v11, v12 done vm */
     0xbf810000, /* s_endpgm */
 };
 

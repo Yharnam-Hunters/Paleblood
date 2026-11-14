@@ -83,6 +83,10 @@ them. They are edge-verified: none has been recorded in a game run.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x013914a0` | 142 | `input_pad_slot_construct_013914a0` | verified | Pad slot constructor (vtable 0x056f1be0): label "pad not set", +0x24..+0x50 cleared, empty wide name at +0x50 (owns 1), +0x88 cleared |
+| `0x01391e30` | 299 | `input_key_assign_pressed_01391e30` | verified | Key assign pressed: mapper (+0x28) button index; enabled +0x20; key state map +0x40 enabled and not suppressed; pressed bit, else alternate input in the held set |
+| `0x01391f60` | 215 | `input_key_assign_analog_value_01391f60` | verified | Key assign analog value: as the pressed query (no mapper null check), then the input state float at the button index; 0 otherwise |
+| `0x013983e0` | 192 | `input_key_assign_first_free_id_013983e0` | verified | Smallest id 0-7 that no assignment (id at +0x24) of table +0x38[table] uses, every entry visited per id; 0xffffffff when all taken |
 | `0x01972900` | 426 | `input_pad_step_01972900` | verified | FD4PadManager map: marks two entries; advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic) |
 | `0x02a8bf30` | 108 | `input_mouse_b_open_for_initial_user` | edge-verified | Second mouse device class's open: initial user; close a positive handle at +0x128; sceMouseOpen(user; 0; 0; null); true when the new handle is positive |
 | `0x02a8c210` | 164 | `input_mouse_construct` | edge-verified | Mouse device constructor: base ctor with the third argument; vtable 0x056b7d00; clear 0x140..0x177; load sysmodule 0xa9; sceMouseInit; open via slot 32; handle 0 on any failure |

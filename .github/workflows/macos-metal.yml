@@ -14,10 +14,16 @@ on:
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'test/test_metal_upload.mm'
+      - 'test/test_metal_presentation.mm'
+      - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
+      - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
+      - 'test/test_metal_blend_banks.c'
+      - 'test/test_metal_vertex_instancing.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -38,10 +44,16 @@ on:
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'test/test_metal_upload.mm'
+      - 'test/test_metal_presentation.mm'
+      - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
+      - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
+      - 'test/test_metal_blend_banks.c'
+      - 'test/test_metal_vertex_instancing.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -67,11 +79,12 @@ jobs:
         arch: [arm64, x86_64]
     steps:
       - uses: actions/checkout@v4
-      - name: Configure normal root build with Metal smoke compilation
+      - name: Configure normal root build with Metal test compilation
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
           -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_ENABLE_METAL_SMOKE_TEST=ON
+          -DPB_ENABLE_METAL_PRESENTATION_TEST=ON
           -DPB_ENABLE_METAL_EXECUTOR=ON
       - name: Check that normal runtime and game targets remain available
         run: |
@@ -82,8 +95,8 @@ jobs:
           names = set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', Path('targets.txt').read_text()))
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
-      - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence test_metal_images --parallel 2
+      - name: Compile Metal library and owned test executables
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:

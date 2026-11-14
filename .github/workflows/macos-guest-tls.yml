@@ -14,6 +14,36 @@ on:
       - 'runtime/include/runtime/guest_tls.h'
       - 'test/test_guest_tls_darwin.c'
       - 'test/test_guest_tls_failures.c'
+      - 'cmake/DarwinGuestPointer.cmake'
+      - 'cmake/DarwinDiskGuestTLSTests.cmake'
+      - 'runtime/guest_pointer_darwin.c'
+      - 'runtime/plugin.c'
+      - 'runtime/hooks.c'
+      - 'runtime/process.c'
+      - 'runtime/include/runtime/guest_pointer.h'
+      - 'runtime/include/runtime/game_guest_pointer.h'
+      - 'runtime/include/runtime/guest.h'
+      - 'runtime/include/runtime/host.h'
+      - 'runtime/include/runtime/hooks.h'
+      - 'runtime/include/runtime/capture_hooks.h'
+      - 'runtime/include/runtime/observe_hooks.h'
+      - 'runtime/include/runtime/probe.h'
+      - 'runtime/include/runtime/process.h'
+      - 'game/loading/disk_device_open.cpp'
+      - 'game/loading/disk_file_device.h'
+      - 'game/loading/tests/disk_guest_tls.cpp'
+      - 'game/engine/allocator.h'
+      - 'game/engine/container.h'
+      - 'game/engine/engine.h'
+      - 'game/engine/static_wide_string.h'
+      - 'game/engine/thread.h'
+      - 'game/engine/wide_string.h'
+      - 'game/engine/wide_string_assign.h'
+      - 'game/frame_timing/job.h'
+      - 'runtime/include/runtime/original.h'
+      - 'test/game_guest_pointer_module.c'
+      - 'test/test_game_guest_pointer.c'
+      - 'test/test_game_guest_pointer_control.py'
   pull_request:
     paths:
       - '.github/workflows/macos-guest-tls.yml'
@@ -23,6 +53,36 @@ on:
       - 'runtime/include/runtime/guest_tls.h'
       - 'test/test_guest_tls_darwin.c'
       - 'test/test_guest_tls_failures.c'
+      - 'cmake/DarwinGuestPointer.cmake'
+      - 'cmake/DarwinDiskGuestTLSTests.cmake'
+      - 'runtime/guest_pointer_darwin.c'
+      - 'runtime/plugin.c'
+      - 'runtime/hooks.c'
+      - 'runtime/process.c'
+      - 'runtime/include/runtime/guest_pointer.h'
+      - 'runtime/include/runtime/game_guest_pointer.h'
+      - 'runtime/include/runtime/guest.h'
+      - 'runtime/include/runtime/host.h'
+      - 'runtime/include/runtime/hooks.h'
+      - 'runtime/include/runtime/capture_hooks.h'
+      - 'runtime/include/runtime/observe_hooks.h'
+      - 'runtime/include/runtime/probe.h'
+      - 'runtime/include/runtime/process.h'
+      - 'game/loading/disk_device_open.cpp'
+      - 'game/loading/disk_file_device.h'
+      - 'game/loading/tests/disk_guest_tls.cpp'
+      - 'game/engine/allocator.h'
+      - 'game/engine/container.h'
+      - 'game/engine/engine.h'
+      - 'game/engine/static_wide_string.h'
+      - 'game/engine/thread.h'
+      - 'game/engine/wide_string.h'
+      - 'game/engine/wide_string_assign.h'
+      - 'game/frame_timing/job.h'
+      - 'runtime/include/runtime/original.h'
+      - 'test/game_guest_pointer_module.c'
+      - 'test/test_game_guest_pointer.c'
+      - 'test/test_game_guest_pointer_control.py'
 
 permissions:
   contents: read
@@ -35,7 +95,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure normal root build
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
-      - name: Build owned library and tests from root
-        run: cmake --build build --target guest_tls_owned test_guest_tls_darwin test_guest_tls_failures --parallel 2
-      - name: Qualify owned GS/TSD profile and failure handling
-        run: ctest --test-dir build -R '^darwin_guest_tls_' --output-on-failure --no-tests=error
+      - name: Build owned TLS and game-pointer bridge tests from root
+        run: cmake --build build --target guest_tls_owned test_guest_tls_darwin test_guest_tls_failures test_game_guest_pointer_correct test_game_guest_pointer_wrong test_game_guest_pointer test_game_guest_pointer_absent test_disk_guest_tls --parallel 2
+      - name: Qualify owned GS/TSD profile and game-pointer bridge
+        run: ctest --test-dir build -R '^(darwin_guest_tls_(owned|failures)|darwin_game_guest_pointer(_absent|_wrong_slot)?|darwin_disk_guest_tls)$' --output-on-failure --no-tests=error
