@@ -66,6 +66,7 @@ address,size,name,system,status,notes
 0x0143e030,55,frame_timing_task_worker_assign_0143e030,frame_timing,edge-verified,"Assigns a batch to a worker slot by index; false when busy, for a null batch, a negative index or one past the end (unsigned count)"
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock; run; destroy and free every queued object; empty the list; unlock"
 0x0143ec40,185,frame_timing_task_clear_items_0143ec40,frame_timing,edge-verified,Under the task lock (+0x90): frees the pending items last first and their array via the allocator at +0x80; empties the list; empties +0x70/+0x78 when counted
+0x0143ed00,264,frame_timing_task_refill_queue_0143ed00,frame_timing,edge-verified,"Under the task lock (+0x90): empties the queue (+0x58 deque) with 0x0143ec40, then pushes every 16-byte item of the list at +0x38/+0x40 onto it (0x02dd7150)"
 0x0143f720,82,frame_timing_task_lookup_0143f720,frame_timing,edge-verified,"Task under an id in the task table's map (std::map lower bound), null when absent; id 0 is never looked up"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60"
@@ -473,6 +474,7 @@ address,size,name,system,status,notes
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x02479710,156,loading_owned_object_release_02479710,loading,edge-verified,"Releases the two parts a transfer task owns at +0x90 (+0x10 then +0x08): slot +0xb0, then destroy and free through its allocator; clears the slot"
+0x0247b720,338,engine_allocator_of_0247b720,engine,edge-verified,Allocator owning a pointer: the thread temporary heap if it holds it; else the last registry range holding it (under the read-write lock); else the fallback allocator 0x0247fa50
 0x0247c000,1112,engine_heap_manager_register_area_0247c000,engine,edge-verified,DLHeapManager area registration: under the write lock; sorted insert after the last area starting at or below; same heap there refused; overrun reported; vector growth
 0x0247c4e0,24,render_setup_create_object_0247c4e0,render,edge-verified,"Thunk: the owner's vtable slot 0x58 called as (owner, first, second, first), second again in r8, candidate in r9; returns its result"
 0x0247c590,70,engine_locked_regular_heap_construct_0247c590,engine,edge-verified,Locked regular heap constructor: heap state zeroed (memset); DLLightMutex vtable and cleared flag; allocator interface vtable and owner

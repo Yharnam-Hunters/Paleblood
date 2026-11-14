@@ -85,6 +85,7 @@ character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_state_flags_update_01e4a490,edge,,40,40,0,0,84ffbaaca95d946f,2026-11-13
+engine_allocator_of_0247b720,edge,,37,37,0,0,cdd44c6e244ee4ea,2026-11-14
 engine_ascii_to_lower,edge,,291,291,0,0,576118df340da7d3,2026-11-05
 engine_ascii_to_lower_in_place,edge,,30,30,0,0,9e3258c3efe48d76,2026-11-03
 engine_ascii_to_upper_in_place,edge,,30,30,0,0,3eff33a1b86e2555,2026-11-03
@@ -386,6 +387,8 @@ frame_timing_task_record_close_0143c450,recorded,,51,51,0,0,0f7b1a925e8b299c,202
 frame_timing_task_record_close_0143c450,edge,,12,12,0,0,0f7b1a925e8b299c,2026-11-13
 frame_timing_task_record_open_0143c360,recorded,,51,51,0,0,0f7b1a925e8b299c,2026-11-13
 frame_timing_task_record_open_0143c360,edge,,30,30,0,0,0f7b1a925e8b299c,2026-11-13
+frame_timing_task_refill_queue_0143ed00,recorded,,200,200,0,0,de433d0739d8df72,2026-11-13
+frame_timing_task_refill_queue_0143ed00,edge,,10,10,0,0,de433d0739d8df72,2026-11-14
 frame_timing_task_run_01388c70,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_run_01388c70,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_run_all_01388c60,recorded,,209,209,0,0,8882a92dbfe2e577,2026-10-07
