@@ -478,6 +478,12 @@ state, required-register presence and canonical-memory updates. Stencil-only met
 use literal S8/BGRA results and complete pool comparisons to preserve the inactive Z plane,
 metadata bytes, padding and other slices; active metadata-dependent aspects retain prework
 refusals.
+`test_metal_vertex_only` checks null-pixel draws with no attachments through vertex stores and
+complete pool comparisons. The same vertex code alternates with color and depth/stencil draws;
+sparse indices, instance-input tuples, zero counts and single-execution rectangle sources have
+independent byte goldens. Nonzero or unprogrammed pixel stages and existing rectangle guards
+remain refusals. Vertex-only execution disables native rasterization and keeps shader memory
+writes; it does not skip the vertex stage or admit attachmentless fragment execution.
 `test_metal_rectangles` compares explicit ordinary-triangle references with rectangle draws,
 including permutations, both viewport signs, varying W, clip outputs, two parameters, sparse
 indices, offset draws, multiple rectangles, vertex counters and capture-stop publication.

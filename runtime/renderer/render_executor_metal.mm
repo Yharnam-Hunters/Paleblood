@@ -71,7 +71,7 @@ struct MetalShader {
     unsigned user, output;
     unsigned required_parameters;
     uint32_t user_read;
-    bool vertex, flip_y, color_output, capture;
+    bool vertex, flip_y, color_output, capture, vertex_only;
     MetalRectangleShader rectangle;
     MetalVertexInstancing instancing;
     std::vector<uint32_t> program, fetch;
@@ -748,14 +748,14 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
                                  const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
                                  MetalRectangleShader *rectangle = nullptr, const MetalVertexInstancing &instancing = {},
-                                 bool color_output = true)
+                                 bool color_output = true, bool vertex_only = false)
 {
     MetalProgram program, callee; uint32_t target_read = 0;
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
         if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
-            shader.color_output == color_output && shader.capture == (rectangle != nullptr) &&
+            shader.color_output == color_output && shader.capture == (rectangle != nullptr) && shader.vertex_only == vertex_only &&
             shader.instancing == instancing &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
             std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
@@ -794,11 +794,12 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
         MetalCompiler compiler(spirv, count);
-        if (!vertex) {
-            auto options = compiler.get_msl_options();
-            options.enable_frag_output_mask = color_output ? 1u : 0u;
-            compiler.set_msl_options(options);
-        }
+        auto options = compiler.get_msl_options();
+        /* A nonrasterizing Metal vertex entry returns void. Keep guest buffer stores
+           without the rectangle capture ABI or an unused stage-output buffer. */
+        options.disable_rasterization = vertex_only;
+        if (!vertex) options.enable_frag_output_mask = color_output ? 1u : 0u;
+        compiler.set_msl_options(options);
         /* Fragment image_sample gradients use native 2x2 quad broadcasts. Whole-quad mask
            expansion also writes wave-wide SCC; its GCN-wave behavior is still outside this profile. */
         for (size_t at = 5; at < count;) {
@@ -834,7 +835,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
         x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, color_output,
-            rectangle != nullptr, rectangle ? *rectangle : MetalRectangleShader{}, instancing,
+            rectangle != nullptr, vertex_only, rectangle ? *rectangle : MetalRectangleShader{}, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
             pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},function});
@@ -1239,7 +1240,8 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     const bool rectangle = state.primitive_set && state.primitive == DI_PT_RECTLIST;
     if (rectangle && (count % 3 || count > UINT32_MAX / 2))
         return failed(error,size,"rectangle lists require complete triples and a bounded expanded count");
-    if (!state.color_enabled && !(state.depth_set && (state.depth & (Z_ENABLE | STENCIL_ENABLE | 8u))))
+    if (!state.color_enabled && !(state.depth_set && (state.depth & (Z_ENABLE | STENCIL_ENABLE | 8u))) &&
+        (!state.pixel_set || state.pixel.code))
         return failed(error,size,"a draw has no color target or depth/stencil attachment");
     for (unsigned slot = 1; slot < RT_COLOR_TARGETS; ++slot)
         if (state.other[slot]) return failed(error, size, "render targets beyond slot 0 are not drawn yet");
@@ -1263,13 +1265,17 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     MetalDepthAttachments depth;
     if (depth_attachments(x,state,depth,error,size)) return -1;
     const bool has_depth = depth.z.texture || depth.stencil.texture;
-    if (!state.color_enabled && !has_depth) return failed(error,size,"a draw has no color target or depth/stencil attachment");
+    const bool vertex_only = !state.color_enabled && !has_depth && !state.pixel.code;
+    if (!state.color_enabled && !has_depth && !vertex_only)
+        return failed(error,size,"a draw has no color target or depth/stencil attachment");
+    const bool raster_rectangle = rectangle && !vertex_only;
     const bool write_color = color_writes(state);
-    if (!state.pixel.code && (write_color || !has_depth))
+    if (!state.pixel.code && !vertex_only && (write_color || !has_depth))
         return failed(error,size,"a draw with no pixel shader requires depth/stencil and no color writes");
     MetalTarget *target = state.color_enabled ? target_for(x,state.color,error,size) : nullptr;
     if (state.color_enabled && !target) return -1;
-    const uint32_t width = target ? target->width : depth.width, height = target ? target->height : depth.height;
+    const uint32_t width = vertex_only ? 1 : target ? target->width : depth.width;
+    const uint32_t height = vertex_only ? 1 : target ? target->height : depth.height;
     if (has_depth && (depth.width < width || depth.height < height))
         return failed(error,size,"depth/stencil extent is smaller than the color target");
     if (target) for (const auto *p : {&depth.z,&depth.stencil})
@@ -1286,23 +1292,24 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         {state.step_rates[0], state.step_rates[1]}, state.step_rates_set};
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
-                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, rectangle ? &rectangle_shader : nullptr, instancing);
+                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, raster_rectangle ? &rectangle_shader : nullptr, instancing, true, vertex_only);
     if (!vertex) return -1;
     id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
                                              state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size, nullptr, {}, state.color_enabled) : nil;
     if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;
-    id<MTLRenderPipelineState> pipeline = pipeline_for(x,rectangle ? rectangle_shader.raster : vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,raster_rectangle ? rectangle_shader.raster : vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
         depth.z.texture ? depth.z.texture.pixelFormat : MTLPixelFormatInvalid,
-        depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size);
+        depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size,!vertex_only);
     if (!pipeline) return -1;
     MetalRectangleDraw captured;
-    if (rectangle && capture_rectangle(x,state,count,indices,vertex,rectangle_shader.stride,captured,error,size)) return -1;
+    if (raster_rectangle && capture_rectangle(x,state,count,indices,vertex,rectangle_shader.stride,captured,error,size)) return -1;
     if (target) load_target(x,*target);
     load_depth_plane(x,depth.z); load_depth_plane(x,depth.stencil);
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.renderTargetWidth = width; pass.renderTargetHeight = height;
+    if (vertex_only) pass.defaultRasterSampleCount = 1;
     if (target) {
         pass.colorAttachments[0].texture = target->texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionLoad; pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -1336,7 +1343,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     [encoder setScissorRect:scissor];
     [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
     [encoder setFragmentBytes:state.user length:sizeof state.user atIndex:0];
-    if (rectangle) {
+    if (raster_rectangle) {
         [encoder setVertexBuffer:captured.outputs offset:0 atIndex:1];
         [encoder setVertexBuffer:captured.indices offset:0 atIndex:2];
     }
@@ -1346,7 +1353,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     [encoder useResource:x->stop usage:MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
     const MTLPrimitiveType primitive = state.primitive_set && state.primitive == DI_PT_TRISTRIP
         ? MTLPrimitiveTypeTriangleStrip : MTLPrimitiveTypeTriangle;
-    if (rectangle) [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count * 2];
+    if (raster_rectangle) [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count * 2];
     else if (indices)
         [encoder drawIndexedPrimitives:primitive indexCount:count indexType:indices->type
             indexBuffer:x->memory indexBufferOffset:indices->offset instanceCount:state.instances baseVertex:0 baseInstance:0];
