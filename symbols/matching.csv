@@ -31,6 +31,8 @@ address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_che
 0x0132c6c0,engine_resize_owner_storage,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/engine/owner_storage.c,36802ed687cda6fb,2026-11-12
 0x01388c60,frame_timing_task_run_all_01388c60,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/frame_timing/wrappers.c,a63e651154d00e70,2026-11-12
 0x013d3520,frame_timing_task_013d3520,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/frame_timing/task_013d3520.c,3539696d72236249,2026-11-12
+0x013e9040,engine_fd4_handle_is_valid_013e9040,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/engine/fd4_handle.c,a7aeb50a014e2bd6,2026-11-13
+0x013e9ee0,engine_fd4_handle_is_set_013e9ee0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/engine/fd4_handle_is_set.c,8c8da0c886019ec5,2026-11-13
 0x0143f9f0,frame_timing_task_set_frame_value_0143f9f0,clang-3.4.2,ps4-o2,99.9,85.0,no,no,game/matching/frame_timing/wrappers.c,a63e651154d00e70,2026-11-12
 0x01471270,render_command_buffer_init,clang-3.4.2,ps4-o2,100.0,80.0,yes,yes,game/matching/render/command_buffer.c,52c497f0bd8b6fb9,2026-11-12
 0x014712d0,render_compose_record_encoding_fields,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/render/record_encoding.c,df59068cf2239c78,2026-11-12

@@ -15,9 +15,59 @@
 #include "render_fixture.h"
 #include "runtime/tiling.h"
 
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
+#include <vulkan/vulkan.h>
+
+/* What the executor records, for orderings the pixels cannot show (this device may order the work
+   either way): the executor is linked in statically, so this program's vkCmdPipelineBarrier, vkCmdDraw
+   and vkCreateRenderPass take its calls, note what the checks ask, and pass each call on to the Vulkan
+   library's (dlsym RTLD_NEXT). */
+static struct {
+    int barrier_since_draw;    /* a barrier has been recorded since the last draw */
+    int draw_after_barrier;    /* the last draw had a barrier recorded between it and the draw before it */
+    unsigned unordered_passes; /* render passes made with no dependency on earlier passes' attachment writes */
+} recorded;
+
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(VkCommandBuffer commands, VkPipelineStageFlags source, VkPipelineStageFlags destination,
+                                                VkDependencyFlags flags, uint32_t memory_count, const VkMemoryBarrier *memory,
+                                                uint32_t buffer_count, const VkBufferMemoryBarrier *buffers, uint32_t image_count,
+                                                const VkImageMemoryBarrier *images)
+{
+    static PFN_vkCmdPipelineBarrier next;
+    if (!next) next = (PFN_vkCmdPipelineBarrier)dlsym(RTLD_NEXT, "vkCmdPipelineBarrier");
+    recorded.barrier_since_draw = 1;
+    next(commands, source, destination, flags, memory_count, memory, buffer_count, buffers, image_count, images);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdDraw(VkCommandBuffer commands, uint32_t vertices, uint32_t instances, uint32_t first_vertex, uint32_t first_instance)
+{
+    static PFN_vkCmdDraw next;
+    if (!next) next = (PFN_vkCmdDraw)dlsym(RTLD_NEXT, "vkCmdDraw");
+    recorded.draw_after_barrier = recorded.barrier_since_draw, recorded.barrier_since_draw = 0;
+    next(commands, vertices, instances, first_vertex, first_instance);
+}
+
+/* A pass is ordered after earlier passes when a dependency from outside it (VK_SUBPASS_EXTERNAL) takes
+   their colour and depth attachment writes to its own attachment reads and writes. */
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRenderPassCreateInfo *info, const VkAllocationCallbacks *allocator,
+                                                  VkRenderPass *pass)
+{
+    static PFN_vkCreateRenderPass next;
+    if (!next) next = (PFN_vkCreateRenderPass)dlsym(RTLD_NEXT, "vkCreateRenderPass");
+    const VkPipelineStageFlags stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    const VkAccessFlags writes = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    int ordered = 0;
+    for (uint32_t i = 0; i < info->dependencyCount; i++) {
+        const VkSubpassDependency *d = &info->pDependencies[i];
+        ordered |= d->srcSubpass == VK_SUBPASS_EXTERNAL && d->dstSubpass == 0 && (d->srcStageMask & stages) == stages &&
+                   (d->dstStageMask & stages) == stages && (d->srcAccessMask & writes) == writes && (d->dstAccessMask & writes) == writes;
+    }
+    recorded.unordered_passes += !ordered;
+    return next(device, info, allocator, pass);
+}
 
 /* Every pixel of the target holds the triangle's colour. */
 static void check_triangle(rt_executor *x, uint64_t target)
@@ -937,8 +987,10 @@ static void tripled(float c[4]) { for (int i = 0; i < 4; i++) c[i] = fminf(3 * c
    dependency. With ONE + ONE into two new (zero) targets, in one buffer, the first target, the
    second, and so on, five draws: the first target holds the triangle tripled, the second doubled.
    The first two draws load their targets; the last three record nothing between them, so only the
-   passes' dependency orders a target's draws. Under the validation layer's synchronization check a
-   pass without it is named (a write after write); the pixels check the order. */
+   passes' dependency orders a target's draws. The pixels check the order where the device would
+   break it; this device keeps attachment writes in order without the dependency, and the validation
+   layer's synchronization check (1.3.290) does not name its absence either, so every render pass made
+   is checked for it as recorded. */
 static void draws_across_passes(rt_executor *x)
 {
     enum { PASSES_BUFFER = 0xc1090000, FIRST = 0x3a00000, SECOND = 0x3a40000 };
@@ -950,6 +1002,62 @@ static void draws_across_passes(rt_executor *x)
     CHECK(ran == 0);
     CHECK(blended_misses(x, at(FIRST), tripled) == 0);
     CHECK(blended_misses(x, at(SECOND), doubled) == 0);
+    CHECK(recorded.unordered_passes == 0);
+}
+
+enum { STORED_COLORS = 0x2c00000 };
+
+/* Records into `buffer` two draws of the triangle into `target`: the first with the pixel shader at
+   `first_code` (its user data s[4:7] a descriptor of STORED_COLORS, 8 user SGPRs), the second with
+   pixel_color, its vertex colours read from STORED_COLORS; the buffer's size. */
+static uint32_t record_draw_then_colours_read(uint64_t buffer, uint64_t target, uint64_t first_code)
+{
+    char error[200] = "";
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t first_pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(first_code >> 8), (uint32_t)(first_code >> 40), 0x2, 8 << 1, 0, 0x4,
+                                                         PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(buffer, offset, first_pixel, error, sizeof error) == 0);
+    uint32_t user[8] = {0};
+    descriptor(user + 4, at(STORED_COLORS), RECORD_STRIDE);
+    CHECK(rt_render_record_user_data(buffer, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+    offset = record_triangle_draw(buffer, offset + 0x20);
+    const uint64_t pixel_code = at(PIXEL_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(pixel_code >> 8), (uint32_t)(pixel_code >> 40), 0x2, 0, 0, 0x4,
+                                                   PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(buffer, offset, pixel, error, sizeof error) == 0);
+    descriptor(user, at(CORNERS), RECORD_STRIDE);
+    CHECK(rt_render_record_user_data(buffer, offset + 0x10, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0);
+    return record_triangle_draw(buffer, offset + 0x20);
+}
+
+/* A draw whose pixel shader stores to memory keeps the barrier before the next draw, which reads what
+   it stored: pixel_late_store stores the vertex colours' missing dword (the second corner's red, 2.0)
+   late, after a long loop, and the next draw, into the same target, takes its colours from there, so
+   it draws the triangle only if it reads them after the store. Without the barrier this device may read
+   first or not, so the recorded barrier is checked too, and that the same draw after pixel_color (no
+   store) has none. */
+static void draw_after_a_store(rt_executor *x)
+{
+    enum { STORE_BUFFER = 0xc10a0000, STORE_CODE = 0x7c00, STORE_TARGET = 0x2c40000 };
+    char error[200] = "";
+    float *const colors = (float *)(uintptr_t)at(STORED_COLORS);
+    memcpy(colors, (const void *)(uintptr_t)at(COLORS), 3 * RECORD_STRIDE);
+    colors[4] = 0; /* the second corner's red, 2.0 once stored */
+    memcpy((void *)(uintptr_t)at(STORE_CODE), pixel_late_store, sizeof pixel_late_store);
+    rt_render_forget(), rt_executor_reset(x);
+    int ran = rt_executor_run(x, STORE_BUFFER, record_draw_then_colours_read(STORE_BUFFER, at(STORE_TARGET), at(STORE_CODE)), error,
+                              sizeof error);
+    if (ran) fprintf(stderr, "draw after a store: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(recorded.draw_after_barrier);
+    CHECK(colors[4] == 2.0f || colors[4] == nextafterf(2.0f, 3.0f));
+    check_triangle(x, at(STORE_TARGET));
+    rt_render_forget(), rt_executor_reset(x);
+    ran = rt_executor_run(x, STORE_BUFFER, record_draw_then_colours_read(STORE_BUFFER, at(STORE_TARGET), at(PIXEL_CODE)), error,
+                          sizeof error);
+    if (ran) fprintf(stderr, "draw after no store: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(!recorded.draw_after_barrier);
 }
 
 /* Two buffers recorded without submitting (rt_executor_record_calls) join one open batch: both name the
@@ -3465,6 +3573,7 @@ int main(void)
     blending(x);
     draws_in_one_batch(x);
     draws_across_passes(x);
+    draw_after_a_store(x);
     indirect_draws(x);
     instanced_draws(x);
     other_viewports(x);
