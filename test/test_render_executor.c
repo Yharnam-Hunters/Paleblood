@@ -1441,6 +1441,32 @@ static void many_targets(rt_executor *x)
     check_triangle(x, at(MANY_FIRST));
 }
 
+/* More pipelines than the executor keeps (MAX_PIPELINES, 1024): 1,210 draws into one target, each with
+   another blend state (11 source x 11 destination factors x 5 functions, under two target masks), each
+   buffer run to the end. Every draw is made: the least recently used pipeline whose batch has run gives
+   its place. The target then still draws the triangle. */
+static void pipelines_past_the_limit(rt_executor *x)
+{
+    enum { MANY_PIPES_BUFFER = 0xc0fdc000, PIPES_TARGET = 0x3f40000, FACTORS_USED = 11, FUNCTIONS_USED = 5, MASKS = 2,
+           BLEND_ENABLE = 1u << 30, DEST_SHIFT = 8, FUNCTION_SHIFT = 5, CB_BLEND0_CONTROL = 0xa1e0, CB_TARGET_MASK = 0xa08e };
+    static const uint32_t masks[MASKS] = {0xf, 0x7};
+    char error[200] = "";
+    int drawn = 1;
+    for (uint32_t m = 0; m < MASKS && drawn; m++)
+        for (uint32_t f = 0; f < FUNCTIONS_USED && drawn; f++)
+            for (uint32_t d = 0; d < FACTORS_USED && drawn; d++)
+                for (uint32_t s = 0; s < FACTORS_USED && drawn; s++) {
+                    const uint32_t registers[][2] = {{CB_BLEND0_CONTROL, BLEND_ENABLE | s | d << DEST_SHIFT | f << FUNCTION_SHIFT},
+                                                     {CB_TARGET_MASK, masks[m]}};
+                    const int ran = run_with_registers(x, MANY_PIPES_BUFFER, at(PIPES_TARGET), registers, 2, 0, error, sizeof error);
+                    if (ran) fprintf(stderr, "pipeline %u: %s\n", ((m * FUNCTIONS_USED + f) * FACTORS_USED + d) * FACTORS_USED + s, error);
+                    drawn = ran == 0;
+                }
+    CHECK(drawn);
+    CHECK(run_with_registers(x, MANY_PIPES_BUFFER, at(PIPES_TARGET), NULL, 0, 0, error, sizeof error) == 0);
+    check_triangle(x, at(PIPES_TARGET));
+}
+
 /* The pipelines kept after render targets are freed (many_targets leaves all 512 kept): each round draws
    into a new target, which frees the oldest; that target's pipeline goes and the last pipeline made (the
    one of the target drawn into the round before) moves into its place. That target is drawn again then.
@@ -3305,6 +3331,7 @@ int main(void)
     reshaped_target(x);
     many_targets(x);
     pipelines_after_freed_targets(x);
+    pipelines_past_the_limit(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
