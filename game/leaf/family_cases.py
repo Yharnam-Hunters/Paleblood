@@ -105,6 +105,32 @@ def setter_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
+RECORD_SIZE = 0x80
+RECORD_PADDING = 0x10   # bytes on each side of the record, which a correct body leaves
+
+
+def record_cases(address: str, value: int | None) -> list[dict]:
+    """A body that clears the 15 words at rsi, stores rdi at rsi+0x78 and returns 0 in all of rax:
+    rsi points into a buffer of distinct bytes with 16 bytes on each side of the record (a store
+    past either end shows), rdi is a pointer, an integer with every bit set and zero, rax enters
+    seeded, and the other arguments point into a probe buffer and are compared."""
+    out = []
+    for case_id, seed, start, owner in (('record_owner_pointer', 7, 0, 'buf:probe+0x18'),
+                                        ('record_owner_all_bits', 91, 0, '0xffffffffffffffff'),
+                                        ('record_owner_zero', 173, 0, '0x0'),
+                                        ('record_unaligned', 29, 3, '0x0123456789abcdef')):
+        size = RECORD_SIZE + 2 * RECORD_PADDING
+        case = base_case(address, case_id, 'i64')
+        case['buffers'] = {'record': {'size': size, 'bytes': probe_bytes(seed, size)},
+                           'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
+        case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
+        case['args']['rdi'] = owner
+        case['args']['rsi'] = f'buf:record+0x{RECORD_PADDING + start:x}'
+        case['args']['rax'] = hex(RAX_SEED)
+        out.append(case)
+    return out
+
+
 XMM0_SEED = '1e1fe00f3cc3a55a8899aabbccddeeff'
 XMM1_SEED = '00112233445566778899aabbccddeeff'
 
@@ -137,6 +163,7 @@ CASES = {
     'returns_first_argument': returns_a_value,
     'returns_second_argument': returns_a_value,
     'returns_float_zero': returns_float_zero,
+    'zeroes_record_and_stores_first_argument': record_cases,
 }
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
@@ -171,6 +198,8 @@ MUTANTS = {
     'returns_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_first_argument'],
     'returns_float_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one',
                            'bb_mutant_zeroes_low_float_only', 'bb_mutant_zeroes_xmm0_and_xmm1'],
+    'zeroes_record_and_stores_first_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_record_last_word_left',
+                                                'bb_mutant_record_owner_is_record', 'bb_mutant_record_returns_owner'],
 }
 
 

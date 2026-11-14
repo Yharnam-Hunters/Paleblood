@@ -334,6 +334,13 @@ MATCHING_TEMPLATES = {
         'shared': STDINT,
         'single': 'uint64_t {symbol}(uint64_t first, uint64_t second)\n{{\n    (void)first;\n    return second;\n}}\n',
     },
+    'zeroes_record_and_stores_first_argument': {
+        'header': '// Record initializers: fifteen `mov qword [rsi+K], 0`, `mov [rsi+0x78], rdi`, `xor eax, eax`.\n',
+        'shared': STDINT + '\nenum { cleared_words = 15 };\n\nstruct record_with_owner {\n    uint64_t cleared[cleared_words];\n    void *owner;\n};\n',
+        'single': 'uint64_t {symbol}(void *owner, struct record_with_owner *record)\n{{\n'
+                  '    for (int i = cleared_words - 1; i >= 0; i--)\n        record->cleared[i] = 0;\n'
+                  '    record->owner = owner;\n    return 0;\n}}\n',
+    },
     'returns_float_zero': {
         'header': '// Float zero getters: `vxorps xmm0, xmm0, xmm0; ret` (the VEX form: the CPU has AVX).\n',
         'shared': '',

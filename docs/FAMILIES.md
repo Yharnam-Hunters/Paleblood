@@ -95,6 +95,7 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | Family | Shape | What the members are |
 |---|---|---|
 | `returns_nothing` | `c3` | empty functions: empty virtual methods and callbacks that do nothing |
+| `zeroes_record_and_stores_first_argument` | 126 exact bytes (`symbols/families.csv`) | record initializers: clear 15 words at the second argument, store the first after them, return 0 |
 | `returns_zero` | `31 c0 c3` | functions that return false, null or 0 (all of rax) |
 | `returns_constant` | `b8 {u32} c3` | functions that return a fixed number, zero-extended to rax |
 | `reads_qword_field` | `48 8b 47 {d8} c3` | getters of a 64-bit field (often a pointer) K bytes into the object |
