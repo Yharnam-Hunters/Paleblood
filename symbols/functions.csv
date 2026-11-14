@@ -688,6 +688,9 @@ address,size,name,system,status,notes
 0x02a3a920,49,engine_mutex_initialize_02a3a920,engine,edge-verified,Engine mutex initialize: asks the vtable; else the PthreadMutex initialize (0x02483fe0) on the handle; a nonzero result is returned and the flag stays as it was
 0x02a3ae00,394,engine_semaphore_wait_02a3ae00,engine,edge-verified,"DLSemaphore wait for one unit, forever or up to a timeout; -3 on ETIMEDOUT; ESRCH..EINVAL report chains, unknown errors reported; 0"
 0x02a3b0d0,122,engine_semaphore_signal_02a3b0d0,engine,edge-verified,DLSemaphore signal: EINVAL ignored; ESRCH and other errors reported; 0
+0x02a3b4d0,32,engine_thread_create_02a3b4d0,engine,edge-verified,DLThread: creates the system thread through 0x02a3b310 with every core and 0 in place of the dropped fifth argument
+0x02a3b8b0,253,engine_block_pool_allocate_02a3b8b0,engine,edge-verified,"Block pool: a block from the current page, else the front partial page, else a new page from the allocator (blocks chained); a page left without free blocks goes to the full ring"
+0x02a3b9b0,142,engine_block_pool_free_02a3b9b0,engine,edge-verified,"Block pool: a block back on its page's free chain; a full page moves to the partial ring, a page with every block free goes back to the allocator"
 0x02a3baa0,378,engine_fast_fixed_allocator_initialize_02a3baa0,engine,edge-verified,"DLFastFixedAllocator set-up: chunk size rounded up to a power of two, chunks aligned to it; blocks rounded to the alignment (at least 8); reports bad sizes and alignment"
 0x02a3bc40,173,engine_fast_fixed_allocator_release_02a3bc40,engine,edge-verified,"DLFastFixedAllocator destructor body: every chunk of both chunk lists, then the spare chunk, freed to the backing allocator"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator

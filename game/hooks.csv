@@ -687,6 +687,9 @@ address,replacement,system,returns
 0x02a3a920,bb_engine_mutex_initialize_02a3a920,engine,i32
 0x02a3ae00,bb_engine_semaphore_wait_02a3ae00,engine,i32
 0x02a3b0d0,bb_engine_semaphore_signal_02a3b0d0,engine,i32
+0x02a3b4d0,bb_engine_thread_create_02a3b4d0,engine,i64
+0x02a3b8b0,bb_engine_block_pool_allocate_02a3b8b0,engine,i64
+0x02a3b9b0,bb_engine_block_pool_free_02a3b9b0,engine,void
 0x02a3baa0,bb_engine_fast_fixed_allocator_initialize_02a3baa0,engine,void
 0x02a3bc40,bb_engine_fast_fixed_allocator_release_02a3bc40,engine,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
