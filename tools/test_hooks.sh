@@ -128,7 +128,7 @@ git add -f AGENTS.md; expect fail "AGENTS.md staged" "local-only file staged"
 mkdir -p .handoff && echo '{}' > .handoff/handoff.json
 git add -f .handoff/handoff.json; expect fail "handoff staged" "local-only file staged"
 
-# a replaced function with the README block left as it was: main regenerates progress
+# a replaced function with the progress block left as it was: main regenerates progress
 # (tools/progress_pr.py), so the branch need not
 fixture_rows
 cat > game/frame_timing/update.c <<'C'
@@ -145,7 +145,7 @@ cat > game/frame_timing/update.c <<'C'
 void bb_frame_timing_update(void) {}
 C
 python3 tools/progress.py --update-readme >/dev/null
-sed -i -E 's/^(\| Replaced \| )[0-9]+ /\1999 /' README.md
+sed -i -E 's/^(\| Replaced \| )[0-9]+ /\1999 /' STATUS.md
 git add -A; expect fail "hand-edited progress number" "progress block is stale"
 
 fixture_rows
@@ -153,7 +153,7 @@ cat > game/frame_timing/update.c <<'C'
 void bb_frame_timing_update(void) {}
 C
 python3 tools/progress.py --update-readme >/dev/null
-git add -A; expect pass "consistent change with regenerated README"
+git add -A; expect pass "consistent change with regenerated progress"
 
 # readability (STYLE.md): a transcription never reaches the branch, and the allowlist only shrinks
 cat > game/frame_timing/raw.cpp <<'C'

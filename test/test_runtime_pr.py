@@ -102,7 +102,8 @@ class ChangedFileClassification(unittest.TestCase):
         self.assertEqual(runtime_pr.check_report(documentation_body(), paths), [])
 
     def test_progress_regeneration_is_documentation_only(self):
-        # tools/progress_pr.py: the generated blocks and the status card, nothing else
+        # tools/progress_pr.py: the generated blocks, nothing else (the former status card's
+        # paths still read as documentation, so its removal does)
         paths = ['README.md', 'STATUS.md', 'CONTRIBUTING.md',
                  'docs/assets/status-light.svg', 'docs/assets/status-dark.svg']
         self.assertEqual(runtime_pr.classify_paths(paths)['classification'], 'documentation-only')

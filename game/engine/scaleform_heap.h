@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 
 #include "runtime/original.h"
 
@@ -53,11 +54,23 @@ constexpr uint32_t unit_code_mask = 3;
 constexpr uint64_t units_per_bitset_word = 16;
 constexpr uint64_t bitset_word_shift = 4;       // units to bitset words
 constexpr uint64_t unit_code_shift_mask = 0x1e; // shifts stay inside the 32-bit word
+constexpr uint64_t long_length_offset = 0x25;   // see long_length_word
+constexpr uint64_t long_length_shift = 5;
+// A block's length code takes up to its first five units (scaleform_heap_bitset_mark.cpp).
+constexpr uint64_t second_code_unit = 1;
+constexpr uint64_t third_code_unit = 2;
+constexpr uint64_t fourth_code_unit = 3;
+constexpr uint64_t fifth_code_unit = 4;
 
 // The page's descriptor (0x20 bytes, in the arrays the page table points at).
 struct MemoryHeap;
+// A link of an engine's ring of pages (the engine holds the ring's own node).
+struct PageLinks {
+    PageLinks *next;
+    PageLinks *prev;
+};
 struct Page {
-    uint8_t unknown_0x00[0x10];
+    PageLinks links;            // in the ring of its engine's pages
     MemoryHeap *heap;           // the heap the page belongs to
     uintptr_t base;             // where the page's 4 KiB start, before rounding to 16 bytes
 };
@@ -104,17 +117,37 @@ struct PageView {
 };
 static_assert(sizeof(PageView) == 0x38);
 
+// What an engine asks when a new page would take its pages past their limit: slot 2 of the
+// handler's vtable, with the heap and the bytes past the limit (true: the handler made room). The
+// engine counts the calls in progress around it.
+struct LimitHandler;
+struct LimitHandlerVtable {
+    void *unknown_slots[2];
+    bool (*on_limit_exceeded)(LimitHandler *handler, MemoryHeap *heap, uint64_t excess);
+};
+struct LimitHandler {
+    const LimitHandlerVtable *vtable;
+    int32_t calls_in_progress;
+};
+static_assert(offsetof(LimitHandlerVtable, on_limit_exceeded) == 0x10);
+static_assert(offsetof(LimitHandler, calls_in_progress) == 8);
+
 // The small-block engine (part of the heap's allocation engine).
 struct Engine {
-    uint8_t unknown_0x00[0x10];
+    uint8_t unknown_0x00[0x8];
+    MemoryHeap *heap;           // the heap the engine allocates for
     uint64_t alignment;         // the heap's minimum alignment: above 16, every allocation is aligned
     Bins bins;
-    uint8_t unknown_0x220[0x18];
+    PageLinks pages;            // the ring of the engine's pages
+    uint64_t page_bytes_taken;  // page_bytes for each page in the ring
     uint64_t used_bytes;        // bytes handed out
-    uint8_t unknown_0x240[0x10];
+    uint64_t limit;             // 0: no limit on page_bytes_taken
+    LimitHandler *limit_handler;
     uint64_t allocation_count;
 };
-static_assert(offsetof(Engine, bins) == 0x18 && offsetof(Engine, used_bytes) == 0x238);
+static_assert(offsetof(Engine, heap) == 8 && offsetof(Engine, bins) == 0x18 && offsetof(Engine, pages) == 0x220);
+static_assert(offsetof(Engine, page_bytes_taken) == 0x230 && offsetof(Engine, used_bytes) == 0x238);
+static_assert(offsetof(Engine, limit) == 0x240 && offsetof(Engine, limit_handler) == 0x248);
 static_assert(offsetof(Engine, allocation_count) == 0x250);
 
 // The heap object, as far as the engine's callers read it.
@@ -142,10 +175,13 @@ struct LargeBlockNode;
 struct PageManager {
     uint8_t unknown_0x00[0x8];
     void *mutex;
-    uint8_t unknown_0x10[0x18];
+    uint8_t unknown_0x10[0x10];
+    uint32_t page_table_entries; // entries of the global page table in use
+    uint8_t unknown_0x24[0x4];
     LargeBlockNode *root;
 };
-static_assert(offsetof(PageManager, mutex) == 0x8 && offsetof(PageManager, root) == 0x28);
+static_assert(offsetof(PageManager, mutex) == 0x8 && offsetof(PageManager, page_table_entries) == 0x20);
+static_assert(offsetof(PageManager, root) == 0x28);
 RT_GLOBAL(0x05940360, page_manager, PageManager *);
 
 RT_ORIGINAL(0x02fbe598, mutex_lock, int(void **mutex));
@@ -163,9 +199,10 @@ static_assert(offsetof(LargeBlockNode, children) == 0x8 && offsetof(LargeBlockNo
 constexpr uintptr_t node_flag_bits = 3;
 
 // The bitset's own functions: mark `units` units from `unit` as one allocated block, and read the
-// length of the allocated block that starts at `unit`.
+// length of the allocated block that starts at `unit` (scaleform_heap_bitset_mark.cpp,
+// scaleform_heap_bitset_units.cpp).
 RT_ORIGINAL(0x027ec640, bitset_mark_allocated, void(uint32_t *bitset, uint64_t unit, uint64_t units));
-RT_ORIGINAL(0x027ec890, bitset_allocated_units, uint64_t(const uint32_t *bitset, uint64_t unit));
+RT_ORIGINAL(0x027ec890, bitset_allocated_units, uint32_t(const uint32_t *bitset, uint64_t unit));
 
 // The page descriptor a header names, if the header is one and `address` is inside that page.
 inline Page *page_from_header(const PageHeader *header, uintptr_t address)
@@ -220,6 +257,12 @@ inline uint64_t bin_bit(uint64_t bin)
     return uint64_t{1} << (bin & bin_shift_mask);
 }
 
+// The lowest set bit's index in a non-empty bin mask.
+inline uint64_t lowest_bin(uint64_t mask)
+{
+    return static_cast<uint64_t>(__builtin_ctzll(mask));
+}
+
 // The page of a free block: the pointer it carries when it is long enough, else the lookup (null
 // when the lookup fails; the callers then read through it).
 inline Page *page_of_free_block(const FreeBlock *block)
@@ -260,6 +303,26 @@ inline uint32_t unit_code_bits_at(uint64_t unit)
     return unit_code_mask << ((unit * unit_code_bits) & unit_code_shift_mask);
 }
 
+inline uint32_t unit_code(const uint32_t *bitset, uint64_t unit)
+{
+    return (bitset[unit >> bitset_word_shift] >> ((unit * unit_code_bits) & unit_code_shift_mask)) & unit_code_mask;
+}
+
+// Stores a unit's code (a value wider than two bits spills into the next unit's, as the game's
+// stores do; the marking never passes one).
+inline void set_unit_code(uint32_t *bitset, uint64_t unit, uint32_t code)
+{
+    const uint64_t shift = (unit * unit_code_bits) & unit_code_shift_mask;
+    uint32_t &word = bitset[unit >> bitset_word_shift];
+    word = (word & ~(unit_code_mask << shift)) | (code << shift);
+}
+
+// The word a block longer than 0x25 units keeps its length in (past its first three units).
+inline uint64_t long_length_word(uint64_t unit)
+{
+    return (unit * unit_code_bits + long_length_offset) >> long_length_shift;
+}
+
 inline bool unit_is_free(const uint32_t *bitset, uint64_t unit)
 {
     return (bitset[unit >> bitset_word_shift] & unit_code_bits_at(unit)) == 0;
@@ -294,10 +357,22 @@ inline void write_free_length(FreeBlock *block, uint64_t bytes)
     tail->prev_word = prev_word;
 }
 
-// Puts a free block (its length already written) at the head of its bin.
-inline void push_free(Bins *bins, FreeBlock *block)
+// Writes a free block's length in units into its link words and its last unit (the merge's form:
+// the high nibble's word takes every bit above the low four).
+inline void write_free_units(FreeBlock *block, uint64_t units)
 {
-    const uint64_t bin = bin_of(units_of(block));
+    auto *tail = reinterpret_cast<FreeBlock *>(reinterpret_cast<uintptr_t>(block) + units * unit_bytes - header_bytes);
+    const uint64_t next_word = (units & length_nibble) | (block->next_word & link_mask);
+    block->next_word = next_word;
+    tail->next_word = next_word;
+    const uint64_t prev_word = (units >> length_nibble_bits) | (block->prev_word & link_mask);
+    block->prev_word = prev_word;
+    tail->prev_word = prev_word;
+}
+
+// Puts a free block at the head of a bin.
+inline void push_to_bin(Bins *bins, FreeBlock *block, uint64_t bin)
+{
     FreeBlock *head = bins->heads[bin];
     const uint64_t self = reinterpret_cast<uintptr_t>(block);
     if (head) {
@@ -314,6 +389,12 @@ inline void push_free(Bins *bins, FreeBlock *block)
     bins->mask |= bin_bit(bin);
 }
 
+// Puts a free block (its length already written) at the head of its bin.
+inline void push_free(Bins *bins, FreeBlock *block)
+{
+    push_to_bin(bins, block, bin_of(units_of(block)));
+}
+
 // Makes `bytes` at `address` a free block of the page: length, page pointer, bin, and the bitset
 // ends.
 inline void release_range(Bins *bins, const PageView &view, uintptr_t address, uint64_t bytes)
@@ -325,11 +406,10 @@ inline void release_range(Bins *bins, const PageView &view, uintptr_t address, u
     push_free(bins, block);
 }
 
-// Takes a free block out of its bin. The bin's head moves to the block's previous one, not its
-// next (the order Scaleform's bins keep).
-inline void unlink_free(Bins *bins, FreeBlock *block)
+// Takes a free block out of a bin. The bin's head moves to the block's previous one, not its next
+// (the order Scaleform's bins keep).
+inline void unlink_from_bin(Bins *bins, FreeBlock *block, uint64_t bin)
 {
-    const uint64_t bin = bin_of(units_of(block));
     const uint64_t self = reinterpret_cast<uintptr_t>(block);
     if (reinterpret_cast<uintptr_t>(bins->heads[bin]) == self) {
         const uint64_t previous = link_target(block->prev_word);
@@ -344,6 +424,47 @@ inline void unlink_free(Bins *bins, FreeBlock *block)
     next->prev_word = with_link(next->prev_word, link_target(block->prev_word));
     FreeBlock *prev = link_block(block->prev_word);
     prev->next_word = with_link(prev->next_word, link_target(block->next_word));
+}
+
+// Takes a free block out of the bin of its length.
+inline void unlink_free(Bins *bins, FreeBlock *block)
+{
+    unlink_from_bin(bins, block, bin_of(units_of(block)));
+}
+
+// Adds a page to the bins, taking the page manager's lock; `retry` says whether to try again.
+RT_ORIGINAL(0x0233bbe0, add_page, void(Engine *engine, bool *retry));
+// The same, for a caller that holds the lock.
+RT_ORIGINAL(0x0233bd20, add_page_locked, void(Engine *engine, bool *retry));
+
+// The small allocations' loop (the engine's plain and aligned allocations): `take` allocates
+// `bytes` from the bins and describes the page; when it finds nothing, a page is added and the
+// allocation tried again for as long as that says to retry. A block is counted in its page's headers
+// and in the engine.
+template <typename Take>
+uintptr_t allocate_small_retrying(Engine *engine, uint64_t bytes, AllocationInfo *info, bool locked, Take take)
+{
+    bool retry = false;     // set once; the page functions store it on every call
+    do {
+        PageView view;
+        if (uintptr_t block = take(&view)) {
+            for (PageHeader *header : {view.header_below, view.header_above}) {
+                if (header)
+                    header->block_count += 1;
+            }
+            info->bytes = bytes;
+            info->page = view.page;
+            info->unknown_0x08 = 0;
+            engine->allocation_count += 1;
+            engine->used_bytes += bytes;
+            return block;
+        }
+        if (locked)
+            add_page_locked(engine, &retry);
+        else
+            add_page(engine, &retry);
+    } while (retry);
+    return 0;
 }
 
 }  // namespace engine::scaleform_heap

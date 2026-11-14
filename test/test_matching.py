@@ -141,6 +141,7 @@ class Comparison(unittest.TestCase):
 # tables for one imported function, reached through a PLT stub.
 FUNCTION, ALPHA, BETA, STUB, STRING, GAMMA, SLOT = (0x00401000, 0x00402000, 0x00402040, 0x00402100,
                                                      0x00402200, 0x00402300, 0x00403000)
+DELTA = 0x00402080                     # a leaf family member
 TEXT_OFFSET, TEXT_SIZE, DYNLIB_OFFSET, DYNAMIC_OFFSET = 0x1000, 0x3000, 0x5000, 0x6000
 SOURCE = """
 .text
@@ -257,6 +258,19 @@ class Targets(unittest.TestCase):
     def test_import_by_name_id(self):
         _, problems = self.problems(self.assemble(library='sceKernelSleep'), self.original())
         self.assertTrue(problems and 'sceKernelSleep' in problems[0], problems)
+
+    def test_family_member_names_its_address(self):
+        # A matching source may call a leaf family member under its member name.
+        os.makedirs(os.path.join(self.root, 'symbols', 'families'))
+        with open(os.path.join(self.root, 'symbols', 'families.csv'), 'w') as f:
+            f.write('family,system,shape,returns,members,bytes,notes\n'
+                    'reads_first_dword,leaf,8b 07 c3,i64,1,3,\n')
+        with open(os.path.join(self.root, 'symbols', 'families', 'reads_first_dword.csv'), 'w') as f:
+            f.write(f'address,size,extent,value,status\n0x{DELTA:08x},3,16,,verified\n')
+        member = f'leaf_reads_first_dword_{DELTA:08x}'
+        self.assertEqual(self.problems(self.assemble(callee=member), self.original(callee=DELTA)), (4, []))
+        _, problems = self.problems(self.assemble(callee=member), self.original())
+        self.assertTrue(problems and member in problems[0] and '(alpha)' in problems[0], problems)
 
     def test_unknown_name_is_unresolved(self):
         _, problems = self.problems(self.assemble(callee='gamma_update'), self.original())
