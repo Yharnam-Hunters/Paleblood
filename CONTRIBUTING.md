@@ -140,6 +140,9 @@ files. Run `tools/session_report.py` on your branch (attach `verify.py` results 
 and the case directories with `--captures`) and paste its output into the PR. CI checks that
 every function replacement in the report has matching, non-empty, passing verification evidence,
 and that the report includes each replacement status change found in `symbols/functions.csv`.
+Cases quarantined with a reason ([docs/VERIFY.md](docs/VERIFY.md)) stay in the report's table as
+quarantined: attach the summary of the `verify.py run --record` run, whose counts CI compares
+with `symbols/verification.csv`.
 
 Every pull request that replaces game code contains, in the description:
 

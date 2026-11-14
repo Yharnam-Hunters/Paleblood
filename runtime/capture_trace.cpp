@@ -334,6 +334,10 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
     for (int i = 0; i < 6; i++)
         arguments += (i ? ", \"" : "\"") + std::string(registers[i]) + "\": \"" + b.describe(args.gpr[i]) + "\"";
     arguments += ", \"xmm0\": \"" + bytes_hex(args.xmm[0], 16) + "\", \"xmm1\": \"" + bytes_hex(args.xmm[1], 16) + "\"";
+    /* xmm2..xmm7 only when the code read them before writing them (a third float argument...). */
+    for (int x = 2; x < 8; x++)
+        if (log.xmm_inputs & (1u << x))
+            arguments += ", \"xmm" + std::to_string(x) + "\": \"" + bytes_hex(args.xmm[x], 16) + "\"";
     std::string stack;
     for (unsigned i = 0; i < log.stack_slots; i++)
         stack += (i ? ", \"" : "\"") + b.describe(args.stack[i]) + "\"";

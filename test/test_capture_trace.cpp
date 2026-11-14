@@ -322,10 +322,25 @@ int self_test()
           "a far index from a base pointer: one buffer from the base, without its trailing zeros");
     rt_trace_log_free(&log);
 
-    /* What a case cannot express: the call still runs to the end, but there is no case. */
-    trace(0x180, arguments(), log);
-    check(log.incomplete != nullptr, "xmm2 read: incomplete");
+    /* xmm2 read before it is written: an input, which the case gives (xmm3..xmm7 unread: left out). */
+    rt_trace_args third_vector = arguments();
+    const float z = 2.5f;
+    std::memcpy(third_vector.xmm[2], &z, sizeof z);
+    r = trace(0x180, third_vector, log);
+    const rt_traced_function return_xmm2 = {"capture_trace_return_xmm2", 0x400180, "f32", at(0x180)};
+    const std::string xmm2_case = rt::traced_case(log, third_vector, return_xmm2, 0, "selftest", {image, image + image_size});
+    float xmm2_returned;
+    std::memcpy(&xmm2_returned, r.xmm0, sizeof xmm2_returned);
+    check(!log.incomplete && log.xmm_inputs == 1u << 2 && xmm2_returned == z &&
+              xmm2_case.find("\"xmm2\": \"00002040000000000000000000000000\"") != std::string::npos &&
+              xmm2_case.find("\"xmm3\"") == std::string::npos,
+          "xmm2 read: traced, given by the case; unread vector registers left out");
     rt_trace_log_free(&log);
+    trace(0x1a0, third_vector, log);
+    check(!log.incomplete && log.xmm_inputs == 0, "xmm3 written before it is read: not an input");
+    rt_trace_log_free(&log);
+
+    /* What a case cannot express: the call still runs to the end, but there is no case. */
     /* fs is the host's own thread block, which a case cannot give: no case. */
     trace(0x1c0, arguments(), log);
     check(log.incomplete != nullptr && std::strstr(log.incomplete, "segment-relative") &&
@@ -523,6 +538,9 @@ int emit(const char *dir)
     rt_trace_args floats = arguments(reinterpret_cast<uint64_t>(&f.factor));
     const float x = 4.0f;
     std::memcpy(floats.xmm[0], &x, sizeof x);
+    rt_trace_args third_vector = arguments();
+    const float z = 2.5f;
+    std::memcpy(third_vector.xmm[2], &z, sizeof z);
     const Call calls[] = {
         {{"capture_trace_scale", 0x400000, "i32", at(0x000)},
          arguments(reinterpret_cast<uint64_t>(&f.out), reinterpret_cast<uint64_t>(&f.outer), 6)},
@@ -532,6 +550,7 @@ int emit(const char *dir)
         {{"capture_trace_copy", 0x400140, "void", at(0x140)},
          arguments(reinterpret_cast<uint64_t>(f.dst), reinterpret_cast<uint64_t>(f.src), sizeof f.src)},
         {{"capture_trace_use_import", 0x4002c0, "i32", at(0x2c0)}, arguments(reinterpret_cast<uint64_t>(&f.filled))},
+        {{"capture_trace_return_xmm2", 0x400180, "f32", at(0x180)}, third_vector},
     };
     alignas(4) static float stored = 1.5f;
     static uint8_t flag = 0;
