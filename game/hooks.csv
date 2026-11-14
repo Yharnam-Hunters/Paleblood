@@ -344,6 +344,7 @@ address,replacement,system,returns
 0x01e5c440,bb_character_counters_refill_01e5c440,character,void
 0x01e77890,bb_engine_list64_insert_01e77890,engine,void
 0x01e77980,bb_engine_list64_insert_01e77980,engine,void
+0x01e86e60,bb_character_gaitem_free_item_01e86e60,character,void
 0x01e88da0,bb_character_gaitem_resolve_handle_01e88da0,character,i64
 0x01e8bae0,bb_character_gaitem_handle_copy_01e8bae0,character,void
 0x01e8bb70,bb_character_gaitem_handle_copy_01e8bb70,character,void
