@@ -29,6 +29,7 @@ FUNCTIONS = {  # name: (address, replacement symbol)
     'capture_trace_copy': ('0x00400140', 'copy'),
     'capture_trace_use_import': ('0x004002c0', 'use_import'),
     'capture_trace_thread_counter': ('0x004006c0', 'thread_counter'),
+    'capture_trace_leaf_caller': ('0x00400840', 'leaf_caller'),
 }
 
 REPLACEMENT = r'''#include <stdint.h>
@@ -52,6 +53,7 @@ int32_t twice(int32_t *p) { increment(p); return increment(p) + BROKEN; }
 void copy(char *dst, const char *src, size_t n) { memcpy(dst, src, n); if (BROKEN) dst[n - 1] ^= 1; }
 int32_t use_import(int32_t *out)
 { int32_t (*fill)(int32_t *, int32_t); memcpy(&fill, image + 0x1800, sizeof fill); return fill(out, 7) + *out + BROKEN; }
+int32_t leaf_caller(const int32_t *p) { return p[2] + 1 + BROKEN; }
 int32_t thread_counter(void)
 {
     uintptr_t thread_pointer; int64_t offset;

@@ -39,7 +39,8 @@ namespace {
 struct Inner { int32_t pad, value; };
 struct Outer { int64_t pad; Inner *inner; };
 
-int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls, use_import_calls;
+int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls, use_import_calls,
+    leaf_caller_calls, leaf_field_calls;
 
 /* The import use_import calls; the test binds its slot as a loader would. */
 int32_t fill(int32_t *out, int32_t v)
@@ -63,6 +64,8 @@ static void copy_replacement(char *dst, const char *src, size_t n) { ++copy_call
 static void call_native_replacement(void (**fn)()) { ++call_native_calls; (*fn)(); }
 static int32_t count_down_replacement(int32_t) { ++count_down_calls; return 7; }
 static int32_t use_import_replacement(int32_t *out) { ++use_import_calls; return fill(out, 7) + *out; }
+static int32_t leaf_caller_replacement(const int32_t *p) { ++leaf_caller_calls; return p[2] + 1; }
+static int32_t leaf_field_replacement(const int32_t *p) { ++leaf_field_calls; return p[2]; }
 
 /* The table plugin.c installs, sorted by address. */
 extern const rt_hook_entry game_hooks[];
@@ -74,9 +77,18 @@ const rt_hook_entry game_hooks[] = {
     {0x00400200u, 0x40u, "bb_capture_trace_call_native", reinterpret_cast<rt_hook_fn>(call_native_replacement), "void"},
     {0x00400280u, 0x40u, "bb_capture_trace_count_down", reinterpret_cast<rt_hook_fn>(count_down_replacement), "i32"},
     {0x004002c0u, 0x20u, "bb_capture_trace_use_import", reinterpret_cast<rt_hook_fn>(use_import_replacement), "i32"},
+    {0x00400840u, 0x40u, "bb_capture_trace_leaf_caller", reinterpret_cast<rt_hook_fn>(leaf_caller_replacement), "i32"},
 };
 extern const unsigned game_hook_count;
 const unsigned game_hook_count = sizeof game_hooks / sizeof game_hooks[0];
+
+/* The family table plugin.c installs after the hooks: one member, as tools/gen_hooks.py writes it. */
+extern const rt_family_hook game_family_hooks[];
+const rt_family_hook game_family_hooks[] = {
+    {0x00400820u, 0x20u, "leaf_field", reinterpret_cast<rt_hook_fn>(leaf_field_replacement)},
+};
+extern const unsigned game_family_hook_count;
+const unsigned game_family_hook_count = sizeof game_family_hooks / sizeof game_family_hooks[0];
 }
 
 namespace {
@@ -112,12 +124,22 @@ int run(const std::string &dir, bool self_test)
     setenv("BB_CAPTURE_RUN", "hooks", 1);
     setenv("BB_CAPTURE_TRACE", "1", 1);
     setenv("BB_CAPTURE_ONLY", "capture_trace_scale,capture_trace_twice,capture_trace_copy,capture_trace_call_native,capture_trace_count_down,"
-           "capture_trace_use_import", 1);
+           "capture_trace_use_import,capture_trace_leaf_caller", 1);
     rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
     if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
         std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
         return 1;
     }
+
+    /* The family member's code is overwritten by its hook; the traced caller still runs the
+       member's original (a copy taken before the hook), and gives a case. */
+    const int32_t fields[3] = {0, 0, 41};
+    auto leaf_caller = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x840);
+    check(leaf_caller(fields) == 42 && leaf_caller_calls == 0 && leaf_field_calls == 0,
+          "leaf_caller: traced, and its call to a family member follows the member's original");
+    check(exists(dir + "/capture_trace_leaf_caller/hooks_0000.json"), "leaf_caller: a case through the family member");
+    auto leaf_field = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x820);
+    check(leaf_field(fields) == 41 && leaf_field_calls == 1, "leaf_field: an untraced call reaches the family replacement");
 
     Inner inner{0, 7};
     Outer outer{0, &inner};
