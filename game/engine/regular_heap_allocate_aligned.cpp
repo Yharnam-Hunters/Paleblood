@@ -6,7 +6,8 @@
 // alignment and returns a payload on that alignment, or null: for an alignment that is not a
 // power of two (zero passes), when the free bytes are fewer than the request, or when no free
 // block holds an aligned payload. Alignments up to 16 are the plain allocation's (every payload
-// is 16-aligned).
+// is 16-aligned). About 27 functions call it directly, most of them the heap manager's code
+// around it (0x0247c920 to 0x02483100).
 //
 // Below 0x400 the first block of the lowest non-empty list above the worst case (request plus
 // alignment) is taken unchecked. Otherwise, or when there is none, the lists from the request's
