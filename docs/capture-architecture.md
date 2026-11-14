@@ -120,6 +120,12 @@ before installing it, while the original is still intact:
    caller's stack pointer, then asks `rt_capture_dispatch` what to do.
 4. A redirect maps the original's entry to its relocated copy: traced code that calls another
    hooked function follows that function's original, as the verifier runs it.
+5. Family members (docs/FAMILIES.md) are never recorded, but traced code calls them all the time
+   (an empty callback, a field read). Before their hooks go in, each member's whole extent is
+   copied the same way (`rt_capture_families_prepare`) and redirected, so a traced call runs the
+   member's original code instead of leaving the traced code for the shared native replacement
+   (`bb_leaf_returns_nothing` and the like). Before this, the perception update, the character
+   ready check, the target speed record and the HK frame update never gave a case.
 
 At run time an unsampled call, or any call while the thread is already tracing, goes on to the
 replacement with every register exactly as it arrived. A sampled call (`runtime/capture.h`: the

@@ -329,6 +329,20 @@ usleep_thunk:
     test %ecx, (%rdi)
     setne %al
     ret
+/* 0x860: int32_t leaf_field(const int32_t *p) { return p[2]; }, a family member with a 32-byte
+   extent. A traced caller must run this original, not the family's shared replacement. It sits
+   below the hooked leaf_caller, so its redirect has to be sorted in among the hooks' redirects. */
+    .org 0x860
+leaf_field:
+    mov 8(%rdi), %eax
+    ret
+
+/* 0x880: int32_t leaf_caller(const int32_t *p) { return leaf_field(p) + 1; } */
+    .org 0x880
+    call leaf_field
+    add $1, %eax
+    ret
+
     .org 0x1000
 global:
     .long 1000
