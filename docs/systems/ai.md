@@ -93,7 +93,7 @@ will be labeled as observations until their implementation is traced.
 | `0x0169af00` | 126 | `ai_character_ready_check` | edge-verified | AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff |
 | `0x0169fad0` | 155 | `ai_character_link_ids` | verified | The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1 |
 | `0x016ad400` | 287 | `ai_perception_target_visible` | edge-verified | Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11 |
-| `0x016b30a0` | 368 | `ai_target_list_mark_main_matches` | edge-verified | Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer |
+| `0x016b30a0` | 368 | `ai_target_list_mark_main_matches` | verified | Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer |
 | `0x01708410` | 168 | `ai_pending_event_fire` | verified | Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index |
 | `0x021d6ea0` | 199 | `ai_draw_world_021d6ea0` | edge-verified | No-op without the view renderer (+0x8); sets slot state +0x18=2 +0x1c=0 +0x70=3 +0x78=16.0 (dirty 4/8/0x80, +9 bit 1) when they differ, then 0x021d5960 per section of world+0x50 list |
 | `0x0222bc10` | 2693 | `ai_hk_frame_update_0222bc10` | verified | SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60); AI debug display and drawing |
