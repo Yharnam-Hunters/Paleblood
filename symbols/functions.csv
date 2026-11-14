@@ -274,6 +274,7 @@ address,size,name,system,status,notes
 0x0169acf0,114,ai_character_has_effect_state,ai,verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
+0x0169d160,2248,ai_hearing_test,ai,edge-verified,"Hearing: whether the enemy hears one sound (range less the sound-cut distance against the gap; otherwise the ear's reach by width and height angle) and remembers it"
 0x0169da30,763,ai_hearing_in_ear_range,ai,edge-verified,"Hearing: does a sphere around a sound point reach the ear (within the ear height angle: reach plus radius; beyond it: the sphere surface crosses the angle edge segment)"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
 0x016a5050,218,engine_array64_push_back_016a5050,engine,edge-verified,"Engine array push_back, 8-byte elements: inside check first; full grows to 1.5x count via 0x016a5130, inside item re-read at its index; stores unless no buffer; end += 8"
