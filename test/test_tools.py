@@ -48,8 +48,12 @@ class Fixture(unittest.TestCase):
                   ['function', 'cases', 'option', 'total', 'passed', 'failed', 'quarantined', 'source', 'date'],
                   [['frame_timing_update', 'recorded', '', '3', '3', '0', '0', '', '2026-01-01'],
                    ['frame_timing_update', 'edge', '', '2', '2', '0', '0', '', '2026-01-01']])
-        with open(f'{self.d}/README.md', 'w') as f:
-            f.write('<!-- target:start -->\n<!-- target:end -->\n<!-- progress:start -->\n<!-- progress:end -->\n')
+        # the generated blocks (tools/progress.py GENERATED_MARKDOWN); the README has none
+        os.makedirs(f'{self.d}/docs', exist_ok=True)
+        with open(f'{self.d}/STATUS.md', 'w') as f:
+            f.write('<!-- progress:start -->\n<!-- progress:end -->\n')
+        with open(f'{self.d}/docs/OVERVIEW.md', 'w') as f:
+            f.write('<!-- target:start -->\n<!-- target:end -->\n')
 
     def tearDown(self):
         shutil.rmtree(self.d)
@@ -79,7 +83,7 @@ class Progress(Fixture):
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
         self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 0)
-        p = f'{self.d}/README.md'
+        p = f'{self.d}/STATUS.md'
         txt = open(p).read().replace('62.50%', '99.00%')
         open(p, 'w').write(txt)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
@@ -99,19 +103,19 @@ class Progress(Fixture):
         self.assertEqual(run('progress.py', *touched).returncode, 0)
         self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
         self.assertEqual(run('progress.py', *touched).returncode, 0)                       # touched, current
-        p = f'{self.d}/README.md'
+        p = f'{self.d}/STATUS.md'
         with open(p) as f:
             text = f.read().replace('62.50%', '99.00%')
         with open(p, 'w') as f:
             f.write(text)
         r = run('progress.py', *touched)
         self.assertEqual(r.returncode, 1)                                                  # touched by hand
-        self.assertIn('README.md (progress block)', r.stderr)
+        self.assertIn('STATUS.md (progress block)', r.stderr)
 
     def test_check_blocks_is_structure_only(self):
         self.assertEqual(run('progress.py', '--root', self.d, '--check-blocks').returncode, 0)
-        with open(f'{self.d}/README.md', 'w') as f:
-            f.write('<!-- target:start -->\n<!-- target:end -->\n')
+        with open(f'{self.d}/STATUS.md', 'w') as f:
+            f.write('Status.\n')
         r = run('progress.py', '--root', self.d, '--check-blocks')
         self.assertEqual(r.returncode, 1)
         self.assertIn('no progress block', r.stderr)
@@ -1257,7 +1261,7 @@ class Boot(unittest.TestCase):
                              ('m.elf:ns::h (stop hook)', 'stopped', 'm.elf+0xe'))
         finally:
             shutil.rmtree(d)
-        import progress                                                  # the README's "Boot stops at"
+        import progress                                                  # STATUS.md's "Boot stops at"
         self.assertEqual(progress.boot_stop(status), '`ns::h` (a stop hook in m.elf, called from `m.elf+0xe`)')
 
     def test_a_runtime_stop_is_recorded_as_where_the_boot_stops(self):
@@ -1572,8 +1576,37 @@ class VerificationRecord(unittest.TestCase):
         self.assertTrue(any('is for other code' in e for e in errs))
         self.assertTrue(any('current recorded result' in e for e in errs))
 
-    def test_edge_verified_is_not_held_to_the_rule(self):
-        self.assertEqual(self.v.check(self.root, [dict(self.funcs[0], status='edge-verified')]), [])
+    def test_edge_verified_needs_only_a_current_edge_result(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+
+    def test_edge_verified_without_an_edge_result_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '30', ['e'], [])     # an option's row does not count
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[0])
+
+    def test_edge_verified_with_a_failing_edge_result_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e', 'g'], ['g'])
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[0])
+
+    def test_stale_result_of_an_edge_verified_function_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
+            f.write('// changed\n')
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 2)
+        self.assertIn('the edge result of x_f is for other code', errs[0])
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[1])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
 
 
 class Promotion(unittest.TestCase):

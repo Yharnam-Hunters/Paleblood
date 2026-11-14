@@ -98,5 +98,5 @@ extern "C" void bb_engine_fast_fixed_allocator_initialize_02a3baa0(Allocator *al
     }
     allocator->backing = backing;
     allocator->unknown_0x08 = nullptr;
-    allocator->unknown_0x00 = nullptr;
+    allocator->spare_chunk = nullptr;
 }

@@ -17,20 +17,10 @@
 
 #include "allocator.h"
 #include "engine.h"
-#include "thread.h"
+#include "temporary_heap.h"
 #include "runtime/original.h"
 
 namespace {
-
-// The thread's temporary heap (temporary_heap_create.cpp): its region, then its allocator part.
-struct TemporaryHeap {
-    uintptr_t begin;
-    uintptr_t end;
-    uint8_t unknown_0x10[0x10];
-    engine::Allocator allocator;
-};
-static_assert(offsetof(TemporaryHeap, end) == 0x8 && offsetof(TemporaryHeap, allocator) == 0x20);
-RT_GLOBAL(0x057e4568, thread_heap_offset, const int64_t);   // the heap pointer's place, from the thread pointer
 
 // A registered heap: its allocator and the memory it owns.
 struct HeapRange {
@@ -97,8 +87,10 @@ extern "C" engine::Allocator *bb_engine_allocator_of_0247b720(const void *data)
     HeapRegistry *registry = heap_registry();
     const uintptr_t address = reinterpret_cast<uintptr_t>(data);
 
-    TemporaryHeap *heap = *reinterpret_cast<TemporaryHeap **>(engine::thread_pointer() + thread_heap_offset.get());
-    if (heap && heap->begin <= address && address < heap->end) return &heap->allocator;
+    // The thread's temporary heap: its region, then its allocator part (the vtable at +0x20).
+    engine::temporary_heap::TemporaryHeap *heap = engine::temporary_heap::thread_heap();
+    if (heap && heap->region.lowest <= address && address < heap->region.highest)
+        return reinterpret_cast<engine::Allocator *>(&heap->vtable);
 
     read_write_lock_read(&registry->lock, wait_forever);
     HeapRange *first = registry->ranges->begin;

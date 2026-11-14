@@ -70,8 +70,7 @@ enum {
     /* a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves left each
        lane's bit unknown (a lane has no known place in the wave there) */
     GCN_RUNTIME_STOP_VCC_UNKNOWN = 2,
-    /* image_load/image_load_mip of a texel outside the image, or of a level past its last */
-    GCN_RUNTIME_STOP_IMAGE_RANGE = 3,
+    /* 3 is free: it was image_load of a texel outside the image, which now reads the replacement texel */
     /* a tessellated draw of more patches than the LDS buffer or the factor ring holds (gcn_tessellation_layout);
        details: the draw's patch count, its low 24 bits */
     GCN_RUNTIME_STOP_TESSELLATION_LIMIT = 4,
@@ -81,6 +80,9 @@ enum {
     /* a guest memory access outside gcn_guest_memory's range; details: the access's guest address
        >> 16, its low 24 bits (0 for an address within 64 KB of 0: a null pointer plus an offset) */
     GCN_RUNTIME_STOP_GUEST_RANGE = 6,
+    /* a read through an image whose descriptor has base address 0 but is not null (gcn_image_binding.unmapped):
+       what the PS4 returns from unmapped memory is not established */
+    GCN_RUNTIME_STOP_UNMAPPED_IMAGE = 7,
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -116,10 +118,13 @@ typedef struct {
     unsigned components;             /* the format's components, 1 to 4 */
     int sampled;                     /* a sampled image (reads only), not a storage image */
     int cube;                        /* a cube, bound as a 2D array of its faces (dim 2D, arrayed) */
-    uint32_t swizzle;                /* a storage image's DST_SEL (3 bits a component: 4-7 x, y, z, w), a permutation:
-                                        a load's component k is the texel's DST_SEL[k] - 4, a store writes it there;
-                                        0 is the identity (sampled images take theirs in the view) */
+    uint32_t swizzle;                /* the image's DST_SEL (3 bits a component: 0 zero, 1 one, 4-7 x, y, z, w); 0 is the identity.
+                                        A storage image's load takes component k from DST_SEL[k], a store writes it there.
+                                        A sampled image's in-range loads take it from the view; a load outside the image
+                                        applies it to the replacement texel (0, 0, 0, 0), or (0, 0, 0, 1) without alpha */
     int null_descriptor;             /* a sampled image whose descriptor is all 0 (a null descriptor): image_load reads 0 */
+    int unmapped;                    /* a sampled image whose descriptor has base address 0 but is not null: a read through
+                                        it writes GCN_RUNTIME_STOP_UNMAPPED_IMAGE (and reads 0); one never run is harmless */
 } gcn_image_binding;
 
 /* GCN_MAX_IMAGES: up to 16 images a program (Vulkan guarantees 16 sampled images per stage) */
@@ -171,6 +176,27 @@ typedef struct {
     int table_format;                                  /* 1: the table is read by buffer_load_format_xyz, 0: buffer_load_dwordx3 */
 } gcn_table_copy;
 int gcn_table_copy_shape(const uint32_t *code, size_t dwords, gcn_table_copy *shape);
+
+/* A constant fill: a compute program whose only memory accesses are scalar loads (s_buffer_load_dword,
+   _dwordx2, _dwordx4) of the value and indexed stores (buffer_store_format_* or buffer_store_dword*,
+   IDXEN, no offsets) of that same value, from SGPRs, through one buffer descriptor, at element
+   lane + workgroup x index * group_elements + offsets[k], one store per offset, the indices built from the
+   lane id v0 and the workgroup index SGPR with s_lshl_b32, v_add_i32, v_sub_i32, v_lshlrev_b32 and
+   v_lshrrev_b32 (a shift right that drops the lane takes lanes of at most most_lanes, a power of two).
+   The game clears its render targets this way. Straight-line code only (waits, s_nop, s_mov_b32 and
+   v_mov_b32 aside), with no write to the descriptor's or the workgroup index's SGPRs. Which elements it
+   stores, so whether the stores cover every element below workgroups x group_elements, depends on the
+   dispatch's workgroup width: the caller checks that. 1 and *shape when the program is one, 0 otherwise. */
+enum { GCN_FILL_STORES = 4 };
+typedef struct {
+    unsigned destination_sgpr;                        /* the descriptor's first SGPR, in the user data */
+    unsigned workgroup_sgpr;                          /* the SGPR holding the workgroup's x index */
+    uint32_t group_elements;                          /* the elements between one workgroup's first and the next's */
+    uint32_t offsets[GCN_FILL_STORES];                /* each store's element offset past lane + workgroup x group_elements */
+    unsigned store_count;
+    uint32_t most_lanes;                              /* the widest workgroup the indices hold for (UINT32_MAX: any) */
+} gcn_fill;
+int gcn_fill_shape(const uint32_t *code, size_t dwords, gcn_fill *shape);
 
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
    s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,

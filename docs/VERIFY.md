@@ -367,8 +367,16 @@ mismatch between the original and the replacement: that is a bug to fix.
 
 `tools/validate_functions.py` (CI) refuses `verified` for a function without current `recorded`
 and `edge` results without an option, with any failure that is not quarantined in any of its
-current results, or with a result for other code. `promote.py` records the runs it makes and
+current results, or with a result for other code. It refuses `edge-verified` for a function without a
+current `edge` result without an option that passed every case: the status is what that row
+records. `promote.py` records the runs it makes and
 applies the same rule.
+
+It also refuses a result for other code of any function, whatever its status: a change to a
+replacement or to a header it includes (a shared container or heap header, say) has to run the
+sets of every function that includes it again, with `--record`, in the same pull request. When
+you cannot run a set (its recordings are in someone else's library), remove its row instead: a
+result for other code counts for nothing, and a verified function still needs current rows.
 
 ## Community patches and hooks
 
