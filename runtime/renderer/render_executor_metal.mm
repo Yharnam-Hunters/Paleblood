@@ -929,7 +929,7 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
             storage_read_write(x,format->metal,error,size)) return -1;
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0};
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0,0,0,0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {
