@@ -78,7 +78,7 @@ address,size,name,system,status,notes
 0x01391c60,442,input_key_assign_held_01391c60,input,edge-verified,"Key assign held: any combination of the key in the multimap at +0x38 whose four parts pass (key -1 passes; 0 pressed, 1 released, 2 analog > 0; other tests repeat the previous part)"
 0x01391e30,299,input_key_assign_pressed_01391e30,input,verified,"Key assign pressed: mapper (+0x28) button index; enabled +0x20; key state map +0x40 enabled and not suppressed; pressed bit, else alternate input in the held set"
 0x01391f60,215,input_key_assign_analog_value_01391f60,input,verified,"Key assign analog value: as the pressed query (no mapper null check), then the input state float at the button index; 0 otherwise"
-0x01398290,127,engine_fd4_handle_less_01398290,engine,edge-verified,"FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed)"
+0x01398290,127,engine_fd4_handle_less_01398290,engine,verified,"FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed)"
 0x013983e0,192,input_key_assign_first_free_id_013983e0,input,verified,"Smallest id 0-7 that no assignment (id at +0x24) of table +0x38[table] uses, every entry visited per id; 0xffffffff when all taken"
 0x013994a0,87,input_held_set_contains_013994a0,input,edge-verified,"Held input set: std::map<int32,bool> find (head at +0x18); 1 when present with a nonzero flag, else 0"
 0x013a2a00,22,menu_named_resource_registry_find_013a2a00,menu,edge-verified,"Scaleform glue: while the named resource registry is active and has its table, the table finds the entry by name (0x013abad0); null otherwise"
