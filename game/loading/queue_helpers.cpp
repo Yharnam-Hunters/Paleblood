@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Loading: five small helpers that the FIOS objects and the load event queue call as originals
+// Loading: six small helpers that the FIOS objects and the load event queue call as originals
 // (fios.h, resource_queue.h).
+// - loading_allocator_allocate_headed_00829a40: allocates a block with a 16-byte header in front
+//   of its data (the allocator's allocate, for the size plus the header in 32 bits), writes the
+//   allocator and the data size into the header and returns the data. The allocation is not
+//   checked: a null one is written through, as in the original.
 // - loading_allocator_free_headed_00829a90: frees a block that carries a 16-byte header in front
 //   of its data (a word cleared before the free, then the data size): the allocator's sized free
 //   gets the header's address and the size plus the header. A null block is ignored.
@@ -26,7 +30,7 @@ using namespace loading::fios;
 using namespace loading::resource_queue;
 
 struct BlockHeader {
-    uint64_t word;       // cleared before the block is freed
+    uint64_t word;       // the allocator it came from; cleared before the block is freed
     uint32_t data_size;  // the size of the data after the header
     uint32_t unknown_0x0c;
 };
@@ -91,4 +95,14 @@ extern "C" uint8_t bb_loading_transfer_task_cancel_024dd8a0(TransferTask *task, 
             break;
     }
     return true;
+}
+
+extern "C" void *bb_loading_allocator_allocate_headed_00829a40(ThreadAllocator *allocator, uint32_t size)
+{
+    // The size is 32-bit, so a header added to a size near the top wraps.
+    const uint32_t total = size + static_cast<uint32_t>(sizeof(BlockHeader));
+    auto *header = static_cast<BlockHeader *>(allocator->vtable->allocate(allocator, total));
+    header->word = reinterpret_cast<uintptr_t>(allocator);
+    header->data_size = size;
+    return header + 1;
 }
