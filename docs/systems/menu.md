@@ -63,6 +63,8 @@ recorded from a real game run, so none is `verified`.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x01edf560` | 254 | `menu_gaitem_select_entry_copy_into_pool` | edge-verified | GaitemSelectDialog list entry copy into a Dantelion fixed pool slot (0x88 B: int, word, wide string, word, wide string); reports a slot past the in-use count |
+| `0x01ee6080` | 114 | `menu_gaitem_select_direction_keys_20_01ee6080` | edge-verified | GaitemSelectDialog direction reader: first held of key assign keys 0x20-0x23 gives {x,y} = up/down/left, or right's state byte as x |
+| `0x01ee61f0` | 134 | `menu_gaitem_select_direction_keys_24_01ee61f0` | edge-verified | GaitemSelectDialog direction reader of keys 0x24-0x27; without a key assign skips up/down and asks left/right with null |
 | `0x01f1bca0` | 235 | `menu_gaitem_status_entry_copy` | edge-verified | GaitemStatusDialog list entry copy of entries[index] (0x90 B: two words and wide strings, a ref-counted pointer at +0x80 (count +8 up), a byte) |
 | `0x023411d0` | 116 | `menu_heap_adapter_free_023411d0` | edge-verified | Scaleform heap adapter free (vtable 0x057ab400): null kept; else DLNew release (thread release heap or the owner heap) |
 | `0x02341330` | 188 | `menu_heap_adapter_reallocate_02341330` | edge-verified | Scaleform heap adapter reallocate: same size returns the buffer; else allocate from heaps[index] and copy the smaller size; DLNew release of the old one |

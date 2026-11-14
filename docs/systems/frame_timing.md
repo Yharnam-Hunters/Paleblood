@@ -278,6 +278,7 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x0143e030` | 55 | `frame_timing_task_worker_assign_0143e030` | edge-verified | Assigns a batch to a worker slot by index; false when busy, for a null batch, a negative index or one past the end (unsigned count) |
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock; run; destroy and free every queued object; empty the list; unlock |
 | `0x0143ec40` | 185 | `frame_timing_task_clear_items_0143ec40` | edge-verified | Under the task lock (+0x90): frees the pending items last first and their array via the allocator at +0x80; empties the list; empties +0x70/+0x78 when counted |
+| `0x0143ed00` | 264 | `frame_timing_task_refill_queue_0143ed00` | edge-verified | Under the task lock (+0x90): empties the queue (+0x58 deque) with 0x0143ec40, then pushes every 16-byte item of the list at +0x38/+0x40 onto it (0x02dd7150) |
 | `0x0143f720` | 82 | `frame_timing_task_lookup_0143f720` | edge-verified | Task under an id in the task table's map (std::map lower bound), null when absent; id 0 is never looked up |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60 |
