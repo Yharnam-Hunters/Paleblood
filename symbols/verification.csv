@@ -652,12 +652,13 @@ menu_gaitem_select_direction_keys_20_01ee6080,recorded,,13,13,0,0,ee2781c35c41d9
 menu_gaitem_select_direction_keys_20_01ee6080,edge,,18,18,0,0,ee2781c35c41d943,2026-11-14
 menu_gaitem_select_direction_keys_24_01ee61f0,recorded,,13,13,0,0,ee2781c35c41d943,2026-11-14
 menu_gaitem_select_direction_keys_24_01ee61f0,edge,,25,25,0,0,ee2781c35c41d943,2026-11-14
-menu_gaitem_select_entry_copy_into_pool,edge,,17,17,0,0,dfb810b9d66119e2,2026-11-13
+menu_gaitem_select_entry_copy_into_pool,edge,,17,17,0,0,e6a0e8f8fb2451f9,2026-11-14
 menu_gaitem_select_list_set_row_01edc580,edge,,17,17,0,0,0b11e7c3d7dfcdd7,2026-11-13
 menu_gaitem_select_move_cursor_01ed0dd0,edge,,17,17,0,0,0b11e7c3d7dfcdd7,2026-11-13
-menu_gaitem_select_text_pair_copy_into_vector_01ed7950,edge,,15,15,0,0,385fed467e783c1c,2026-11-13
-menu_gaitem_status_entry_copy,edge,,10,10,0,0,dfb810b9d66119e2,2026-11-13
-menu_gaitem_status_label_push_back_01f2c200,edge,,10,10,0,0,385fed467e783c1c,2026-11-13
+menu_gaitem_select_text_pair_copy_into_vector_01ed7950,recorded,,6,6,0,0,6086d9a71e809c43,2026-11-14
+menu_gaitem_select_text_pair_copy_into_vector_01ed7950,edge,,16,16,0,0,6086d9a71e809c43,2026-11-14
+menu_gaitem_status_entry_copy,edge,,10,10,0,0,e6a0e8f8fb2451f9,2026-11-14
+menu_gaitem_status_label_push_back_01f2c200,edge,,10,10,0,0,6086d9a71e809c43,2026-11-14
 menu_heap_adapter_free_023411d0,edge,,6,6,0,0,99d14ad81370e4cc,2026-11-14
 menu_heap_adapter_reallocate_02341330,edge,,14,14,0,0,99d14ad81370e4cc,2026-11-14
 menu_movie_screen_close_023548d0,edge,,5,5,0,0,99d14ad81370e4cc,2026-11-14
