@@ -68,7 +68,7 @@ static void run_case(const Case *c)
         CHECK(index<WORDS);put_word(expected+OUTPUT+4*index,marker_base|index);
     }
     rt_executor *executor=NULL;
-    const rt_executor_memory memory={fd,POOL,guest_base,NULL,NULL,NULL};
+    const rt_executor_memory memory={.fd=fd,.size=POOL,.guest_base=guest_base};
     const int opened=rt_executor_open(&memory,&executor,error,sizeof error);CHECK(close(fd)==0);CHECK(opened==0);
     if(opened){fprintf(stderr,"[%s] open: %s\n",context,error);munmap(pool,POOL);free(before);free(expected);exit(1);}
     rt_render_call calls[3]={{0}};
