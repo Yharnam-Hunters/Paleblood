@@ -1,4 +1,5 @@
 address,last,functions,bytes,library,file,evidence,confidence
+0x00400170,0x00740310,11861,3244080,scaleform,,extent,medium
 0x00819480,0x00819480,1,482,havok,Common/Base/System/Error/hkError.cpp,direct,high
 0x00819670,0x00819670,1,35,havok,Common/Base/System/Error/hkError.cpp,range,medium
 0x008196a0,0x008196a0,1,304,havok,Common/Base/System/Error/hkError.cpp,direct,high
@@ -1551,7 +1552,9 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x0218e320,0x0218e320,1,734,engine,SPRJ/Gfx/Res/Tex/TpfResCap.cpp,direct,high
 0x0218e6b0,0x022432f0,2504,681292,engine,,range,low
 0x02243660,0x022436d0,2,1164,engine,SPRJ/Havok/PhysRigidToMdlMtx.cpp,direct,high
-0x02243b10,0x023b54a0,5149,1358318,engine,,range,low
+0x02243b10,0x023380e0,3049,891532,engine,,range,low
+0x023380f0,0x0233e8f0,86,23910,scaleform,,extent,medium
+0x0233e9c0,0x023b54a0,2014,442876,engine,,range,low
 0x023b54d0,0x023b5620,2,368,engine,SPRJ/Sys/Localize/CSLocalize.cpp,direct,high
 0x023b5660,0x023b5890,5,672,engine,SPRJ/Sys/Localize/CSLocalize.cpp,range,medium
 0x023b5940,0x023b5940,1,57,engine,SPRJ/Sys/Localize/CSLocalize.cpp,direct,high
@@ -1810,7 +1813,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x025b2fb0,0x025b2fb0,1,768,engine,GS/Base/System/GXSwapChainCtrl.cpp,direct,high
 0x025b32e0,0x025b3680,10,771,engine,,range,low
 0x025b36e0,0x025b36e0,1,119,engine,GS/Base/System/Memory/GXFailoverAllocator.cpp,direct,high
-0x025b37f0,0x02779130,3812,1784245,engine,,range,low
+0x025b37f0,0x02779130,3812,1784280,engine,,range,low
 0x02779170,0x02779170,1,195,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/DLSerializeLightArchiver.cpp,direct,high
 0x02779260,0x027793a0,5,3278,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/DLSerializeLightArchiver.cpp,range,medium
 0x02779ff0,0x02779ff0,1,915,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/DLSerializeLightArchiver.cpp,direct,high
@@ -1818,6 +1821,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x0277ac00,0x0277ac00,1,77,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/ExtendedHeader.cpp,direct,high
 0x0277ac50,0x0277aef0,10,527,engine,,range,low
 0x0277af40,0x0277af40,1,322,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/LoaderTemporaryData.cpp,direct,high
+0x02785580,0x028bf790,8241,1202147,scaleform,,extent,medium
 0x028f3f50,0x028f3f50,1,1090,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high
 0x028f43a0,0x028f75c0,165,11167,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,range,medium
 0x028f75d0,0x028f75d0,1,304,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high

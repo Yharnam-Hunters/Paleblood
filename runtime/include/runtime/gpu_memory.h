@@ -16,12 +16,22 @@
 extern "C" {
 #endif
 
-/* The guest address of pool offset 0 for GPU-visible maps. */
+/* The guest address of pool offset 0 for GPU-visible maps. Linux uses the fixed runtime
+   window; Darwin selects an available aligned span below 2^40 on first use. This selects
+   an address policy, not a permanent reservation: each actual map remains non-replacing. */
 uint64_t rt_gpu_memory_base(void);
 
 /* The pool's host memory file and its size, for the renderer's own mapping; returns -1 before the
    title has allocated any direct memory (the file does not exist yet). */
 int rt_gpu_memory_pool(int *fd, uint64_t *size);
+
+/* The GPU's global data share (GDS): 64 KB of on-chip memory beside guest memory, which the command
+   processor's DMA_DATA (runtime/syslib/gnm.c) and shaders' GDS instructions (ds_append, ds_consume)
+   reach by byte offset (AMD's Sea Islands ISA, "Global Data Share"). Here it is host memory aligned to
+   its size, which the renderer gives the GPU as well (imported, as it does the pool), so the DMA steps
+   on the CPU and the shaders on the GPU reach the same bytes. */
+enum { RT_GPU_GDS_BYTES = 64 << 10 };
+uint8_t *rt_gpu_memory_gds(void);
 
 #ifdef __cplusplus
 }

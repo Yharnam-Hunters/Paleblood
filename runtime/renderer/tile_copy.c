@@ -8,7 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { SPV_OP_U_DIV = 134, SPV_OP_U_MOD = 137, MAX_OPERANDS = 4, BYTES_PER_WORD = 4 };
+enum {
+    MAX_OPERANDS = 4, BYTES_PER_WORD = 4,
+    /* SPIR-V capabilities for 8- and 16-bit values in buffer memory (core in SPIR-V 1.5) */
+    SPV_CAPABILITY_STORAGE_BUFFER_16_BIT_ACCESS = 4433, SPV_CAPABILITY_STORAGE_BUFFER_8_BIT_ACCESS = 4448
+};
 
 typedef struct {
     spirv_module m;
@@ -57,22 +61,22 @@ static uint32_t offset_address(builder *b, uint32_t address, uint32_t bytes)
     return binary(b, SPV_OP_I_ADD, b->u64, address, op(b, SPV_OP_U_CONVERT, b->u64, &bytes, 1));
 }
 
-static uint32_t word_pointer(builder *b, uint32_t address)
+/* A load of `type` (a word, or a vector of words) from address, `bytes`-aligned. */
+static uint32_t load_aligned(builder *b, uint32_t type, uint32_t address, uint32_t bytes)
 {
-    return op(b, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&b->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, b->u32), &address, 1);
-}
-
-static uint32_t load_word(builder *b, uint32_t address)
-{
+    const uint32_t pointer = op(b, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&b->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, type), &address, 1);
     const uint32_t id = spirv_new_id(&b->m);
-    spirv_emit(&b->m, &b->body, SPV_OP_LOAD, (const uint32_t[]){b->u32, id, word_pointer(b, address), SPV_MEMORY_ACCESS_ALIGNED, BYTES_PER_WORD}, 5);
+    spirv_emit(&b->m, &b->body, SPV_OP_LOAD, (const uint32_t[]){type, id, pointer, SPV_MEMORY_ACCESS_ALIGNED, bytes}, 5);
     return id;
 }
 
-static void store_word(builder *b, uint32_t address, uint32_t value)
+static void store_aligned(builder *b, uint32_t type, uint32_t address, uint32_t value, uint32_t bytes)
 {
-    spirv_emit(&b->m, &b->body, SPV_OP_STORE, (const uint32_t[]){word_pointer(b, address), value, SPV_MEMORY_ACCESS_ALIGNED, BYTES_PER_WORD}, 4);
+    const uint32_t pointer = op(b, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&b->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, type), &address, 1);
+    spirv_emit(&b->m, &b->body, SPV_OP_STORE, (const uint32_t[]){pointer, value, SPV_MEMORY_ACCESS_ALIGNED, bytes}, 4);
 }
+
+static uint32_t load_word(builder *b, uint32_t address) { return load_aligned(b, b->u32, address, BYTES_PER_WORD); }
 
 static uint32_t input_vector(builder *b, uint32_t built_in)
 {
@@ -98,9 +102,17 @@ static uint32_t push_block(builder *b)
     return id;
 }
 
-int rt_tile_copy_shader(unsigned dwords, int to_tiled, uint32_t **spirv, size_t *word_count)
+/* The type of an element of `bytes` bytes: an 8- or 16-bit integer, a word, or a vector of words. */
+static uint32_t element_type(builder *b, unsigned bytes)
 {
-    if (dwords != 1 && dwords != 2 && dwords != 4) return -1;
+    if (bytes < BYTES_PER_WORD) return spirv_global(&b->m, SPV_OP_TYPE_INT, (const uint32_t[]){bytes * 8, 0}, 2);
+    if (bytes == BYTES_PER_WORD) return b->u32;
+    return spirv_global(&b->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){b->u32, bytes / BYTES_PER_WORD}, 2);
+}
+
+int rt_tile_copy_shader(unsigned element_bytes, int to_tiled, uint32_t **spirv, size_t *word_count)
+{
+    if (element_bytes != 1 && element_bytes != 2 && element_bytes != 4 && element_bytes != 8 && element_bytes != 16) return -1;
     builder *b = calloc(1, sizeof *b);
     if (!b) return -1;
     spirv_module *m = &b->m;
@@ -148,19 +160,23 @@ int rt_tile_copy_shader(unsigned dwords, int to_tiled, uint32_t **spirv, size_t 
     spirv_emit(m, &b->body, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){in_image, copy, copied}, 3);
     spirv_emit(m, &b->body, SPV_OP_LABEL, &copy, 1);
 
-    /* the element's two addresses: the tile's first element plus its offset there; (slice, y, x) in the rows */
-    const uint32_t tile_entry = binary(b, SPV_OP_I_ADD, b->u32, tile, konst(b, RT_TILE_COPY_TILE_BASES));
+    /* the element's two addresses: the first element of its tile (of its piece, for a split tile) plus its
+       offset there; (slice, y, x) in the rows */
+    const uint32_t pieces_log2 = push_word(b, RT_TILE_COPY_PIECES_LOG2);
+    const uint32_t piece = binary(b, SPV_OP_SHIFT_RIGHT_LOGICAL, b->u32, k, binary(b, SPV_OP_I_SUB, b->u32, six, pieces_log2));
+    const uint32_t tile_piece = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_SHIFT_LEFT_LOGICAL, b->u32, tile, pieces_log2), piece);
+    const uint32_t tile_entry = binary(b, SPV_OP_I_ADD, b->u32, tile_piece, konst(b, RT_TILE_COPY_TILE_BASES));
     const uint32_t base = load_word(b, offset_address(b, table, binary(b, SPV_OP_I_MUL, b->u32, tile_entry, word_bytes)));
     const uint32_t tiled = offset_address(b, push_address(b, RT_TILE_COPY_TILED_LO), binary(b, SPV_OP_I_ADD, b->u32, base, in_tile));
     const uint32_t row = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, slice, height), y);
     const uint32_t element = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, row, width), x);
     const uint32_t linear = offset_address(b, push_address(b, RT_TILE_COPY_LINEAR_LO),
-                                           binary(b, SPV_OP_I_MUL, b->u32, element, konst(b, dwords * BYTES_PER_WORD)));
-    for (unsigned w = 0; w < dwords; w++) {
-        const uint32_t from = offset_address(b, to_tiled ? linear : tiled, konst(b, w * BYTES_PER_WORD));
-        const uint32_t to = offset_address(b, to_tiled ? tiled : linear, konst(b, w * BYTES_PER_WORD));
-        store_word(b, to, load_word(b, from));
-    }
+                                           binary(b, SPV_OP_I_MUL, b->u32, element, konst(b, element_bytes)));
+    /* the whole element in one access: lanes then write neighbouring bytes at once (separate word
+       stores leave gaps that the bus to host memory moves word by word, hundreds of times slower) */
+    const uint32_t type = element_type(b, element_bytes);
+    const uint32_t from = to_tiled ? linear : tiled, to = to_tiled ? tiled : linear;
+    store_aligned(b, type, to, load_aligned(b, type, from, element_bytes), element_bytes);
     spirv_emit(m, &b->body, SPV_OP_BRANCH, &copied, 1);
     spirv_emit(m, &b->body, SPV_OP_LABEL, &copied, 1);
     spirv_emit(m, &b->body, SPV_OP_BRANCH, &merge, 1);
@@ -171,6 +187,10 @@ int rt_tile_copy_shader(unsigned dwords, int to_tiled, uint32_t **spirv, size_t 
     static const uint32_t capabilities[] = {SPV_CAPABILITY_SHADER, SPV_CAPABILITY_INT64, SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER};
     for (size_t c = 0; c < sizeof capabilities / sizeof *capabilities; c++)
         spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, &capabilities[c], 1);
+    if (element_bytes < BYTES_PER_WORD) {
+        const uint32_t small = element_bytes == 1 ? SPV_CAPABILITY_STORAGE_BUFFER_8_BIT_ACCESS : SPV_CAPABILITY_STORAGE_BUFFER_16_BIT_ACCESS;
+        spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, &small, 1);
+    }
     spirv_emit(m, &m->sections[SPIRV_MEMORY_MODEL], SPV_OP_MEMORY_MODEL,
                (const uint32_t[]){SPV_ADDRESSING_PHYSICAL_STORAGE_BUFFER64, SPV_MEMORY_MODEL_GLSL450}, 2);
     const uint32_t void_type = spirv_type_void(m);

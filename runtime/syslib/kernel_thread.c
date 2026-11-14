@@ -10,9 +10,15 @@
    guessing. */
 #define _GNU_SOURCE /* pthread_setname_np */
 #include "runtime/process.h"
+#include "runtime/memory.h"
 #include "runtime/syslib.h"
 
+#if defined(__APPLE__) && defined(__MACH__)
+#include "runtime/guest_pointer.h"
+#else
 #include <asm/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -20,7 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 enum { BSD_ESRCH = 3, BSD_EDEADLK = 11, BSD_ENOMEM = 12, BSD_EINVAL = 22, BSD_ENOTSUP = 45 };
@@ -139,8 +144,8 @@ static guest_thread *thread_object_new(const char *caller)
     pthread_mutex_lock(&thread_objects_lock);
     if (!thread_objects) {
         void *const want = (void *)(uintptr_t)THREAD_OBJECTS_BASE;
-        void *const got = mmap(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread), PROT_READ | PROT_WRITE,
-                               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        void *const got = rt_map_anonymous_at(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread),
+                                              PROT_READ | PROT_WRITE);
         if (got != want) rt_fatal(caller, "the host cannot reserve the thread objects' range below 2^40");
         thread_objects = got;
     }
@@ -251,9 +256,14 @@ static int attr_destroy(guest_attr **attr)
 
 /* rt_thread_call(entry, argument, stack_top), declared in runtime/process.h: calls entry(argument) on
    the guest stack, with the System V convention the guest uses, and returns its result. */
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_THREAD_CALL_SYMBOL "_rt_thread_call"
+#else
+#define RT_THREAD_CALL_SYMBOL "rt_thread_call"
+#endif
 __asm__(".text\n"
-        ".globl rt_thread_call\n"
-        "rt_thread_call:\n"
+        ".globl " RT_THREAD_CALL_SYMBOL "\n"
+        RT_THREAD_CALL_SYMBOL ":\n"
         "  push %rbp\n  push %rbx\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
         "  mov %rsp, %r12\n"
         "  mov %rdx, %rsp\n"
@@ -281,8 +291,15 @@ static void *thread_start(void *raw)
     sigaddset(&main_only, SIGALRM);
     sigaddset(&main_only, SIGUSR1);
     pthread_sigmask(SIG_BLOCK, &main_only, NULL);
+#if defined(__APPLE__) && defined(__MACH__)
+    rt_guest_pointer_bind(t->tls);
+    pthread_mutex_lock(&join_lock); /* Serialize the startup label with concurrent guest renames. */
+    if (t->name[0]) (void)pthread_setname_np(t->name);
+    pthread_mutex_unlock(&join_lock);
+#else
     if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)t->tls))
         rt_fatal("scePthreadCreate", "the host refused the new thread's thread pointer");
+#endif
     current = t;
     /* The System V convention wants the stack 16-byte aligned at the call. */
     enum { STACK_TOP_RESERVE = 64, STACK_ALIGN = 16 };
@@ -291,6 +308,9 @@ static void *thread_start(void *raw)
     if (!__builtin_setjmp(t->exit_point)) t->exit_value = rt_thread_call(t->entry, t->argument, (void *)top);
     t->exiting = 1;
     rt_thread_keys_exit((void *)top);
+#if defined(__APPLE__) && defined(__MACH__)
+    rt_guest_pointer_clear();
+#endif
     pthread_mutex_lock(&join_lock);
     t->ended = 1;
     pthread_mutex_unlock(&join_lock);
@@ -351,7 +371,11 @@ static int create_named_thread(const char *fn, guest_thread **thread, guest_attr
     const int detach_state = rt_thread_attr_detach_state((void *const *)attr, fn); /* stops when not set */
     guest_thread *t = thread_object_new(fn);
     t->stack_size = a->stack_size;
-    t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    int stack_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_STACK
+    stack_flags |= MAP_STACK;
+#endif
+    t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, stack_flags, -1, 0);
     if (t->stack == MAP_FAILED) rt_fatal(fn, "the host cannot map the thread's stack");
     t->tls = rt_tls_block_create();
     if (!t->tls) rt_fatal(fn, "the host has no memory for the thread's TLS block");
@@ -408,16 +432,21 @@ static int set_affinity(guest_thread *thread, uint64_t mask)
     return 0;
 }
 
+/* The CPU set answered for a thread or attribute the guest gave no mask: the six CPUs 0 to 5. It is
+   the mask the executable's own thread set-up gives each thread (docs/runtime-syscalls.md) and
+   PS4Recomp's default (facts only); shadPS4 answers the host thread's set. The maintainer's ruling
+   of 2026-11-11 replaced the earlier all ones; the console's own main-thread mask is not measured. */
+#define DEFAULT_CPU_MASK UINT64_C(0x3f)
+
 /* scePthreadGetaffinity(thread, uint64_t *mask): the thread's CPU set, imported by the bundled
-   file library (libSceFios2.elf). A mask the guest set is answered back; a thread nobody set one on runs wherever the system lets it, which the runtime
-   answers as all ones (shadPS4 answers the host thread's set, PS4Recomp 0x3f; facts only; all
-   ones is the maintainer's ruling of 2026-11-10). No thread answers ESRCH, as for the set; no
-   variable stops by name. */
+   file library (libSceFios2.elf). A mask the guest set is answered back; a thread nobody set one
+   on answers DEFAULT_CPU_MASK. No thread answers ESRCH, as for the set; no variable stops by
+   name. */
 static int get_affinity(guest_thread *thread, uint64_t *mask)
 {
     if (!thread) return SCE_KERNEL_ERROR(BSD_ESRCH);
     if (!mask) rt_fatal("scePthreadGetaffinity", "no variable for the mask: the error value is not established");
-    *mask = thread->affinity ? thread->affinity : UINT64_MAX;
+    *mask = thread->affinity ? thread->affinity : DEFAULT_CPU_MASK;
     return 0;
 }
 
@@ -427,11 +456,13 @@ static int sce_attr_destroy(guest_attr **attr) { return sce(attr_destroy(attr));
 /* Copies a running thread's attributes into an initialised attribute object. The copy replaces
    everything the object held (libthr's pthread_attr_get_np copies the whole attribute block), so a
    detach state set on it before is dropped: the thread's own detach state is one the system
-   supplies, and the runtime does not know it. */
+   supplies, and the runtime does not know it. The thread's CPU mask comes along (0 when the guest
+   never set one), so scePthreadAttrGetaffinity on the copy answers as scePthreadGetaffinity does. */
 static int attr_get(guest_thread *thread, guest_attr **attr)
 {
     if (!thread || !attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
-    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size};
+    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size,
+                          .affinity = thread->affinity};
     return 0;
 }
 
@@ -651,6 +682,22 @@ static int sce_attr_set_affinity(guest_attr **attr, uint64_t mask)
 }
 RT_SYSLIB("libkernel", scePthreadAttrSetaffinity, sce_attr_set_affinity);
 
+/* scePthreadAttrGetaffinity(attr, uint64_t *mask): the attribute's CPU set, imported by the bundled
+   libc.elf, whose thread-count probe (+0x81a80) asks it for a copy of the main thread's attributes
+   and counts the set bits of the eight-byte answer (docs/runtime-syscalls.md). A mask set with
+   scePthreadAttrSetaffinity, or copied from a thread by scePthreadAttrGet, is answered back. Without
+   one the answer is DEFAULT_CPU_MASK, as from scePthreadGetaffinity, so the probe counts six CPUs.
+   A variable holding no attribute is EINVAL, as for the setter; no variable for the mask stops by
+   name. */
+static int sce_attr_get_affinity(guest_attr **attr, uint64_t *mask)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!mask) rt_fatal("scePthreadAttrGetaffinity", "no variable for the mask: the error value is not established");
+    *mask = (*attr)->affinity ? (*attr)->affinity : DEFAULT_CPU_MASK;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrGetaffinity, sce_attr_get_affinity);
+
 /* scePthreadAttrSetinheritsched(attr, inherit): whether a thread created with the attribute takes
    its creator's scheduling (PTHREAD_INHERIT_SCHED, 4, libthr's default) or the attribute's
    (PTHREAD_EXPLICIT_SCHED, 0), FreeBSD's <pthread.h> numbers. libSceFios2's thread helper
@@ -794,7 +841,12 @@ static int rename_thread(guest_thread *thread, const char *name)
     char host_name[16];
     memcpy(host_name, thread->name, sizeof host_name - 1);
     host_name[sizeof host_name - 1] = 0;
+#if defined(__APPLE__) && defined(__MACH__)
+    /* Darwin can label only the calling host thread; the guest's name is always retained. */
+    if (!thread->ended && thread == current) (void)pthread_setname_np(host_name);
+#else
     if (!thread->ended) pthread_setname_np(thread == current ? pthread_self() : thread->host, host_name);
+#endif
     pthread_mutex_unlock(&join_lock);
     return 0;
 }

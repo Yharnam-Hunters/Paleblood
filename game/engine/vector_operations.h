@@ -26,6 +26,19 @@ inline float subtract(float a, float b)
     return result;
 }
 inline Vec4 add(Vec4 a, Vec4 b) { return a + b; }
+// addps / mulps with the first operand as the destination, so that when both lanes are NaN the
+// first operand's payload comes out as in the original (the compiler may swap the operands of
+// _mm_add_ps / _mm_mul_ps, which it treats as commutative).
+inline Vec4 add_in_order(Vec4 first, Vec4 second)
+{
+    asm("addps %1, %0" : "+x"(first.v) : "x"(second.v));
+    return first;
+}
+inline Vec4 multiply_in_order(Vec4 first, Vec4 second)
+{
+    asm("mulps %1, %0" : "+x"(first.v) : "x"(second.v));
+    return first;
+}
 inline Vec4 subtract(Vec4 a, Vec4 b) { return Vec4(_mm_sub_ps(a.v, b.v)); }
 inline Vec4 multiply(Vec4 a, Vec4 b) { return a * b; }
 inline Vec4 divide(Vec4 a, Vec4 b) { return Vec4(_mm_div_ps(a.v, b.v)); }

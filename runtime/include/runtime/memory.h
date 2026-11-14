@@ -3,6 +3,7 @@
 #define RUNTIME_MEMORY_H
 
 #include <stddef.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +18,13 @@ extern "C" {
    A declined hint does not prove the requested address is occupied. A cleanup failure instead
    preserves munmap's errno. The caller owns a successful mapping and must munmap it. */
 void *rt_map_anonymous_at(void *address, size_t size, int protection);
+
+/* The same non-replacing placement for shared file or private anonymous mappings.
+   flags must select MAP_SHARED or MAP_PRIVATE and may add MAP_ANONYMOUS/MAP_NORESERVE;
+   MAP_FIXED and unknown flags are rejected. fd/offset have mmap's usual meaning.
+   A declined hint is cleaned up and fails with EADDRNOTAVAIL; that does not prove
+   occupancy. The caller must serialize any later replacement of its owned ranges. */
+void *rt_map_at(void *address, size_t size, int protection, int flags, int fd, off_t offset);
 
 #ifdef __cplusplus
 }

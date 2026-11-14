@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* The answers the maintainer ruled on (2026-11-10) for the libkernel calls and data libc.elf and
-   libSceFios2 import (runtime/syslib/kernel_libc_support.c, kernel_thread.c), the disc map's
-   unnamed import (runtime/syslib/disc_map.c, registered by its NID) and a module loaded twice
+/* The answers the maintainer ruled on (2026-11-10; the default CPU mask revised 2026-11-11) for
+   the libkernel calls and data libc.elf and libSceFios2 import
+   (runtime/syslib/kernel_libc_support.c, kernel_thread.c), the disc map's unnamed import
+   (runtime/syslib/disc_map.c, registered by its NID) and a module loaded twice
    (runtime/syslib/kernel_sysmodule.c). */
 #include "../syslib_test.h"
 
@@ -48,15 +49,15 @@ SYSLIB_TEST(kernel_rulings)
     CHECK(read_(0, buffer, sizeof buffer) == 0 && buffer[0] == 'x'); /* end of file, nothing written */
     CHECK(died_in_fatal(read_other_descriptor));
 
-    /* A thread nobody set a mask on answers all ones; a set mask is answered back. */
+    /* A thread nobody set a mask on answers 0x3f, the six CPUs 0 to 5; a set mask is answered back. */
     void *self = ((self_fn)fn("libkernel", "scePthreadSelf"))();
     uint64_t mask = 0;
     if (self) {
-        CHECK(get_affinity(self, &mask) == 0 && mask == UINT64_MAX);
+        CHECK(get_affinity(self, &mask) == 0 && mask == 0x3f);
         CHECK(set_affinity(self, 0x3c) == 0);
         CHECK(get_affinity(self, &mask) == 0 && mask == 0x3c);
         CHECK(died_in_fatal(affinity_no_mask));
-        set_affinity(self, UINT64_MAX); /* the main thread runs anywhere again */
+        set_affinity(self, 0x3f); /* back to the six CPUs */
     }
     CHECK(get_affinity(NULL, &mask) == (int32_t)0x80020003u); /* ESRCH */
 
