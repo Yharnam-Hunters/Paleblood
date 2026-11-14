@@ -94,6 +94,58 @@ typedef struct {
 
 void rt_compute_shader_decode(const uint32_t words[RT_COMPUTE_SHADER_WORDS], rt_compute_shader *shader);
 
+/* The tessellation and geometry-shader stages' register blocks, as sceGnmSetLsShader, SetHsShader,
+   SetEsShader and SetGsShader take them (shadPS4's gnmdriver.cpp writes them, facts only), with the
+   fields of AMD's gfx_7_2_sh_mask.h:
+     local (LS, 4 words): SPI_SHADER_PGM_LO_LS, PGM_HI_LS, PGM_RSRC1_LS, PGM_RSRC2_LS. RSRC1 as a vertex
+       shader's (VGPR_COMP_CNT bits 24-25); RSRC2 USER_SGPR bits 1-5, LDS_SIZE 7-15 in 512-byte units
+       (Sea Islands' LDS granularity, 128 dwords, as Mesa's radeonsi counts it for LS).
+     hull (HS, 7 words): SPI_SHADER_PGM_LO_HS, PGM_HI_HS, PGM_RSRC1_HS, PGM_RSRC2_HS, VGT_TF_PARAM,
+       VGT_HOS_MAX_TESS_LEVEL, VGT_HOS_MIN_TESS_LEVEL (two floats), and the call's own argument,
+       VGT_LS_HS_CONFIG. RSRC2 USER_SGPR bits 1-5, OC_LDS_EN 7, TG_SIZE_EN 8. VGT_TF_PARAM TYPE bits 0-1
+       (0 isolines, 1 triangles, 2 quads), PARTITIONING 2-4 (0 integer, 1 power of two, 2 fractional odd,
+       3 fractional even), TOPOLOGY 5-7 (0 points, 1 lines, 2 triangles clockwise, 3 counterclockwise).
+       VGT_LS_HS_CONFIG NUM_PATCHES bits 0-7 (patches a workgroup), HS_NUM_INPUT_CP 8-13,
+       HS_NUM_OUTPUT_CP 14-19.
+     export (ES, 4 words): SPI_SHADER_PGM_LO_ES, PGM_HI_ES, PGM_RSRC1_ES, PGM_RSRC2_ES (USER_SGPR 1-5).
+     geometry (GS, 7 words): SPI_SHADER_PGM_LO_GS, PGM_HI_GS, PGM_RSRC1_GS, PGM_RSRC2_GS (USER_SGPR 1-5),
+       VGT_STRMOUT_CONFIG, VGT_GS_OUT_PRIM_TYPE, VGT_GS_INSTANCE_CNT.
+   The local and export calls' shader modifier is applied to RSRC1 before the words are decoded
+   (runtime/syslib/gnm.c). */
+enum { RT_LOCAL_SHADER_WORDS = 4, RT_HULL_SHADER_WORDS = 8, RT_EXPORT_SHADER_WORDS = 4, RT_GEOMETRY_SHADER_WORDS = 7 };
+typedef struct {
+    uint64_t code;
+    uint32_t vgprs, sgprs, user_sgprs;
+    uint32_t vgpr_inputs;            /* VGPR_COMP_CNT */
+    uint32_t lds_bytes;              /* LDS_SIZE: the workgroup's local data share, in bytes */
+} rt_local_shader;
+typedef struct {
+    uint64_t code;
+    uint32_t vgprs, sgprs, user_sgprs;
+    int off_chip;                    /* OC_LDS_EN: an SGPR with the off-chip buffer's offset */
+    int workgroup_size_enabled;      /* TG_SIZE_EN */
+    uint32_t domain, partitioning, topology; /* VGT_TF_PARAM's TYPE, PARTITIONING and TOPOLOGY */
+    float max_level, min_level;      /* VGT_HOS_MAX_TESS_LEVEL and VGT_HOS_MIN_TESS_LEVEL */
+    uint32_t patches, input_points, output_points; /* VGT_LS_HS_CONFIG */
+} rt_hull_shader;
+typedef struct {
+    uint64_t code;
+    uint32_t vgprs, sgprs, user_sgprs;
+    uint32_t resources[2];           /* PGM_RSRC1 and PGM_RSRC2 as written */
+    uint32_t registers[3];           /* a geometry shader's VGT_STRMOUT_CONFIG, VGT_GS_OUT_PRIM_TYPE, VGT_GS_INSTANCE_CNT (0 for export) */
+} rt_geometry_stage_shader;
+/* The tessellation-factor ring's guest address: the runtime's answer to
+   sceGnmGetTheTessellationFactorRingBufferBaseAddress (runtime/syslib/gnm.c), where the title maps it. */
+#define RT_TESSELLATION_FACTOR_RING 0xfe00000000ull
+enum { RT_TESS_ISOLINES = 0, RT_TESS_TRIANGLES = 1, RT_TESS_QUADS = 2 };
+enum { RT_TESS_INTEGER = 0, RT_TESS_POW2 = 1, RT_TESS_FRACTIONAL_ODD = 2, RT_TESS_FRACTIONAL_EVEN = 3 };
+enum { RT_TESS_POINTS = 0, RT_TESS_LINES = 1, RT_TESS_TRIANGLES_CW = 2, RT_TESS_TRIANGLES_CCW = 3 };
+
+void rt_local_shader_decode(const uint32_t words[RT_LOCAL_SHADER_WORDS], rt_local_shader *shader);
+void rt_hull_shader_decode(const uint32_t words[RT_HULL_SHADER_WORDS], rt_hull_shader *shader);
+/* export: words holds RT_EXPORT_SHADER_WORDS; geometry: RT_GEOMETRY_SHADER_WORDS */
+void rt_geometry_stage_shader_decode(const uint32_t *words, int geometry, rt_geometry_stage_shader *shader);
+
 /* An image resource descriptor (T#, 8 words), as the Sea Islands manual's Table 8.10 defines it and
    shadPS4's video_core/amdgpu/resource.h lays it out: word 0 and word 1's bits 0-5 the base address
    >> 8, word 1 DATA_FORMAT bits 20-25 and NUM_FORMAT 26-29; word 2 WIDTH - 1 bits 0-13, HEIGHT - 1
@@ -118,7 +170,8 @@ typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
     RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES, RT_CALL_COMPUTE_SHADER, RT_CALL_DISPATCH,
     RT_CALL_INDEX_BASE, RT_CALL_INDEX_SIZE, RT_CALL_INDEX_TYPE, RT_CALL_DRAW_INDEX_OFFSET,
-    RT_CALL_DRAW_INDEXED,
+    RT_CALL_DRAW_INDEXED, RT_CALL_INDIRECT_BASE, RT_CALL_DISPATCH_INDIRECT, RT_CALL_LOCAL_SHADER, RT_CALL_HULL_SHADER,
+    RT_CALL_EXPORT_SHADER, RT_CALL_GEOMETRY_SHADER, RT_CALL_DRAW_INDIRECT,
 } rt_render_call_kind;
 
 /* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
@@ -158,9 +211,23 @@ typedef struct {
             uint32_t count;          /* NUM_INSTANCES: instances each later draw makes */
         } instances;
         rt_compute_shader compute_shader;
+        rt_local_shader local_shader;
+        rt_hull_shader hull_shader;
+        rt_geometry_stage_shader geometry_stage_shader; /* RT_CALL_EXPORT_SHADER and RT_CALL_GEOMETRY_SHADER */
         struct {
             uint32_t groups[3];      /* DISPATCH_DIRECT: workgroups in x, y and z */
         } dispatch;
+        struct {
+            uint64_t address;        /* SET_BASE (base 1): where later indirect calls' arguments are */
+        } indirect_base;
+        struct {
+            uint32_t data_offset;    /* DISPATCH_INDIRECT: bytes from the indirect base to x, y, z */
+        } dispatch_indirect;
+        struct {
+            uint32_t data_offset;    /* DRAW_INDIRECT: bytes from the indirect base to the draw's arguments */
+            rt_shader_stage stage;   /* the stage whose user SGPRs the two below count in */
+            uint32_t base_vertex_sgpr, start_instance_sgpr; /* user SGPRs the GPU writes them to; 0 none */
+        } draw_indirect;
         struct {
             uint64_t address;        /* unmasked byte address from INDEX_BASE's low/high DWORDs */
         } index_base;
@@ -205,6 +272,18 @@ int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address
                               size_t error_size);
 /* A compute dispatch of groups[0] x groups[1] x groups[2] workgroups (DISPATCH_DIRECT); each at least 1. */
 int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3], char *error, size_t error_size);
+/* The base address of later indirect calls' arguments (SET_BASE with base index 1, the draw and
+   dispatch indirect table): an address the packet keeps (bits 3-39). */
+int rt_render_record_indirect_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size);
+/* A compute dispatch whose workgroup counts the GPU reads when it runs (DISPATCH_INDIRECT): three
+   32-bit words, x, y and z, at data_offset bytes from the indirect base, a multiple of 4. */
+int rt_render_record_dispatch_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset, char *error, size_t error_size);
+/* An auto-index draw whose counts the GPU reads when it runs (DRAW_INDIRECT): four 32-bit words,
+   vertices per instance, instances, start vertex and start instance, at data_offset bytes from the
+   indirect base, a multiple of 4. The start vertex and instance go to the stage's user SGPRs
+   base_vertex_sgpr and start_instance_sgpr (0: to none). */
+int rt_render_record_draw_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset, rt_shader_stage stage, uint32_t base_vertex_sgpr,
+                                   uint32_t start_instance_sgpr, char *error, size_t error_size);
 /* The index buffer later indexed draws read: its address (INDEX_BASE), its size in indices
    (INDEX_BUFFER_SIZE) and the index type (INDEX_TYPE). */
 int rt_render_record_index_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size);
@@ -230,6 +309,12 @@ int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count,
 int rt_render_record_vertex_shader_at(uint64_t address, const uint32_t words[RT_VERTEX_SHADER_WORDS]);
 int rt_render_record_compute_shader_at(uint64_t address, const uint32_t words[RT_COMPUTE_SHADER_WORDS]);
 int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS]);
+/* The same for the tessellation and geometry-shader stages (sceGnmSetLsShader, SetHsShader and its
+   Update form, SetEsShader, SetGsShader and its Update form): words as above. */
+int rt_render_record_local_shader_at(uint64_t address, const uint32_t words[RT_LOCAL_SHADER_WORDS]);
+int rt_render_record_hull_shader_at(uint64_t address, const uint32_t words[RT_HULL_SHADER_WORDS]);
+int rt_render_record_export_shader_at(uint64_t address, const uint32_t words[RT_EXPORT_SHADER_WORDS]);
+int rt_render_record_geometry_shader_at(uint64_t address, const uint32_t words[RT_GEOMETRY_SHADER_WORDS]);
 
 /* At submission of size bytes of the buffer: its calls made before that point, in order (with the
    placed calls the buffer holds), and their count in *count. Submitting marks the buffer used: its

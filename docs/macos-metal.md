@@ -2,7 +2,7 @@
 
 On macOS, the normal root CMake configuration adds `pbmetal` alongside the runtime, game and
 test targets. It is a native static library with a C API and an Objective-C++ implementation
-linked to Apple's Metal and Foundation frameworks. `PB_METAL_ONLY` defaults to `OFF`; set it
+linked to Apple's Metal, Foundation and QuartzCore frameworks. `PB_METAL_ONLY` defaults to `OFF`; set it
 to `ON` explicitly to build the Metal unit without the other targets. An existing build cache
 that selected `ON` retains that setting until changed.
 
@@ -11,11 +11,13 @@ is still in progress. Compiling or testing this Metal unit does not establish a 
 runtime build or guest boot on macOS.
 
 The base Metal unit creates a device, command queue and RGBA8Unorm offscreen texture, submits a
-render-pass clear/store, then reads pixels after command-buffer completion. This first
-shared-texture implementation requires a unified-memory Metal device. Successful CMake
-configuration or compilation does not prove that a suitable device exists. There is no
-window, presentation or guest execution in this unit. The optional draw executor below adds
-shader translation and offscreen draws through the renderer's existing call record.
+render-pass clear/store, then reads pixels after command-buffer completion. It also accepts
+complete RGBA8 frames through a synchronous CPU upload and can present a completed frame
+through a caller-owned `CAMetalLayer`. This shared-texture implementation requires a
+unified-memory Metal device. Configuration or compilation does not prove that a suitable
+device exists. The caller supplies the window, application event loop and layer lifetime.
+The optional draw executor below adds shader translation and offscreen draws through the
+renderer’s existing call record; its guest display remains separate from this primitive.
 
 Use Apple Clang and an installed macOS SDK. The intended deployment target is macOS 13 or
 newer. For a native Apple Silicon library build, from the repository root:
@@ -30,12 +32,12 @@ a GPU test. On a machine where a real unified-memory Metal device is available, 
 
 ```sh
 cmake -S . -B build-metal -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_METAL_ONLY=ON -DPB_ENABLE_METAL_SMOKE_TEST=ON
-cmake --build build-metal --target test_metal_offscreen --parallel 2
-ctest --test-dir build-metal -R '^metal_offscreen$' --output-on-failure
+cmake --build build-metal --target test_metal_offscreen test_metal_upload --parallel 2
+ctest --test-dir build-metal -R '^metal_(offscreen|upload)$' --output-on-failure
 ```
 
-The test has a 30-second CTest timeout. It fails if device creation is unavailable or any check
-fails; an unavailable GPU is not reported as a passing or skipped smoke. It checks four actual
+Each test has a 30-second CTest timeout and fails if device creation is unavailable or any
+check fails. An unavailable GPU is not a passing or skipped smoke. The offscreen test checks four actual
 clear/store submissions, all RGBA channels, readback padding/canaries and API lifecycle/error
 contracts. Both packed and padded multirow reads are checked. Packed rows are read directly
 into caller memory; padded rows use staging to preserve padding. Invalid inputs and rejected
@@ -45,9 +47,89 @@ the compiler; an x86-64 or universal build
 is not evidence that the guest runtime works through Rosetta. Device loss, hardware timeout
 and allocation exhaustion are not deliberately induced.
 
+The upload test uses independently literal RGBA and BGRA pattern tables. It checks a
+nonuniform 7x5 frame, arbitrary source row padding, exact final-pixel capacity at a protected
+page, caller-memory lifetime, rejected-update preservation and alternation with GPU clears.
+It also checks 1x1, 7x1 and 1x5 frames, including an unused single-row caller stride of
+`SIZE_MAX`. CPU texture updates and completed GPU clears are reported separately.
+
+`rt_metal_offscreen_upload` copies each source row before returning and retains no caller
+pointer. It supplies zero Metal row stride for a single-row source, as documented by Apple’s
+[`replaceRegion:mipmapLevel:withBytes:bytesPerRow:`](https://developer.apple.com/documentation/metal/mtltexture/replace(region:mipmaplevel:withbytes:bytesperrow:)).
+Pixels remain `RGBA8Unorm`, without channel conversion, alpha premultiplication or vertical
+flip. A successful upload makes the texture readable without a prior clear. The owner must
+serialize upload, clear, read and presentation. An upload backend exception poisons the context;
+invalid input preserves its prior frame and readiness.
+
 The `macos-metal` CI workflow configures the normal root build and compiles the library and
-smoke executable for ARM64 and x86-64. It does not run a GPU test on a hosted runner. The
-real-device test remains an explicit local check, and its result must be reported separately.
+owned test executables for ARM64 and x86-64. It does not run a GPU or window test on a hosted
+runner. Real-device and real-window results remain explicit local checks.
+
+## Presenting completed frames
+
+The caller owns a valid `CAMetalLayer`, its view/window and the application event loop.
+`rt_metal_offscreen_configure_layer` accepts an unretained bridge to that layer, assigns the
+context’s device, `BGRA8Unorm`, its exact source extent, finite drawable acquisition and
+non-transactional presentation. Bounds, backing scale, attachment, `framebufferOnly`, window
+resize and close policy remain with the caller. Configuration and presentation require the
+main thread. Serialize all operations on the context and all mutation of its borrowed layer.
+Destroying the context does not detach the layer or restore its previous configuration.
+
+After a successful upload or clear, `rt_metal_offscreen_present` rechecks the layer profile,
+reads source texels through a fixed fullscreen Metal shader and schedules the completed
+BGRA drawable. Source and drawable dimensions must match. The render pass performs no
+scaling, vertical flip, channel swizzle or blending. Core Animation may scale to the layer’s
+bounds and apply display color processing; this API does not establish physical screen
+pixel or color identity.
+
+An optional `rt_metal_bgra_readback` captures the actual drawable before presentation. It
+requires `framebufferOnly=NO`, preserves caller padding and accepts capacity ending at the
+last pixel. The implementation blits into owned shared storage before scheduling presentation,
+then copies caller bytes after successful GPU completion. A null capture avoids readback
+allocation/copy and allows framebuffer-only drawables. Invalid input or a backend error
+leaves capture bytes untouched. Apple documents why drawable data must be captured
+[before presentation](https://developer.apple.com/documentation/metal/reading-pixel-data-from-a-drawable-texture).
+
+`RT_METAL_OK` proves command completion and presentation scheduling. A caller can separately
+observe the drawable’s [presented handler](https://developer.apple.com/documentation/metal/mtldrawable/addpresentedhandler(_:))
+and [presented time](https://developer.apple.com/documentation/metal/mtldrawable/presentedtime).
+A zero time means that the drawable was not presented or its frame was dropped; scheduling
+and completed pre-present pixels do not guarantee that each frame is displayed.
+The 1..30000 ms timeout bounds the GPU wait after commit. Pipeline compilation and
+[`nextDrawable` acquisition](https://developer.apple.com/documentation/quartzcore/cametallayer/nextdrawable())
+are outside that wait; acquisition has its own system timeout. `RT_METAL_NO_DRAWABLE` leaves
+the context usable. GPU failure or a GPU-wait timeout poisons it. Timeout does not cancel
+submitted work, which can present later. Command resources and strong callback references
+retain the layer/drawable after a timeout; callbacks retain neither caller output pointers
+nor the context.
+
+The window fixture is separately opt-in and needs a graphical macOS session and real Metal
+device. Ordinary builds and the smoke option do not register it:
+
+```sh
+cmake -S . -B build-metal-window -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_METAL_ONLY=ON -DPB_ENABLE_METAL_SMOKE_TEST=ON -DPB_ENABLE_METAL_PRESENTATION_TEST=ON
+cmake --build build-metal-window --target test_metal_offscreen test_metal_upload test_metal_presentation --parallel 2
+ctest --test-dir build-metal-window -R '^metal_(offscreen|upload|presentation)$' --output-on-failure
+```
+
+The fixture owns its AppKit application/window and observes genuine drawables. Named records
+separate actual API status, GPU completion, acquisition identity, callbacks/timestamps and
+literal pre-present BGRA pixel/padding checks. It checks profile/size/format/thread/state
+refusals before acquisition, framebuffer-only presentation, window-bound resize with a fixed
+source extent, and 1x1, 7x1 and 1x5 drawable captures. Every valid case requires its own
+callback and a finite nonnegative time; zero is reported as `DROP_OR_UNCONFIRMED`, while a
+positive time is `DISPLAY_OBSERVED`. The predeclared `present/normal-sized-positive-anchor`
+is a separate 320x180 literal capture and must have its own positive time. No other frame
+can satisfy that requirement. A single fixed startup submission follows each newly
+configured source or restored profile, including the normal-sized anchor; startup times
+never satisfy the anchor. Main-thread display and window-occlusion samples immediately
+before and after the anchor describe only those instants, not continuous visibility or the
+cause of a dropped frame. Submissions use a fixed 10 Hz cadence while servicing events,
+without retries until a frame displays. The CTest limit remains 30 seconds.
+
+These tests do not capture the user’s screen, verify physical scanout, force `NO_DRAWABLE`,
+device loss, allocation exhaustion or hardware timeout, or exercise guest execution. The
+runtime’s `--display window`, host input and audio are not wired by this primitive.
 
 ## Draw executor
 
@@ -87,9 +169,23 @@ It supports viewport 0, vertex/pixel shaders and their separate user-data ranges
 component order).
 Targets are limited to 4096 pixels per axis; viewport X/Y scales and translations must be
 finite and within ±4096, with a positive X scale and a nonzero Y scale.
-Only vertex input profile 0, with vertex ID in VGPR0, is modeled by the common translator.
-The other three `VGPR_COMP_CNT` encodings are rejected explicitly; their additional hardware
-inputs cannot be assumed to contain zero. Fetch calls use the same vertex-ID input profile.
+Vertex input profiles 0 through 3 reuse the common translator. VGPR0 holds the vertex ID;
+profiles 1 and 2 add the instance index divided by `VGT_INSTANCE_STEP_RATE_0` in VGPR1 and
+by `VGT_INSTANCE_STEP_RATE_1` in VGPR2, and profile 3 adds the instance index in VGPR3.
+The step-rate words and their written bits persist across call fragments and reset to unwritten.
+A missing or zero step rate is unknown: reading its enabled input before overwriting it stops
+translation by name. Undeclared inputs have no established hardware value. Primitive-ID inputs
+and unmodeled stage state remain outside this profile.
+
+`NUM_INSTANCES` is a full 32-bit count; zero means one instance, as documented for
+`VGT_NUM_INSTANCES` in the [AMD CIK register reference, page 29](https://docs.amd.com/api/khub/documents/9fuBVmqajj07G~5~aeTUig/content).
+The native auto and indexed
+draws use that count with base instance zero (and base vertex zero for indexed draws), so the
+index slice is reused for every instance. This follows Apple's
+[instance-count draw contract](https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawprimitives(type:vertexstart:vertexcount:instancecount:baseinstance:)).
+No per-instance host allocation or extra DMA bound is inferred. Vertex shader cache keys include
+the input profile, both full step-rate words and written bits; the instance count remains dynamic.
+Fetch calls use the same starting-register and cache contract.
 The recorded viewport clip bounds must be standard 0 and 1 (either signed zero is accepted);
 other bounds stop explicitly. Position and enabled clip-distance vectors require float4 export
 formats. Both clip vectors, including sparse selections of all eight distances, are supported;
@@ -114,10 +210,26 @@ validate every instruction against its declared SGPR/VGPR allocation.
 Readback is tightly packed BGRA, matching the display API. Images are separate GPU resources:
 they are not copied back into the guest pool or interpreted as tiled console surfaces.
 The generic register events validate this backend's supported opaque-triangle profile: blending,
-depth, non-copy colour operations, partial colour masks and multiple instances stop with a reason.
+depth, non-copy colour operations and partial colour masks stop with a reason.
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
+
+Triangle strips (`VGT_PRIMITIVE_TYPE` 6) select Metal's native triangle-strip primitive for
+auto draws and every admitted 16/32-bit direct or offset indexed route. Triangle lists retain
+their existing mapping and pipeline cache; topology is selected at each draw. Geometry shaders,
+rectangle expansion and other primitive types remain outside this backend's profile.
+
+Metal's [indexed draw contract](https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawindexedprimitives(type:indexcount:indextype:indexbuffer:indexbufferoffset:))
+always treats an index equal to the maximum of its width as a strip restart. Guest restart
+state is not modeled here, so an indexed strip containing that incompatible value is refused
+by name before encoding; this is an explicit backend limit, not a claim that AMD rejects it.
+The executor scans only the fetched range after the existing address, alignment and DMA-bound
+checks, freshly on every draw, with no fetch for zero count. `0xffff` is ordinary data for a
+32-bit index; its restart marker is `0xffffffff`. Restart-register writes retain their existing
+unknown-register refusal. No guest reset/default or complete primitive-restart support is claimed.
+The owned `metal_triangle_strips` fixture uses independent solid-square and gapped-column pixel
+goldens, fresh vertex stores and full-pool canaries across geometry, cache, indexing and refusals.
 
 Screen scissors use the existing register events for `PA_SC_SCREEN_SCISSOR_TL` and `_BR`.
 The [AMD CIK register manual](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
@@ -152,8 +264,8 @@ bound to a raw packet's independent `MAX_SIZE`.
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
 this profile. Pixel image loads and fixed-LOD sampling use the bindings described below.
-Triangle strips and depth-target registers
-remain outside this profile. Rectangle lists need a geometry expansion path and are rejected.
+Depth-target registers remain outside this profile. Rectangle lists need a geometry expansion
+path and are rejected.
 
 ## Vertex fetch calls
 
@@ -284,6 +396,15 @@ checks the selectors for the format's real components; selectors beyond them do 
 
 A GPU timeout or device failure makes the executor unusable; completion retains
 the pool and stop word until in-flight GPU work finishes.
+
+The separate `metal_vertex_instancing` fixture uses owned literal tile geometry and disjoint
+(instance, vertex) records to check both rate quotients and actual instance IDs. Its full-pool
+oracles cover every direct draw route, cached rate changes, explicit zero, reset and named
+unknown-input refusals; its small instance counts do not qualify extreme GPU workloads.
+The two additional strip groups use the same 31 route/quotient cases with four-corner strips
+and a repeated final-corner tail. Their literal full-tile pixel oracles distinguish a valid
+six-vertex Triangle fallback, including with reversed indices; default triangle-list inputs
+and the 76-case inventory are unchanged.
 
 The real-device test uses only owned synthetic GFX7 programs, descriptors and data. It checks
 interpolated triangles, two-parameter interfaces and their capacity guards, all eight clip

@@ -39,6 +39,13 @@ void rt_display_present(int port, int buffer);
 /* How many frames a port has presented. */
 uint64_t rt_display_presented(int port);
 
+/* Writes a line for each frame presented from now on to the file at path (pbboot --frame-log): the
+   port, the frame's number on it (from 0, as rt_display_presented counts) and the host's monotonic
+   clock in nanoseconds when it was presented, for frame rates (tools/frame_stats.py). Presenting
+   needs a display mode other than none. A NULL path stops the log. Returns 0, or -1 when the file
+   cannot be opened. */
+int rt_display_log_frames(const char *path);
+
 /* Waits until every captured frame so far is written (frames are written by a thread of the
    display's own, so a flip never waits on a file). */
 void rt_display_capture_wait(void);

@@ -29,11 +29,30 @@ extern "C" {
 
 typedef struct rt_executor rt_executor;
 
-/* The guest memory the GPU reaches: the pool's file, its size, and the guest address of its offset 0. */
+/* The guest memory the GPU reaches: the pool's file, its size, and the guest address of its offset 0.
+   collect_cpu_writes reports the pool bytes inside the given ranges (pool offset and length,
+   ascending) that the CPU wrote since they were last collected (rt_write_watch_collect,
+   runtime/write_watch.h); without it, or when it answers -1, the executor takes all memory as
+   changed at each buffer. guard keeps the CPU from `length` bytes at guest address `address` until
+   unguard lifts it, and answers 0, or -1 when it cannot (rt_write_watch_guard): a render target drawn
+   into is guarded until it is written back and the CPU touches it (rt_executor_resolve). Without
+   them every drawn target is written back at each recorded buffer's end. gds is the GPU's global data
+   share (runtime/gpu_memory.h), gds_bytes of host memory aligned to its size, which the executor gives the
+   GPU too: compute shaders' ds_append and ds_consume reach it (runtime/gcn_spirv.h); NULL leaves them
+   stopping. */
 typedef struct {
     int fd;
     uint64_t size;
     uint64_t guest_base;
+    int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                              void *context);
+    int (*guard)(uint64_t address, uint64_t length);
+    void (*unguard)(uint64_t address, uint64_t length);
+    void *gds;
+    uint32_t gds_bytes;
+    /* Whether collect_cpu_writes may report anything now; NULL: always. The executor asks it first, so
+       that it builds and sorts the ranges only for a collect that happens. */
+    int (*cpu_writes_due)(void);
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no
@@ -53,21 +72,66 @@ int rt_executor_run_calls(rt_executor *executor, const rt_render_call *calls, si
    rt_executor_wait_ticket has returned for that ticket or a later one. Returns 0, or -1 with the reason. */
 int rt_executor_submit_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
                              size_t error_size);
+/* The same without handing the work to the GPU yet: the calls are recorded into the open batch, and
+   *ticket names the submission that will hold them. Later calls join the same batch, until
+   rt_executor_submit (or a wait inside the executor) hands it over. Waiting for *ticket before then
+   blocks until it has been submitted and has run. The render targets they draw stay in their images,
+   guarded from the CPU (rt_executor_memory's guard): their guest memory receives the draws when later
+   GPU work reads that memory (a dispatch, an image over it), when the CPU touches it
+   (rt_executor_resolve), or when rt_executor_submit_calls writes every drawn target back. A target
+   that cannot be guarded is written back at the buffer's end. Returns 0, or -1 with the reason. */
+int rt_executor_record_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
+                             size_t error_size);
+/* Before the CPU touches `length` bytes at guest address `address` (a fault on a guarded page):
+   writes back the render targets drawn into over them, waits for that to run, and lifts the guards of
+   the targets there whose memory is now current. Returns 0, or -1 with the reason. */
+int rt_executor_resolve(rt_executor *executor, uint64_t address, uint64_t length, char *error, size_t error_size);
+/* Hands the open batch, if any, to the GPU without waiting. Returns 0, or -1 with the reason. */
+int rt_executor_submit(rt_executor *executor, char *error, size_t error_size);
 /* Waits until the submission `ticket` (and every one before it) has run; ticket 0 returns at once. Unlike
-   the other calls it may run on another thread while the executor records. Run-time stops are reported
-   by the next call on the recording thread. Returns 0, or -1 with the reason (the GPU failed). */
+   the other calls it may run on another thread while the executor records; a ticket still open (the
+   batch not yet handed to the GPU) waits for its handover first, and the GPU's wait limit counts from
+   there. Run-time stops are reported by the next call on the recording thread. Returns 0, or -1 with
+   the reason (the GPU failed). */
 int rt_executor_wait_ticket(rt_executor *executor, uint64_t ticket, char *error, size_t error_size);
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
 int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
+/* How long a wait for submitted work gives the GPU before the call fails naming the unfinished batch's
+   draws and dispatches; 0 is the default (20 s, render_executor.c). For tests. */
+void rt_executor_set_wait_limit(rt_executor *executor, uint64_t nanoseconds);
 /* Forgets the state earlier buffers set, as a GPU fresh from reset has none (tests: independent cases). */
 void rt_executor_reset(rt_executor *executor);
+/* The queue the next calls come from: RT_EXECUTOR_GRAPHICS_QUEUE, or a compute queue's id (1 to
+   RT_EXECUTOR_QUEUES - 1, sceGnmMapComputeQueue's). Each queue keeps its own compute state (the compute
+   shader, its user data, the indirect arguments' base), as each of the console GPU's queues keeps its
+   own registers: a compute queue's buffer dispatches with the shader its queue bound last, whatever
+   another queue bound since. The rest of the state is the graphics queue's. Calls start on the
+   graphics queue. Returns 0, or -1 with the reason (a queue out of range). */
+enum { RT_EXECUTOR_GRAPHICS_QUEUE = 0, RT_EXECUTOR_QUEUES = 65 };
+int rt_executor_select_queue(rt_executor *executor, unsigned queue, char *error, size_t error_size);
 
 /* The pixels of the image standing for the render target at a guest address, width x height
    from its top left, as 8-bit BGRA (the display's frames). Returns 0, or -1 when no draw has used
    that address or the size is past the image. */
 int rt_executor_read_target(rt_executor *executor, uint64_t address, uint32_t *bgra, uint32_t width, uint32_t height,
                             char *error, size_t error_size);
+
+/* A copy of a render target's image taken in order with the recorded work, for showing at a flip
+   without waiting for the work after it: rt_executor_snapshot_target records the copy into the open
+   batch (after everything recorded so far) and answers the ticket that batch gets and the snapshot's
+   slot; once that ticket has been signalled (rt_executor_wait_ticket, from any thread),
+   rt_executor_read_snapshot gives its pixels as rt_executor_read_target does, and
+   rt_executor_release_snapshot frees the slot. Only read and release may run on another thread than
+   the executor's other calls. A few slots are kept; taking one still held waits for its release. */
+typedef struct {
+    uint64_t ticket;
+    unsigned slot;
+} rt_executor_snapshot;
+int rt_executor_snapshot_target(rt_executor *executor, uint64_t address, rt_executor_snapshot *snapshot, char *error, size_t error_size);
+int rt_executor_read_snapshot(rt_executor *executor, const rt_executor_snapshot *snapshot, uint32_t *bgra, uint32_t width, uint32_t height,
+                              char *error, size_t error_size);
+void rt_executor_release_snapshot(rt_executor *executor, const rt_executor_snapshot *snapshot);
 
 void rt_executor_close(rt_executor *executor);
 
