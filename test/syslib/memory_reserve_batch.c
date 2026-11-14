@@ -42,8 +42,12 @@ static int64_t pool_start;
 /* Whether nothing is mapped at address any more: the host maps there again. */
 static int is_unmapped(void *address)
 {
-    void *again = mmap(address, PAGE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-    if (again != address) return 0;
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_FIXED_NOREPLACE
+    flags |= MAP_FIXED_NOREPLACE;
+#endif
+    void *again = mmap(address, PAGE, PROT_READ, flags, -1, 0);
+    if (again != address) { if (again != MAP_FAILED) munmap(again, PAGE); return 0; }
     munmap(again, PAGE);
     return 1;
 }

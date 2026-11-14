@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Regenerate main's progress text in one pull request, and queue it.
+
+Feature branches leave the generated progress text alone (the generated blocks of
+STATUS.md, CONTRIBUTING.md and docs/OVERVIEW.md), so
+parallel pull requests do not conflict on it. This tool brings main up to date instead: in a
+temporary worktree of origin/main it runs `tools/progress.py --update-readme`, commits the result
+to the branch auto/regenerate-progress, builds the worktree (the pre-push gate's unit tests load
+build/), pushes it through the normal pre-push gate, opens a
+documentation-only pull request for it (or reuses the open one) and enables auto-merge, which
+puts it in the merge queue. Run it after any of your pull requests merges; .github/workflows/
+progress.yml fails while main is behind.
+
+It is idempotent and safe to run from several sessions: the branch only ever moves forward, a
+push that loses a race is retried from the new state, and nothing is pushed when main is already
+current. It never force-pushes and never touches your own worktree. The text is always
+regenerated from scratch on origin/main; when the pull request's branch is still open, the new
+commit also merges that branch with the ours strategy (its tree is main's plus the regenerated
+text), so the branch moves forward without a merge that could stop on a conflict, such as a file
+main deleted or a file the branch changed before it stopped being generated.
+
+usage: progress_pr.py [--remote origin] [--repo OWNER/NAME] [--co-author 'Name <email>']
+                      [--dry-run] [--no-queue]
+  --co-author   adds a Co-Authored-By trailer to the commit (AI-assisted sessions)
+  --dry-run     regenerate and report what would change; push nothing
+  --no-queue    push and open the pull request, but do not enable auto-merge
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BRANCH = 'auto/regenerate-progress'
+GENERATED = ('STATUS.md', 'CONTRIBUTING.md', 'docs/OVERVIEW.md')     # tools/progress.py
+ATTEMPTS = 3
+
+
+def repo_flag(repo: str | None) -> list[str]:
+    return ['-R', repo] if repo else []
+
+
+class Failure(Exception):
+    pass
+
+
+def run(argv: list[str], cwd: str = ROOT, check: bool = True, quiet: bool = False) -> subprocess.CompletedProcess:
+    r = subprocess.run(argv, cwd=cwd, text=True, capture_output=True)
+    if check and r.returncode:
+        if not quiet:
+            sys.stderr.write(r.stdout[-4000:] + r.stderr[-4000:])
+        raise Failure(f"{' '.join(argv[:3])} failed ({r.returncode})")
+    return r
+
+
+def git(*args: str, cwd: str = ROOT, check: bool = True) -> str:
+    return run(['git', *args], cwd=cwd, check=check).stdout.strip()
+
+
+def is_ancestor(a: str, b: str, cwd: str = ROOT) -> bool:
+    return run(['git', 'merge-base', '--is-ancestor', a, b], cwd=cwd, check=False).returncode == 0
+
+
+def open_pr(repo: str) -> int | None:
+    out = run(['gh', 'pr', 'list', *repo_flag(repo), '--head', BRANCH, '--state', 'open',
+               '--json', 'number', '--jq', '.[].number']).stdout.split()
+    return int(out[0]) if out else None
+
+
+def report_body(main_sha: str, paths: list[str]) -> str:
+    summary = (f'Regenerated the progress blocks from symbols/ on main {main_sha[:12]} '
+               '(tools/progress_pr.py). No other text changed.')
+    report = {'schema': 1, 'track': 'documentation', 'pages': paths, 'summary': summary,
+              'implementation_changes': False}
+    return ('### Documentation-only report\n\n'
+            f"Pages changed: {', '.join(f'`{p}`' for p in paths)}\n\n"
+            f'Summary: {summary}\n\n'
+            'Main is regenerated here instead of in every feature branch, so parallel pull requests '
+            'do not conflict on these lines (CONTRIBUTING.md, "Generated progress and merging main").\n\n'
+            '<!-- documentation-report:start -->\n'
+            f'<!-- documentation-report-json {json.dumps(report)} -->\n'
+            '<!-- documentation-report:end -->\n')
+
+
+def prepare(wt: str, remote: str) -> tuple[str, list[str], bool]:
+    """Regenerate the progress text on origin/main in the worktree WT and stage it.
+
+    Returns (main sha, changed generated paths relative to main, whether there is anything to
+    push). When the pull request's branch is still open, the branch is first merged with the ours
+    strategy: main's tree is kept whole and nothing is taken from the branch, whose only changes
+    are generated text that is rebuilt here, so the merge cannot stop on a conflict and the branch
+    still moves forward (no force-push)."""
+    main_ref = f'refs/remotes/{remote}/main'
+    branch_ref = f'refs/remotes/{remote}/{BRANCH}'
+    git('fetch', '-q', remote, f'+refs/heads/main:{main_ref}', cwd=wt)
+    have_branch = run(['git', 'fetch', '-q', remote, f'+refs/heads/{BRANCH}:{branch_ref}'],
+                      cwd=wt, check=False, quiet=True).returncode == 0
+    main_sha = git('rev-parse', main_ref, cwd=wt)
+    git('merge', '--abort', cwd=wt, check=False)
+    git('checkout', '-q', '--force', '--detach', main_sha, cwd=wt)
+    if have_branch and not is_ancestor(branch_ref, main_ref, cwd=wt):
+        git('merge', '-q', '--no-commit', '--no-ff', '-s', 'ours', branch_ref, cwd=wt)
+    run([sys.executable, 'tools/progress.py', '--update-readme'], cwd=wt)
+    git('add', '--', *[p for p in GENERATED if os.path.exists(os.path.join(wt, p))], cwd=wt)
+    changed = git('diff', '--cached', '--name-only', main_sha, '--', *GENERATED, cwd=wt).split()
+    if not changed:
+        git('merge', '--abort', cwd=wt, check=False)
+    return main_sha, changed, bool(changed)
+
+
+def build(wt: str) -> None:
+    """Configure and build the worktree as CONTRIBUTING.md says: the pre-push gate's unit tests
+    load the built runtime (build/runtime/libpbloader.so and the game library)."""
+    print('progress-pr: building the worktree for the pre-push gate', file=sys.stderr)
+    run(['cmake', '-S', '.', '-B', 'build'], cwd=wt)
+    run(['cmake', '--build', 'build', f'-j{os.cpu_count() or 4}'], cwd=wt)
+
+
+def commit_message(wt: str, main_sha: str, co_author: str | None) -> str:
+    status = run([sys.executable, 'tools/progress.py', '--status-line'], cwd=wt).stdout.strip()
+    msg = f'docs: regenerate progress from symbols/ on main {main_sha[:12]}\n\n{status}\n'
+    if co_author:
+        msg += f'\nCo-Authored-By: {co_author}\n'
+    return msg
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--remote', default='origin')
+    ap.add_argument('--repo', help='OWNER/NAME for gh (default: the repository of the remote gh picks)')
+    ap.add_argument('--co-author')
+    ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--no-queue', action='store_true')
+    a = ap.parse_args()
+
+    parent = tempfile.mkdtemp(prefix='pb-progress-')
+    wt = os.path.join(parent, 'worktree')
+    git('worktree', 'add', '-q', '--detach', wt, 'HEAD')
+    try:
+        for attempt in range(1, ATTEMPTS + 1):
+            main_sha, changed, pending = prepare(wt, a.remote)
+            if not pending:
+                number = open_pr(a.repo) if not a.dry_run else None
+                if number:
+                    print(f'progress-pr: main {main_sha[:12]} is current; pull request #{number} is no longer '
+                          'needed', file=sys.stderr)
+                    run(['gh', 'pr', 'close', str(number), *repo_flag(a.repo), '--comment',
+                         f'Main {main_sha[:12]} already has current progress text (tools/progress_pr.py).'])
+                else:
+                    print(f'progress-pr: main {main_sha[:12]} is current; nothing to do')
+                return 0
+            if a.dry_run:
+                print(f"progress-pr: would regenerate {', '.join(changed)} from main {main_sha[:12]}")
+                print(git('diff', '--cached', '--stat', main_sha, cwd=wt))
+                git('merge', '--abort', cwd=wt, check=False)
+                return 0
+            msg_path = os.path.join(parent, 'message')
+            with open(msg_path, 'w') as f:
+                f.write(commit_message(wt, main_sha, a.co_author))
+            git('commit', '-q', '-F', msg_path, cwd=wt)
+            head = git('rev-parse', 'HEAD', cwd=wt)
+            build(wt)  # incremental after a lost race moved to a newer main
+            pushed = run(['git', 'push', a.remote, f'HEAD:refs/heads/{BRANCH}'], cwd=wt, check=False)
+            if pushed.returncode == 0:
+                break
+            sys.stderr.write(pushed.stdout[-3000:] + pushed.stderr[-3000:])
+            # Another session created or moved the branch first: retry from the new state.
+            lost_race = ('non-fast-forward', 'fetch first', 'reference already exists')
+            if not any(reason in pushed.stderr for reason in lost_race):
+                raise Failure('git push failed (see above); the pre-push gate output says why')
+            print(f'progress-pr: lost a race for {BRANCH} (attempt {attempt}); retrying', file=sys.stderr)
+        else:
+            raise Failure(f'could not push {BRANCH} after {ATTEMPTS} attempts')
+
+        number = open_pr(a.repo)
+        if number is None:
+            body_path = os.path.join(parent, 'body.md')
+            with open(body_path, 'w') as f:
+                f.write(report_body(main_sha, changed))
+            url = run(['gh', 'pr', 'create', *repo_flag(a.repo), '--base', 'main', '--head', BRANCH,
+                       '--title', 'docs: regenerate progress', '--body-file', body_path]).stdout.strip()
+            number = int(url.rstrip('/').rsplit('/', 1)[-1])
+        print(f'progress-pr: pushed {head[:12]} to {BRANCH}; pull request #{number}')
+        if not a.no_queue:
+            run(['gh', 'pr', 'merge', str(number), *repo_flag(a.repo), '--auto', '--match-head-commit', head])
+            print(f'progress-pr: #{number} queued (auto-merge)')
+        return 0
+    except Failure as e:
+        print(f'progress-pr: {e}', file=sys.stderr)
+        return 1
+    finally:
+        git('worktree', 'remove', '--force', wt, check=False)
+        for leftover in ('message', 'body.md'):
+            path = os.path.join(parent, leftover)
+            if os.path.exists(path):
+                os.remove(path)
+        if os.path.isdir(parent) and not os.listdir(parent):
+            os.rmdir(parent)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

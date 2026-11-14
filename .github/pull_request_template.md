@@ -54,7 +54,7 @@ Summary:
 ### Checklist
 - [ ] Based on current `main`; no other open PR touches the same functions
 - [ ] One function or cluster
-- [ ] `symbols/functions.csv` and `game/hooks.csv` rows included; `tools/progress.py --update-readme` run
+- [ ] `symbols/functions.csv` and `game/hooks.csv` rows included; progress blocks left as main has them (main regenerates them: `tools/progress_pr.py`)
 - [ ] No game files, assets, binaries, decompiler projects or raw decompiler dumps; no screenshots or clips of the game; no links to game files (CONTRIBUTING.md, "Your own copy")
 - [ ] No `FUN_` / `DAT_` / `undefined8` / `local_` names left in the code
 - [ ] Readable ([STYLE.md](../STYLE.md)): `tools/check_readable.py` passes; no transcription (addresses, raw offsets, magic numbers, `_mm_` outside `game/engine/`, recording code) goes to `main`; `tools/readable_allowlist.txt` only shrinks

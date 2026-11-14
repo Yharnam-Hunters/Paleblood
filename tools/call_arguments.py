@@ -36,6 +36,8 @@ def required_arguments(entry: dict) -> int:
         for item in sequence(field):
             if not isinstance(item, dict):
                 raise ArgumentError(f'{field} entry must be an object')
+            if field == 'writes' and 'addr' in item and 'arg' not in item:
+                continue                    # a write at a fixed place reads no argument
             count = max(count, bounded(item.get('arg'), f'{field}.arg', MAX_GP_ARGUMENTS - 1) + 1)
     if 'series' in entry:
         series = entry['series']

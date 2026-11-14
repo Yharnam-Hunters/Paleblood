@@ -10,9 +10,15 @@
    guessing. */
 #define _GNU_SOURCE /* pthread_setname_np */
 #include "runtime/process.h"
+#include "runtime/memory.h"
 #include "runtime/syslib.h"
 
+#if defined(__APPLE__) && defined(__MACH__)
+#include "runtime/guest_pointer.h"
+#else
 #include <asm/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -20,7 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 enum { BSD_ESRCH = 3, BSD_EDEADLK = 11, BSD_ENOMEM = 12, BSD_EINVAL = 22, BSD_ENOTSUP = 45 };
@@ -139,8 +144,8 @@ static guest_thread *thread_object_new(const char *caller)
     pthread_mutex_lock(&thread_objects_lock);
     if (!thread_objects) {
         void *const want = (void *)(uintptr_t)THREAD_OBJECTS_BASE;
-        void *const got = mmap(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread), PROT_READ | PROT_WRITE,
-                               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        void *const got = rt_map_anonymous_at(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread),
+                                              PROT_READ | PROT_WRITE);
         if (got != want) rt_fatal(caller, "the host cannot reserve the thread objects' range below 2^40");
         thread_objects = got;
     }
@@ -251,9 +256,14 @@ static int attr_destroy(guest_attr **attr)
 
 /* rt_thread_call(entry, argument, stack_top), declared in runtime/process.h: calls entry(argument) on
    the guest stack, with the System V convention the guest uses, and returns its result. */
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_THREAD_CALL_SYMBOL "_rt_thread_call"
+#else
+#define RT_THREAD_CALL_SYMBOL "rt_thread_call"
+#endif
 __asm__(".text\n"
-        ".globl rt_thread_call\n"
-        "rt_thread_call:\n"
+        ".globl " RT_THREAD_CALL_SYMBOL "\n"
+        RT_THREAD_CALL_SYMBOL ":\n"
         "  push %rbp\n  push %rbx\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
         "  mov %rsp, %r12\n"
         "  mov %rdx, %rsp\n"
@@ -281,8 +291,15 @@ static void *thread_start(void *raw)
     sigaddset(&main_only, SIGALRM);
     sigaddset(&main_only, SIGUSR1);
     pthread_sigmask(SIG_BLOCK, &main_only, NULL);
+#if defined(__APPLE__) && defined(__MACH__)
+    rt_guest_pointer_bind(t->tls);
+    pthread_mutex_lock(&join_lock); /* Serialize the startup label with concurrent guest renames. */
+    if (t->name[0]) (void)pthread_setname_np(t->name);
+    pthread_mutex_unlock(&join_lock);
+#else
     if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)t->tls))
         rt_fatal("scePthreadCreate", "the host refused the new thread's thread pointer");
+#endif
     current = t;
     /* The System V convention wants the stack 16-byte aligned at the call. */
     enum { STACK_TOP_RESERVE = 64, STACK_ALIGN = 16 };
@@ -291,6 +308,9 @@ static void *thread_start(void *raw)
     if (!__builtin_setjmp(t->exit_point)) t->exit_value = rt_thread_call(t->entry, t->argument, (void *)top);
     t->exiting = 1;
     rt_thread_keys_exit((void *)top);
+#if defined(__APPLE__) && defined(__MACH__)
+    rt_guest_pointer_clear();
+#endif
     pthread_mutex_lock(&join_lock);
     t->ended = 1;
     pthread_mutex_unlock(&join_lock);
@@ -351,7 +371,11 @@ static int create_named_thread(const char *fn, guest_thread **thread, guest_attr
     const int detach_state = rt_thread_attr_detach_state((void *const *)attr, fn); /* stops when not set */
     guest_thread *t = thread_object_new(fn);
     t->stack_size = a->stack_size;
-    t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    int stack_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_STACK
+    stack_flags |= MAP_STACK;
+#endif
+    t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, stack_flags, -1, 0);
     if (t->stack == MAP_FAILED) rt_fatal(fn, "the host cannot map the thread's stack");
     t->tls = rt_tls_block_create();
     if (!t->tls) rt_fatal(fn, "the host has no memory for the thread's TLS block");
@@ -817,7 +841,12 @@ static int rename_thread(guest_thread *thread, const char *name)
     char host_name[16];
     memcpy(host_name, thread->name, sizeof host_name - 1);
     host_name[sizeof host_name - 1] = 0;
+#if defined(__APPLE__) && defined(__MACH__)
+    /* Darwin can label only the calling host thread; the guest's name is always retained. */
+    if (!thread->ended && thread == current) (void)pthread_setname_np(host_name);
+#else
     if (!thread->ended) pthread_setname_np(thread == current ? pthread_self() : thread->host, host_name);
+#endif
     pthread_mutex_unlock(&join_lock);
     return 0;
 }

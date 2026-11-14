@@ -33,7 +33,7 @@ static unsigned input_axes(const uint32_t *words,size_t count)
 int main(void)
 {
     const uint32_t end=0xbf810000;uint32_t *legacy=NULL;size_t legacy_count=0;char error[256]="";
-    gcn_compute_layout layout={.local_size={2,3,4},.workgroup_id_x_sgpr=-1};
+    gcn_compute_layout layout={.local_size={2,3,4},.workgroup_id_enables=0};
     CHECK(gcn_translate_compute(&end,1,&layout,&legacy,&legacy_count,error,sizeof error)==0);
     CHECK(legacy && input_axes(legacy,legacy_count)==7);
     for (unsigned count=1;count<=3;++count) {

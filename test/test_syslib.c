@@ -1065,11 +1065,11 @@ static void gnm_submit_constant_without_sizes(void)
     uint32_t bytes[1] = {8};
     gnm_submit_fn(1, buffers, bytes, constants, NULL);
 }
+static uint32_t gnm_dma_fill_target[5];
 static void gnm_submit_dma_fill(void)
 {
-    /* DMA_DATA filling memory with a value (source select 2): the stand-in does not fill */
-    static uint32_t target[4];
-    const uint64_t at = (uint64_t)(uintptr_t)target;
+    /* DMA_DATA filling memory with a value (source select 2): every dword of the 16 bytes */
+    const uint64_t at = (uint64_t)(uintptr_t)gnm_dma_fill_target;
     uint32_t p[7] = {0xc0055000u, 0x40000000u, 0x12345678u, 0, (uint32_t)at, (uint32_t)(at >> 32), 16};
     gnm_submit_one(p, 7);
 }
@@ -2987,9 +2987,9 @@ int main(void)
         CHECK(qa > 0 && qb > 0 && qa != qb);
         CHECK(died_in_fatal(cq_twice));
         CHECK(died_in_fatal(cq_no_ring));
-        /* sceGnmDingDong: completes the work at once. Shader state and dispatches are skipped, the
-           RELEASE_MEM "done" value reaches its label, and the read pointer reaches the write offset,
-           also when the ring wraps. */
+        /* sceGnmDingDong: each indirect buffer goes to the renderer like a submitted one (with no
+           display, its work is done at once): the RELEASE_MEM "done" value reaches its label, and the
+           read pointer reaches the write offset, also when the ring wraps. */
         ding_dong_fn = (f_ding_dong)fn("libSceGnmDriver", "sceGnmDingDong");
         CHECK(ding_dong_fn != NULL);
         if (ding_dong_fn) {
@@ -3114,6 +3114,17 @@ int main(void)
             memset(before, 0xee, sizeof before);
             CHECK(vo_status_fn(vo_handle, before) == 0 && !memcmp(before, zero, sizeof zero));
         }
+        /* The frame log (pbboot --frame-log): a line per presented frame, the port, the frame's number and
+           the monotonic time; a file that cannot be opened is refused. */
+        char frame_log[512];
+        snprintf(frame_log, sizeof frame_log, "%s/pb-frames-XXXXXX", tmp_dir ? tmp_dir : "/tmp");
+        const int log_fd = mkstemp(frame_log);
+        CHECK(log_fd >= 0);
+        if (log_fd >= 0) close(log_fd);
+        CHECK(rt_display_log_frames("/nonexistent-pb-dir/frames.log") == -1);
+        CHECK(rt_display_log_frames(frame_log) == 0);
+        struct timespec before_flip;
+        clock_gettime(CLOCK_MONOTONIC, &before_flip);
         CHECK(vo_flip_fn(vo_handle, 1, 2, 77) == 0);
         unsigned char ev[32]; int32_t n = 0; int64_t data;
         CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 77));
@@ -3171,6 +3182,23 @@ int main(void)
                 remove(frame_path);
             }
         }
+        /* the log has the first flip and the quick ones after it, numbered in order, at times that never
+           go back and come after the first flip was asked for */
+        CHECK(rt_display_log_frames(NULL) == 0);
+        FILE *log = fopen(frame_log, "r");
+        CHECK(log != NULL);
+        if (log) {
+            int port = 0, lines = 0, ordered = 1;
+            unsigned long long frame = 0, when = 0, last_when = 0;
+            const unsigned long long asked = (unsigned long long)before_flip.tv_sec * 1000000000ull + (unsigned long long)before_flip.tv_nsec;
+            while (fscanf(log, "%d %llu %llu", &port, &frame, &when) == 3) {
+                ordered &= port == vo_handle && frame == (unsigned long long)lines && when >= asked && when >= last_when;
+                last_when = when, lines++;
+            }
+            CHECK(lines == (capture && host_a ? 8 : 1) && ordered);
+            fclose(log);
+        }
+        remove(frame_log);
         rt_display_configure(RT_DISPLAY_HEADLESS, NULL); /* stop capturing: writing a frame would skew the timing */
         /* A vsync flip completes at the next 60 Hz tick: within one period. */
         struct timespec before, after;
@@ -3248,7 +3276,8 @@ int main(void)
             const uint64_t dma_from = (uint64_t)(uintptr_t)dma_source;
             uint32_t dma[7] = {0xc0055000u, 0x60000000u, (uint32_t)dma_from, (uint32_t)(dma_from >> 32), 0x3022cu, 0, 0x28200064u};
             CHECK(gnm_submit_one_result(dma, 7) == 0 && dma_source[0] == 1 && dma_source[2] == 3);
-            CHECK(died_in_fatal(gnm_submit_dma_fill));
+            gnm_submit_dma_fill();
+            CHECK(gnm_dma_fill_target[0] == 0x12345678u && gnm_dma_fill_target[3] == 0x12345678u && gnm_dma_fill_target[4] == 0);
             CHECK(died_in_fatal(gnm_submit_dma_other_register));
             /* an indexed draw: index type, base and buffer size, then DRAW_INDEX_2; only memory reads */
             static uint16_t indices[3] = {0, 1, 2};
