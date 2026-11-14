@@ -9,6 +9,7 @@
    macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
 #include "runtime/rect_list.h"
+#include "runtime/table_snapshot.h"
 #include "runtime/tile_copy.h"
 
 #include "gcn_programs.h"
@@ -595,6 +596,39 @@ static void table_snapshots(void)
     free(spirv);
 }
 
+/* Table snapshots at submission (runtime/table_snapshot.h): a dispatch on a queue takes the table its
+   shader (table_descriptor_store) reads through s[2:3] from the shader and user data earlier buffers set
+   on that queue; another queue's dispatch has no shader there; a pointer half set, or a table outside
+   the memory, takes nothing. */
+static void submitted_table_snapshots(void)
+{
+    static uint32_t memory_words[512];
+    const uint64_t base = (uint64_t)(uintptr_t)memory_words, table = base + 256 * 4;
+    memcpy(memory_words, table_descriptor_store, sizeof table_descriptor_store);
+    for (unsigned i = 0; i < 4; i++) memory_words[256 + i] = 0x1000 + i;
+    const rt_table_memory memory = {base, sizeof memory_words};
+    rt_table_snapshots *s = rt_table_snapshots_new();
+    CHECK(s != NULL);
+    if (!s) return;
+    rt_render_call setup[3] = {{.kind = RT_CALL_COMPUTE_SHADER}, {.kind = RT_CALL_USER_DATA}, {.kind = RT_CALL_DISPATCH}};
+    setup[0].u.compute_shader.code = base, setup[0].u.compute_shader.user_sgprs = 4;
+    setup[1].u.user_data.stage = RT_STAGE_COMPUTE, setup[1].u.user_data.slot = 2, setup[1].u.user_data.count = 2;
+    setup[1].u.user_data.words[0] = (uint32_t)table, setup[1].u.user_data.words[1] = (uint32_t)(table >> 32);
+    rt_table_words tables[3];
+    CHECK(rt_table_snapshots_take(s, 1, setup, 2, &memory, tables) == 0 && tables[0].words[0] == 0 && tables[1].words[0] == 0);
+    CHECK(rt_table_snapshots_take(s, 1, setup + 2, 1, &memory, tables) == 0); /* a later buffer on the same queue */
+    CHECK(tables[0].words[0] == 1 && tables[0].words[1] == 0x1000 && tables[0].words[4] == 0x1003);
+    const rt_render_call indirect = {.kind = RT_CALL_DISPATCH_INDIRECT};
+    CHECK(rt_table_snapshots_take(s, 2, &indirect, 1, &memory, tables) == 0 && tables[0].words[0] == 0); /* no shader on queue 2 */
+    rt_table_snapshots_free(s);
+    s = rt_table_snapshots_new();
+    setup[1].u.user_data.count = 1; /* s3, the pointer's high half, unset */
+    CHECK(rt_table_snapshots_take(s, 0, setup, 3, &memory, tables) == 0 && tables[2].words[0] == 0);
+    setup[1].u.user_data.count = 2, setup[1].u.user_data.words[0] = (uint32_t)(base + sizeof memory_words);
+    CHECK(rt_table_snapshots_take(s, 0, setup, 3, &memory, tables) == 0 && tables[2].words[0] == 0); /* outside the memory */
+    rt_table_snapshots_free(s);
+}
+
 /* Table-driven copies (gcn_table_copy_shape): the table in s[0:3] (read as dwords or through its
    format), the source s[4:7], the destination s[8:11], the workgroup index s12. A store with an offset,
    or another program, is not one. */
@@ -942,6 +976,7 @@ static void constant_pixel_wqm(void)
 int main(void)
 {
     table_snapshots();
+    submitted_table_snapshots();
     constant_pixel_wqm();
     survey_mode();
     tessellation();

@@ -58,7 +58,8 @@ enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_t
 enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 /* a compute shader's push constants: its user data, then its table snapshot's mask and words (gcn_spirv.h) */
-enum { TABLE_SNAPSHOT_BYTES = (GCN_TABLE_SNAPSHOT_WORDS + 1) * 4, COMPUTE_PUSH_BYTES = USER_DATA_BYTES + TABLE_SNAPSHOT_BYTES };
+_Static_assert(RT_TABLE_WORDS == GCN_TABLE_SNAPSHOT_WORDS + 1, "a dispatch call holds the snapshot's mask and words");
+enum { TABLE_SNAPSHOT_BYTES = RT_TABLE_WORDS * 4, COMPUTE_PUSH_BYTES = USER_DATA_BYTES + TABLE_SNAPSHOT_BYTES };
 enum { COLOR_8 = 0x1, COLOR_32 = 0x4, COLOR_16_16 = 0x5, COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
        SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000 };
@@ -5638,26 +5639,21 @@ static int fill_target_from_group(rt_executor *x, target_entry *t, uint64_t grou
     return 0;
 }
 
-/* A dispatch's table snapshot (gcn_spirv.h, "Table snapshots"): each entry's words copied from guest
-   memory now, as the dispatch is recorded, with its bit set in the mask (words[0]). An entry whose
-   pointer is not set, whose table lies outside the guest memory, or which open or submitted work may
-   store to is left out: its loads read memory when the dispatch runs. */
-static void snapshot_tables(const rt_executor *x, const gcn_table_snapshot *tables, const uint32_t *user, uint32_t user_set,
-                            uint32_t words[GCN_TABLE_SNAPSHOT_WORDS + 1])
+/* A dispatch's table snapshot (runtime/table_snapshot.h): the words copied when its buffer was submitted
+   (`taken`), less any entry that open or submitted work may store to, whose loads then read memory when
+   the dispatch runs. */
+static void snapshot_tables(const rt_executor *x, const gcn_table_snapshot *tables, const uint32_t *user, const uint32_t taken[RT_TABLE_WORDS],
+                            uint32_t words[RT_TABLE_WORDS])
 {
     enum { POINTER_HIGH_MASK = 0xffff };
-    memset(words, 0, (GCN_TABLE_SNAPSHOT_WORDS + 1) * sizeof *words);
+    memcpy(words, taken, RT_TABLE_WORDS * sizeof *words);
     for (unsigned k = 0; k < tables->entry_count; k++) {
+        if (!(words[0] >> k & 1)) continue;
         const gcn_table_entry *e = &tables->entries[k];
-        if (e->pointer_sgpr + 2 > GCN_USER_SGPR_MAX || (~user_set >> e->pointer_sgpr & 3)) continue;
         const uint64_t pointer = (uint64_t)(user[e->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[e->pointer_sgpr];
-        const uint64_t address = pointer + e->offset, bytes = (uint64_t)e->dwords * 4;
-        if (address % 4 || address < x->guest_base || address - x->guest_base > x->size || bytes > x->size - (address - x->guest_base)) continue;
         int stored = 0;
-        for (unsigned slot = 0; slot < BATCH_SLOTS && !stored; slot++) stored = batch_may_store(x, slot, address, bytes, 0);
-        if (stored) continue;
-        memcpy(&words[1 + e->first_word], (const uint8_t *)x->view + (address - x->guest_base), bytes);
-        words[0] |= 1u << k;
+        for (unsigned slot = 0; slot < BATCH_SLOTS && !stored; slot++) stored = batch_may_store(x, slot, pointer + e->offset, (uint64_t)e->dwords * 4, 0);
+        if (stored) words[0] &= ~(1u << k);
     }
 }
 
@@ -5715,7 +5711,8 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
 /* A dispatch of the bound compute shader: of groups[0] x groups[1] x groups[2] workgroups, or, with
    groups NULL, of the counts the GPU reads from guest memory at `arguments` when it runs
    (DISPATCH_INDIRECT: three 32-bit words, x, y, z, which earlier work may have written). */
-static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], uint64_t arguments, char *error, size_t error_size)
+static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], uint64_t arguments, const uint32_t tables[RT_TABLE_WORDS],
+                    char *error, size_t error_size)
 {
     x->call_serial++;
     enum { INDIRECT_ARGUMENT_BYTES = 3 * sizeof(uint32_t) };
@@ -5766,7 +5763,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (check_user_data("compute", c->code, entry->user_read, s->compute_user_set, error, error_size)) return -1;
     uint32_t push[COMPUTE_PUSH_BYTES / 4];
     memcpy(push, s->compute_user, USER_DATA_BYTES);
-    snapshot_tables(x, &entry->tables, s->compute_user, s->compute_user_set, push + GCN_USER_SGPR_MAX);
+    snapshot_tables(x, &entry->tables, s->compute_user, tables, push + GCN_USER_SGPR_MAX);
     const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, NULL, 0, &set,
@@ -5879,7 +5876,7 @@ int rt_executor_select_queue(rt_executor *x, unsigned queue, char *error, size_t
     return 0;
 }
 
-static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size);
+static int run_calls(rt_executor *x, const rt_render_call *calls, const rt_table_words *tables, size_t count, char *error, size_t error_size);
 
 int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
 {
@@ -5906,7 +5903,13 @@ int rt_executor_submit_calls(rt_executor *x, const rt_render_call *calls, size_t
 
 int rt_executor_record_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error, size_t error_size)
 {
-    if (run_calls(x, calls, count, error, error_size)) {
+    return rt_executor_record_calls_with_tables(x, calls, NULL, count, ticket, error, error_size);
+}
+
+int rt_executor_record_calls_with_tables(rt_executor *x, const rt_render_call *calls, const rt_table_words *tables, size_t count, uint64_t *ticket,
+                                         char *error, size_t error_size)
+{
+    if (run_calls(x, calls, tables, count, error, error_size)) {
         char later[64];
         batch_finish(x, later, sizeof later); /* the calls before the failing one still run, as they did one by one */
         return -1;
@@ -6046,8 +6049,9 @@ static int draw_call(rt_executor *x, draw_state *s, const rt_render_call *c, cha
     return 0;
 }
 
-static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size)
+static int run_calls(rt_executor *x, const rt_render_call *calls, const rt_table_words *tables, size_t count, char *error, size_t error_size)
 {
+    static const rt_table_words no_tables;
     draw_state *s = &x->state; /* the GPU's state carries over from buffer to buffer */
     note_cpu_writes(x);         /* the CPU runs between buffers */
     for (size_t i = 0; i < count; i++) {
@@ -6092,14 +6096,16 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             s->geometry = c->u.geometry_stage_shader, s->geometry_set = 1;
             break;
         case RT_CALL_DISPATCH:
-            if (dispatch(x, s, c->u.dispatch.groups, 0, error, error_size) && !sweep_skip(x, "dispatch", error)) return -1;
+            if (dispatch(x, s, c->u.dispatch.groups, 0, tables ? tables[i].words : no_tables.words, error, error_size) &&
+                !sweep_skip(x, "dispatch", error))
+                return -1;
             break;
         case RT_CALL_INDIRECT_BASE:
             s->indirect_base = c->u.indirect_base.address, s->indirect_base_set = 1;
             break;
         case RT_CALL_DISPATCH_INDIRECT:
             if (!s->indirect_base_set) return failed(error, error_size, "an indirect dispatch with no indirect base set");
-            if (dispatch(x, s, NULL, s->indirect_base + c->u.dispatch_indirect.data_offset, error, error_size) &&
+            if (dispatch(x, s, NULL, s->indirect_base + c->u.dispatch_indirect.data_offset, tables ? tables[i].words : no_tables.words, error, error_size) &&
                 !sweep_skip(x, "indirect dispatch", error))
                 return -1;
             break;

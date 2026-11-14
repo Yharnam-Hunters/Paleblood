@@ -162,14 +162,15 @@ int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads
 /* Table snapshots: the small tables a compute program reads with s_load through a user-data pointer
    pair it does not write, at an immediate or literal offset (as gcn_memory_reads finds them). The
    game hands such shaders a pointer into a per-frame ring (a 16-byte table holding a buffer
-   descriptor) and rewrites the ring's slot a frame or two later: the console's GPU has read it by
-   then, as it starts on a buffer soon after its submission, but a batch here may still be waiting to
-   run, and the shader then read another table's words (a garbage descriptor). So the executor copies
-   each such table's words when it records the dispatch, into the push constants after the user data
-   (gcn_compute_layout's table_snapshot), and the translated loads take the copy when the executor
-   says it holds one: word 0 of the snapshot is a mask, bit k for entry k; entry k's dwords follow
-   from word 1 + first_word. An entry the executor cannot copy (pending GPU work may store there)
-   leaves its bit clear and the load reads memory as it runs, as before.
+   descriptor) and rewrites the ring's slot soon after it submits the buffer: the console's GPU has
+   read it by then, as it starts on a buffer soon after its submission, but the renderer here may record
+   the buffer later, and the shader then read another table's words (a garbage descriptor). So each such table's
+   words are copied when the buffer is submitted (runtime/table_snapshot.h), the executor puts them in
+   the push constants after the user data (gcn_compute_layout's table_snapshot), and the translated
+   loads take the copy when the executor says it holds one: word 0 of the snapshot is a mask, bit k for
+   entry k; entry k's dwords follow from word 1 + first_word. An entry without a copy (its pointer not
+   set, or pending GPU work may store there) leaves its bit clear and the load reads memory as it runs,
+   as before.
    uses[] lists each s_load's dword position with its entry. Entries take the loads in program order
    while their words fit (GCN_TABLE_SNAPSHOT_WORDS); a load past that, or one whose pointer is not
    such a pair, reads memory. */

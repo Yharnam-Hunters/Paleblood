@@ -1151,6 +1151,14 @@ extern "C" int rt_executor_record_calls(rt_executor *x, const rt_render_call *ca
     return rt_executor_submit_calls(x, calls, count, ticket, error, error_size);
 }
 
+/* Its shaders are translated without table snapshots (runtime/table_snapshot.h), and each buffer runs
+   to completion as it is recorded, so the snapshots are not needed. */
+extern "C" int rt_executor_record_calls_with_tables(rt_executor *x, const rt_render_call *calls, const rt_table_words *, size_t count,
+                                                    uint64_t *ticket, char *error, size_t error_size)
+{
+    return rt_executor_record_calls(x, calls, count, ticket, error, error_size);
+}
+
 extern "C" int rt_executor_submit(rt_executor *x, char *error, size_t error_size)
 {
     return !x || x->failed ? failed(error, error_size, "a usable executor is required") : 0;

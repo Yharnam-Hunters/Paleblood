@@ -11,6 +11,7 @@
    reports itself skipped (exit 77). */
 #define _GNU_SOURCE /* memfd_create, MAP_FIXED_NOREPLACE (render_fixture.h) */
 #include "runtime/render_executor.h"
+#include "runtime/table_snapshot.h"
 
 #include "render_fixture.h"
 #include "runtime/tiling.h"
@@ -2762,10 +2763,11 @@ static void gds_counters(rt_executor *x)
 }
 
 /* A table a compute shader reads through a user-data pointer is the one the pointer held when the
-   dispatch was recorded (gcn_spirv.h, "Table snapshots"): table_descriptor_store loads its buffer
-   descriptor from the table at s[2:3]; the game rewrites such a ring slot before a lagging batch runs,
-   so here the table is rewritten to name another buffer after the dispatch is recorded and before its
-   batch is submitted. The stores still land in the first buffer, and none in the second. */
+   buffer was submitted (runtime/table_snapshot.h, as the renderer copies it on the submitting thread):
+   table_descriptor_store loads its buffer descriptor from the table at s[2:3]; the game rewrites such
+   a ring slot before a lagging buffer is recorded, so here the table is rewritten to name another
+   buffer after the snapshot and before the buffer is recorded and run. The stores still land in the
+   first buffer, and none in the second. */
 static void table_snapshot_at_record(rt_executor *x)
 {
     enum { TABLE_BUFFER = 0xc0e90000, TABLE_CODE = 0x2f000, TABLE = 0x3c00000, FIRST_OUT = 0x3c01000, SECOND_OUT = 0x3c02000, LANES = 64,
@@ -2786,10 +2788,16 @@ static void table_snapshot_at_record(rt_executor *x)
     CHECK(rt_render_record_dispatch(TABLE_BUFFER, 0x20, one, error, sizeof error) == 0);
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(TABLE_BUFFER, 0x30, &count);
+    rt_table_words tables[8];
+    CHECK(count <= 8);
+    rt_table_snapshots *tracker = rt_table_snapshots_new();
+    const rt_table_memory memory = {GUEST_BASE, GUEST_SIZE};
+    CHECK(rt_table_snapshots_take(tracker, RT_EXECUTOR_GRAPHICS_QUEUE, calls, count, &memory, tables) == 0);
+    rt_table_snapshots_free(tracker);
+    descriptor(table, at(SECOND_OUT), DWORD_STRIDE); /* the slot's next use, before the buffer is recorded */
     uint64_t ticket = 0;
-    const int recorded = rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error);
-    descriptor(table, at(SECOND_OUT), DWORD_STRIDE); /* the slot's next use, before the batch runs */
-    const int ran = recorded || rt_executor_finish(x, error, sizeof error);
+    const int ran = rt_executor_record_calls_with_tables(x, calls, tables, count, &ticket, error, sizeof error) ||
+                    rt_executor_finish(x, error, sizeof error);
     if (ran) fprintf(stderr, "table snapshot: %s\n", error);
     CHECK(ran == 0);
     int stored = 1, untouched = 1;
