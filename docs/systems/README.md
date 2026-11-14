@@ -26,7 +26,7 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | Target (Ghidra export) | 157,757 | 42,487,404 |
 | Replaced | 748 (0.47%) | 257,421 (0.61%) |
 | Edge-verified (includes verified) | 748 (0.47%) | 257,421 (0.61%) |
-| Verified | 125 (0.08%) | 32,187 (0.08%) |
+| Verified | 126 (0.08%) | 32,935 (0.08%) |
 
 Counts are cumulative: verified functions are included in edge-verified and replaced totals.
 
@@ -35,7 +35,7 @@ Counts are cumulative: verified functions are included in edge-verified and repl
 | Members of 19 function families | 18,019 (11.42%) | 62,426 (0.15%) |
 | Replaced, with family members | 18,767 (11.90%) | 319,847 (0.75%) |
 | Edge-verified, with family members | 18,767 (11.90%) | 319,847 (0.75%) |
-| Verified, with family members | 18,144 (11.50%) | 94,613 (0.22%) |
+| Verified, with family members | 18,145 (11.50%) | 95,361 (0.22%) |
 
 Family members are tiny functions (one to a few bytes each) that share one replacement per family: they add far more to the function count than to the bytes.
 
@@ -47,7 +47,7 @@ Matching tier: 125 functions compile byte for byte to the original from their ow
 | audio | 5 | 5 | 5 | 2 | 413 |
 | camera | 5 | 5 | 5 | 0 | 20,790 |
 | character | 5 | 5 | 5 | 1 | 2,331 |
-| engine | 149 | 149 | 149 | 6 | 53,595 |
+| engine | 149 | 149 | 149 | 7 | 53,595 |
 | event | 2 | 2 | 2 | 2 | 545 |
 | frame_timing | 80 | 79 | 79 | 13 | 20,578 |
 | input | 5 | 5 | 5 | 2 | 890 |
