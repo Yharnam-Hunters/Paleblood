@@ -253,6 +253,7 @@ typedef struct {
     uint32_t patch_points;           /* its control points a patch */
     VkPipeline pipeline;
     uint32_t bucket_next;            /* the next pipeline of its bucket (pipeline_buckets), index + 1; 0 none */
+    uint64_t used_ticket;            /* the submission that last draws with it (pipeline_slot_to_free) */
 } pipeline_entry;
 
 /* A compute shader translated for one workgroup size and starting-register layout, and its pipeline. */
@@ -3204,6 +3205,33 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     return module;
 }
 
+/* The least recently used pipeline whose last batch has run, or -1 (every one is in a batch still to run). */
+static long pipeline_to_free(rt_executor *x)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return -1;
+    long pick = -1;
+    for (size_t i = 0; i < x->pipeline_count; i++)
+        if (x->pipelines[i].used_ticket <= done && (pick < 0 || x->pipelines[i].used_ticket < x->pipelines[pick].used_ticket)) pick = (long)i;
+    return pick;
+}
+
+/* Makes room for one more pipeline when all MAX_PIPELINES are kept (walking a scene brings more shader,
+   pass and state combinations than that): the least recently used one goes, once no unfinished batch
+   draws with it, waiting for the GPU's work when every one is in use. The last pipeline moves into its
+   place and the buckets are filled again. 0, or -1 with the reason. */
+static int free_pipeline_slot(rt_executor *x, char *error, size_t error_size)
+{
+    long pick = pipeline_to_free(x);
+    if (pick < 0 && batch_finish(x, error, error_size)) return -1;
+    if (pick < 0) pick = pipeline_to_free(x);
+    if (pick < 0) return failed(error, error_size, "more pipelines than the executor keeps, all of them in batches still to run");
+    vkDestroyPipeline(x->device, x->pipelines[pick].pipeline, NULL);
+    x->pipelines[pick] = x->pipelines[--x->pipeline_count];
+    index_pipelines(x);
+    return 0;
+}
+
 /* With control set, a tessellation pipeline: the empty vertex shader, control, then vertex (the domain shader)
    as the evaluation shader, over patches of patch_points points. */
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
@@ -3213,16 +3241,15 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
 {
     const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
     for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
-        const pipeline_entry *p = &x->pipelines[i - 1];
+        pipeline_entry *p = &x->pipelines[i - 1];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
             p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
-            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points)
+            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points) {
+            p->used_ticket = x->submitted + 1;
             return p->pipeline;
+        }
     }
-    if (x->pipeline_count == MAX_PIPELINES) {
-        failed(error, error_size, "more pipelines than the executor keeps");
-        return VK_NULL_HANDLE;
-    }
+    if (x->pipeline_count == MAX_PIPELINES && free_pipeline_slot(x, error, error_size)) return VK_NULL_HANDLE;
     /* the vertex stage, then the pixel stage unless the draw has none (a depth-only pass), then the
        rect-list geometry stage if any */
     VkPipelineShaderStageCreateInfo stages[4];
@@ -3299,7 +3326,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
-                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket]};
+                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket], .used_ticket = x->submitted + 1};
     memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
     x->pipeline_buckets[bucket] = (uint32_t)x->pipeline_count;
     return pipeline;

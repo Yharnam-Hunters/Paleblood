@@ -924,6 +924,7 @@ render_set_db_stencil_control,recorded,,158,158,0,0,5cc18e786d28e006,2026-11-12
 render_set_db_stencil_control,edge,,18,18,0,0,5cc18e786d28e006,2026-11-12
 render_set_depth_render_target,recorded,,151,151,0,0,3c8b412ea3a8e286,2026-11-12
 render_set_depth_render_target,edge,,21,21,0,0,3c8b412ea3a8e286,2026-11-12
+render_set_dispatch_draw_index,edge,,103,103,0,0,b82ebba1aafc0051,2026-11-13
 render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_discard_adjust,recorded,,79,79,0,0,d796d1a200c99651,2026-11-12
@@ -939,6 +940,7 @@ render_set_present_last_record_indices,recorded,,16,16,0,0,291c7c22a0fec988,2026
 render_set_present_last_record_indices,edge,,28,28,0,0,291c7c22a0fec988,2026-11-12
 render_set_present_last_record_stencil_compress_disable,recorded,,101,101,0,0,758897980e62c04d,2026-11-12
 render_set_present_last_record_stencil_compress_disable,edge,,28,28,0,0,758897980e62c04d,2026-11-12
+render_set_primitive_id_enable,edge,,103,103,0,0,379384d7c5425964,2026-11-13
 render_set_record_register_enabled,recorded,,50,50,0,0,deea15d098373695,2026-11-12
 render_set_record_register_enabled,edge,,28,28,0,0,deea15d098373695,2026-11-12
 render_set_record_register_range,recorded,,82,82,0,0,ac8358cf6d557f69,2026-11-12
