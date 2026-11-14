@@ -249,6 +249,40 @@ usleep_thunk:
     mov %ecx, (%rax)
     mov %ecx, %eax
     ret
+/* 0x700: void *take(Pool *p, uint64_t n) { the next n bytes of [top, end), or 0 }  Pool: +0x10 top,
+   +0x18 end. Its short ja lies in the first 14 bytes (a hook's jump), with its target just past
+   them: relocation writes it in its 32-bit form. */
+    .org 0x700
+    mov 0x10(%rdi), %rcx
+    add %rcx, %rsi
+    xor %eax, %eax
+    cmp 0x18(%rdi), %rsi
+    ja 1f
+    mov %rsi, 0x10(%rdi)
+    mov %rcx, %rax
+1:  ret
+/* 0x740: a short branch back into the first 14 bytes: cannot be relocated. */
+    .org 0x740
+    xor %eax, %eax
+1:  inc %eax
+    cmp $3, %eax
+    jb 1b
+    xor %edx, %edx
+    xor %ecx, %ecx
+    xor %esi, %esi
+    ret
+/* 0x780: int32_t bump(int32_t x) { return x >= 0 ? x + 1 : -x; } with a short jns and a short jmp
+   in the first 14 bytes, the jns landing on the first byte after them. */
+    .org 0x780
+    mov %edi, %eax
+    test %eax, %eax
+    jns 1f
+    neg %eax
+    jmp 2f
+    xor %edx, %edx
+    xor %ecx, %ecx
+1:  add $1, %eax
+2:  ret
     .org 0x1000
 global:
     .long 1000

@@ -90,6 +90,7 @@ typedef struct {
     uint64_t thread_lo, thread_hi;     /* [lo, hi): bytes reached through gs or the thread pointer */
     unsigned stale_args;               /* bit n: argument register n (rdi..r9) is what an import left */
     const char *incomplete;
+    uint64_t stopped_at;               /* the instruction tracing stopped at */
     pid_t pid;
     /* The import running now (between its entry and the return pad). */
     int in_import;
@@ -127,8 +128,10 @@ int rt_trace_available(void) { return 1; }
 
 static void stop(trace_state *t, ucontext_t *uc, const char *why)
 {
-    if (!t->incomplete)
+    if (!t->incomplete) {
         t->incomplete = why;
+        t->stopped_at = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+    }
     uc->uc_mcontext.gregs[REG_EFL] &= ~(greg_t)TRAP_FLAG;
 }
 
@@ -828,6 +831,7 @@ static int collect(trace_state *t, rt_trace_log *log)
     log->steps = t->steps;
     log->thread_base = t->thread_hi ? t->thread_base : 0;   /* the code read through gs */
     log->incomplete = t->incomplete;
+    log->stopped_at = t->stopped_at;
     return 0;
 }
 
@@ -982,14 +986,15 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
     cs_option(cs, CS_OPT_DETAIL, CS_OPT_ON);
     cs_insn *in = cs_malloc(cs);
     uint8_t out[RT_RELOCATE_MAX];
-    size_t n = 0, done = 0;
+    uint64_t branch_targets[8];
+    size_t n = 0, done = 0, branches = 0;
     int ok = in != NULL;
     const uint64_t base = (uint64_t)(uintptr_t)src, to = (uint64_t)(uintptr_t)dst;
     while (ok && done < min_bytes) {
         const uint8_t *code = (const uint8_t *)src + done;
         size_t size = 16;
         uint64_t address = base + done;
-        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 14 > sizeof out) {
+        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 4 + 14 > sizeof out) {
             ok = 0;
             break;
         }
@@ -997,17 +1002,31 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
         memcpy(p, in->bytes, in->size);
         const cs_x86 *x = &in->detail->x86;
         const int64_t shift = (int64_t)(base + done) - (int64_t)(to + n);
+        size_t emitted = in->size;
         if (is_relative_branch(in)) {
             const uint64_t target = branch_target(in);
-            /* Only rel32 moves; a branch into the copied bytes would run the hook's jump. */
-            if (x->encoding.imm_size != 4 || (target > base && target < base + min_bytes + 16)) {
+            /* A branch into the copied bytes would run the hook's jump: refused once the copied
+               length is known, below. */
+            if (branches == sizeof branch_targets / sizeof branch_targets[0]) { ok = 0; break; }
+            branch_targets[branches++] = target;
+            /* A short jcc or jmp (rel8, no prefix) is written in its rel32 form, which reaches
+               the original's target from the copy; loop and jrcxz have no rel32 form. */
+            const uint8_t op = in->bytes[0];
+            int imm_offset = x->encoding.imm_offset;
+            if (x->encoding.imm_size == 1 && in->size == 2 && op >= 0x70 && op <= 0x7f) {
+                p[0] = 0x0f, p[1] = (uint8_t)(0x80 + (op - 0x70));
+                imm_offset = 2, emitted = 6;
+            } else if (x->encoding.imm_size == 1 && in->size == 2 && op == 0xeb) {
+                p[0] = 0xe9;
+                imm_offset = 1, emitted = 5;
+            } else if (x->encoding.imm_size != 4) {
                 ok = 0;
                 break;
             }
-            const int64_t rel = (int64_t)target - (int64_t)(to + n + in->size);
+            const int64_t rel = (int64_t)target - (int64_t)(to + n + emitted);
             if (!fits_int32(rel)) { ok = 0; break; }
             const int32_t r32 = (int32_t)rel;
-            memcpy(p + x->encoding.imm_offset, &r32, 4);
+            memcpy(p + imm_offset, &r32, 4);
         }
         for (uint8_t i = 0; ok && i < x->op_count; i++) {
             if (x->operands[i].type != X86_OP_MEM || x->operands[i].mem.base != X86_REG_RIP) continue;
@@ -1019,9 +1038,11 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
             disp = (int32_t)moved;
             memcpy(p + x->encoding.disp_offset, &disp, 4);
         }
-        n += in->size;
+        n += emitted;
         done += in->size;
     }
+    for (size_t i = 0; ok && i < branches; i++)
+        if (branch_targets[i] > base && branch_targets[i] < base + done) ok = 0;
     if (ok) {
         /* jmp qword ptr [rip]; .quad src + done */
         const uint8_t jump[6] = {0xff, 0x25, 0, 0, 0, 0};

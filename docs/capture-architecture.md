@@ -22,7 +22,8 @@ would fault is reported instead of crashing.
 
 The call always runs to the end and returns its real result to the game. When anything cannot be
 expressed in a case, tracing stops and the rest of the call runs natively; the log names the reason
-and no case is written. Fail-closed reasons today: an instruction the tracer does not model
+and where it stopped (`BB_CAPTURE_VERBOSE=1` prints both: a PS4 address, or native code with its
+symbol, such as a replacement without a redirect), and no case is written. Fail-closed reasons today: an instruction the tracer does not model
 (`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), an `fs` access (the host's own thread block;
 guest code reads its thread pointer through `gs`, below), thread-local storage more than 1 MiB from
 the thread pointer, a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
@@ -96,12 +97,15 @@ fails.
 before installing it, while the original is still intact:
 
 1. The original's first instructions (at least the 14 bytes the hook's jump overwrites) are copied
-   into a block mapped within reach of the image, with RIP-relative operands and 32-bit relative
-   calls and jumps rewritten to keep their targets, followed by a jump back into the rest of the
-   original (`rt_trace_relocate`).
+   into a block mapped within reach of the image, with RIP-relative operands and relative calls
+   and jumps rewritten to keep their targets (a short `jcc` or `jmp` is written in its 32-bit
+   form), followed by a jump back into the rest of the original (`rt_trace_relocate`). Small
+   functions often test and branch in their first bytes (a heap's bounds check, a lock's `-1`
+   check); before short branches moved, 85 of the hooked functions had no redirect, and a traced
+   call that reached one (the target-list update's temporary heap) left the traced code.
 2. A function whose own branches jump back into those first bytes (a loop at its very start) is not
    recorded: its original can no longer run once hooked (`rt_trace_branches_into`). Nor is one that
-   short branches or out-of-reach operands keep from relocating, or one without a return class.
+   `loop`/`jrcxz` or out-of-reach operands keep from relocating, or one without a return class.
 3. The hook's target becomes a small thunk that loads the hook's record and enters
    `rt_capture_entry`, which saves every argument register (and `al`, for variadic calls) and the
    caller's stack pointer, then asks `rt_capture_dispatch` what to do.
