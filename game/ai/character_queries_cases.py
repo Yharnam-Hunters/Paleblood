@@ -433,6 +433,29 @@ TARGET_LISTS = [
     [node(priority=1.0, ident=8), node(priority=1.0, ident=9), node(priority=float('nan'), ident=8, timer=-0.0)],
     [node(kind=2, priority=0.0, place=(float('nan'), 0, 0)), node(kind=2, place=(0, 0, 0), matches=1, timer=1.0)],
     [node(priority=-0.5, ident=3, timer=8.5), node(ident=3, timer=0.0), node(ident=3, matches=1, timer=-2.0)],
+    # Places differing in one lane only, so a distance that drops y or z (or adds w) is caught:
+    # 0.6 m away in y or in z is another place, 0.4 m is the same; the w lanes never count.
+    [node(kind=2, priority=1.0, place=(1.0, 2.0, 3.0)), node(kind=2, place=(1.0, 2.6, 3.0)),
+     node(kind=2, place=(1.0, 2.0, 3.6)), node(kind=2, place=(1.0, 2.4, 3.0)),
+     node(kind=2, place=(1.0, 2.0, 2.6)), node(kind=2, place=(1.0, 1.4, 3.0), matches=1)],
+    [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0, 5.0)), node(kind=2, place=(0.0, 0.0, 0.0, -7.0)),
+     node(kind=2, place=(0.1, 0.0, 0.0, 0.0), matches=1), node(kind=2, place=(0.0, 0.0, 0.0, 0.3))],
+    # Just inside half a metre: squared distance one step below 0.25 (as floats), so the limit must
+    # be exactly 0.25; the mirrored entry is already marked.
+    [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0)),
+     node(kind=2, place=(0.2723987102508545, 0.35387587547302246, 0.22487951815128326)),
+     node(kind=2, place=(-0.2723987102508545, 0.35387587547302246, 0.22487951815128326), matches=1)],
+    # A place not yet valid never matches, even 0.1 m from the main target.
+    [node(kind=2, priority=1.0, place=(0, 0, 0)), node(kind=2, valid=0, place=(0.1, 0, 0))],
+    # Node kind 0x41 is not a target entry (only the low seven bits are compared, against 1).
+    [node(priority=1.0, ident=2), node(node_kind=0x41, priority=5.0, ident=3), node(ident=3)],
+    # Just under half a metre, where (x+z)+y or x+(y+z) rounds differently from (x+y)+z.
+    [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0)),
+     node(kind=2, place=(0.2291375697, 0.3826622963, 0.2259768248)),
+     node(kind=2, place=(0.33681029081344604, 0.33434823155403137, 0.15738511085510254))],
+    # Each lane alone is within half a metre, together they are not (0.27 squared).
+    [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0)), node(kind=2, place=(0.3, 0.3, 0.3), matches=1),
+     node(kind=2, place=(0.0, 0.3, 0.3)), node(kind=2, place=(0.3, 0.0, 0.3)), node(kind=2, place=(0.3, 0.3, 0.0))],
 ]
 
 
@@ -453,7 +476,8 @@ def target_list_cases():
             k.put(name, 0x30, f32(x['priority']) + f32(x['timer']))
             k.put(name, 0x41, bytes([x['matches']]))
             k.ptr(name, 0x48, 'handle_vt')
-            k.put(name, 0x70, b''.join(f32(v) for v in x['place']) + f32(1.0))
+            place = tuple(x['place']) + (1.0,) * (4 - len(x['place']))   # w is 1 unless given
+            k.put(name, 0x70, b''.join(f32(v) for v in place))
             k.put(name, 0x80, bytes([x['valid']]))
             k.ptr(previous[0], previous[1], name)
             previous = (name, 0x8)

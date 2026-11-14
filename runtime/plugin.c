@@ -4,12 +4,17 @@
 #include <string.h>
 #include "runtime/capture_hooks.h"
 #include "runtime/guest.h"
+#include "runtime/game_guest_pointer.h"
 #include "runtime/host.h"
 #include "runtime/hooks.h"
 #include "runtime/observe_hooks.h"
 #include "runtime/probe.h"
 
 unsigned char *rt_image;
+
+#if defined(__APPLE__) && defined(__MACH__)
+rt_game_guest_offset_fn rt_game_guest_offset_provider;
+#endif
 
 extern const rt_hook_entry game_hooks[];
 extern const unsigned game_hook_count;
@@ -104,6 +109,9 @@ int bbgame_init(const rt_host *host)
                 host ? host->version : 0u, RT_HOST_API_VERSION);
         return 1;
     }
+#if defined(__APPLE__) && defined(__MACH__)
+    if (rt_game_guest_pointer_initialize()) return 1;
+#endif
     rt_image = host->image;
     if (rt_hooks_install(game_hooks, game_hook_count))
         return 1;
