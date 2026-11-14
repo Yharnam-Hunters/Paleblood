@@ -249,6 +249,59 @@ usleep_thunk:
     mov %ecx, (%rax)
     mov %ecx, %eax
     ret
+/* 0x700: int32_t reread_counter(int32_t *a) { int32_t *c = stale(a); *c; stale(a); return *c; }
+   the counter is read, then changed by the second call behind a register the first call left
+   (not an argument, so not the import's write), as another thread might change it, and read
+   again: no case. */
+    .org 0x700
+    push %rbx
+    push %r12
+    sub $8, %rsp
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rdx, %r12
+    mov (%r12), %eax
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%r12), %eax
+    add $8, %rsp
+    pop %r12
+    pop %rbx
+    ret
+/* 0x780: void *take(Pool *p, uint64_t n) { the next n bytes of [top, end), or 0 }  Pool: +0x10 top,
+   +0x18 end. Its short ja lies in the first 14 bytes (a hook's jump), with its target just past
+   them: relocation writes it in its 32-bit form. */
+    .org 0x780
+    mov 0x10(%rdi), %rcx
+    add %rcx, %rsi
+    xor %eax, %eax
+    cmp 0x18(%rdi), %rsi
+    ja 1f
+    mov %rsi, 0x10(%rdi)
+    mov %rcx, %rax
+1:  ret
+/* 0x7c0: a short branch back into the first 14 bytes: cannot be relocated. */
+    .org 0x7c0
+    xor %eax, %eax
+1:  inc %eax
+    cmp $3, %eax
+    jb 1b
+    xor %edx, %edx
+    xor %ecx, %ecx
+    xor %esi, %esi
+    ret
+/* 0x800: int32_t bump(int32_t x) { return x >= 0 ? x + 1 : -x; } with a short jns and a short jmp
+   in the first 14 bytes, the jns landing on the first byte after them. */
+    .org 0x800
+    mov %edi, %eax
+    test %eax, %eax
+    jns 1f
+    neg %eax
+    jmp 2f
+    xor %edx, %edx
+    xor %ecx, %ecx
+1:  add $1, %eax
+2:  ret
     .org 0x1000
 global:
     .long 1000
