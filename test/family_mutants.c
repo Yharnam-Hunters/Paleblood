@@ -113,3 +113,29 @@ __attribute__((naked)) void bb_mutant_zeroes_xmm0_and_xmm1(void)
 {
     __asm__("pxor %xmm0, %xmm0\n\tpxor %xmm1, %xmm1\n\tret");
 }
+
+/* Constant first-field stores of the wrong value or width, for the constant setter families. */
+void bb_mutant_clears_first_qword(uint64_t *object)
+{
+    *object = 0;
+}
+
+void bb_mutant_clears_first_dword(uint32_t *object)
+{
+    *object = 0;
+}
+
+void bb_mutant_clears_first_byte(uint8_t *object)
+{
+    *object = 0;
+}
+
+void bb_mutant_stores_one_in_first_byte(uint8_t *object)
+{
+    *object = 1;
+}
+
+void bb_mutant_stores_one_in_first_dword(uint32_t *object)
+{
+    *object = 1;
+}

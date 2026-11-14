@@ -82,6 +82,31 @@ def field_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
+FIELD_FILL = 0x5a   # no stored constant (0, 1, all bits) has this byte
+
+
+def constant_setter_cases(address: str, value: int | None) -> list[dict]:
+    """A body that stores a fixed value in the field at offset VALUE (0 for the first-field
+    families): rdi points at an object of distinct bytes whose eight bytes at the field are all
+    FIELD_FILL, so the store shows in every byte it covers, and a store at another offset or of
+    another width changes other bytes. rax is seeded (the body leaves it), the other arguments
+    point into a probe buffer and the argument registers are compared."""
+    offset = value or 0
+    out = []
+    for case_id, seed, start in (('object_a', 9, 0), ('object_b', 151, 0), ('object_shifted', 83, 0x10)):
+        pattern = bytearray.fromhex(probe_bytes(seed, OBJECT_SIZE))
+        pattern[start + offset:start + offset + 8] = bytes([FIELD_FILL]) * 8
+        case = base_case(address, case_id, 'i64')
+        case['buffers'] = {'object': {'size': OBJECT_SIZE, 'bytes': pattern.hex()},
+                           'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
+        case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
+        case['args']['rdi'] = f'buf:object+0x{start:x}'
+        case['args']['rax'] = hex(RAX_SEED)
+        case['observe_registers'] = list(ARGUMENT_REGISTERS)
+        out.append(case)
+    return out
+
+
 def setter_cases(address: str, value: int | None) -> list[dict]:
     """A setter of the field at offset VALUE (0 for the first-field setters) from rsi: rdi points
     at an object of distinct bytes, and rsi holds the bitwise complement of the eight bytes at the
@@ -134,6 +159,16 @@ CASES = {
     'writes_byte_field': setter_cases,
     'writes_first_qword': setter_cases,
     'writes_first_dword': setter_cases,
+    'stores_one_in_byte_field': constant_setter_cases,
+    'clears_byte_field': constant_setter_cases,
+    'clears_qword_field': constant_setter_cases,
+    'clears_dword_field': constant_setter_cases,
+    'stores_one_in_dword_field': constant_setter_cases,
+    'stores_all_bits_in_dword_field': constant_setter_cases,
+    'clears_first_qword': constant_setter_cases,
+    'clears_first_dword': constant_setter_cases,
+    'clears_first_byte': constant_setter_cases,
+    'stores_one_in_first_byte': constant_setter_cases,
     'returns_first_argument': returns_a_value,
     'returns_second_argument': returns_a_value,
     'returns_float_zero': returns_float_zero,
@@ -167,6 +202,21 @@ MUTANTS = {
     'writes_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword', 'bb_mutant_returns_zero',
                            'bb_mutant_writes_first_qword_clears_eax'],
     'writes_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_qword', 'bb_mutant_returns_zero'],
+    # Constant setters: the neighbouring offset's replacement stores at the wrong place; the
+    # first-field ones also meet a store of the other constant or of the wrong width.
+    'stores_one_in_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'clears_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'clears_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'clears_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'stores_one_in_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'stores_all_bits_in_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'clears_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_clears_first_dword'],
+    'clears_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_clears_first_qword',
+                           'bb_mutant_clears_first_byte'],
+    'clears_first_byte': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_stores_one_in_first_byte',
+                          'bb_mutant_clears_first_dword'],
+    'stores_one_in_first_byte': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_clears_first_byte',
+                                 'bb_mutant_stores_one_in_first_dword'],
     'returns_first_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_second_argument'],
     'returns_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_first_argument'],
     'returns_float_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one',

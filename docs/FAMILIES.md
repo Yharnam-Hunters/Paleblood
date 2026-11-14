@@ -110,6 +110,16 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |
 | `writes_first_qword` | `48 89 37 c3` | setters of the 64-bit field at the start of the object |
 | `writes_first_dword` | `89 37 c3` | setters of the 32-bit field at the start of the object |
+| `stores_one_in_byte_field` | `c6 47 {d8} 01 c3` | constant setters: the byte field gets 1 (a flag set to true) |
+| `clears_byte_field` | `c6 47 {d8} 00 c3` | constant setters: the byte field gets 0 (a flag set to false) |
+| `clears_qword_field` | `48 c7 47 {d8} 00 00 00 00 c3` | constant setters: the qword field gets 0 (often a null pointer) |
+| `clears_dword_field` | `c7 47 {d8} 00 00 00 00 c3` | constant setters: the dword field gets 0 |
+| `stores_one_in_dword_field` | `c7 47 {d8} 01 00 00 00 c3` | constant setters: the dword field gets 1 |
+| `stores_all_bits_in_dword_field` | `c7 47 {d8} ff ff ff ff c3` | constant setters: the dword field gets all bits set (-1, often "none") |
+| `clears_first_qword` | `48 c7 07 00 00 00 00 c3` | constant setters: the qword field gets 0 |
+| `clears_first_dword` | `c7 07 00 00 00 00 c3` | constant setters: the dword field gets 0 |
+| `clears_first_byte` | `c6 07 00 c3` | constant setters: the byte field gets 0 |
+| `stores_one_in_first_byte` | `c6 07 01 c3` | constant setters: the byte field gets 1 |
 | `returns_first_argument` | `48 89 f8 c3` | identity functions: return the first argument |
 | `returns_second_argument` | `48 89 f0 c3` | return the second argument |
 | `returns_float_zero` | `c5 f8 57 c0 c3` | functions that return 0.0f (all of xmm0 zero) |
