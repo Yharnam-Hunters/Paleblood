@@ -3227,7 +3227,8 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
-   s_cbranch_execz around both). 0, or -1 with the reason. */
+   s_cbranch_execz around both). A use that no write reaches on any path (written_on_a_path_to: the
+   writes sit in blocks that branch past it) reads the user data's descriptor. 0, or -1 with the reason. */
 static int descriptor_origin(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width,
                              gcn_resource_origin *origin, char *error, size_t error_size);
 
@@ -3242,6 +3243,39 @@ static long last_sgpr_writer(const uint32_t *code, size_t program, const callee_
         p += ins.dwords;
     }
     return writer;
+}
+
+/* A load's pointer pair s[pointer : pointer + 1] restored from SGPR spill slots before the load at dword
+   `at`: each SGPR last written by a v_readlane_b32 of a constant lane whose slot one v_writelane_b32 in the
+   whole program fills, before it, from that same SGPR. The pair then holds at the load what it held when
+   spilled, whatever was written to it in between (a clinic-beast pixel shader spills its user-data
+   pointer, reuses those SGPRs for a descriptor, and restores the pointer for its next load). The later of
+   the two writelanes, or -1 when the pair is not so restored. */
+static long pointer_spilled_at(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned pointer)
+{
+    long spilled = -1;
+    for (unsigned d = 0; d < 2; d++) {
+        const long reader = last_sgpr_writer(code, program, callee, at, pointer + d);
+        gcn_instruction ins;
+        if (reader < 0 || gcn_decode(code + reader, program - (size_t)reader, &ins) || ins.encoding != GCN_VOP2 ||
+            strcmp(ins.name, "v_readlane_b32"))
+            return -1;
+        const uint32_t *r = code + reader;
+        const unsigned lane = spill_lane_of(r), vgpr_field = r[0] & 0x1ff;
+        long writer = -1;
+        int writes = 0;
+        for (size_t p = 0; p < program && lane >= LANE_SELECT_CONSTANT;) {
+            gcn_instruction w;
+            if (gcn_decode(code + p, program - p, &w) || !w.name) break;
+            if (w.encoding == GCN_VOP2 && !strcmp(w.name, "v_writelane_b32") && spill_lane_of(code + p) == lane &&
+                OPERAND_VGPR + ((code[p] >> 17) & 0xff) == vgpr_field)
+                writes++, writer = (long)p;
+            p += w.dwords;
+        }
+        if (writes != 1 || writer > reader || (code[writer] & 0x1ff) != pointer + d) return -1;
+        if (writer > spilled) spilled = writer;
+    }
+    return spilled;
 }
 
 /* A descriptor restored from SGPR spill slots (spill_lane): each of its SGPRs last written, before the use
@@ -3300,6 +3334,49 @@ static int restored_origin(const uint32_t *code, size_t program, const callee_co
     return 1;
 }
 
+/* Whether an instruction that writes any of s[first : first + width - 1] can run before the instruction at
+   dword `at` on some path through the program: a search back from `at` along fall-throughs and branches,
+   stopping at each writer. 1 when one can; 0 when only the program's start reaches `at` without one, so
+   the user data's descriptor holds there (a write in a block that ends in an s_branch past the use, as a
+   clinic-beast pixel shader's is, never reaches it); -1 when a branch's target is not known. */
+static int written_on_a_path_to(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width)
+{
+    long *target = malloc(program * sizeof *target), *previous = malloc(program * sizeof *previous);
+    size_t *pending = malloc(program * sizeof *pending);
+    unsigned char *seen = calloc(program, 1), *falls = calloc(program, 1), *starts = calloc(program, 1);
+    int result = target && previous && pending && seen && falls && starts ? 0 : -1;
+    long last = -1;
+    for (size_t p = 0; p < program && result == 0;) { /* each instruction's branch target and whether it runs on into the next */
+        gcn_instruction ins;
+        if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
+        starts[p] = 1, previous[p] = last, last = (long)p;
+        target[p] = -1;
+        const int ends = !strcmp(ins.name, "s_endpgm");
+        long to = -1;
+        if (!ends && leaves_straight_line(code + p, &ins, p, callee, &to)) {
+            if (to < 0 || (size_t)to >= program) result = -1;
+            target[p] = to;
+        }
+        falls[p] = !ends && strcmp(ins.name, "s_branch") != 0;
+        p += ins.dwords;
+    }
+    size_t count = 0;
+    if (result == 0 && at < program && starts[at]) pending[count++] = at, seen[at] = 1;
+    while (result == 0 && count) {
+        const size_t i = pending[--count];
+        /* the instructions that may run just before i: the one before it, if it runs on, and the branches to it */
+        for (size_t j = 0; j < program && result == 0; j++) {
+            if (!starts[j] || seen[j] || !((falls[j] && previous[i] == (long)j) || target[j] == (long)i)) continue;
+            gcn_instruction ins;
+            gcn_decode(code + j, program - j, &ins);
+            if (writes_sgprs(code + j, &ins, callee, first, width)) result = 1;
+            else seen[j] = 1, pending[count++] = j;
+        }
+    }
+    free(target), free(previous), free(pending), free(seen), free(falls), free(starts);
+    return result;
+}
+
 static int descriptor_origin(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width,
                              gcn_resource_origin *origin, char *error, size_t error_size)
 {
@@ -3316,7 +3393,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
         }
         p += ins.dwords;
     }
-    if (!written) return 0;
+    if (!written || written_on_a_path_to(code, program, callee, at, first, width) == 0) return 0;
     int loops_to_load = 0; /* a branch back to the load or before it */
     size_t last_loop_back = 0; /* the last such branch */
     long loop_end = -1;    /* the last branch from after the load back to between it and the use */
@@ -3374,12 +3451,16 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
     const size_t checked_end = loops_to_load && last_loop_back > (size_t)writer ? last_loop_back : (size_t)writer;
-    for (size_t p = 0; p < checked_end;) {
+    /* writes to a pointer spilled and restored before the load (pointer_spilled_at) are undone after the spill */
+    const long spilled = loops_to_load ? -1 : pointer_spilled_at(code, program, callee, (size_t)writer, pointer);
+    /* nor do writes to it that reach the load on no path: it holds the user data's pointer there */
+    const int pointer_unwritten = !loops_to_load && written_on_a_path_to(code, program, callee, (size_t)writer, pointer, 2) == 0;
+    for (size_t p = 0; p < checked_end && !pointer_unwritten;) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
-        const int the_load = p == (size_t)writer && !loops_to_load;
-        if (writes_sgprs(code + p, &before, callee, pointer, 2) && !the_load) {
+        const int the_load = p == (size_t)writer && !loops_to_load, undone = spilled >= 0 && (long)p > spilled;
+        if (writes_sgprs(code + p, &before, callee, pointer, 2) && !the_load && !undone) {
             snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded through s[%u:%u], which the program writes (%s at dword %zu): "
                      "not done yet", first, first + width - 1, pointer, pointer + 1, before.name, p);
             return -1;
@@ -3402,13 +3483,14 @@ static int same_origin(const gcn_resource_origin *a, const gcn_resource_origin *
 /* MIMG fields (the Sea Islands ISA manual): word 0 DMASK bits 8-11, UNORM 12, GLC 13, DA 14, R128 15,
    TFE 16, LWE 17, OP 18-24, SLC 25; word 1 VADDR bits 0-7, VDATA 8-15, SRSRC 16-20 (4 SGPRs each),
    SSAMP 21-25. */
-enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_D = 0x22, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_OP_SAMPLE_C_LZ = 0x2f, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
+enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_D = 0x22, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_OP_SAMPLE_C_LZ = 0x2f, MIMG_OP_SAMPLE_LZ_O = 0x37, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
        SAMPLER_DWORDS = 4 };
 
 /* Whether a MIMG opcode is one of the samples the translator does (through a sampler). */
 static int mimg_samples(unsigned op)
 {
-    return op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_D || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ;
+    return op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_D || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ ||
+           op == MIMG_OP_SAMPLE_LZ_O;
 }
 
 static unsigned mimg_resource_sgpr(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * MIMG_SRSRC_UNIT; }
@@ -3618,9 +3700,14 @@ static uint32_t compared_sample(translator *t, const uint32_t *w, const gcn_imag
    write their VGPRs. image_sample_c_lz is image_sample_lz with a depth compare (compared_sample).
    image_sample_d (given_gradients) takes the derivatives from VADDR, before the coordinates: x's for each
    spatial coordinate, then y's (the ISA's address order); cubes stop by name, their derivatives being in
-   the cube's own space. */
+   the cube's own space. image_sample_lz_o (`offset`) is image_sample_lz with a texel offset in the first
+   address VGPR: six-bit signed integers, x in bits 5:0 and y in 13:8 (the Sea Islands ISA manual's
+   address order and shadPS4's reading of the field, facts only). Vulkan takes a sample's offset only as
+   a constant, so the offset moves the coordinates instead, by offset / the image's size at level 0, which
+   at level 0 samples the same texels; 2D images only. */
 static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
-                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod, int compare, int given_gradients)
+                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod, int compare, int given_gradients,
+                         int offset)
 {
     enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
     const uint32_t *w = code + at;
@@ -3660,8 +3747,13 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: a depth compare of other than one component of a 2D float image is not translated yet", ins->name);
         return;
     }
-    /* a compare's reference comes first (the ISA's address order: offset, bias, z-compare, derivatives,
-       the coordinates, LOD) */
+    if (offset && (b->dim != GCN_IMAGE_2D || b->cube)) {
+        fail(t, "%s: a texel offset on other than a 2D image is not translated yet", ins->name);
+        return;
+    }
+    /* the ISA's address order: offset, bias, z-compare, derivatives, the coordinates, LOD */
+    const uint32_t packed_offset = offset ? load(t, t_uint(t), vgpr(t, vaddr)) : 0;
+    if (offset) vaddr++;
     const uint32_t reference = compare ? as_float(t, load(t, t_uint(t), vgpr(t, vaddr))) : 0;
     if (compare) vaddr++;
     const unsigned coordinates = (b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3) + (b->arrayed ? 1 : 0);
@@ -3686,6 +3778,19 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         c[0] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[0], one), c[1] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[1], one);
         const uint32_t cubes = glsl(t, t_float(t), SPV_GLSL_FLOOR, value(t, SPV_OP_F_MUL, t_float(t), 2, c[2], konst_float(t, 0.125f)), 0, 0, 1);
         c[2] = glsl(t, t_float(t), SPV_GLSL_FMA, cubes, konst_float(t, -2.0f), c[2], 3);
+    }
+    if (offset) {
+        const unsigned size_components = b->arrayed ? 3 : 2;
+        const uint32_t uvec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), size_components}, 2);
+        const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE_LOD, uvec, 2, load(t, image_type(t, b), image_variable(t, binding)), konst(t, 0));
+        t->queries_images = 1;
+        for (unsigned i = 0; i < 2; i++) { /* the field's sign moved to bit 31 and back */
+            const uint32_t up = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, packed_offset, konst(t, 26 - 8 * i));
+            const uint32_t texels = value(t, SPV_OP_BITCAST, t_int(t), 1, value(t, SPV_OP_SHIFT_RIGHT_ARITHMETIC, t_uint(t), 2, up, konst(t, 26)));
+            const uint32_t extent = value(t, SPV_OP_CONVERT_U_TO_F, t_float(t), 1, value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, size, i));
+            const uint32_t shift = value(t, SPV_OP_F_DIV, t_float(t), 2, value(t, SPV_OP_CONVERT_S_TO_F, t_float(t), 1, texels), extent);
+            c[i] = value(t, SPV_OP_F_ADD, t_float(t), 2, c[i], shift);
+        }
     }
     uint32_t coordinate = c[0];
     if (coordinates > 1) {
@@ -3790,7 +3895,8 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     if (sample) {
         const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
         image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L,
-                     op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_D);
+                     op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ || op == MIMG_OP_SAMPLE_LZ_O, op == MIMG_OP_SAMPLE_C_LZ,
+                     op == MIMG_OP_SAMPLE_D, op == MIMG_OP_SAMPLE_LZ_O);
         return;
     }
     if (b->sampled && op == MIMG_OP_STORE) {

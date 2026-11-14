@@ -287,37 +287,43 @@ usleep_thunk:
     pop %r12
     pop %rbx
     ret
-/* 0x780: int32_t nonzero(int32_t x) { return x != 0; } with a short je in its first 14 bytes,
-   whose target lies past them: its entry relocates, the je in its 32-bit form. */
+/* 0x780: void *take(Pool *p, uint64_t n) { the next n bytes of [top, end), or 0 }  Pool: +0x10 top,
+   +0x18 end. Its short ja lies in the first 14 bytes (a hook's jump), with its target just past
+   them: relocation writes it in its 32-bit form. */
     .org 0x780
-    push %rbp
-    mov %rsp, %rbp
-    push %rbx
-    push %rax
-    mov %edi, %ebx
-    test %edi, %edi
-    je 1f
-    mov $1, %eax
-    jmp 2f
-1:  xor %eax, %eax
-2:  add $8, %rsp
-    pop %rbx
-    pop %rbp
-    ret
-/* 0x7c0: int32_t plus_three(int32_t x) with a short je into its first 14 bytes: its entry does
-   not relocate (the je would run the hook's jump). */
+    mov 0x10(%rdi), %rcx
+    add %rcx, %rsi
+    xor %eax, %eax
+    cmp 0x18(%rdi), %rsi
+    ja 1f
+    mov %rsi, 0x10(%rdi)
+    mov %rcx, %rax
+1:  ret
+/* 0x7c0: a short branch back into the first 14 bytes: cannot be relocated. */
     .org 0x7c0
-    test %edi, %edi
-    je 1f
-    nop
-1:  mov %edi, %eax
-    add $1, %eax
-    add $1, %eax
-    add $1, %eax
+    xor %eax, %eax
+1:  inc %eax
+    cmp $3, %eax
+    jb 1b
+    xor %edx, %edx
+    xor %ecx, %ecx
+    xor %esi, %esi
     ret
-/* 0x800: int32_t bit_set(const int32_t *p) { return (*p & 4) != 0; } reading *p only through
-   `test m, r`, whose memory operand Capstone marks with no access: still an input. */
+/* 0x800: int32_t bump(int32_t x) { return x >= 0 ? x + 1 : -x; } with a short jns and a short jmp
+   in the first 14 bytes, the jns landing on the first byte after them. */
     .org 0x800
+    mov %edi, %eax
+    test %eax, %eax
+    jns 1f
+    neg %eax
+    jmp 2f
+    xor %edx, %edx
+    xor %ecx, %ecx
+1:  add $1, %eax
+2:  ret
+/* 0x840: int32_t bit_set(const int32_t *p) { return (*p & 4) != 0; } reading *p only through
+   `test m, r`, whose memory operand Capstone marks with no access: still an input. */
+    .org 0x840
     xor %eax, %eax
     mov $4, %ecx
     test %ecx, (%rdi)
@@ -348,10 +354,6 @@ usleep_slot:
 /* 0x1838: thread_counter's variable, 4 KiB below the thread pointer (TLS variant II). */
 tls_offset:
     .quad -0x1000
-/* 0x1900: room for the relocated entries of 0x780 and 0x7c0 (within reach of the image). */
-    .org 0x1900
-relocated_entry:
-    .skip 64
     .org 0x2000
     .globl capture_trace_guest_end
 capture_trace_guest_end:

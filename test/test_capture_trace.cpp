@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "runtime/capture.h"
+#include "runtime/capture_hooks.h"
 #include "runtime/capture_trace.h"
 #include "runtime/guest.h"
 #include "runtime/trace.h"
@@ -327,7 +328,9 @@ int self_test()
     rt_trace_log_free(&log);
     /* fs is the host's own thread block, which a case cannot give: no case. */
     trace(0x1c0, arguments(), log);
-    check(log.incomplete != nullptr && std::strstr(log.incomplete, "segment-relative"), "fs access: incomplete");
+    check(log.incomplete != nullptr && std::strstr(log.incomplete, "segment-relative") &&
+              log.stopped_at == reinterpret_cast<uintptr_t>(image + 0x1c0),
+          "fs access: incomplete at the access");
     rt_trace_log_free(&log);
     /* A thread-local variable through gs and the thread pointer: traced, and the case keeps the
        variable and the thread block in one buffer (4 KiB apart, beyond MERGE_GAP), with gs at it. */
@@ -358,7 +361,8 @@ int self_test()
     static int native_calls;
     void (*native)() = [] { ++native_calls; };
     r = trace(0x200, arguments(reinterpret_cast<uint64_t>(&native)), log);
-    check(log.incomplete != nullptr && native_calls == 1, "native call: incomplete, and the call still ran");
+    check(log.incomplete != nullptr && native_calls == 1 && log.stopped_at == reinterpret_cast<uintptr_t>(native),
+          "native call: incomplete at the native code, and the call still ran");
     rt_trace_log_free(&log);
     /* An input read again with another value (here changed by an import behind a register an
        earlier import left, as another thread changes memory): a case gives it one value. */
@@ -377,20 +381,9 @@ int self_test()
     rt_trace_log_free(&log);
     /* A word read only through `test m, r` is an input. */
     static int32_t tested = 6;
-    r = trace(0x800, arguments(reinterpret_cast<uint64_t>(&tested)), log);
+    r = trace(0x840, arguments(reinterpret_cast<uint64_t>(&tested)), log);
     check(!log.incomplete && r.rax == 1 && read_input(log, &tested, 6), "test m, r: the word it reads is an input");
     rt_trace_log_free(&log);
-    /* Entry relocation: a short je past the copied bytes moves in its 32-bit form and the
-       relocated entry runs the function; one into the copied bytes does not relocate. */
-    size_t copied = 0, written = 0;
-    const bool widened = rt_trace_relocate(at(0x780), 14, image + 0x1900, &copied, &written) == 0 &&
-                         copied == 17 && written == 17 + 4 + 14;
-    check(widened, "relocate: a short je past the copied bytes is widened");
-    auto *relocated_nonzero = reinterpret_cast<int32_t (*)(int32_t)>(image + 0x1900);
-    check(widened && relocated_nonzero(0) == 0 && relocated_nonzero(-5) == 1,
-          "relocate: the relocated entry runs the function");
-    check(rt_trace_relocate(at(0x7c0), 14, image + 0x1900, &copied, &written) != 0,
-          "relocate: a short je into the copied bytes is refused");
     setenv("BB_TRACE_STEP_LIMIT", "100", 1);
     trace(0x240, arguments(), log);
     check(log.incomplete != nullptr, "instruction limit: incomplete");
@@ -482,6 +475,26 @@ int self_test()
                                      .find("\"name\": \"sceKernelUsleep\", \"argc\": 0, \"argu32\": [0]") != std::string::npos,
           "case: sceKernelUsleep's microseconds are compared");
     rt_trace_log_free(&log);
+
+    /* Relocating entries with short branches (a hook's jump overwrites the first 14 bytes): each
+       becomes its 32-bit form and the copy behaves as the original; a branch back into the
+       copied bytes is refused. */
+    unsigned char *copies = rt_map_near_image(image, image_size, 4096);
+    size_t copied = 0, written = 0;
+    const bool relocated = copies && !rt_trace_relocate(at(0x780), 14, copies, &copied, &written) && copied == 15 &&
+              written == 15 + 4 + 14 && !rt_trace_relocate(at(0x800), 14, copies + 64, &copied, &written) &&
+              copied == 14 && written == 14 + 4 + 3 + 14;
+    check(relocated && rt_trace_relocate(at(0x7c0), 14, copies + 128, &copied, &written),
+          "relocation: short branches in their 32-bit form; a branch into the copied bytes refused");
+    if (relocated && !mprotect(copies, 4096, PROT_READ | PROT_EXEC)) {
+        struct Pool { uint64_t pad[2], top, end; };
+        Pool fits{{0, 0}, 0x1000, 0x1100}, full{{0, 0}, 0x1000, 0x1010};
+        const auto take = reinterpret_cast<uint64_t (*)(Pool *, uint64_t)>(copies);
+        const auto bump = reinterpret_cast<int32_t (*)(int32_t)>(copies + 64);
+        check(take(&fits, 0x20) == 0x1000 && fits.top == 0x1020 && take(&full, 0x20) == 0 && full.top == 0x1000 &&
+                  bump(5) == 6 && bump(-5) == 5 && bump(0) == 1,
+              "relocation: the copies run as the originals");
+    }
 
     if (!failures) std::puts("capture trace self-test: traced calls, inputs and fail-closed cases passed");
     return failures ? 1 : 0;

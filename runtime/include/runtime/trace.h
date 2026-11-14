@@ -82,6 +82,7 @@ typedef struct {
        reaches (`link`) from the thread pointer it read there. */
     uint64_t thread_base;
     const char *incomplete;    /* NULL when the whole call was traced; else why it was not */
+    uint64_t stopped_at;       /* where it stopped: the instruction it could not trace, or native code */
 } rt_trace_log;
 
 /* 1 when the runtime was built with the tracer (Capstone found). */
@@ -118,12 +119,12 @@ void rt_trace_set_imports(const rt_trace_import *table, size_t count);
 enum { RT_RELOCATE_MAX = 64 };   /* bytes of relocated entry code, including the jump back */
 
 /* Copies whole instructions from `src` covering at least `min_bytes` to `dst` (writable, and
-   within 2 GB of `src`), rewriting RIP-relative operands and 32-bit relative calls and jumps to
-   keep their targets, then appends an absolute jump back to the first byte not copied. Writes
-   the number of source bytes copied to *copied and the bytes written to *written. A short
-   conditional or unconditional jump is rewritten in its 32-bit form. Returns -1, copying nothing,
-   when an instruction cannot be moved (loop or jrcxz, a branch into the copied bytes, an operand
-   out of reach) or decoding fails. */
+   within 2 GB of `src`), rewriting RIP-relative operands and relative calls and jumps to keep
+   their targets (a short jcc or jmp becomes its 32-bit form), then appends an absolute jump back
+   to the first byte not copied. Writes the number of source bytes copied to *copied and the bytes
+   written to *written. Returns -1, copying nothing, when an instruction cannot be moved (loop or
+   jrcxz, a branch into the copied bytes, an operand out of reach, more than RT_RELOCATE_MAX bytes)
+   or decoding fails. */
 int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copied, size_t *written);
 
 /* 1 when a direct branch inside the function [fn, fn + size) targets (fn, fn + n): the first n

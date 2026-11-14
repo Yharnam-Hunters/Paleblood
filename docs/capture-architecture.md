@@ -24,7 +24,8 @@ would fault is reported instead of crashing.
 
 The call always runs to the end and returns its real result to the game. When anything cannot be
 expressed in a case, tracing stops and the rest of the call runs natively; the log names the reason
-and no case is written. Fail-closed reasons today: an instruction the tracer does not model
+and where it stopped (`BB_CAPTURE_VERBOSE=1` prints both: a PS4 address, or native code with its
+symbol, such as a replacement without a redirect), and no case is written. Fail-closed reasons today: an instruction the tracer does not model
 (`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), an `fs` access (the host's own thread block;
 guest code reads its thread pointer through `gs`, below), thread-local storage more than 1 MiB from
 the thread pointer, a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
@@ -35,7 +36,8 @@ with another value although neither the traced code nor a scripted import write 
 path), a byte the traced code or a scripted import wrote that a later read sees with another value
 (another thread changed it between the write and the read, as when a heap's lock is released
 between two allocations; the replay would read the value written, so it would take another path:
-the tracer reads each written byte's value once the writing instruction has run), the instruction limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
+the tracer reads each written byte's value once the writing instruction has run), the instruction
+limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
 
 **Case** (`runtime/capture_trace.cpp`). A complete trace becomes a schema-1 case:
 
@@ -89,9 +91,7 @@ arguments, a float argument and result, a call between guest functions, `rep mov
 4 KiB apart through one pointer, and imports that leave a register pointing at memory they change,
 write through two registers at once, change memory far past what they wrote, or write a zero into
 the frame, a table index reached through a computed pointer (add and lea forms, and a register a
-load replaced), and a sleep whose length is compared; and an entry whose short `je` past the copied
-bytes relocates in its 32-bit form and runs, while one into the copied bytes does not; and a word
-read only through `test m, r` is an input. It checks
+load replaced), a sleep whose length is compared, and a word read only through `test m, r`. It checks
 the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
 (one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
 read it), and that an `xmm2` read, an `fs` access, a call into native code, an input changed
@@ -107,13 +107,14 @@ before installing it, while the original is still intact:
 
 1. The original's first instructions (at least the 14 bytes the hook's jump overwrites) are copied
    into a block mapped within reach of the image, with RIP-relative operands and relative calls
-   and jumps rewritten to keep their targets (a short `jcc` or `jmp` in its 32-bit form, as an early
-   null check has one), followed by a jump back into the rest of the original
-   (`rt_trace_relocate`).
+   and jumps rewritten to keep their targets (a short `jcc` or `jmp` is written in its 32-bit
+   form), followed by a jump back into the rest of the original (`rt_trace_relocate`). Small
+   functions often test and branch in their first bytes (a heap's bounds check, a lock's `-1`
+   check); before short branches moved, 85 of the hooked functions had no redirect, and a traced
+   call that reached one (the target-list update's temporary heap) left the traced code.
 2. A function whose own branches jump back into those first bytes (a loop at its very start) is not
-   recorded: its original can no longer run once hooked (`rt_trace_branches_into`). Nor is one whose
-   copied bytes branch into themselves, hold a `loop` or `jrcxz` (no 32-bit form) or an
-   out-of-reach operand, or one without a return class.
+   recorded: its original can no longer run once hooked (`rt_trace_branches_into`). Nor is one that
+   `loop`/`jrcxz` or out-of-reach operands keep from relocating, or one without a return class.
 3. The hook's target becomes a small thunk that loads the hook's record and enters
    `rt_capture_entry`, which saves every argument register (and `al`, for variadic calls) and the
    caller's stack pointer, then asks `rt_capture_dispatch` what to do.
