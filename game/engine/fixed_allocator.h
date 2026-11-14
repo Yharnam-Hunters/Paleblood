@@ -34,11 +34,13 @@ static_assert(offsetof(Chunk, free_count) == 0x30 && sizeof(Chunk) == 0x38);
 
 struct BackingAllocator;
 struct BackingAllocatorVtable {
-    void *unknown_slots[11];
+    void *unknown_slots[10];
+    void *(*allocate)(BackingAllocator *, uint64_t size);
     void *(*allocate_aligned)(BackingAllocator *, uint64_t size, uint64_t alignment);
     void *unknown_slots_0x60[2];
     void (*free)(BackingAllocator *, void *memory);
 };
+static_assert(offsetof(BackingAllocatorVtable, allocate) == 0x50);
 static_assert(offsetof(BackingAllocatorVtable, allocate_aligned) == 0x58);
 static_assert(offsetof(BackingAllocatorVtable, free) == 0x70);
 
@@ -74,5 +76,46 @@ static_assert(offsetof(Allocator, chunks_with_room) == 0x48 && offsetof(Allocato
 // linking a new node below `parent`.
 RT_ORIGINAL(0x024f8460, tree_remove, void(TreeNode **root, TreeNode *node));
 RT_ORIGINAL(0x024f8350, tree_insert_fixup, void(TreeNode **root, TreeNode *node, TreeNode *parent));
+
+// Gives every chunk of a subtree back to the backing allocator (fixed_allocator_release_chunks.cpp).
+RT_ORIGINAL(0x02484ae0, release_chunks, void(Allocator *, TreeNode *subtree));
+
+// The memory of the chunk whose descriptor holds this tree node.
+inline void *chunk_memory(const Allocator *allocator, TreeNode *node)
+{
+    const uintptr_t descriptor = reinterpret_cast<uintptr_t>(node) - offsetof(Chunk, node);
+    return reinterpret_cast<void *>(descriptor + sizeof(Chunk) - allocator->chunk_size);
+}
+
+// Sets an allocator up empty: no chunks yet, elements of `element_size`, `elements_per_chunk` to a
+// chunk (whose memory ends in its descriptor), chunks aligned to `chunk_alignment` and taken from
+// `backing`.
+inline void set_up(Allocator *allocator, BackingAllocator *backing, uint64_t element_size,
+                   uint64_t elements_per_chunk, uint64_t chunk_alignment)
+{
+    allocator->last_freed_into = nullptr;
+    allocator->current = nullptr;
+    allocator->chunk_alignment = chunk_alignment;
+    allocator->chunk_count = 0;
+    allocator->free_count = 0;
+    allocator->element_size = element_size;
+    allocator->elements_per_chunk = elements_per_chunk;
+    allocator->chunk_size = elements_per_chunk * element_size + sizeof(Chunk);
+    allocator->backing = backing;
+    auto *sentinel = reinterpret_cast<Chunk *>(&allocator->chunks_with_room);
+    allocator->chunks_with_room.prev = sentinel;
+    allocator->chunks_with_room.next = sentinel;
+    allocator->chunk_tree = nullptr;
+}
+
+// Forgets every chunk (after releasing them): no current chunk, an empty list and tree.
+inline void forget_chunks(Allocator *allocator)
+{
+    allocator->last_freed_into = nullptr;
+    allocator->current = nullptr;
+    allocator->chunk_tree = nullptr;
+    allocator->chunks_with_room.prev = nullptr;
+    allocator->chunks_with_room.next = nullptr;
+}
 
 }  // namespace engine::fixed_allocator

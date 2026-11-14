@@ -33,6 +33,12 @@ Instead:
    - `--display-capture DIR` writes every presented frame as a PPM image, for tests and for
      looking at a run.
    - `tools/boot.py` passes both options on. The default, `none`, leaves boots as they were.
+     Its `--clip FILE` turns a range of presented frames into a silent full-resolution clip
+     (WebM or MP4, via ffmpeg) for local review ([ENEMY_OVERLAY.md](ENEMY_OVERLAY.md),
+     "Recording clips").
+   - A debug overlay that draws enemy hit shapes, detection cones, AI states and target lines over
+     the frame is designed in [ENEMY_OVERLAY.md](ENEMY_OVERLAY.md); it waits for the enemy AI
+     structures to be decompiled.
    - Today the frames are black: nothing draws into them yet. macOS gets a Metal window next
      (building on the offscreen Metal unit of #213).
 2. **Shader translator** (in progress).
@@ -92,6 +98,27 @@ Instead:
        shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
        the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+       The words live in host-cached memory where the device has it: every finished batch reads
+       all 1,600 of them, and from write-combined memory each read crossed the bus (in Iosefka's
+       Clinic that scan was the renderer thread's largest single cost, 13 November 2026).
+     - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
+       shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
+       base plus its offsets) is first checked against the imported pool. An access outside goes to
+       a 256-byte scratch sink after the stop words instead and stops by name
+       (`GCN_RUNTIME_STOP_GUEST_RANGE`, with the address's bits 16-39: 0 means a null pointer plus an
+       offset). Without the check such an access reaches memory Vulkan never gave the shader; on an
+       RTX 3070 that stops the GPU context (NVIDIA Xid 109) and the batch never finishes, which held
+       the clinic's load with no name for the work. On the console the same access would fault the
+       GPU too, so it is an error to report, not behaviour to imitate. The Metal executor does not
+       fill the range yet (its layouts leave it 0: unchecked).
+     - **Device diagnostics**, each used when the device offers it: `robustImageAccess2`
+       (`VK_EXT_robustness2`: an image access outside the image reads zero, alpha 1 for a format
+       without alpha, and writes nothing, as AMD's hardware does; Mesa's RADV exposes that by default
+       with no shader-side bounds code), a checkpoint before each draw and dispatch
+       (`VK_NV_device_diagnostic_checkpoints`), and the fault's addresses on a lost device
+       (`VK_EXT_device_fault`). A batch that does not finish in the wait limit is reported with the
+       work the checkpoints show begun and ended, and with any stop word a shader has already
+       written.
      - **Format buffer accesses** (`buffer_load/store_format_*`): loads of 8- and 16-bit components
        (8, 16, 8_8, 16_16, 8_8_8_8, 16_16_16_16) as uint (zero-extended), sint (sign-extended) and,
        for 8-bit components, unorm (each byte v / 255, correctly rounded), read byte by byte from any
@@ -126,8 +153,29 @@ Instead:
        it even when only written, so a store that covers part of it keeps the rest.
      - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
-       DST_SEL. A texel outside the image or a level past its last is a run-time stop
-       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+       DST_SEL. A texel outside the image or a level past its last reads the replacement texel
+       (0, 0, 0, 0), or (0, 0, 0, 1) for a format without alpha, through the descriptor's DST_SEL
+       (each 0 or 1 selector its constant, a texel component its replacement): Vulkan's
+       `robustImageAccess2` texel replacement, which the component swizzle then applies, and what
+       AMD's hardware returns (Mesa's RADV exposes `robustImageAccess2` with no bounds code in the
+       shader, `radv_physical_device.c`). The translator checks the range itself and fetches only
+       inside it, so the result does not depend on the device offering the feature; a storage
+       image's loads (one level: `image_load_mip` past level 0 is outside) read the same. The
+       clinic's final LUT pass (pixel shader 0x20d1b00f00) loads the scene target at the flip's
+       pixel, and on a loading-to-clinic transition frame the target was smaller than the flip.
+     - **The image cache** keeps up to 4096 images, found by a hash of their address. When it is
+       full, a new image takes the slot of the least recently used one whose texels are guest
+       memory's (loaded from it, never written by a shader) and that no unfinished batch, and not
+       the draw or dispatch being recorded, uses; if
+       every such image is still in use, the batches are waited for first. The image is loaded again
+       from guest memory at its next use. The clinic's loading screen streams in more textures than
+       the cache held (12 November 2026). In about one boot in three the clinic itself then used more
+       than the 1024 images the cache held: each draw evicted images the next one needed, and every
+       load made and freed a GPU buffer for its tile copy, so the renderer's thread spent nine tenths
+       of its time in the driver and the clinic ran at 0.3 frames a second (26,000 evictions in one
+       boot, 13 November 2026). The cache was then made four times larger, and a linear search of
+       4096 images at every image a draw binds would have cost more than the search of 1024 did, so
+       the images are kept in buckets by address.
      - **Mip-mapped images** (a pixel shader's sampled images, BASE_LEVEL to LAST_LEVEL): the
        executor makes the image with LAST_LEVEL + 1 levels and views BASE_LEVEL on. Each level's
        texels come from where `rt_tiling_mip_chain` (runtime/tiling.h) puts them: the levels one after
@@ -144,8 +192,20 @@ Instead:
        instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face
        number counts 8 per cube of an array (as shadPS4 samples cubes as 2D arrays). Filtering does
        not cross faces.
+     - **DA on an image that is not an array**: the image's own type (its T# TYPE) decides the
+       coordinates, so a sample with DA 1 from a 1D or 2D image does not read the slice VGPR after
+       them (shadPS4 samples such an image as the view its descriptor names, facts only); with one
+       layer, any slice is that layer. Found at the clinic's load (pixel shader 0x20d1b00f00, a LUT
+       pass, 12 November 2026). With a LOD VGPR after the coordinates (`image_sample_l`) where that
+       VGPR is would depend on how the slice counts, so it still stops by name.
      - **`image_sample_l`** takes its level of detail after the coordinates and samples there
        (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
+     - **`image_sample_lz_o`** is `image_sample_lz` with a texel offset in the first address VGPR
+       (six-bit signed x in bits 5:0 and y in 13:8, before the coordinates: the Sea Islands ISA's
+       address order, as shadPS4 reads it; facts only). Vulkan takes a sample's `Offset` only as a
+       constant, so the coordinates move instead, by the offset over the image's size at level 0, which
+       picks the same texels at level 0. 2D images only; others stop by name. The clinic beast's
+       encounter uses it in pixel shader `0x20d3b9cb00`.
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
        bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at the level the
        coordinates' derivatives pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from
@@ -205,6 +265,13 @@ Instead:
        index from its vertex data (the main menu's last draw after New Game) sent the GPU far outside
        the guest memory, and the NVIDIA driver reset the context (Xid 109, `CTX SWITCH TIMEOUT`); out
        of range stores could write anywhere in guest memory.
+     - **SGPR spill slots** (`v_writelane_b32`, `v_readlane_b32`): the game's shader compiler spills
+       SGPRs into a VGPR's lanes and restores them later. From such a VGPR's first lane instruction to its
+       last, each lane it names is a slot: a word, and the SGPR's lane bit when it held a mask, the same in
+       every lane as the SGPR was. Before and after, the VGPR is an ordinary one (its register is reused);
+       any other use in between, a lane chosen by an SGPR, or the VOP3 forms stop by name. A descriptor
+       restored this way comes from where the spilled SGPRs' descriptor came from, when each slot is
+       written once, from consecutive SGPRs that nothing writes while they are spilled.
      - **Typed buffer loads and stores** (`tbuffer_load_format_*`, `tbuffer_store_format_*`):
        the format is in the instruction. The game uses only 32-bit float data (one to four
        components, as many as the access names), which moves whole dwords with no conversion, so
@@ -218,6 +285,13 @@ Instead:
        whole turns), base-2 `v_exp_f32` and `v_log_f32`, and `v_rsq_clamp_f32` (the largest float
        instead of infinity). Cases GLSL leaves undefined (the log of zero or of a negative number,
        the reciprocal square root of a negative number) are spelled out as IEEE defines them.
+     - **Three-way and wide operations** (from the coverage survey's list): `v_min3`, `v_max3` and
+       `v_med3` for f32, i32 and u32 (the middle is max(min(a, b), min(max(a, b), c)); floats ignore a
+       NaN, as `v_min_f32` and `v_max_f32` do here), the bit-field insert `v_bfi_b32`, the 64-bit shifts
+       `v_lshl_b64`, `v_lshr_b64` and `v_ashr_i64` (a VGPR or SGPR pair, or a sign-extended integer
+       constant, shifted by bits 5:0 of the count), and Direct3D 9's `v_min_legacy_f32` and
+       `v_max_legacy_f32` (the second source when either is a NaN). The clinic's particle compute
+       shaders use the first three kinds.
      - **Vertex and pixel shaders** (`gcn_translate_vertex`, `gcn_translate_pixel`):
        - **Exports (`exp`):** a vertex shader's `pos0` becomes the position and `param` n the
          output at location n; a pixel shader's `mrt` n becomes colour output n. Only the enabled
@@ -234,14 +308,20 @@ Instead:
          shader's `v_interp_p1`/`p2` pair reads attribute n at location n, interpolated by the GPU
          with perspective at the pixel centre; the layout names the VGPRs that hold those
          barycentrics. GCN computes the pair in two halves, so here `p1` already writes the finished
-         value and `p2` must follow it into the same VGPR. Other interpolation modes,
-         `v_interp_mov` and other pixel inputs stop translation.
+         value and `p2` must follow it into the same VGPR. `v_interp_mov_f32` from P0 (the
+         attribute at the primitive's first vertex, not interpolated) reads a Flat input, the
+         provoking vertex's value, which Vulkan takes from the first vertex; the game's particle pixel
+         shaders read packed halves that way. From P10 or P20, or of an input the shader also reads
+         interpolated, it stops by name, as do other interpolation modes and other pixel inputs.
        - **Matching the stages:** parameter n of the vertex shader feeds attribute n of the pixel
          shader. The console maps them through GPU settings; the engine hooks will set that up.
      - **Calls to fetch shaders** (`s_swappc_b64`): the game's vertex shaders call a fetch shader at
        the address in a user-data SGPR pair, which loads the vertex inputs and returns with
        `s_setpc_b64`. The executor reads that address at draw time (`gcn_call_sgpr` names the pair:
-       user data untouched before the call, one call) and the translator inlines the callee in place
+       user data untouched before the call, one call; the pair is kept by the shader's address with
+       a copy of the program, used while the memory still holds that code, since decoding the program
+       at every draw took a sixth of the renderer thread's time in Iosefka's Clinic) and the
+       translator inlines the callee in place
        of the call, the return pair taking the return address. That is exactly what the call runs
        when the callee is straight-line code ending in that return, which it checks; a callee with a
        branch, an image instruction or a write to the return pair stops by name. Descriptor analyses
@@ -252,8 +332,25 @@ Instead:
        writes of 8, 16, 32 and 64 bits, the two-address `read2` and `write2` forms (including `st64`),
        and the 32-bit atomics `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `wrxchg` and `cmpst`, in plain and
        `_rtn` forms. An access at or past the LDS's size reads 0 and writes nothing. `s_barrier` is a
-       workgroup control barrier that also makes LDS writes visible. The global data share (GDS), the
-       other atomics, `ds_swizzle`, `ds_append` and `ds_consume` stop by name.
+       workgroup control barrier that also makes LDS writes visible. The other atomics, and `ds_append` and
+       `ds_consume` on the LDS stop by name.
+     - **The global data share (GDS) and append buffers:** the GDS is 64 KB beside guest memory. The
+       runtime keeps it in host memory (`rt_gpu_memory_gds`), which the command processor's `DMA_DATA`
+       steps reach on the CPU and the executor imports for the GPU, so both see the same counters. In a
+       compute shader, `ds_append` and `ds_consume` with the GDS bit move the dword at GDS byte
+       `M0[31:16]` plus the offset by the wave's count of active lanes and give every active lane its old
+       value. `v_mbcnt_lo/hi_u32_b32` gives a lane's rank among the active lanes, so each lane gets a slot
+       of its own. The game's clinic compute shaders use this pattern. Here a wave is a Vulkan subgroup:
+       one elected lane does the atomic for its subgroup, and `v_mbcnt` with EXEC's halves counts the
+       subgroup's active lanes below the lane (a ballot). That is exact with 64-lane subgroups. With
+       32-lane subgroups, each subgroup counts as its own wave, so slots stay unique and dense but are
+       handed out per half wave. `v_mbcnt` with a constant mask uses the compute lane's place in its wave.
+       Other masks, and `v_mbcnt` outside compute shaders (Metal has no subgroup lanes in vertex and
+       fragment functions), stop by name.
+     - **`ds_swizzle_b32`** exchanges a VGPR between lanes without the LDS. Its quad mode with one source
+       lane for all four lanes of a quad becomes a Vulkan quad broadcast: GCN's quads are Vulkan's (a 2x2
+       pixel block in a pixel shader). The game's pixel shaders use it to take a value's screen-space
+       differences by hand. Other patterns, the bit-mask mode and vertex shaders stop by name.
      - **Tessellation stages** (`runtime/gcn_spirv.h`): GCN runs a tessellated draw's control points
        through a local shader (LS), which writes them to LDS. It runs the patches through a hull shader
        (HS), which writes the tessellation factors to the factor ring. Then the hardware VS stage runs
@@ -291,8 +388,9 @@ Instead:
          shader is an ordinary vertex shader whose ring loads read the GSVS ring.
        - Emits to streams other than 0 stop by name.
      - **Not yet:** anything else stops with the instruction's name. One group needs a design of its own:
-       - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle`), whose results depend
-         on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
+       - reads across lanes (`v_readlane` and `v_writelane` other than as SGPR spill slots,
+         `ds_swizzle` outside its quad mode), whose results depend on GCN's 64-lane wave where Vulkan and
+         Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
        with values worked out by hand from the manual. `test/test_gcn_draw.c` draws a triangle
@@ -406,6 +504,38 @@ Instead:
        modifier, which replaces `PGM_RSRC1`'s SGPR and input-VGPR counts. A null pixel shader
        (a depth-only pass) is recorded too: such a draw is drawn with no pixel stage when it writes
        no colour target, and stops by name when it would.
+     - **A buffer submitted again with nothing recorded since** (found in Iosefka's Clinic, 13
+       November 2026): the record keeps each buffer's calls until a later call starts it over, so
+       a second submission of the same address with no call recorded in between took the earlier
+       use's calls again. The game rewrites some small buffers from packets alone (DMA and memory
+       writes, which record nothing) at the address of an earlier compute buffer, and that earlier
+       use's user data and dispatches ran again (they fed the clinic's timing-dependent stop "the
+       compute shader at 0x20d1b00800: a shader reached outside the guest memory"). The first submission that takes a buffer's calls now notes the two words at each
+       call's offset; a later submission with no new call takes them again only where the memory
+       still holds those words (the same commands submitted twice), and otherwise forgets them
+       (`taken_count` in `render_calls.c`, with the reader of `runtime/render_placed.h`). A buffer
+       built and never submitted is not checked this way: its calls stay until a new call starts
+       it over.
+     - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
+       command buffers from rings, so the record sees new buffer addresses all the time, and the
+       runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
+       and compacting one array of placed binds on each call took about a fifth of the CPU samples
+       of a clinic profile, on the game's submitting threads (the frame rate, bound by the
+       renderer's own thread, did not change).
+       The lists are found by a hash of the buffer's address, and a list not used for 65,536
+       submissions (hundreds of frames) is forgotten. Placed binds wait in a ring, each linked into
+       a bucket by its address's 4 KiB page, so that a submission looks only at the pages of its
+       buffer and merges their binds into the list in one pass, and a bind placed again at an
+       address finds the older one in its page alone. The clinic places two binds a draw while
+       the submissions run behind, and the old fixed array of 4,096 dropped the oldest binds when
+       full: binds of buffers still to be submitted, whose draws and dispatches then ran with the
+       shaders bound before them (a boot logged compute binds taken about 12,000 placements after
+       they were placed). The clinic's timing-dependent stop "the compute shader at 0x20d1ceb800
+       reads an image of type 0" still happens with this fixed, so it has another cause as well.
+       When the ring comes round
+       to a bind still waiting, it now drops it only if its NOP packet has been written over or
+       65,536 binds have been placed since (a buffer abandoned with its memory untouched), and
+       otherwise doubles, up to 262,144.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one
@@ -421,8 +551,14 @@ Instead:
      control, colour control, the target mask, the primitive type) and the instance count. The
      executor understands those registers and, at each draw, stops by name on what it does not
      draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
-     than a normal copy, more than one instance, and any register it does not interpret. A draw
+     than a normal copy, and any register it does not interpret. A draw
      whose targets are all masked off (and that writes no depth) writes nothing and is skipped.
+     - **Instancing:** a draw takes `NUM_INSTANCES` instances from instance 0. A vertex shader asks for
+       the instance index with `VGPR_COMP_CNT` (the input VGPRs after the vertex index): v1 holds the
+       instance index over `VGT_INSTANCE_STEP_RATE_0`, v2 over `VGT_INSTANCE_STEP_RATE_1`, and v3 the
+       instance index itself. A shader that reads v1 or v2 before writing it, with that step rate never
+       set (or 0), stops by name. `NUM_INSTANCES` 0 draws one instance, as the GPU does (AMD's CIK 3D
+       register reference, `VGT_NUM_INSTANCES`: "if set to zero, it is interpreted as 1").
      - **Fast clears** (`CB_COLOR_INFO`'s FAST_CLEAR): before each draw a target whose CMASK is all 0
        (cleared, as radeonsi clears it) gets its memory filled with its `CB_COLORn_CLEAR_WORD0/1` texel
        and its CMASK set to all ones, as an eliminate pass would; eliminate passes then have nothing
@@ -458,11 +594,24 @@ Instead:
        (`rt_executor_snapshot_target`, a ring of four) and performs the flip on the completion thread
        once that copy has run, as the PS4's GPU goes on with the commands after a flip. Before, each
        flip waited for all work and then read the target back, so the GPU sat idle while the CPU
-       recorded the next frame. A stop on the renderer's thread still names the submitting call and
-       the shader. Before this, each submit ran its work on the calling thread: the engine's movie
+       recorded the next frame. A submit returns only once the renderer's thread has taken a buffer
+       at most four before it (`RENDER_LAG_LIMIT`), except while that thread performs a wait step,
+       which may wait for memory the submitting thread has yet to write; a held submit goes on as soon as the renderer's thread takes a buffer (before, it slept until that buffer had run, however long its steps took). The console's GPU starts on a
+       buffer soon after it is submitted, and the game's per-frame GPU memory rings rely on that:
+       without the bound the renderer fell tens of seconds behind during the clinic's load, the
+       rings' allocations came back empty, and the game wrote draws whose vertex shader's fetch table
+       pointer (user data 2-3) was null; the GPU faulted on them (NVIDIA Xid 109). A stop on the
+       renderer's thread still names the submitting call and the shader. Before this, each submit ran its work on the calling thread: the engine's movie
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
        context when the main thread drew (found at the opening movie, 10 November 2026).
+     - **A batch the GPU does not finish stops by name.** Each wait for submitted work gives the GPU
+       20 seconds, far past any batch the game's frames make; then the run stops naming the oldest
+       unfinished batch's draws (vertex and pixel shader, most vertices) and dispatches (shader, most
+       workgroups), runs of the same shaders counted once. Before, the wait had no end: at the
+       clinic's load (12 November 2026) the GPU stopped finishing (the kernel logged an NVIDIA
+       context switch timeout) and the title sat on its loading screen with nothing said. A stop
+       reading a descriptor names its shader too.
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
         descriptors and pointers in their user data. The game's GPU-visible memory is direct
         memory, a range of the runtime's pool (one host memory file).
@@ -559,6 +708,29 @@ Instead:
           texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
           would move the same bytes through host memory. It is copied again after the target's next draws.
           At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
+          Once the target is written back, an image that took its texels since its last draw stays loaded
+          (its memory changed in no other way since the copy) instead of loading the same bytes again.
+        - **Depth straight to images:** an image of the depth's texel size (32 bits for Z_32_FLOAT, 16
+          for Z_16) over a depth target's depth drawn since its
+          write-back (the same address, tiling index and pitch, slice 0; 2D, one level and layer; no other
+          unwritten target over it) takes the depth on the GPU through the depth target's linear rows
+          (`image_from_depth`) instead of a write-back and a load, again after the depth's next draws. In
+          Iosefka's Clinic that was about two depth write-backs and loads a frame, some 35 MB each way
+          through host memory. bbhost and shadPS4 copy depth into an R32 image on the GPU too (facts only).
+          Both depth formats are written back to memory the same way, 2 or 4 bytes a texel; the clinic
+          beast's encounter reads a 512x512 Z_16 depth as a 16-bit unorm image, which
+          stopped by name while only 32-bit depth was handled.
+        - **Compute fills on the target:** the game clears render targets with a compute program that
+          stores one value from a constant buffer into every element of a buffer descriptor spanning the
+          target's memory (compute shader `0x20d1b00500`, about ten a frame in Iosefka's Clinic). Each
+          used to write the target's draws back, store the whole target into host memory, and load the
+          target and the images over it back. A program of that shape (`gcn_fill_shape`: scalar loads of
+          the value, indexed stores of it at lane + workgroup x n + offset) whose stores cover exactly a
+          render target's memory in its element size runs only its first workgroup; its elements are
+          copied into the target's linear rows, doubled until full, and into the image, and the target
+          counts as drawn: its memory gets the fill when it is written back. Its earlier draws are not
+          written back. bbhost (`detect_fill`) and shadPS4 (`IsComputeImageClear`) recognise the same
+          clears and clear the image instead (facts only).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -596,6 +768,15 @@ Instead:
           the Contract screen the CPU's waits for the GPU went from about 102 to 90 every 2 s when
           they moved to the GPU; most of the rest are CPU reads of memory inside the depth copy's
           2.2 GB store range.
+          Memory a game draws into as a target of another size or format (YEBIS's post passes reuse
+          theirs) gets another image: the one there is written back and set aside (`target_for`), and taken
+          back, loaded from the memory, when that address has its shape again.
+          When all 512 target slots are taken, the one set aside longest (else the least recently used)
+          whose texels are all in its memory and that no unfinished batch uses is freed, with the render
+          passes and pipelines made for it (`target_slot_to_free`); the GPU's work is waited for when none
+          is free. Freeing is a fallback, not a steady state: with 128 slots the clinic's YEBIS passes
+          freed and made again about 39 targets a frame (their images, copy buffers, passes and pipelines),
+          about 3 of each 6 seconds a frame took; 512 slots hold all of them (with twice as many render passes).
           Showing a frame copies the target's image to a host-visible buffer once per flip.
           `test_render_executor` checks a 1D-tiled target's texels at `rt_tiling_offset` after a
           write-back and a CPU write showing at its pixel after a load; a mutated table fails both.
@@ -641,10 +822,24 @@ Instead:
           the viewport's depth range. The depth bounds test (`DEPTH_BOUNDS_ENABLE`) passes pixels
           whose stored depth lies within `DB_DEPTH_BOUNDS_MIN` to `_MAX`, Vulkan's depth bounds test
           with dynamic bounds; the library's setter (`0x01473520`) takes them as two floats, which
-          its observe hook reads from the saved frame's xmm0 and xmm1. The buffer's contents in guest memory are never loaded: a depth
+          its observe hook reads from the saved frame's xmm0 and xmm1. The viewport scissor
+          (`PA_SC_VPORT_SCISSOR_0_TL`/`_BR`, on with `PA_SC_MODE_CNTL_0`'s `VPORT_SCISSOR_ENABLE`) is the
+          draw's Vulkan scissor, clipped to the target; off or never written, the draw covers the whole
+          target. The library's setter (`0x014766d0`: command buffer, viewport, left, top, right, bottom,
+          and on the stack the window-offset mode) is observed, its stack argument read above the saved
+          frame (`rt_observed_stack_argument`); the `PA_SC_MODE_CNTL_0` replacement reports its value. The
+          clinic's deferred lights are full-screen quads drawn once per 128x128 screen tile with that tile
+          as the scissor: unclipped, each tile's draw lit the whole screen (the scene came out about 8x too
+          bright, in banded steps). A scissor that takes the window offset (`WINDOW_OFFSET_DISABLE` clear)
+          stops by name; the screen, window and generic scissors are not applied yet. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
-          nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
+          nothing is skipped. Clipping follows `PA_CL_CLIP_CNTL` (the GPU library's setter `0x01476b30`,
+          which masks the value with `0x0f7fe03f`): with `ZCLIP_NEAR_DISABLE`, `ZCLIP_FAR_DISABLE` or
+          `CLIP_DISABLE` set, z is not clipped and depth is clamped to the viewport's range (Vulkan's
+          `depthClampEnable`, Metal's `MTLDepthClipModeClamp`). The clinic's sun shadow draws set only
+          `DX_CLIP_SPACE_DEF` (0x80000: z from 0 to w, Vulkan's clip space), so they are clipped as
+          before. `DX_RASTERIZATION_KILL` stops by name. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
           library's stage setter `0x01476030`) are vertex and pixel, tessellation (0x45, below) or
           a geometry shader (0xb0, below); others stop by name at the draw. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. A tessellated draw (`VGT_SHADER_STAGES_EN` 0x45) is drawn in three steps. First, the local and
           hull shaders run as compute passes over a 16 MiB LDS buffer, one workgroup per `NUM_PATCHES` patches. Second, the hull
@@ -710,7 +905,11 @@ Instead:
         executor draws rect lists. **Observe hooks** (`runtime/observe_hooks.h`) report what has no replacement yet:
         the hook calls an observer with the call's arguments, then the original runs from its
         first instructions relocated next to the image, so every packet is still the original's.
-        A replacement, when one lands, takes the address and its observe hook is dropped. They
+        A replacement, when one lands, takes the address and its observe hook is dropped. An
+        observer reports a packet where it lands: when the writer's words do not fit before the
+        command buffer's limit, the observer asks the space callback for them first (the writer
+        then finds the room), so a packet that opens a new chunk is filed at that chunk's start,
+        not past the old chunk's end where no submission takes it. They
         cover `setRenderTarget` (`0x014738b0`) and the five user-data writers (`0x01476420`
         one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
         whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With
@@ -730,7 +929,18 @@ Instead:
         and the executor runs the dispatch with `vkCmdDispatchIndirect` on the guest memory
         buffer, so the GPU reads the three workgroup counts at the base plus the offset when the
         dispatch runs, after the work before it (which may have written them). Drawn targets over
-        those 12 bytes are written back first. **Indirect draws:** `0x014744d0` (command buffer,
+        those 12 bytes are written back first. **Each queue keeps its own compute state** (found in
+        Iosefka's Clinic, 13 November 2026): the game's compute-queue buffers (each an indirect
+        buffer of a ring that `sceGnmDingDong` completes) dispatch again without binding the shader
+        their queue bound last, so a single compute state shared by all queues ran the shader another
+        queue had bound since on their user data, a stop that came and went with the threads' timing
+        ("the compute shader at 0x20d1ceb800 reads an image of type 0", two buffer descriptors of
+        another shader in its image's place). Each queue of the GPU keeps its own registers, and
+        shadPS4 keeps a compute program state for each mapped queue (`liverpool.h`, `cs_state`; facts
+        only). The renderer passes each submission's queue (the graphics queue, or the compute
+        queue's id), and the executor keeps the compute shader, its user data and the indirect
+        arguments' base for each queue (`rt_executor_select_queue`); the rest of the state is the
+        graphics queue's. **Indirect draws:** `0x014744d0` (command buffer,
         data offset, stage, base-vertex SGPR, start-instance SGPR) writes `DRAW_INDIRECT`. The GPU
         reads four words at the base plus the offset: vertices per instance, instances, start vertex
         and start instance. The start vertex and instance reach the shader only through the named
@@ -743,8 +953,31 @@ Instead:
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with
         `runtime/tiling.h` and loaded again at a use that reads it when the guest memory changed since
-        (the CPU or a buffer store may have changed them); one that is also a render target stops by name. Pixel shaders' images
-        are found the same way and bound as sampled images. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
+        (the CPU or a buffer store may have changed them). One a shader writes over a render target first takes
+        the target's texels, and the target takes the image's at its next draw (`take_written_image`); the copy
+        covers the two's overlap, since a target's size counts its pitch and its slice's whole tiles (a 960x540
+        image under a 1024x576 target, 1920x1080 under 1920x1088). An image of another texel size or a non-2D
+        image over a target (a YEBIS pass in the clinic stores a 37x14 16_16_16_16 float image over another
+        format's target) is instead tiled into the guest memory after its dispatch (`write_back_image`, the
+        target's own draws written back first), and the target loads that memory at its next draw, as the
+        PS4's colour buffer reads whatever bytes a shader stored at its address. An image left to a target of
+        its own texel size is tiled into the memory later, when a target of another format takes that address
+        first (`target_for` sets the first target aside): the image keeps its dispatch's descriptor for that.
+        Pixel shaders' images
+        are found the same way and bound as sampled images. A pixel shader's null image descriptor (all 8
+        words 0) reads 0: Mesa's radeonsi writes 8 zero words for an unbound sampler view or image
+        (`si_reset_sampler_view_slot`, `si_disable_shader_image`) and RADV zeroes the descriptor of a
+        VK_EXT_robustness2 null descriptor, whose reads must return 0, with `nullDescriptor` on every GPU it
+        supports (GFX6 onward; the PS4's is GFX7) (Mesa `992de21c`, `si_descriptors.c`, `radv_descriptors.c`,
+        `radv_physical_device.c`). The executor binds a 1x1 image of zeros of its own, and the translator writes
+        0 for its `image_load` without a range check (`gcn_image_binding.null_descriptor`). YEBIS binds such
+        descriptors in the clinic's post-processing passes. A descriptor with base address 0 but other fields
+        set would read unmapped memory, and what the PS4 returns there is not established. YEBIS binds one
+        (1x1 8_8_8_8, tiling index 13, base 0) to a clinic post pass whose pixel shader (`0x205700fa00`)
+        samples it only when a constant-buffer value is 1.0: its own branch skips the read otherwise. Such a
+        binding (`gcn_image_binding.unmapped`) gets the same image of zeros, and the translator turns any read
+        through it into a run-time stop (`GCN_RUNTIME_STOP_UNMAPPED_IMAGE`), so a read the game does make
+        stops by name and one it skips costs nothing. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
         unorm and uint, 8 and 8_8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
         (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
         On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
@@ -757,6 +990,31 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+**Stand-in: occlusion counts.** The game's occlusion query dumps (`EVENT_WRITE` `PIXEL_PIPE_STAT_DUMP`)
+store an invented, always-visible count (`runtime/syslib/gnm.c`; docs/runtime-syscalls.md, "Occlusion
+query counts"). Real counts from Vulkan occlusion queries are the follow-up.
+
+## Coverage survey
+
+Rather than finding the translator's gaps one boot stop at a time, two diagnostic tools list them all.
+Neither changes what a normal run does.
+
+- **Offline, over every shader the game ships:** `game/render/tools/shader_survey.py` reads the shader
+  bundles in your own copy of the game by their archive entries (each shader keeps its name and stage)
+  and the shader files inside the executable, and runs each distinct program through `build/pbgcn_survey`.
+  That tool translates in the translator's **survey mode** (`gcn_spirv_set_survey`): an instruction it
+  cannot translate is noted with its dword and translation goes on, so one pass names every gap a
+  program has. The layout comes from the shader's registers (user SGPRs, pixel inputs, workgroup size,
+  LDS); images and samplers are bound as the code shows them, and a fetch-shader call calls one that only
+  returns. A setting only a draw knows can therefore add or hide a reason. Programs that translate are
+  checked with `spirv-val`. It prints counts, reasons and shader names; `--report` and `--results` write
+  them to files outside the repository. No game code or data enters the repository.
+- **At run time, over what a boot reaches:** with `BB_SHADER_SWEEP` naming a directory, the Vulkan
+  executor writes every distinct shader it meets there (`<stage>-<address>.bin`, and `.spv` when it
+  translates), translates in survey mode, records each shader's reasons in `sweep.txt`, and records and
+  skips a draw, dispatch or register it cannot do instead of stopping. The frames such a run shows lack
+  the skipped draws: it is for listing gaps, never for judging output.
 
 
 ## Guest memory on the GPU
@@ -813,7 +1071,9 @@ target again at every submitted buffer.
    written: there is no signal handler, and nothing changes for the guest's threads. At each
    buffer the renderer reads the written pages with `PAGEMAP_SCAN`, which protects them again in
    the same step (`PM_SCAN_WP_MATCHING`), so a write between the read and the protection cannot
-   be lost. The facts behind this are shadPS4's page manager (write watchers on cached memory)
+   be lost. The executor first asks whether a collect is due (`cpu_writes_due`: the renderer
+   collects once for all the buffers submitted before the last collect), and only then gathers and
+   sorts the ranges it asks about. The facts behind this are shadPS4's page manager (write watchers on cached memory)
    and the kernel's userfaultfd and pagemap documentation; they are used as facts only. A
    userfaultfd limited to user-mode faults (`UFFD_USER_MODE_ONLY`) needs no privilege, so
    `vm.unprivileged_userfaultfd = 0` does not stop it. Where any of this is missing, the watch
@@ -830,6 +1090,66 @@ target again at every submitted buffer.
    fast clear's fill; a dispatch whose stores may reach anything counts for all memory). A render
    target or image loads again only when its span changed since its last load, instead of at
    every submitted buffer and after every dispatch.
+
+### Device-local twins: tried, slower (November 2026)
+
+Before the whole mirror, a smaller step was tried on a local branch: device-local copies ("twins")
+of only the 64 KB chunks the shaders read. Each translated guest load looked its chunk up in a
+device-local table and read the twin when there was one (else marked the chunk wanted); stores and
+atomics went to both copies; the CPU's writes (the write watch) and the executor's own writes
+(write-backs, fills) copied the twins again. Steps the renderer performs in the GPU's place (a
+constant engine dump, a WRITE_DATA, a DMA copy) reported the memory they wrote, and a twin the CPU
+wrote in 3 frames of 60 was dropped and held off for a while (LanternEngine's
+`memory_model_fps_sink.md` rule for its 64 KiB blocks, as facts). bbhost's twins, whose particle
+result suggested this, are found at each buffer binding, on the CPU (its `docs/rendering.md`), not
+by a lookup in every access.
+
+Measured in Iosefka's Clinic with `tools/ab_bench.py` (two rounds each, 60 s settle then 180 s from
+frame 800, the same save; main at 875e3995 against the twins branch on fc89c005 (the commits between add two small game-function replacements), both with the same local input
+driver): main 7.99 and 7.80 fps, twins 5.16 and 5.15 fps; the 2.74 fps difference is far beyond the
+noise floor (0.20 fps). Other programs kept CPUs busy during every window (medians of 3-4 CPUs,
+peaks of 6-12), over the tool's default limit; the difference is large enough to stand anyway. The twins' own copies were small
+(500-730 chunks, 30-45 MB, and 80-140 drops per 60 frames, with about 2,700 of the pool's 2,970
+slots in use), so the cost is most likely the per-access table lookup in every shader's loads and the doubled
+stores, not the uploads. An earlier version that collected all of the CPU's writes after every
+step was slower still. The branch is kept unmerged. A mirror for read-mostly memory needs a fixed
+offset (one device-local buffer for the whole span, step 1 above, or per-buffer device-local
+bindings), not a lookup per access.
+
+### Whole-span mirror: first prototype (November 2026)
+
+Step 1 was tried next as a local prototype (not merged). The executor made one device-local buffer
+for the span `0x2039400000`-`0x210c400000` (3,376 MB). It set the shaders' address offset to point
+into that buffer, so a guest address needs only one add and no lookup. Index buffers, indirect
+arguments, the target copies' reads and the fills used the buffer too, and the shaders' bounds
+were the span.
+
+- **CPU writes:** at each buffer, the executor collected the write watch over the whole span and
+  copied the written pages from the imported host memory into the mirror before the buffer's work.
+- **GPU writes:** at each submission, the batch's written ranges (the ones `batch_writes` already
+  keeps for the CPU's waits) were copied from the mirror back to host memory.
+
+The clinic's working set fit: the boot used about 3.4 GB of the RTX 3070's 8 GB before the mirror.
+
+One boot from the clinic save did not reach the clinic. A vertex shader (`0x205700f700`) read a
+buffer descriptor with data format 15. That is a stale descriptor: memory the CPU had written was
+not yet in the mirror when the draw ran. The likely writers are the steps the renderer performs in
+the GPU's place (constant engine dumps, WRITE_DATA, DMA copies), some deferred to the completion
+thread. They write guest memory between or after the collects. The twins branch had to report
+those writes explicitly (`rt_renderer_step_wrote`). The mirror needs the same, placed in the
+command stream where the step's writes land.
+
+The prototype also measured its costs, per 500 submissions:
+
+- The whole-span collect took 4.46 s on the renderer's thread, about 9 ms a submission.
+- 4,017 MB was copied in (the first 3,376 MB is the initial fill), and 810 MB was copied back.
+- No submission needed the whole span copied back.
+
+So before a mirror can be measured against main, two things are needed. First, every CPU write
+must be reported at its place in the stream: the write watch at each buffer, plus the
+renderer-performed steps. Second, the collect must cost a small fraction of a frame: a collect
+limited to the pages the GPU can read, or the watch's dirty bits read without scanning the whole
+span.
 
 ### Tests for each step
 
@@ -860,7 +1180,28 @@ unsupported header. A packet's MAX_SIZE counts from its first index, independent
 of INDEX_BUFFER_SIZE. Counts above MAX_SIZE would require DMA zero filling, which
 the executor does not implement.
 
-Vulkan draws supported offset packets. Predicated packets, other headers and
-nonzero initiators fail with a reason. Addressed DRAW_INDEX_2 calls are recorded
-with their complete payload but are not yet executed by Vulkan. The packet
-observer bridge belongs with the GPU-library replacements that first call it.
+Vulkan draws supported offset packets and addressed DRAW_INDEX_2 packets. Predicated
+packets, other headers and nonzero initiators fail with a reason. A DRAW_INDEX_2 draws
+INDEX_COUNT indices from its own address (INDEX_TYPE gives their size) and, as shadPS4's
+`liverpool.cpp` treats it (facts only), its address becomes the index base later offset
+draws count from. The GPU library's addressed writer `0x01474360` (command buffer, count,
+address) is observed (`game/render/observe_gpu_library.c`): YEBIS's indexed draws, its
+post-processing passes, go through it, and without it the clinic's tone map, glare and
+depth of field never reached the renderer (the scene behind the HUD stayed one flat
+grey). Observers that only observe hooks call are declared in
+`runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
+
+## Measuring frame rate
+
+Two runs of one build differ: in Iosefka's Clinic the same build measured from 4.81 to 7.15 fps
+over a run, with other work on the machine. A speed change counts only when it is larger than that.
+`tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR` runs two builds alternately, two rounds each
+by default (A1 B1 A2 B2), and measures each over the same window: a fixed settle, then a fixed
+measure window, counted from the moment the run presents its anchor frame (`--anchor-frame`, a
+frame reached at the same point of the same save). Each build's spread over its rounds is its noise
+floor, and a difference counts only when it is larger than both builds' spreads (the rule of
+bbhost's area check). While a run plays, the load average and the CPUs busy with other work than
+the run's own processes are sampled every second; a run whose window met more than
+`--max-other-cpus` of other work is left out, with the reason. The run command builds before it
+starts the game and holds the GPU lock while it plays, so builds and other GPU work stay outside
+the window. `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.

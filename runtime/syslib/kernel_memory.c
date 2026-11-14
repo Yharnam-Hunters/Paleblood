@@ -175,6 +175,12 @@ int rt_gpu_memory_pool(int *fd, uint64_t *size)
     return created ? 0 : -1;
 }
 
+uint8_t *rt_gpu_memory_gds(void)
+{
+    static _Alignas(RT_GPU_GDS_BYTES) uint8_t gds[RT_GPU_GDS_BYTES];
+    return gds;
+}
+
 /* Non-replacing placement in the address window. A declined POSIX hint is stepped over
    without assuming the reason was occupancy; other host failures still stop by name. */
 static void *window_place(const char *caller, uint64_t length, uint64_t alignment, int host_protection, int map_flags,

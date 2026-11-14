@@ -209,6 +209,114 @@ static void stencil_cases(rt_executor *x,uint8_t *pool)
     s=scene();s.format=0;s.stencil=1;s.control=1|7<<8;s.ops=3<<4;s.color=s.pixel=0;
     setup(x,pool,&s);if(!submit(x,NULL))expected(&s,1,0x17,W,H);finish(pool,&s);
 }
+/* These owned cases use selected linear S8 slices plus one owned P8/ADDR5 case
+   with independent literal offsets. The expected pool changes only at covered stencil bytes and,
+   when the stencil test passes, the white BGRA colour rectangle. */
+enum { ASPECT_META = 0x400000, HTILE_FLAG = 1u << 29, EXPCLEAR_FLAG = 1u << 27,
+       STENCIL_NO_METADATA = 1u << 29, STENCIL_ALWAYS = 1 | 7u << 8,
+       DEPTH_AND_STENCIL_ALWAYS = STENCIL_ALWAYS | 2 | 4 | 7u << 4 };
+typedef struct {
+    const char *id;
+    unsigned format, z_flags, stencil_flags, control, ops, result, color, omit_z_bases, geometry;
+    const char *reason;
+} AspectCase;
+static const AspectCase aspect_cases[] = {
+    {"s8-disabled-z-htile",0,HTILE_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,3u<<4,0x17,1,1,0,NULL},
+    {"s8-disabled-z-expclear",0,EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,7u<<4,0xd5,1,1,0,NULL},
+    {"s8-disabled-z-both",0,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,1u<<4,0,1,1,0,NULL},
+    {"s8-inactive-d16-htile",1,HTILE_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,3u<<4,0x17,1,1,0,NULL},
+    {"s8-inactive-d16-expclear",1,EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,7u<<4,0xd5,1,1,0,NULL},
+    {"s8-inactive-d16-both",1,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,1u<<4,0,1,1,0,NULL},
+    {"s8-inactive-d32-htile",3,HTILE_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,3u<<4,0x17,1,1,0,NULL},
+    {"s8-inactive-d32-expclear",3,EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,7u<<4,0xd5,1,1,0,NULL},
+    {"s8-inactive-d32-both",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,1u<<4,0,1,1,0,NULL},
+    {"s8-zwrite-without-enable",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS|4u,3u<<4,0x17,1,1,0,NULL},
+    {"s8-never-fail-replace",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,1,3,0x17,0,1,0,NULL},
+    {"s8-inactive-d32-addr5-f",3,HTILE_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,3u<<4,0x17,1,1,0x001a0c4f,NULL},
+    {"active-d16-htile",1,HTILE_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"HTILE"},
+    {"active-d16-expclear",1,EXPCLEAR_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"expanded depth"},
+    {"active-d16-both",1,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"HTILE"},
+    {"active-d32-htile",3,HTILE_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"HTILE"},
+    {"active-d32-expclear",3,EXPCLEAR_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"expanded depth"},
+    {"active-d32-both",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"HTILE"},
+    {"stencil-metadata-htile",3,HTILE_FLAG,0,STENCIL_ALWAYS,3u<<4,0x2a,0,1,0,"HTILE"},
+    {"stencil-metadata-expclear",3,EXPCLEAR_FLAG,0,STENCIL_ALWAYS,3u<<4,0x2a,0,1,0,"expanded depth"},
+    {"stencil-metadata-both",3,HTILE_FLAG|EXPCLEAR_FLAG,0,STENCIL_ALWAYS,3u<<4,0x2a,0,1,0,"HTILE"},
+    {"stencil-expclear-after-htile",3,HTILE_FLAG,STENCIL_NO_METADATA|EXPCLEAR_FLAG,STENCIL_ALWAYS,3u<<4,0x2a,0,1,0,"expanded stencil"},
+    {"stencil-expclear-after-expclear",3,EXPCLEAR_FLAG,STENCIL_NO_METADATA|EXPCLEAR_FLAG,STENCIL_ALWAYS,3u<<4,0x2a,0,1,0,"expanded stencil"},
+    {"stencil-expclear-after-both",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA|EXPCLEAR_FLAG,STENCIL_ALWAYS,3u<<4,0x2a,0,1,0,"expanded stencil"},
+};
+static void omit_z_bases(void)
+{
+    size_t kept=0;
+    for(size_t i=0;i<count;++i){
+        if(calls[i].kind==RT_CALL_REGISTER&&(calls[i].u.reg.address==0xa012||calls[i].u.reg.address==0xa014))continue;
+        calls[kept++]=calls[i];
+    }
+    count=kept;
+}
+static int aspect_submit(rt_executor *x,uint8_t *pool,Scene *s,const char *id,const char *reason,
+                         unsigned value,unsigned color,unsigned omitted,uint8_t *before,uint8_t *wanted)
+{
+    memcpy(before,pool,POOL);memcpy(wanted,before,POOL);
+    if(!reason){
+        if(s->geometry==0x001a0c4fu){
+            /* Owned P8/S8 slice1 origin47104: two literal64-byte microtiles,
+               separated by256bytes. No production address mapper forms this oracle. */
+            memset(wanted+S_BASE+47104,(int)value,64);
+            memset(wanted+S_BASE+47104+256,(int)value,64);
+        }else for(unsigned y=0;y<H;++y)for(unsigned col=0;col<W;++col)
+            wanted[S_BASE+s->slice*(W*H)+y*W+col]=(uint8_t)value;
+        if(color)memset(wanted+COLOR_BASE,255,W*H*4);
+    }
+    char error[1024]="";rt_render_call *c=event(RT_CALL_DRAW_AUTO);c->u.draw_auto.index_count=3;
+    const int rc=rt_executor_run_calls(x,calls,count,error,sizeof error);
+    const unsigned reason_match=reason?(rc==-1&&strstr(error,reason)!=NULL):(rc==0);
+    size_t changed=0,mismatches=0;
+    for(size_t i=0;i<POOL;++i){changed+=pool[i]!=before[i];mismatches+=pool[i]!=wanted[i];}
+    unsigned stencil_matches=0,color_matches=0;
+    if(s->geometry==0x001a0c4fu)for(unsigned i=0;i<64;++i){
+        stencil_matches+=pool[S_BASE+47104+i]==(reason?0x2a:value);
+        stencil_matches+=pool[S_BASE+47104+256+i]==(reason?0x2a:value);
+    }
+    for(unsigned y=0;y<H;++y)for(unsigned col=0;col<W;++col){
+        if(s->geometry!=0x001a0c4fu)
+            stencil_matches+=pool[S_BASE+s->slice*(W*H)+y*W+col]==(reason?0x2a:value);
+        const uint8_t *pixel=pool+COLOR_BASE+(y*W+col)*4;
+        const unsigned byte=reason||!color?0x55:255;
+        color_matches+=pixel[0]==byte&&pixel[1]==byte&&pixel[2]==byte&&pixel[3]==byte;
+    }
+    CHECK(reason_match);CHECK(mismatches==0);CHECK(stencil_matches==W*H);CHECK(color_matches==W*H);
+    printf("depth aspect id=%s rc=%d reason_match=%u pool_changed=%zu pool_mismatches=%zu stencil_matches=%u color_matches=%u z_bases_omitted=%u reason=%s\n",
+           id,rc,reason_match,changed,mismatches,stencil_matches,color_matches,omitted,error);
+    ++scenarios;
+    return rc;
+}
+static void aspect_metadata_cases(rt_executor *x,uint8_t *pool)
+{
+    uint8_t *before=malloc(POOL),*wanted=malloc(POOL);CHECK(before!=NULL&&wanted!=NULL);
+    if(!before||!wanted){free(before);free(wanted);return;}
+    for(unsigned i=0;i<sizeof aspect_cases/sizeof *aspect_cases;++i){
+        const AspectCase *test=&aspect_cases[i];Scene s=scene();s.format=test->format;s.stencil=1;s.slice=1;
+        s.geometry=test->geometry;s.control=test->control;s.ops=test->ops;
+        if(s.geometry==0x001a0c4fu){s.width=128;s.height=64;s.pixels=32768;}
+        setup(x,pool,&s);
+        memset(pool+ASPECT_META-32,0x67,4096+64);
+        reg(0xa005,(uint32_t)((base+ASPECT_META)>>8));reg(0xa2af,0);
+        reg(0xa00b,bits(0.5f));reg(0xa00a,0x35);
+        reg(0xa010,test->format|test->z_flags);reg(0xa011,1u|test->stencil_flags);
+        if(test->omit_z_bases)omit_z_bases();
+        const int rc=aspect_submit(x,pool,&s,test->id,test->reason,test->result,test->color,test->omit_z_bases,before,wanted);
+        if(!test->reason&&rc==0)expected(&s,1,test->result,W,H);
+        if(test->reason){
+            char id[96];const int length=snprintf(id,sizeof id,"%s/recovery",test->id);CHECK(length>0&&(size_t)length<sizeof id);
+            count=0;reg(0xa010,test->format);reg(0xa011,1u|STENCIL_NO_METADATA);reg(0xa200,STENCIL_ALWAYS);reg(0xa10b,3u<<4);
+            if(aspect_submit(x,pool,&s,id,NULL,0x17,1,test->omit_z_bases,before,wanted)==0)expected(&s,1,0x17,W,H);
+        }
+        finish(pool,&s);
+    }
+    free(before);free(wanted);
+}
 static void refusals(rt_executor *x,uint8_t *pool)
 {
     const struct {uint32_t address,value;const char *reason;} bad[]={
@@ -247,15 +355,18 @@ static void refusals(rt_executor *x,uint8_t *pool)
         submit(x,missing[k].reason);finish(pool,&s);
     }
 }
-int main(void)
+int main(int argc,char **argv)
 {
+    const int aspect_only=argc==2&&strcmp(argv[1],"--aspect-only")==0;
+    if(argc!=1&&!aspect_only){fprintf(stderr,"usage: %s [--aspect-only]\n",argv[0]);return 2;}
     char path[]="/tmp/paleblood-metal-depth-XXXXXX",error[512]="";int fd=mkstemp(path);CHECK(fd>=0);if(fd<0)return 1;unlink(path);
     CHECK(ftruncate(fd,POOL)==0);uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);CHECK(pool!=MAP_FAILED);if(pool==MAP_FAILED)return 1;
     memcpy(pool+VS,vertex_position_color,sizeof vertex_position_color);memcpy(pool+PS,pixel_color,sizeof pixel_color);
     const float colors[3][4]={{1,1,1,1},{1,1,1,1},{1,1,1,1}};memcpy(pool+COLORS,colors,sizeof colors);
-    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base,NULL,NULL,NULL};
+    rt_executor *x=NULL;const rt_executor_memory memory={.fd=fd,.size=POOL,.guest_base=base};
     int rc=rt_executor_open(&memory,&x,error,sizeof error);if(rc)fprintf(stderr,"open: %s\n",error);CHECK(rc==0);if(rc)return 1;
-    depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);
+    if(!aspect_only){depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);}
+    aspect_metadata_cases(x,pool);
     rt_executor_close(x);munmap(pool,POOL);close(fd);
     printf("metal depth: %u scenarios, %u checks, %u failures\n",scenarios,checks,failures);return failures?1:0;
 }

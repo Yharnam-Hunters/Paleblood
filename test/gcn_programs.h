@@ -91,6 +91,57 @@ static const uint32_t table_copy[] = TABLE_COPY(0xe03c2000, 0);
 static const uint32_t table_copy_format[] = TABLE_COPY(0xe0082000, 0);
 static const uint32_t table_copy_store_offset[] = TABLE_COPY(0xe03c2000, 4);
 
+/* Constant fills (gcn_fill_shape): the value loaded from the constant buffer s[8:11] into s[16:19],
+   stored through the descriptor s[0:3] at element lane + workgroup (s12) x 64; at lane + workgroup x 128
+   and 64 past it; and at the same two elements built from the thread's global id ((id >> 6) << 7 plus
+   id - (id >> 6) << 6, which holds for workgroups of up to 64 lanes). One storing the lane id (not the
+   loaded value) is not one. */
+#define FILL_VALUE_LOAD 0xc2880900, /* s_buffer_load_dwordx4 s[16:19], s[8:11], 0x0 */ \
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */                                             \
+    0x7e020210, /* v_mov_b32 v1, s16 */                                                \
+    0x7e040211, /* v_mov_b32 v2, s17 */                                                \
+    0x7e060212, /* v_mov_b32 v3, s18 */                                                \
+    0x7e080213  /* v_mov_b32 v4, s19 */
+static const uint32_t fill_one_store[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_two_stores[] = {
+    0x8f0d870c, /* s_lshl_b32 s13, s12, 7 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0x4a0a00c0, /* v_add_i32 v5, vcc, 64, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xe01c2000, 0x80000105, /* buffer_store_format_xyzw v[1:4], v5, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_from_global_id[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0: the global id */
+    0x2c0c0086, /* v_lshrrev_b32 v6, 6, v0 */
+    0x340e0c86, /* v_lshlrev_b32 v7, 6, v6 */
+    0x4c0e0f00, /* v_sub_i32 v7, vcc, v0, v7: the lane */
+    0x340c0c87, /* v_lshlrev_b32 v6, 7, v6 */
+    0x4a000d07, /* v_add_i32 v0, vcc, v7, v6 */
+    FILL_VALUE_LOAD,
+    0x4a0a00c0, /* v_add_i32 v5, vcc, 64, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xe01c2000, 0x80000105, /* buffer_store_format_xyzw v[1:4], v5, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_of_lanes[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0x7e020300, /* v_mov_b32 v1, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+#undef FILL_VALUE_LOAD
+
 /* out[i] = v_min_i32(-3, in[i]), out[64 + i] = v_max_i32(-3, in[i]), out[128 + i] = v_min_u32(7, in[i]),
    out[192 + i] = v_max_u32(7, in[i]). */
 static const uint32_t integer_min_max[] = {
@@ -232,6 +283,21 @@ static const uint32_t constants_and_modifiers[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* The roundings: per lane i, the float in[i] toward zero, up, to the nearest (ties to even), and its
+   negation toward zero (VOP3 neg), at out[4i .. 4i + 3]. */
+static const uint32_t roundings[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e064302, /* v_trunc_f32_e32 v3, v2 */
+    0x7e084502, /* v_ceil_f32_e32 v4, v2 */
+    0x7e0a4702, /* v_rndne_f32_e32 v5, v2 */
+    0xd3420006, 0x20000102, /* v_trunc_f32_e64 v6, -v2 */
+    0x340e0084, /* v_lshlrev_b32_e32 v7, 4, v0 */
+    0xe0781000, 0x80010307, /* buffer_store_dwordx4 v[3:6], v7, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* An instruction the translator does not handle yet: translation stops naming it. */
 static const uint32_t unsupported[] = {
     0xc8040002, /* v_interp_p1_f32 v1, v2, attr0.x */
@@ -365,6 +431,65 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* ds_swizzle_b32's quad mode: lane i holds i * i and takes the value of its quad's lane 0, 2 and 3 (one
+   source lane for the whole quad), stored at out[i], out[64 + i] and out[128 + i]. */
+static const uint32_t quad_swizzle[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0x16040100, /* v_mul_u32_u24_e32 v2, v0, v0 */
+    0xd8d48000, 0x03000002, /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,0,0,0,0) */
+    0xd8d480aa, 0x04000002, /* ds_swizzle_b32 v4, v2 offset:swizzle(QUAD_PERM,2,2,2,2) */
+    0xd8d480ff, 0x05000002, /* ds_swizzle_b32 v5, v2 offset:swizzle(QUAD_PERM,3,3,3,3) */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010501, /* buffer_store_dword v5, v1, s[4:7], 0 offen offset:512 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A pixel shader's screen-space difference by hand, as the game's do: attribute x of the quad's lane 1
+   minus that of its lane 0 (ds_swizzle_b32's quad mode), exported as the colour. */
+static const uint32_t pixel_quad_swizzle[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x */
+    0xc8090001, /* v_interp_p2_f32 v2, v1, attr0.x */
+    0xd8d48055, 0x03000002, /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,1,1,1,1) */
+    0xd8d48000, 0x04000002, /* ds_swizzle_b32 v4, v2 offset:swizzle(QUAD_PERM,0,0,0,0) */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x08060903, /* v_sub_f32_e32 v3, v3, v4 */
+    0x5e0c0703, /* v_cvt_pkrtz_f16_f32_e32 v6, v3, v3 */
+    0xf8001c0f, 0x00000606, /* exp mrt0, v6, v6, v6, v6 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* The negated float compares: per lane i, the floats (a, b) at in[2i], in[2i + 1]; each of nge, nlg, ngt
+   and nle stores 1 where it holds, 0 elsewhere, at out[8i .. 8i + 3]; neq and nlt at out[8i + 4], out[8i + 5];
+   then v_cmpx_ngt leaves active only the lanes where ngt holds, which store (neq, nlt, 1, 0) at
+   out[8i + 4 .. 8i + 7] (the others store nothing there). */
+static const uint32_t negated_compares[] = {
+    0x34020083, /* v_lshlrev_b32_e32 v1, 3, v0 */
+    0xe0341000, 0x80000201, /* buffer_load_dwordx2 v[2:3], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34020085, /* v_lshlrev_b32_e32 v1, 5, v0 */
+    0x7c120702, /* v_cmp_nge_f32_e32 vcc, v2, v3 */
+    0xd2000004, 0x01a90280, /* v_cndmask_b32_e64 v4, 0, 1, vcc */
+    0x7c140702, /* v_cmp_nlg_f32_e32 vcc, v2, v3 */
+    0xd2000005, 0x01a90280, /* v_cndmask_b32_e64 v5, 0, 1, vcc */
+    0x7c160702, /* v_cmp_ngt_f32_e32 vcc, v2, v3 */
+    0xd2000006, 0x01a90280, /* v_cndmask_b32_e64 v6, 0, 1, vcc */
+    0x7c180702, /* v_cmp_nle_f32_e32 vcc, v2, v3 */
+    0xd2000007, 0x01a90280, /* v_cndmask_b32_e64 v7, 0, 1, vcc */
+    0xe0781000, 0x80010401, /* buffer_store_dwordx4 v[4:7], v1, s[4:7], 0 offen */
+    0x7c1a0702, /* v_cmp_neq_f32_e32 vcc, v2, v3 */
+    0xd2000004, 0x01a90280, /* v_cndmask_b32_e64 v4, 0, 1, vcc */
+    0x7c1c0702, /* v_cmp_nlt_f32_e32 vcc, v2, v3 */
+    0xd2000005, 0x01a90280, /* v_cndmask_b32_e64 v5, 0, 1, vcc */
+    0x7c360702, /* v_cmpx_ngt_f32_e32 vcc, v2, v3 */
+    0x7e0c0281, /* v_mov_b32_e32 v6, 1 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0xe0781010, 0x80010401, /* buffer_store_dwordx4 v[4:7], v1, s[4:7], 0 offen offset:16 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, from in[i]: out[i] = the half in its low 16 bits as a float (the high 16 bits ignored);
    out[64 + i] = the same with the source negated (VOP3 neg). */
 static const uint32_t unpack_halves[] = {
@@ -395,6 +520,34 @@ static const uint32_t buffer_atomics[] = {
     0xe0c45204, 0x80010502, /* buffer_atomic_cmpswap v[5:6], v2, s[4:7], 0 offen offset:516 glc */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xe0701400, 0x80010503, /* buffer_store_dword v5, v3, s[4:7], 0 offen offset:1024 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* An append and a consume buffer on the GDS (M0's base 0x20): lane i first stores its place in the wave
+   (v_mbcnt with constant masks) at out[128 + i]; then the lanes with i % 4 != 0 rank themselves among the
+   active lanes (v_mbcnt with EXEC's halves), ds_append the counter at GDS byte 0x24 and store old + rank at
+   out[i]; then all lanes ds_consume the counter at byte 0x28 and store old - rank at out[64 + i]. */
+static const uint32_t gds_append_consume[] = {
+    0x34080082, /* v_lshlrev_b32_e32 v4, 2, v0 */
+    0xd2460008, 0x000100c1, /* v_mbcnt_lo_u32_b32_e64 v8, -1, 0 */
+    0x481010c1, /* v_mbcnt_hi_u32_b32_e32 v8, -1, v8 */
+    0xe0701200, 0x80010804, /* buffer_store_dword v8, v4, s[4:7], 0 offen offset:512 */
+    0x36120083, /* v_and_b32_e32 v9, 3, v0 */
+    0x7daa1280, /* v_cmpx_ne_u32_e32 vcc, 0, v9 */
+    0xbefc03ff, 0x00200000, /* s_mov_b32 m0, 0x200000 */
+    0xd2480001, 0x0001007f, /* v_mbcnt_hi_u32_b32_e64 v1, exec_hi, 0 */
+    0x4602027e, /* v_mbcnt_lo_u32_b32_e32 v1, exec_lo, v1 */
+    0xd8fa0004, 0x02000000, /* ds_append v2 offset:4 gds */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x4a060302, /* v_add_i32_e32 v3, vcc, v2, v1 */
+    0xe0701000, 0x80010304, /* buffer_store_dword v3, v4, s[4:7], 0 offen */
+    0xbefe04c1, /* s_mov_b64 exec, -1 */
+    0xd2480005, 0x0001007f, /* v_mbcnt_hi_u32_b32_e64 v5, exec_hi, 0 */
+    0x460a0a7e, /* v_mbcnt_lo_u32_b32_e32 v5, exec_lo, v5 */
+    0xd8f60008, 0x06000000, /* ds_consume v6 offset:8 gds */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x4c0e0b06, /* v_sub_i32_e32 v7, vcc, v6, v5 */
+    0xe0701100, 0x80010704, /* buffer_store_dword v7, v4, s[4:7], 0 offen offset:256 */
     0xbf810000, /* s_endpgm */
 };
 
@@ -617,6 +770,20 @@ static const uint32_t vertex_position_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As vertex_position_color, with the colour at record vertex + 3 x the instance index (v3, VGPR_COMP_CNT 3), and as
+   vertex_instance_color_stepped, with the instance index over VGT_INSTANCE_STEP_RATE_0 (v1, VGPR_COMP_CNT 1). */
+#define VERTEX_INSTANCE_COLOR(index_vgpr) {                                                                                   \
+    0xd2860009, 0x04010700 | (index_vgpr), /* v_mad_u32_u24 v9, v<index_vgpr>, 3, v0 */                                      \
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[32_32_32_32,FLOAT] idxen */            \
+    0xebf32000, 0x80010509, /* tbuffer_load_format_xyzw v[5:8], v9, s[4:7], 0 format:[32_32_32_32,FLOAT] idxen */            \
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */                                                                                      \
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */                                                                  \
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */                                                               \
+    0xbf810000, /* s_endpgm */                                                                                                \
+}
+static const uint32_t vertex_instance_color[] = VERTEX_INSTANCE_COLOR(3);
+static const uint32_t vertex_instance_color_stepped[] = VERTEX_INSTANCE_COLOR(1);
+
 /* As vertex_position_color, but the position also goes out as parameter 0 and the colour as parameter 1. */
 static const uint32_t vertex_colour_second[] = {
     0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
@@ -699,6 +866,20 @@ static const uint32_t pixel_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As pixel_color, but attribute 0 read flat with v_interp_mov_f32 from P0 (the first vertex's value), not
+   interpolated. */
+static const uint32_t pixel_flat_color[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc80a0002, /* v_interp_mov_f32 v2, p0, attr0.x */
+    0xc80e0102, /* v_interp_mov_f32 v3, p0, attr0.y */
+    0xc8120202, /* v_interp_mov_f32 v4, p0, attr0.z */
+    0xc8160302, /* v_interp_mov_f32 v5, p0, attr0.w */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Pixel shaders (SPI_PS_INPUT 0x1002: the front face in v2 after the barycentrics) colouring each pixel
    (face, 0.25, 0.25, 1): the face VGPR as a float, or (pixel_face_bits) converted from an unsigned integer. */
 static const uint32_t pixel_face_float[] = {
@@ -713,6 +894,26 @@ static const uint32_t pixel_face_bits[] = {
     0x7e0802f2, /* v_mov_b32_e32 v4, 1.0 */
     0xf800180f, 0x04030302, /* exp mrt0, v2, v3, v3, v4 done vm */
     0xbf810000, /* s_endpgm */
+};
+
+/* A pixel shader that stores to memory: after a scalar loop of 2^20 steps (a multiply-add chain the
+   compiler cannot fold away, so the store comes late), every pixel stores 2.0 (or the next float up, by
+   the chain's low bit) at byte 16 of the buffer in s[4:7], and exports white. */
+static const uint32_t pixel_late_store[] = {
+    0xbe880380, /*  0: s_mov_b32 s8, 0 */
+    0xbe8903ff, 0x12345678, /*  1: s_mov_b32 s9, 0x12345678 */
+    0x9309ff09, 0x0019660d, /*  3: s_mul_i32 s9, s9, 0x19660d */
+    0x8009ff09, 0x3c6ef35f, /*  5: s_add_u32 s9, s9, 0x3c6ef35f */
+    0x80088108, /*  7: s_add_u32 s8, s8, 1 */
+    0xbf0aff08, 0x00100000, /*  8: s_cmp_lt_u32 s8, 0x100000 */
+    0xbf85fff8, /* 10: s_cbranch_scc1 -8 (to 3) */
+    0x87098109, /* 11: s_and_b32 s9, s9, 1 */
+    0x8809f409, /* 12: s_or_b32 s9, s9, 2.0 */
+    0x7e020209, /* 13: v_mov_b32_e32 v1, s9 */
+    0xe0700010, 0x80010100, /* 14: buffer_store_dword v1, off, s[4:7], 0 offset:16 */
+    0x7e0402f2, /* 16: v_mov_b32_e32 v2, 1.0 */
+    0xf800180f, 0x02020202, /* 17: exp mrt0, v2, v2, v2, v2 done vm */
+    0xbf810000, /* 19: s_endpgm */
 };
 
 /* pixel_color writing its colour to colour targets 0 and 2 (two exports, the second done). */
@@ -801,6 +1002,20 @@ static const uint32_t pixel_lookup[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* image_sample_l with DA from the second image (the table's, as in pixel_lookup) at x = v2, slice 0,
+   LOD 0: the LOD's VGPR follows the slice's. */
+static const uint32_t pixel_lookup_level[] = {
+    0xc0c00300, /* s_load_dwordx8 s[0:7], s[2:3], 0x0 */
+    0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+    0x7e080302, /* v_mov_b32_e32 v4, v2 */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0904100, 0x00600004, /* image_sample_l v0, v[4:6], s[0:7], s[12:15] dmask:0x1 da */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x00000000, /* exp mrt0, v0, v0, v0, v0 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* The image in s[4:11] sampled through the sampler in s[12:15] at (x / 16, y / 16) of the pixel's
    position: the level its derivatives pick. */
 static const uint32_t pixel_minified[] = {
@@ -822,6 +1037,18 @@ static const uint32_t pixel_level_zero[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* image_sample_lz with a texel offset (image_sample_lz_o): the image in s[4:11] at (x / 16, y / 16) of the
+   pixel's position moved 2 texels right and 1 up (the offset VGPR, first: x 2 in bits 5:0, y -1 in 13:8). */
+static const uint32_t pixel_level_zero_offset[] = {
+    0x7e0c02ff, 0x00003f02, /* v_mov_b32_e32 v6, 0x3f02 */
+    0x100e04ff, 0x3d800000, /* v_mul_f32_e32 v7, 0x3d800000 (1/16), v2 */
+    0x101006ff, 0x3d800000, /* v_mul_f32_e32 v8, 0x3d800000 (1/16), v3 */
+    0xf0dc0f00, 0x00610906, /* image_sample_lz_o v[9:12], v[6:8], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0c0b0a09, /* exp mrt0, v9, v10, v11, v12 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* A depth compare at level 0: the reference 0.5 against the image in s[4:11] at (x / 16, y / 16), through
    the sampler in s[12:15] (its compare function and filter); the result in red, green and blue, alpha 1. */
 static const uint32_t pixel_compared[] = {
@@ -832,6 +1059,21 @@ static const uint32_t pixel_compared[] = {
     0xf0bc0100, 0x00610703, /* image_sample_c_lz v7, v[3:5], s[4:11], s[12:15] dmask:0x1 */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xf800180f, 0x08070707, /* exp mrt0, v7, v7, v7, v8 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* pixel_minified's coordinates sampled with given derivatives (image_sample_d): 1/32 a pixel in x along x and in
+   y along y, 2 texels of a 64-texel image, the level 1 whatever the coordinates' own derivatives. */
+static const uint32_t pixel_given_derivatives[] = {
+    0x101004ff, 0x3d800000, /* v_mul_f32_e32 v8, 0x3d800000 (1/16), v2 */
+    0x101206ff, 0x3d800000, /* v_mul_f32_e32 v9, 0x3d800000 (1/16), v3 */
+    0x7e0802ff, 0x3d000000, /* v_mov_b32_e32 v4, 0x3d000000 (1/32: ds/dx) */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 (dt/dx) */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 (ds/dy) */
+    0x7e0e02ff, 0x3d000000, /* v_mov_b32_e32 v7, 0x3d000000 (1/32: dt/dy) */
+    0xf0880f00, 0x00610a04, /* image_sample_d v[10:13], v[4:9], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0d0c0b0a, /* exp mrt0, v10, v11, v12, v13 done vm */
     0xbf810000, /* s_endpgm */
 };
 
@@ -893,6 +1135,112 @@ static const uint32_t pixel_other_barycentrics[] = {
 /* Refused: pos1, whose meaning depends on GPU settings. */
 static const uint32_t vertex_pos1[] = {
     0xf80008df, 0x04030201, /* exp pos1, v1, v2, v3, v4 done */
+    0xbf810000, /* s_endpgm */
+};
+
+/* SGPR spill slots (v_writelane_b32, v_readlane_b32): v2 is an ordinary VGPR (the lane's index, from which v3
+   = the lane's byte offset), then holds s8, s9, the output descriptor s[4:7] and the mask s[12:13] (lanes
+   below 8) in lanes 0, 5, 6-9, 10-11 while those SGPRs are cleared, which come back (s8 and s9 into s10 and
+   s11); then v2 is ordinary again (1). Each lane stores s10 + s11 + v2 = 0x11111119 at out[i] and its mask
+   bit at out[64 + i], through the restored descriptor. */
+static const uint32_t spill_slots[] = {
+    0xbe8803ff, 0x11111111, /* s_mov_b32 s8, 0x11111111 */
+    0xbe890387, /* s_mov_b32 s9, 7 */
+    0x7e040300, /* v_mov_b32_e32 v2, v0 */
+    0x34060482, /* v_lshlrev_b32_e32 v3, 2, v2 */
+    0xd188000c, 0x00020088, /* v_cmp_gt_u32_e64 s[12:13], 8, v0 */
+    0x04050008, /* v_writelane_b32 v2, s8, 0 */
+    0x04050a09, /* v_writelane_b32 v2, s9, 5 */
+    0x04050c04, /* v_writelane_b32 v2, s4, 6 */
+    0x04050e05, /* v_writelane_b32 v2, s5, 7 */
+    0x04051006, /* v_writelane_b32 v2, s6, 8 */
+    0x04051207, /* v_writelane_b32 v2, s7, 9 */
+    0x0405140c, /* v_writelane_b32 v2, s12, 10 */
+    0x0405160d, /* v_writelane_b32 v2, s13, 11 */
+    0xbe880380, /* s_mov_b32 s8, 0 */
+    0xbe890380, /* s_mov_b32 s9, 0 */
+    0xbe840480, /* s_mov_b64 s[4:5], 0 */
+    0xbe860480, /* s_mov_b64 s[6:7], 0 */
+    0xbe8c0480, /* s_mov_b64 s[12:13], 0 */
+    0x02150102, /* v_readlane_b32 s10, v2, 0 */
+    0x02170b02, /* v_readlane_b32 s11, v2, 5 */
+    0x02090d02, /* v_readlane_b32 s4, v2, 6 */
+    0x020b0f02, /* v_readlane_b32 s5, v2, 7 */
+    0x020d1102, /* v_readlane_b32 s6, v2, 8 */
+    0x020f1302, /* v_readlane_b32 s7, v2, 9 */
+    0x02191502, /* v_readlane_b32 s12, v2, 10 */
+    0x021b1702, /* v_readlane_b32 s13, v2, 11 */
+    0x7e08020a, /* v_mov_b32_e32 v4, s10 */
+    0x4a08080b, /* v_add_i32_e32 v4, vcc, s11, v4 */
+    0x7e040281, /* v_mov_b32_e32 v2, 1 */
+    0x4a080902, /* v_add_i32_e32 v4, vcc, v2, v4 */
+    0xd2000005, 0x00310280, /* v_cndmask_b32_e64 v5, 0, 1, s[12:13] */
+    0xe0701000, 0x80010403, /* buffer_store_dword v4, v3, s[4:7], 0 offen */
+    0xe0701100, 0x80010503, /* buffer_store_dword v5, v3, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A descriptor spilled and restored: s_load_dwordx8 s[0:7] from s[8:9] + 16 bytes, spilled to v1's lanes
+   2-9, cleared, restored into s[12:19] and used by image_load. */
+static const uint32_t spilled_descriptor[] = {
+    0xc0c00904, /* s_load_dwordx8 s[0:7], s[8:9], 0x4 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x04030400, /* v_writelane_b32 v1, s0, 2 */
+    0x04030601, /* v_writelane_b32 v1, s1, 3 */
+    0x04030802, /* v_writelane_b32 v1, s2, 4 */
+    0x04030a03, /* v_writelane_b32 v1, s3, 5 */
+    0x04030c04, /* v_writelane_b32 v1, s4, 6 */
+    0x04030e05, /* v_writelane_b32 v1, s5, 7 */
+    0x04031006, /* v_writelane_b32 v1, s6, 8 */
+    0x04031207, /* v_writelane_b32 v1, s7, 9 */
+    0xbe800480, /* s_mov_b64 s[0:1], 0 */
+    0xbe820480, /* s_mov_b64 s[2:3], 0 */
+    0xbe840480, /* s_mov_b64 s[4:5], 0 */
+    0xbe860480, /* s_mov_b64 s[6:7], 0 */
+    0x02190501, /* v_readlane_b32 s12, v1, 2 */
+    0x021b0701, /* v_readlane_b32 s13, v1, 3 */
+    0x021d0901, /* v_readlane_b32 s14, v1, 4 */
+    0x021f0b01, /* v_readlane_b32 s15, v1, 5 */
+    0x02210d01, /* v_readlane_b32 s16, v1, 6 */
+    0x02230f01, /* v_readlane_b32 s17, v1, 7 */
+    0x02251101, /* v_readlane_b32 s18, v1, 8 */
+    0x02271301, /* v_readlane_b32 s19, v1, 9 */
+    0xf0000f00, 0x00030402, /* image_load v[4:7], v[2:3], s[12:19] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Three-way min, max and middle (f32, i32, u32), bit-field insert, 64-bit shifts and the legacy float min
+   and max: lane i reads (x, y, z, w) at in[4i] and, for lanes 0-11, writes v6-v25 at out[20i]: min3, max3,
+   med3 of (x, y, z) as i32 then u32, bfi(x, y, z), the pair (y:x) shifted left, right and arithmetically
+   right by w, min3(x, y, z), max3(x, y, -z), med3(x, y, z) as floats, max_legacy(x, y), min_legacy(x, y),
+   and the 64-bit -1 shifted left by w. */
+static const uint32_t valu_batch[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0xe0381000, 0x80000201, /* buffer_load_dwordx4 v[2:5], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x160200ff, 0x00000050, /* v_mul_u32_u24_e32 v1, 0x50, v0 */
+    0xd2a40006, 0x04120702, /* v_min3_i32 v6, v2, v3, v4 */
+    0xd2aa0007, 0x04120702, /* v_max3_i32 v7, v2, v3, v4 */
+    0xd2b00008, 0x04120702, /* v_med3_i32 v8, v2, v3, v4 */
+    0xd2a60009, 0x04120702, /* v_min3_u32 v9, v2, v3, v4 */
+    0xd2ac000a, 0x04120702, /* v_max3_u32 v10, v2, v3, v4 */
+    0xd2b2000b, 0x04120702, /* v_med3_u32 v11, v2, v3, v4 */
+    0xd294000c, 0x04120702, /* v_bfi_b32 v12, v2, v3, v4 */
+    0xd2c2000d, 0x00020b02, /* v_lshl_b64 v[13:14], v[2:3], v5 */
+    0xd2c4000f, 0x00020b02, /* v_lshr_b64 v[15:16], v[2:3], v5 */
+    0xd2c60011, 0x00020b02, /* v_ashr_i64 v[17:18], v[2:3], v5 */
+    0xd2a20013, 0x04120702, /* v_min3_f32 v19, v2, v3, v4 */
+    0xd2a80014, 0x84120702, /* v_max3_f32 v20, v2, v3, -v4 */
+    0xd2ae0015, 0x04120702, /* v_med3_f32 v21, v2, v3, v4 */
+    0x1c2c0702, /* v_max_legacy_f32_e32 v22, v2, v3 */
+    0x1a2e0702, /* v_min_legacy_f32_e32 v23, v2, v3 */
+    0xd2c20018, 0x00020ac1, /* v_lshl_b64 v[24:25], -1, v5 */
+    0x7da8008c, /* v_cmpx_gt_u32_e32 vcc, 12, v0 */
+    0xe0781000, 0x80010601, /* buffer_store_dwordx4 v[6:9], v1, s[4:7], 0 offen */
+    0xe0781010, 0x80010a01, /* buffer_store_dwordx4 v[10:13], v1, s[4:7], 0 offen offset:16 */
+    0xe0781020, 0x80010e01, /* buffer_store_dwordx4 v[14:17], v1, s[4:7], 0 offen offset:32 */
+    0xe0781030, 0x80011201, /* buffer_store_dwordx4 v[18:21], v1, s[4:7], 0 offen offset:48 */
+    0xe0781040, 0x80011601, /* buffer_store_dwordx4 v[22:25], v1, s[4:7], 0 offen offset:64 */
     0xbf810000, /* s_endpgm */
 };
 

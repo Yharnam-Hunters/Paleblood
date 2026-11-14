@@ -14,7 +14,14 @@ calling thread with the trap flag set, on a private stack holding a copy of the 
 arguments. The kernel delivers SIGTRAP after each instruction; the handler decodes the next
 instruction with Capstone before it runs, computes each memory operand's effective address from
 the saved registers, and notes the bytes: the first value of a byte read before it is written is an
-input, and every written byte is noted so the case gives it somewhere to land. String instructions
+input, and every written byte is noted so the case gives it somewhere to land. A memory operand
+Capstone marks with no access at all (the source of `test m, r`, as a heap's bitmap test has one)
+counts as a read. Capstone 5 also marks the destination of most vector and x87 stores
+(`vmovss m, xmm`, `movups m, xmm`, `vextractps`, `fstp m`, most `setcc m`) as a read, and that of
+`rol m` or `cmpxchg m` as a read only; the tracer classifies those itself (`memory_access`).
+Before it did, a store's destination became an input holding its old value, and reading the stored
+value back looked like another thread's write, so the perception update (which stores its timer
+with `vmovss` and stores it again later) never gave a case. String instructions
 with `rep` cover `rcx` elements in the direction flag's direction. The function's own frame is left
 out; reads of its stack arguments are counted. The handler allocates nothing (tables are mapped
 before the call) and reads values with `process_vm_readv` on its own process, so an address that
@@ -22,19 +29,30 @@ would fault is reported instead of crashing.
 
 The call always runs to the end and returns its real result to the game. When anything cannot be
 expressed in a case, tracing stops and the rest of the call runs natively; the log names the reason
-and no case is written. Fail-closed reasons today: an instruction the tracer does not model
-(`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), a segment-relative access (thread-local
-storage), a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
-it (cases give only `xmm0` and `xmm1`), a stack argument past the 70th, code outside the traced
-ranges (an import or other native code), unreadable memory, the instruction limit
-(`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
+and where it stopped (`BB_CAPTURE_VERBOSE=1` prints both: a PS4 address, or native code with its
+symbol, such as a replacement without a redirect), and no case is written. Fail-closed reasons today: an instruction the tracer does not model
+(`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), an `fs` access (the host's own thread block;
+guest code reads its thread pointer through `gs`, below), thread-local storage more than 1 MiB from
+the thread pointer, a vector-indexed access (gather, scatter), a stack argument past the 70th, code outside the traced
+ranges (an import or other native code), unreadable memory, an input byte that a later read sees
+with another value although neither the traced code nor a scripted import write changed it
+(another thread wrote it; a case gives each input one value, so the replay would take another
+path), a byte the traced code or a scripted import wrote that a later read sees with another value
+(another thread changed it between the write and the read, as when a heap's lock is released
+between two allocations; the replay would read the value written, so it would take another path:
+the tracer reads each written byte's value once the writing instruction has run), the instruction
+limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
 
 **Case** (`runtime/capture_trace.cpp`). A complete trace becomes a schema-1 case:
 
 - Bytes inside the executable's image are `memory` entries at their PS4 addresses.
 - Every other touched byte belongs to a buffer: bytes closer than 256 apart join one buffer, which
   starts on a 16-byte boundary so aligned vector loads stay aligned. Read bytes hold the value
-  read; written-only bytes are zero.
+  read; written-only bytes are zero. Each buffer notes its `origin`, its address in the run. The
+  verifier replays it there when it can (docs/VERIFY.md, `buffers`), because code may depend on
+  where memory lies: an engine heap takes a block's size from the distance to the next block, which
+  can be another buffer megabytes away, and a different distance files the rest of a split block
+  in a list the run never read.
 - An eight-byte input whose value points into a buffer or into the image becomes a `pointer` or
   `guest` entry, so it still points at the same thing in the verifier's sandbox.
 - A pointer (an argument or an eight-byte input) that lies before the bytes it reaches, up to
@@ -42,8 +60,30 @@ ranges (an import or other native code), unreadable memory, the instruction limi
   buffer down to it, so it is written as `buf:NAME+off` and keeps its distance to those bytes.
 - Bytes of the executable's read-only segments are not inputs: the verifier maps the same
   executable, and presetting them would write into read-only memory.
-- Arguments (`rdi`..`r9`, `xmm0`, `xmm1`) and the stack arguments read are written the same way:
-  `buf:NAME+off`, `guest:0xADDRESS`, or a number.
+- Thread-local storage. The loader rewrites the game's `mov rax, fs:[0]` to read `gs`, which the
+  runtime points at each guest thread's block (TLS variant II: the thread pointer's first word
+  points to itself, the executable's variables lie below it). The tracer reads `gs` accesses at the
+  calling thread's GS base, and follows the thread pointer read at `gs:[0]` through an offset added
+  from memory (`add rax, [rip + offset]`, the offset a global the case carries): a variable reached
+  that way is a far reach from the thread pointer, so the variable and the block are one buffer at
+  their distance, and the case's `gs` points at the block (docs/VERIFY.md, `gs`). Whatever the
+  variable points to (the thread's temporary heap) is ordinary memory.
+- An access 256 bytes to 1 MiB away from the base pointer it went through (a large object whose
+  fields lie in separate runs) keeps the pointer and the bytes it reached in one buffer, so the
+  replay keeps their distance. A buffer's `bytes` leave out its trailing zeros. A pointer computed
+  from another by address arithmetic (`lea`, `add` of a loaded offset, `mov` between registers;
+  a table's search index at the table plus its stored size) counts as the pointer it came from,
+  so an access through it keeps its distance to that pointer too; any other write to the register
+  forgets this.
+- The private stack is filled with `0xa5` below the return slot before the call, so an import that
+  writes into the traced code's frame (a zero result, a timespec) always changes it and is scripted.
+- Imports' arguments are not compared (`argc` 0), except the first 32-bit number of
+  `sceKernelUsleep` and `sceKernelClockGettime` (`argu32`): a replacement that sleeps for another
+  time or reads another clock fails.
+- Arguments (`rdi`..`r9`) and the stack arguments read are written the same way:
+  `buf:NAME+off`, `guest:0xADDRESS`, or a number. `xmm0` and `xmm1` are always written (hex
+  bytes); `xmm2`..`xmm7` only when the code reads one before writing it (a third float argument,
+  say).
 - `returns` comes from the hook table: the return class is data (`game/hooks.csv`), not inferred.
 - The `capture` provenance names the function and the run; files are written by `rt_capture_write`
   (owner-only, never overwriting), under the same sampling as before (`runtime/capture.h`).
@@ -53,9 +93,18 @@ and nothing is recorded.
 
 **Proof.** `test/test_capture_trace.cpp` traces synthetic guest code (`test/capture_trace_guest.S`)
 mapped as an image: a pointer argument to a struct holding a pointer, an image global, stack
-arguments, a float argument and result, a call between guest functions, and `rep movsb`. It checks
-the results and the inputs, and that an `xmm2` read, a thread-local access, a call into native code
-and the instruction limit give no case while the call still completes.
+arguments, a float argument and result, a call between guest functions, `rep movsb`, two fields
+4 KiB apart through one pointer, and imports that leave a register pointing at memory they change,
+write through two registers at once, change memory far past what they wrote, or write a zero into
+the frame, a table index reached through a computed pointer (add and lea forms, and a register a
+load replaced), a sleep whose length is compared, a word read only through `test m, r`, and a `vmovss` store and a `seta` store each read back.
+It checks
+the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
+(one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
+read it), an `xmm2` argument (given by the case, while `xmm3`, written before it is read, is not),
+and that an `fs` access, a call into native code, an input changed
+between two reads, memory the code wrote changed before it read it again and the instruction limit
+give no case while the call still completes.
 `test/capture_trace_integration.py` then replays every recorded case with `tools/verify.py`: each
 passes against a native replacement, and a replacement with one deliberate change per function
 fails.
@@ -65,17 +114,26 @@ fails.
 before installing it, while the original is still intact:
 
 1. The original's first instructions (at least the 14 bytes the hook's jump overwrites) are copied
-   into a block mapped within reach of the image, with RIP-relative operands and 32-bit relative
-   calls and jumps rewritten to keep their targets, followed by a jump back into the rest of the
-   original (`rt_trace_relocate`).
+   into a block mapped within reach of the image, with RIP-relative operands and relative calls
+   and jumps rewritten to keep their targets (a short `jcc` or `jmp` is written in its 32-bit
+   form), followed by a jump back into the rest of the original (`rt_trace_relocate`). Small
+   functions often test and branch in their first bytes (a heap's bounds check, a lock's `-1`
+   check); before short branches moved, 85 of the hooked functions had no redirect, and a traced
+   call that reached one (the target-list update's temporary heap) left the traced code.
 2. A function whose own branches jump back into those first bytes (a loop at its very start) is not
    recorded: its original can no longer run once hooked (`rt_trace_branches_into`). Nor is one that
-   short branches or out-of-reach operands keep from relocating, or one without a return class.
+   `loop`/`jrcxz` or out-of-reach operands keep from relocating, or one without a return class.
 3. The hook's target becomes a small thunk that loads the hook's record and enters
    `rt_capture_entry`, which saves every argument register (and `al`, for variadic calls) and the
    caller's stack pointer, then asks `rt_capture_dispatch` what to do.
 4. A redirect maps the original's entry to its relocated copy: traced code that calls another
    hooked function follows that function's original, as the verifier runs it.
+5. Family members (docs/FAMILIES.md) are never recorded, but traced code calls them all the time
+   (an empty callback, a field read). Before their hooks go in, each member's whole extent is
+   copied the same way (`rt_capture_families_prepare`) and redirected, so a traced call runs the
+   member's original code instead of leaving the traced code for the shared native replacement
+   (`bb_leaf_returns_nothing` and the like). Before this, the perception update, the character
+   ready check, the target speed record and the HK frame update never gave a case.
 
 At run time an unsampled call, or any call while the thread is already tracing, goes on to the
 replacement with every register exactly as it arrived. A sampled call (`runtime/capture.h`: the
@@ -132,11 +190,27 @@ loaded from the slot), the call runs natively and is recorded instead of ending 
 tracer snapshots up to 4096 bytes behind each argument register, sends the import's return to a
 one-byte `int3` pad, and lets it run untraced. At the pad it records the return value and every byte
 that changed behind each pointer argument, notes those bytes as written (later reads of them are not
-inputs: the case's script writes them), puts the real return address back and resumes tracing. Only
-bytes above the return slot are compared: an unused argument register can hold a stale pointer below
-the stack, where the import's own frames and the trap handler write, and none of that is visible to
-the caller once the import returns. The
-case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [{"arg", "offset", "bytes"}]}`.
+inputs: the case's script writes them), puts the real return address back and resumes tracing.
+The import's argument count is not known, and each change is scripted as a write through its
+register, which a replay sets differently for registers that were not arguments, so a change counts
+only when it can be the import's write for the caller:
+
+- not through a register an earlier import left and the traced code has not set since (an unused
+  argument register holds whatever the last import put there);
+- not on bytes an earlier register of the same call already scripts (two registers pointing at the
+  same memory);
+- not below the import's return slot on the private stack the call runs on (the import's own frames
+  and the trap handler's), nor below the caller's stack pointer (the recording thread's own native
+  frames);
+- in the traced call's own frame, within 256 bytes after the pointer or after the last change kept
+  through it (a filled buffer whose runs kept some of their values), or on bytes the traced code
+  read or wrote before: other threads change memory behind any pointer while the import runs.
+
+The case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [...]}`. A kept change in
+a buffer or the image is written at its place (`{"addr", "bytes"}`), since the register it was seen
+through need not be an argument (an import that updates labels in the command buffers it was
+given, seen through a register it does not read); a change in the traced call's own frame, which has
+no place in the case, is written through its register (`{"arg", "offset", "bytes"}`).
 Reads of an import's slot are never inputs, since the verifier binds its own stub there.
 
 The host's loader binds the imports, so the runtime finds the slots itself at install time: it maps
@@ -168,9 +242,7 @@ import stub bound by NID (`capture_trace_replay`, `capture_hooks_replay`).
 
 ### Next steps
 
-1. **Thread-local storage**: a `gs:` access becomes a buffer for the thread block and the case's
-   `gs` value.
-2. **Import arguments**: compare an import's arguments once their count is data (a declaration
+1. **Import arguments**: compare an import's arguments once their count is data (a declaration
    list per import), as hooks carry their return class.
 
 ## Typed descriptors (earlier proof)

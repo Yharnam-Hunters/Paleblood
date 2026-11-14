@@ -158,12 +158,21 @@ static void effects(rt_executor *x,uint8_t *pool)
             memmove(program+prefix+2,program+prefix,sizeof counted_vertex-prefix*4);
             program[prefix]=0xe01c2000;program[prefix+1]=0x80020500;
             for(size_t i=0;i<count;++i)if(calls[i].kind==RT_CALL_USER_DATA&&calls[i].u.user_data.slot==8)
-                calls[i].u.user_data.words[3]=(4u|5u<<3|6u<<6|7u<<9)|5u<<15;
+                calls[i].u.user_data.words[3]=(4u|5u<<3|6u<<6|7u<<9)|6u<<15;
         }
-        submit(x,3,0,mode==3?"shader runtime stop: 4-component buffer store, DATA_FORMAT 5":NULL);
+        submit(x,3,0,mode==3?"shader runtime stop: 4-component buffer store, DATA_FORMAT 6":NULL);
         for(unsigned i=0;i<W*H*4+64;++i)CHECK(pool[TARGET+i]==0x55);
         for(unsigned i=0;i<VERTICES;++i){float value;memcpy(&value,pool+COUNTER+i*4,4);CHECK(value==(i<3?1.0f:0.0f));}
         if(mode==3)for(unsigned i=0;i<W*H;++i){float value;memcpy(&value,pool+Z+i*4,4);CHECK(value==.75f);CHECK(pool[S+i]==0x2a);}
+    }
+    /* The rectangle capture pass currently executes a single instance only. Refuse both
+       ordinary and zero-count multi-instance requests before shaders or pool publication. */
+    const unsigned instance_counts[] = {3,0};
+    for(unsigned i=0;i<2;++i){
+        setup(x,pool,3,1,17);memcpy(pool+POS,pos,sizeof pos);memcpy(pool+COL,colors,sizeof colors);
+        rt_render_call *c=event(RT_CALL_INSTANCES);c->u.instances.count=2;
+        uint8_t *before=malloc(POOL);CHECK(before!=NULL);if(!before)exit(1);memcpy(before,pool,POOL);
+        submit(x,instance_counts[i],0,"rectangle-list instancing");CHECK(memcmp(before,pool,POOL)==0);free(before);
     }
     /* Zero indexed count never resolves the deliberately absent source address. */
     setup(x,pool,3,1,17);submit(x,0,2,NULL);
@@ -173,7 +182,7 @@ int main(void)
 {
     char path[]="/tmp/paleblood-metal-rectangles-XXXXXX",error[1024]="";int fd=mkstemp(path);CHECK(fd>=0);if(fd<0)return 1;unlink(path);
     CHECK(ftruncate(fd,POOL)==0);uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);CHECK(pool!=MAP_FAILED);if(pool==MAP_FAILED)return 1;
-    rt_executor *x=NULL;rt_executor_memory memory={fd,POOL,base,NULL,NULL,NULL};int rc=rt_executor_open(&memory,&x,error,sizeof error);CHECK(rc==0);if(rc){fprintf(stderr,"open %s\n",error);return 1;}
+    rt_executor *x=NULL;rt_executor_memory memory={.fd=fd,.size=POOL,.guest_base=base};int rc=rt_executor_open(&memory,&x,error,sizeof error);CHECK(rc==0);if(rc){fprintf(stderr,"open %s\n",error);return 1;}
     for(unsigned p=0;p<5;++p)for(unsigned permutation=0;permutation<6;++permutation)for(unsigned indexed=0;indexed<3;++indexed)for(int sy=-1;sy<=1;sy+=2)
         compare(x,pool,permutation,indexed,p,sy);
     multiple(x,pool,2);multiple(x,pool,4);effects(x,pool);

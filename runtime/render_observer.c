@@ -3,6 +3,7 @@
    functions are looked up by name in the host process once, and each observer call forwards to its
    function, or does nothing when the host has none. */
 #include "runtime/render_observer.h"
+#include "runtime/render_observer_hooks.h"
 
 #include <dlfcn.h>
 #include <pthread.h>
@@ -28,6 +29,7 @@ static struct {
     __typeof__(rt_render_record_index_size) *index_size;
     __typeof__(rt_render_record_index_type) *index_type;
     __typeof__(rt_render_record_draw_index_offset) *draw_index_offset;
+    __typeof__(rt_render_record_draw_indexed) *draw_indexed;
     fatal_fn fatal;
 } record;
 
@@ -56,6 +58,7 @@ static void look_up(void)
     record.index_size = (__typeof__(record.index_size))host_function("rt_render_record_index_size");
     record.index_type = (__typeof__(record.index_type))host_function("rt_render_record_index_type");
     record.draw_index_offset = (__typeof__(record.draw_index_offset))host_function("rt_render_record_draw_index_offset");
+    record.draw_indexed = (__typeof__(record.draw_indexed))host_function("rt_render_record_draw_indexed");
     record.fatal = (fatal_fn)host_function("rt_fatal");
 }
 
@@ -162,4 +165,10 @@ void rt_observe_index_type(uint64_t buffer, uint32_t offset, uint32_t type)
 void rt_observe_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count)
 {
     FORWARD(draw_index_offset, "render observer: indexed draw", buffer, offset, first, count);
+}
+
+void rt_observe_draw_indexed(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size, uint64_t address, uint32_t count,
+                             uint32_t initiator)
+{
+    FORWARD(draw_indexed, "render observer: addressed indexed draw", buffer, offset, header, max_size, address, count, initiator);
 }

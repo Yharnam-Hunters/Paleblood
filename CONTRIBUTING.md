@@ -2,18 +2,18 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 18137 of 157757 functions are verified (11.50%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
-runtime ([README](README.md#the-goal)). It is open to everyone who wants to help. Reverse
+runtime ([docs/OVERVIEW.md](docs/OVERVIEW.md#what-this-is)). It is open to everyone who wants to help. Reverse
 engineering, C and C++, PS4 internals, the runtime's system libraries and writing up how a system
 works all count, and the smallest correct pull request is
 welcome.
 
 ## Getting started
 
-1. Read the [README](README.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
+1. Read the [README](README.md), [docs/OVERVIEW.md](docs/OVERVIEW.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
    port works, and [QUIRKS.md](QUIRKS.md) for the traps.
 2. Choose a track. Decompilation work uses your own console and your own game copy; follow
    [docs/ONBOARDING.md](docs/ONBOARDING.md). Runtime system-call work needs no game files, dump,
@@ -86,9 +86,12 @@ Never copy its code, and never attach or link the files. Do not copy, adapt, or 
 implementation code from another PS4 runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
-the rest of CTest, and retains the repository's policy checks. It also builds and tests your PR
-merged with each other open PR that is ready for review (`tools/combined_check.py`), so two PRs
-that pass alone but break together are found before either is queued. CI selects the concise runtime
+the rest of CTest, and retains the repository's policy checks. An advisory `combined` workflow
+(not a required check, never run by the merge queue) also builds and tests your PR merged with up
+to four other open PRs that are ready for review and change the same files or directories
+(`tools/combined_check.py --overlap --max-pairs 4`), so two PRs that pass alone but break together
+are usually found before either is queued; the merge queue still tests the real combination. A new
+push cancels the previous `combined` run, and draft PRs are checked when marked ready. CI selects the concise runtime
 report from changed files, not a manually applied label. Include sources, confirmed behavior,
 unresolved questions, tests, and the clean-room basis in that report.
 
@@ -137,6 +140,9 @@ files. Run `tools/session_report.py` on your branch (attach `verify.py` results 
 and the case directories with `--captures`) and paste its output into the PR. CI checks that
 every function replacement in the report has matching, non-empty, passing verification evidence,
 and that the report includes each replacement status change found in `symbols/functions.csv`.
+Cases quarantined with a reason ([docs/VERIFY.md](docs/VERIFY.md)) stay in the report's table as
+quarantined: attach the summary of the `verify.py run --record` run, whose counts CI compares
+with `symbols/verification.csv`.
 
 Every pull request that replaces game code contains, in the description:
 
@@ -150,7 +156,7 @@ A function's status in `symbols/functions.csv` goes through three levels:
 | Status | Means |
 |---|---|
 | `replaced` | it is in the hook registry and builds |
-| `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original |
+| `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original, recorded as a current `edge` row (`verify.py run --record edge`) |
 | `verified` | it also passes on inputs recorded in the game (the capture library), and the independent review approved it |
 
 `edge-verified` is for functions whose code the game doesn't reach where you can record (a
@@ -161,6 +167,37 @@ and edge case passes. A failure leaves it where it was and is reported. The runt
 inputs itself: `tools/capture_loop.py` boots every scene it reaches with recording on, then runs
 `tools/promote.py` and lists the functions that pass and await their independent review
 ([docs/VERIFY.md](docs/VERIFY.md), "Recording in the game").
+
+`tools/validate_functions.py` refuses `edge-verified` (and `verified`) for a function without a
+current, passing `edge` row without an option in `symbols/verification.csv`: run its edge cases
+with `tools/verify.py run --record edge` in the pull request that sets the status, and again in
+any pull request that changes its source or a header it includes.
+
+### Generated progress and merging main
+
+Several pull requests land in the merge queue at once, so a pull request must not rewrite text
+that every other one rewrites too:
+
+- **Generated progress.** Leave the generated blocks (the progress block in `STATUS.md`, the status
+  block in this file and the target block in `docs/OVERVIEW.md`) as main has them. (The README's
+  progress map and badges, and the progress page `progress.html` with its `progress.json`, are not
+  committed at all: `.github/workflows/progress-map.yml` builds them with `tools/progress_map.py`
+  and `tools/progress_page.py` from `symbols/` on every push to main and publishes them on GitHub
+  Pages, so they are never stale.) Main is regenerated by one pull request on the branch
+  `auto/regenerate-progress`: after a merge, run `tools/progress_pr.py`, which opens or updates it
+  and queues it (`.github/workflows/progress.yml` fails while main is behind). CI, the hooks and
+  the push gate refuse generated text that a branch changes by hand or leaves stale
+  (`tools/progress.py --check-touched`).
+- **Shared tables.** Keep `symbols/functions.csv`, `game/hooks.csv` and
+  `symbols/matching.csv` in address order, `symbols/reviews.csv` in address and date order, and
+  `symbols/verification.csv` in the order `tools/verify.py run --record` writes, one row per line
+  (`tools/validate_functions.py` checks the order). Git merges rows added or changed in different
+  places; only rows next to each other conflict.
+- **Bringing a branch up to date.** Run `tools/remerge.py` (add `--push` to push and
+  `--pr N` to re-queue): it merges `origin/main`, restores main's generated text, resolves conflicts
+  in the keyed tables row by row (a row only one side changed takes that side; a row both changed
+  differently stops for you, except dated test records, where the newer one wins), rebuilds and
+  validates before it commits. Anything else that conflicts is left for you to resolve.
 
 ### Definition of done
 
@@ -227,7 +264,7 @@ firmware, keys or decryption tools.
   contents). The only images allowed here are under `docs/assets/` and listed in
   `docs/assets/ALLOWLIST` with the command that produced them, and they are our own work:
   recordings of our tools' output, and frames drawn by Paleblood's own renderer, at full
-  resolution, added by the maintainer with attribution (such as the README's title screen).
+  resolution, added by the maintainer with attribution (such as the README's Iosefka's Clinic frame).
   Every file is capped at 2 MiB; an allowlisted image may be up to 8 MiB, so a frame is posted
   whole, never downscaled.
   Contributors do not add game frames themselves; propose one in an issue instead. This repository rule does not

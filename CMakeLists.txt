@@ -17,13 +17,14 @@ add_compile_options(-Wall -Wextra -Werror)
 option(PB_ENABLE_METAL_EXECUTOR "Build the Metal draw executor and its pinned shader converter" OFF)
 option(PB_METAL_ONLY "Build only the standalone macOS Metal platform unit" OFF)
 option(PB_ENABLE_METAL_SMOKE_TEST "Build/register the real-device offscreen Metal test" OFF)
+option(PB_ENABLE_METAL_PRESENTATION_TEST "Build/register the real-window Metal test" OFF)
 if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     enable_language(OBJCXX)
     include(cmake/Metal.cmake)
     if(PB_METAL_ONLY)
         return()
     endif()
-elseif(PB_METAL_ONLY OR PB_ENABLE_METAL_SMOKE_TEST OR PB_ENABLE_METAL_EXECUTOR)
+elseif(PB_METAL_ONLY OR PB_ENABLE_METAL_SMOKE_TEST OR PB_ENABLE_METAL_PRESENTATION_TEST OR PB_ENABLE_METAL_EXECUTOR)
     message(FATAL_ERROR "Metal options require macOS and an Apple SDK")
 endif()
 
@@ -83,7 +84,9 @@ add_executable(test_capture_trace test/test_capture_trace.cpp test/capture_trace
 target_link_libraries(test_capture_trace bbrt)
 add_test(NAME capture_trace COMMAND test_capture_trace --self-test)
 add_test(NAME capture_trace_replay
-         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_trace>)
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_trace>
+                 capture_trace_scale capture_trace_stack_args capture_trace_scale_float capture_trace_twice
+                 capture_trace_copy capture_trace_use_import capture_trace_thread_counter capture_trace_return_xmm2)
 set_tests_properties(capture_trace_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 add_executable(test_capture_hooks test/test_capture_hooks.cpp test/capture_trace_guest.S)
@@ -91,9 +94,11 @@ target_link_libraries(test_capture_hooks bbrt)
 add_test(NAME capture_hooks COMMAND test_capture_hooks --self-test)
 add_test(NAME capture_hooks_original COMMAND test_capture_hooks --original-self-test)
 add_test(NAME capture_hooks_native COMMAND test_capture_hooks --native-self-test)
+add_test(NAME capture_hooks_many COMMAND test_capture_hooks --many-self-test)
 add_test(NAME capture_hooks_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_hooks>
-                 capture_trace_scale capture_trace_twice capture_trace_copy capture_trace_use_import)
+                 capture_trace_scale capture_trace_twice capture_trace_copy capture_trace_use_import
+                 capture_trace_leaf_caller)
 set_tests_properties(capture_hooks_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 add_executable(test_capture_poc test/test_capture_poc.cpp)
@@ -123,6 +128,7 @@ endif()
 add_test(NAME syslib COMMAND test_syslib)
 include(cmake/HostTimeTests.cmake)
 include(cmake/HostThreadTests.cmake)
+include(cmake/DarwinDiskGuestTLSTests.cmake)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
 add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)
 target_include_directories(pbgcn_decode PUBLIC runtime/include)
@@ -159,6 +165,9 @@ target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
 add_executable(test_gcn_spirv test/test_gcn_spirv.c)
 target_link_libraries(test_gcn_spirv PRIVATE pbgcn_spirv)
+# pbgcn_survey: the translator's coverage survey of a shader program (game/render/tools/shader_survey.py)
+add_executable(pbgcn_survey runtime/renderer/pbgcn_survey.c)
+target_link_libraries(pbgcn_survey PRIVATE pbgcn_spirv)
 add_test(NAME gcn_spirv COMMAND test_gcn_spirv)
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
@@ -200,7 +209,8 @@ add_test(NAME verify_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DI
 add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
-add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+# generated progress text this branch changes is current (main regenerates it: tools/progress_pr.py)
+add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check-touched)
 add_test(NAME source_files COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/source_files.py --check)
 
 # Compiled-SDK wire validation over the loader-owned process parameters.

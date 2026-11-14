@@ -23,6 +23,12 @@ extern "C" {
 
 enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
 
+/* Survey mode, for listing what the translator lacks (pbgcn_survey, docs/RENDERER.md "Coverage survey";
+   never on in a draw): a translation meeting an instruction it cannot translate notes the reason and goes
+   on with the next instruction instead of stopping, and fails at the end with every distinct reason in
+   the error, one a line after the dword it was first met at ("@dword reason\n"). Process-wide. */
+void gcn_spirv_set_survey(int on);
+
 /* Every layout below also says where the shader finds its data:
      push_constant_offset  the byte offset of its user data (GCN_USER_SGPR_MAX words) in the push
                            constants, so that the stages of one draw keep theirs apart (a vertex
@@ -32,7 +38,24 @@ enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
      address_offset        what is added to every guest address the shader forms (a buffer
                            descriptor's base, an SGPR pair) to reach the same bytes on the GPU: the
                            guest memory is one GPU buffer, at a fixed distance from the guest's view
-                           of it. 0 when the two coincide, as in the tests' own buffers. */
+                           of it. 0 when the two coincide, as in the tests' own buffers;
+     guest                 the guest memory's range and a sink (gcn_guest_memory, below), or all 0
+                           for no range check. */
+
+/* The guest memory the GPU can reach: guest addresses [base, base + bytes) (before address_offset is
+   added). With bytes set, every guest memory access a shader makes through an address it forms (a
+   scalar load's SGPR pair, a buffer descriptor's base plus offsets) is checked against it first: an
+   access reaching outside goes to sink instead (a GPU address of GCN_GUEST_SINK_BYTES bytes of scratch
+   memory: a load there reads what was stored there, a store changes nothing that counts) and writes
+   GCN_RUNTIME_STOP_GUEST_RANGE to the stop word. Without the check such an access reaches memory the
+   Vulkan device never gave the shader, which is undefined: an NVIDIA GPU stops the context (Xid 109)
+   and the work never finishes. On the console the same access would fault the GPU too (memory
+   outside what the game mapped for it), so it is an error, not a case to imitate. */
+enum { GCN_GUEST_SINK_BYTES = 256 };
+typedef struct {
+    uint64_t base, bytes;
+    uint64_t sink;
+} gcn_guest_memory;
 
 /* The run-time stop channel. Some of what a shader does is only known when it runs: a buffer
    access's data format comes from its descriptor. A shader meeting such a case it cannot do exactly
@@ -47,15 +70,20 @@ enum {
     /* a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves left each
        lane's bit unknown (a lane has no known place in the wave there) */
     GCN_RUNTIME_STOP_VCC_UNKNOWN = 2,
-    /* image_load/image_load_mip of a texel outside the image, or of a level past its last */
-    GCN_RUNTIME_STOP_IMAGE_RANGE = 3,
+    /* 3 is free: it was image_load of a texel outside the image, which now reads the replacement texel */
     /* a tessellated draw of more patches than the LDS buffer or the factor ring holds (gcn_tessellation_layout);
        details: the draw's patch count, its low 24 bits */
     GCN_RUNTIME_STOP_TESSELLATION_LIMIT = 4,
     /* a draw with a geometry shader of more vertices or primitives than its rings or strip buffer hold
        (gcn_geometry_layout); details: the draw's vertex count, its low 24 bits */
     GCN_RUNTIME_STOP_GEOMETRY_LIMIT = 5,
-    GCN_RUNTIME_STOP_WAVE_PC = 6, /* cooperative compute invocations disagree on the next block */
+    /* a guest memory access outside gcn_guest_memory's range; details: the access's guest address
+       >> 16, its low 24 bits (0 for an address within 64 KB of 0: a null pointer plus an offset) */
+    GCN_RUNTIME_STOP_GUEST_RANGE = 6,
+    /* a read through an image whose descriptor has base address 0 but is not null (gcn_image_binding.unmapped):
+       what the PS4 returns from unmapped memory is not established */
+    GCN_RUNTIME_STOP_UNMAPPED_IMAGE = 7,
+    GCN_RUNTIME_STOP_WAVE_PC = 8, /* cooperative compute invocations disagree on the next block */
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -91,9 +119,13 @@ typedef struct {
     unsigned components;             /* the format's components, 1 to 4 */
     int sampled;                     /* a sampled image (reads only), not a storage image */
     int cube;                        /* a cube, bound as a 2D array of its faces (dim 2D, arrayed) */
-    uint32_t swizzle;                /* a storage image's DST_SEL (3 bits a component: 4-7 x, y, z, w), a permutation:
-                                        a load's component k is the texel's DST_SEL[k] - 4, a store writes it there;
-                                        0 is the identity (sampled images take theirs in the view) */
+    uint32_t swizzle;                /* the image's DST_SEL (3 bits a component: 0 zero, 1 one, 4-7 x, y, z, w); 0 is the identity.
+                                        A storage image's load takes component k from DST_SEL[k], a store writes it there.
+                                        A sampled image's in-range loads take it from the view; a load outside the image
+                                        applies it to the replacement texel (0, 0, 0, 0), or (0, 0, 0, 1) without alpha */
+    int null_descriptor;             /* a sampled image whose descriptor is all 0 (a null descriptor): image_load reads 0 */
+    int unmapped;                    /* a sampled image whose descriptor has base address 0 but is not null: a read through
+                                        it writes GCN_RUNTIME_STOP_UNMAPPED_IMAGE (and reads 0); one never run is harmless */
 } gcn_image_binding;
 
 /* GCN_MAX_IMAGES: up to 16 images a program (Vulkan guarantees 16 sampled images per stage) */
@@ -146,6 +178,27 @@ typedef struct {
 } gcn_table_copy;
 int gcn_table_copy_shape(const uint32_t *code, size_t dwords, gcn_table_copy *shape);
 
+/* A constant fill: a compute program whose only memory accesses are scalar loads (s_buffer_load_dword,
+   _dwordx2, _dwordx4) of the value and indexed stores (buffer_store_format_* or buffer_store_dword*,
+   IDXEN, no offsets) of that same value, from SGPRs, through one buffer descriptor, at element
+   lane + workgroup x index * group_elements + offsets[k], one store per offset, the indices built from the
+   lane id v0 and the workgroup index SGPR with s_lshl_b32, v_add_i32, v_sub_i32, v_lshlrev_b32 and
+   v_lshrrev_b32 (a shift right that drops the lane takes lanes of at most most_lanes, a power of two).
+   The game clears its render targets this way. Straight-line code only (waits, s_nop, s_mov_b32 and
+   v_mov_b32 aside), with no write to the descriptor's or the workgroup index's SGPRs. Which elements it
+   stores, so whether the stores cover every element below workgroups x group_elements, depends on the
+   dispatch's workgroup width: the caller checks that. 1 and *shape when the program is one, 0 otherwise. */
+enum { GCN_FILL_STORES = 4 };
+typedef struct {
+    unsigned destination_sgpr;                        /* the descriptor's first SGPR, in the user data */
+    unsigned workgroup_sgpr;                          /* the SGPR holding the workgroup's x index */
+    uint32_t group_elements;                          /* the elements between one workgroup's first and the next's */
+    uint32_t offsets[GCN_FILL_STORES];                /* each store's element offset past lane + workgroup x group_elements */
+    unsigned store_count;
+    uint32_t most_lanes;                              /* the widest workgroup the indices hold for (UINT32_MAX: any) */
+} gcn_fill;
+int gcn_fill_shape(const uint32_t *code, size_t dwords, gcn_fill *shape);
+
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
    s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
    and makes it from the descriptor. */
@@ -180,6 +233,17 @@ typedef struct {
     uint64_t address;
 } gcn_lds;
 
+/* The global data share (GDS): 64 KB beside guest memory, the same for every shader (runtime/gpu_memory.h).
+   A compute shader's ds_append and ds_consume with the GDS bit add their wave's count of active lanes
+   to, or take it from, the dword at GDS byte M0[31:16] + the instruction's offset, and give every active
+   lane the dword's old value; with v_mbcnt (its lane's rank among the wave's active lanes) each lane
+   gets a slot of its own in an append buffer. gds_address is the GDS's GPU address (0: these stop
+   translation). Here a wave is a subgroup of the Vulkan device: one subgroup lane adds the subgroup's
+   count, and v_mbcnt with an EXEC half ranks a lane among the active lanes of its subgroup (exact where
+   subgroups have 64 lanes; with 32-lane subgroups each holds the low half of a wave of its own), so the
+   slots stay unique and dense. An access past the GDS changes nothing and gives 0. */
+enum { GCN_GDS_BYTES = 64 << 10 };
+
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
@@ -187,17 +251,19 @@ typedef struct {
                                       order right after the user data (COMPUTE_PGM_RSRC2's TGID_X/Y/Z_EN) */
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     const gcn_image_binding *images;
     unsigned image_count;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    gcn_lds lds;              /* the workgroup's LDS (above) */
+    uint64_t gds_address;     /* the GDS's GPU address (above), or 0 */
     unsigned thread_id_vgprs; /* 1=X, 2=XY, 3=XYZ; 0 preserves the existing XYZ default.
                                  Other registers retain the translator's deterministic initial value,
                                  not a hardware guarantee for disabled thread-ID inputs. */
     unsigned workgroup_wave_votes; /* 1: full 64-thread logical-wave votes with a uniform dispatcher guard.
                                        Requires exactly 64 local invocations and a runtime-stop word.
                                        0 preserves native subgroup translation for other backends. */
-    gcn_lds lds;              /* the workgroup's LDS (above) */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
@@ -224,6 +290,7 @@ typedef struct {
     uint32_t output_control;
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     /* the fetch shader the program calls (gcn_call_sgpr), read from the user data's address by the
        caller, and the program's own guest address (for the return address the call saves); NULL when
@@ -240,6 +307,14 @@ typedef struct {
     /* a geometry shader's copy shader (Geometry shaders, below): its ring loads read the GSVS ring, here
        on the GPU; 0 for any other vertex shader */
     uint64_t gsvs_ring, gsvs_ring_bytes;
+    /* instancing: the input VGPRs the hardware fills after the vertex index (VGPR_COMP_CNT, 0 to 3): v1 the
+       instance index over VGT_INSTANCE_STEP_RATE_0, v2 over VGT_INSTANCE_STEP_RATE_1, v3 the instance index
+       (shadPS4's translate.cpp lays them out so, facts only). step_rates holds the two registers, the ones
+       set in step_rates_set (bit 0, bit 1); a program that reads v1 or v2 before writing it, its step rate
+       not set or 0, stops translation (taking the instructions in program order, as User data read below) */
+    unsigned instance_vgprs;
+    uint32_t step_rates[2];
+    unsigned step_rates_set;
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
@@ -279,6 +354,7 @@ typedef struct {
     unsigned front_face_vgpr;
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     const gcn_image_binding *images;
     unsigned image_count;
@@ -342,6 +418,7 @@ typedef struct {
     uint32_t patches, input_points, output_points; /* VGT_LS_HS_CONFIG */
     uint32_t push_constant_offset;   /* the domain shader's; the local and hull shaders' user data is at 0 */
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;
     gcn_lds lds;                     /* the workgroups' LDS, in a buffer (address not 0) */
     uint32_t lds_workgroups;         /* the workgroups the LDS buffer holds */
@@ -443,6 +520,7 @@ typedef struct {
     uint64_t esgs_ring, esgs_ring_bytes, gsvs_ring, gsvs_ring_bytes; /* GPU addresses and sizes */
     uint64_t strip_buffer, strip_buffer_bytes;
     uint64_t address_offset;
+    gcn_guest_memory guest;   /* above; all 0: no range check */
     uint64_t error_address;
     /* the export shader's fetch shader and its own guest address, as gcn_vertex_layout's */
     const uint32_t *callee;

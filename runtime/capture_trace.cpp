@@ -8,13 +8,19 @@
    - An eight-byte input whose value points into a buffer or into the image is a pointer: the
      case gives it the buffer's address (`pointer`) or the image address (`guest`), so it still
      points at the same thing in the verifier's sandbox.
+   - An access through a base pointer 256 bytes to 1 MiB away from it puts the pointer and what it
+     reached in one buffer, so the replay keeps their distance.
    - Arguments and stack arguments that point into a buffer or the image are written the same way;
      other values are numbers.
+   - Thread-local storage: a variable is reached through the thread pointer read at gs:[0] (the
+     tracer notes it as a far reach from that pointer, so it and the thread block are one buffer),
+     and the case's `gs` points at the block, so the variable stays at its offset from it.
    - Imports the call made are scripted in order: return value, and the bytes each changed behind
      its pointer arguments. */
 #include "runtime/capture_trace.h"
 
 #include <algorithm>
+#include <dlfcn.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -116,6 +122,18 @@ public:
             for (Region &r : regions_)
                 if (v > r.end && v - r.end <= MERGE_GAP) r.end = v;
         }
+        /* An access far from the pointer it went through (a large object whose fields lie in
+           separate runs) keeps the pointer and what it reached in one buffer, at their distance. */
+        for (size_t i = 0; i < log.link_count; i++) {
+            const uint64_t base = log.link[i][0], reached = log.link[i][1];
+            if (in_image(base) || in_image(reached)) continue;
+            Region *r = nullptr;
+            for (Region &x : regions_)
+                if (reached >= x.base && reached < x.end) r = &x;
+            if (!r) continue;               /* the private stack: not a buffer */
+            r->base = std::min(r->base, base & ~uint64_t{15});
+            r->end = std::max(r->end, base + 1);
+        }
         std::sort(regions_.begin(), regions_.end(), [](const Region &a, const Region &b) { return a.base < b.base; });
         /* Widened buffers may now meet: join them. */
         std::vector<Region> joined;
@@ -141,6 +159,14 @@ public:
         for (const Region &r : regions_)
             if (a >= r.base && (a < r.end || (allow_end && a == r.end))) return &r;
         return nullptr;
+    }
+
+    /* 1 when all n bytes at `a` have a place in the case: one buffer, or the image. */
+    bool placed(uint64_t a, size_t n) const
+    {
+        if (in_image(a)) return in_image(a + n - 1);
+        const Region *r = region(a, false);
+        return r && a + n <= r->end;
     }
 
     /* Where an input byte lives in the case: an image address or buf:NAME+off. */
@@ -186,9 +212,18 @@ public:
         std::string out;
         for (size_t i = 0; i < regions_.size(); i++) {
             const std::string &b = bytes[i];
+            /* `bytes` is zero-padded to `size`: trailing zeros are left out (a far field keeps its
+               object's buffer large and mostly unread). */
+            size_t used = b.size();
+            while (used && !b[used - 1]) used--;
+            /* `origin`: where the buffer lay in the run. The verifier puts it back there when it
+               can, since code may depend on where its memory lies, not only on what it holds: a
+               heap block's size is the distance to the next block, which may be in another buffer,
+               and a heap checks a block against its own recorded bounds. */
             out += (out.empty() ? "" : ", ") + ("\"" + regions_[i].name + "\": {\"size\": " + std::to_string(b.size()) +
-                                                ", \"bytes\": \"" +
-                                                bytes_hex(reinterpret_cast<const uint8_t *>(b.data()), b.size()) + "\"}");
+                                                ", \"origin\": \"" + number_hex(regions_[i].base) +
+                                                "\", \"bytes\": \"" +
+                                                bytes_hex(reinterpret_cast<const uint8_t *>(b.data()), used) + "\"}");
         }
         return out;
     }
@@ -238,8 +273,26 @@ private:
     std::vector<Region> regions_;
 };
 
+/* Imports whose first argument is a 32-bit number the traced code computes (a sleep's length, a
+   clock's id): the case compares its low 32 bits (`argu32`), so a replacement that passes a
+   different value fails. Their other arguments are pointers into the caller's own frame, which
+   differ between the two sides, and are not compared. */
+bool compares_first_word(const char *name)
+{
+    static const char *const known[] = {"sceKernelUsleep", "sceKernelClockGettime"};
+    for (const char *k : known)
+        if (!std::strcmp(name, k)) return true;
+    return false;
+}
+
 /* The imports the call made, scripted in order: name, return value, and what each changed behind
-   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. A
+   its pointer arguments. Arguments are not compared (argc 0): their count is not known here, except
+   for a few imports' first number (compares_first_word). What
+   an import changed in a buffer or the image is scripted at that place (`addr`): the register it
+   was seen through need not be one of the import's arguments (a command buffer's labels, seen
+   through a register the import does not read), and a replay sets such registers differently.
+   Only changes in the traced call's own frame, which has no place in the case, are scripted
+   through their register. A
    return value that points into a buffer or the image (memset returns its destination) is written
    as such, like an argument, so the replay's code gets its own address back. */
 std::string imports(const rt_trace_log &log, const Builder &b)
@@ -250,15 +303,18 @@ std::string imports(const rt_trace_log &log, const Builder &b)
         std::string writes;
         for (size_t w = c.first_write; w < c.first_write + c.writes; w++) {
             const rt_trace_write &x = log.writes[w];
-            writes += (writes.empty() ? "" : ", ") + ("{\"arg\": " + std::to_string(x.arg) + ", \"offset\": " +
-                                                      std::to_string(x.offset) + ", \"bytes\": \"" +
-                                                      bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
+            const std::string where = b.placed(x.addr, x.size)
+                                          ? "\"addr\": \"" + b.location(x.addr) + "\""
+                                          : "\"arg\": " + std::to_string(x.arg) + ", \"offset\": " + std::to_string(x.offset);
+            writes += (writes.empty() ? "" : ", ") +
+                      ("{" + where + ", \"bytes\": \"" + bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
         }
         const std::string described = b.describe(c.ret);
         const std::string ret = described.rfind("0x", 0) == 0 ? std::to_string(static_cast<unsigned long long>(c.ret))
                                                                : "\"" + described + "\"";
-        out += (out.empty() ? "" : ", ") + ("{\"name\": \"" + std::string(c.name) + "\", \"argc\": 0, \"ret\": " + ret +
-                                             ", \"writes\": [" + writes + "]}");
+        const char *compared = compares_first_word(c.name) ? ", \"argu32\": [0]" : "";
+        out += (out.empty() ? "" : ", ") + ("{\"name\": \"" + std::string(c.name) + "\", \"argc\": 0" + compared +
+                                             ", \"ret\": " + ret + ", \"writes\": [" + writes + "]}");
     }
     return out;
 }
@@ -278,14 +334,19 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
     for (int i = 0; i < 6; i++)
         arguments += (i ? ", \"" : "\"") + std::string(registers[i]) + "\": \"" + b.describe(args.gpr[i]) + "\"";
     arguments += ", \"xmm0\": \"" + bytes_hex(args.xmm[0], 16) + "\", \"xmm1\": \"" + bytes_hex(args.xmm[1], 16) + "\"";
+    /* xmm2..xmm7 only when the code read them before writing them (a third float argument...). */
+    for (int x = 2; x < 8; x++)
+        if (log.xmm_inputs & (1u << x))
+            arguments += ", \"xmm" + std::to_string(x) + "\": \"" + bytes_hex(args.xmm[x], 16) + "\"";
     std::string stack;
     for (unsigned i = 0; i < log.stack_slots; i++)
         stack += (i ? ", \"" : "\"") + b.describe(args.stack[i]) + "\"";
+    const std::string thread = log.thread_base ? ", \"gs\": \"" + b.describe(log.thread_base) + "\"" : "";
     char id[32];
     std::snprintf(id, sizeof id, "capture_%04d", number);
     return "{\"schema\": 1, \"address\": \"" + guest_hex(f.address) + "\", \"id\": \"" + id + "\", \"returns\": \"" +
            f.returns + "\", \"capture\": {\"function\": \"" + f.function + "\", \"run_id\": \"" + run +
-           "\"}, \"args\": {" + arguments + "}, \"stack\": [" + stack + "], \"buffers\": {" + b.buffers() +
+           "\"}, \"args\": {" + arguments + "}, \"stack\": [" + stack + "]" + thread + ", \"buffers\": {" + b.buffers() +
            "}, \"memory\": [" + b.memory() + "], \"stubs\": [], \"imports\": [" + imports(log, b) + "]}";
 }
 
@@ -308,8 +369,16 @@ extern "C" int rt_capture_traced_call(const rt_traced_function *f, int number, c
         if (rt_capture_keep(f->function, json.c_str())) rt_capture_write(f->function, number, json.c_str());
         written = 1;
     } else if (std::getenv("BB_CAPTURE_VERBOSE")) {
-        std::fprintf(stderr, "capture: %s: no case: %s\n", f->function,
-                     log.incomplete ? log.incomplete : "the trace cannot be written as a case");
+        /* Where the trace stopped, as a PS4 address when it is in the image. */
+        const uintptr_t at = log.stopped_at, lo = reinterpret_cast<uintptr_t>(image.lo);
+        const bool in_image = at >= lo && at < reinterpret_cast<uintptr_t>(image.hi);
+        /* Native code is named by its symbol when it has one (a replacement: bb_...). */
+        Dl_info native{};
+        const bool named = !in_image && at && dladdr(reinterpret_cast<void *>(at), &native) && native.dli_sname;
+        std::fprintf(stderr, "capture: %s: no case: %s (at %s0x%llx%s%s)\n", f->function,
+                     log.incomplete ? log.incomplete : "the trace cannot be written as a case", in_image ? "" : "host ",
+                     static_cast<unsigned long long>(in_image ? at - lo + RT_EBOOT_BASE : at), named ? ", " : "",
+                     named ? native.dli_sname : "");
     }
     rt_trace_log_free(&log);
     return written;

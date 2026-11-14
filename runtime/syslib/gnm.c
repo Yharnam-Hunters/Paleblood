@@ -14,6 +14,7 @@
    modules and thread objects. It is the runtime's choice, not the PS4's value: the engine only
    maps it and hands it back to the GPU calls. */
 #include "runtime/equeue.h"
+#include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
 #include "runtime/renderer.h"
@@ -551,6 +552,9 @@ static void raise_interrupt(uint64_t id)
 /* Which interrupt a completion packet raises: the graphics queue's end of pipe, or, while a
    compute queue's ring is completed (sceGnmDingDong), that queue's pipe. */
 static _Thread_local int32_t completing_pipe = -1;
+/* The queue whose work is being completed: the graphics queue, or while a compute queue's ring is
+   completed, that queue's id (the renderer keeps each queue's compute state apart). */
+static _Thread_local unsigned completing_queue = RT_RENDERER_GRAPHICS_QUEUE;
 
 /* The GPU's steps after a submitted command buffer's work (runtime/renderer.h): while a submission's
    packets are read, its "work done" writes and memory waits are collected here instead of performed,
@@ -776,18 +780,17 @@ static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint3
     return holds;
 }
 
-/* The GPU's global data share (GDS): 64 KB of on-chip memory beside guest memory, which DMA_DATA and
-   shaders' GDS instructions reach by byte offset (AMD's Sea Islands ISA, "Global Data Share"). The
+/* The GPU's global data share (runtime/gpu_memory.h), which the shaders on the GPU reach too. The
    engine keeps counters there (structured append buffers: a DMA_DATA loads each from memory before
-   its passes and another saves it back after), at offsets from 0x20. */
-enum { GDS_BYTES = 64 << 10, DMA_DATA_BYTE_COUNT_MASK = 0x1fffff };
-static uint8_t gds[GDS_BYTES];
+   its passes, the shaders' ds_append and ds_consume move it, and another DMA_DATA saves it back after),
+   at offsets from 0x20. */
+enum { DMA_DATA_BYTE_COUNT_MASK = 0x1fffff };
 
 /* The byte offset and count inside the GDS, or a stop by name. */
 static uint8_t *gds_bytes(const char *fn, uint32_t offset, uint32_t bytes)
 {
-    if (offset > GDS_BYTES || bytes > GDS_BYTES - offset) rt_fatal(fn, "a DMA_DATA reaching past the 64 KB GDS");
-    return gds + offset;
+    if (offset > RT_GPU_GDS_BYTES || bytes > RT_GPU_GDS_BYTES - offset) rt_fatal(fn, "a DMA_DATA reaching past the 64 KB GDS");
+    return rt_gpu_memory_gds() + offset;
 }
 
 /* A step: the command processor's DMA, after the work before it and before the work after it. The
@@ -1045,7 +1048,7 @@ static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int d
     collecting = &steps; /* its steps' offsets count in this buffer, as a submitted buffer's do */
     complete_packets(fn, buffer, dwords, 0, 0);
     collecting = saved, packet_offset = saved_offset;
-    rt_renderer_submit(fn, buffer, dwords * (uint32_t)sizeof(uint32_t), steps.steps, steps.count);
+    rt_renderer_submit(fn, completing_queue, buffer, dwords * (uint32_t)sizeof(uint32_t), steps.steps, steps.count);
     free(steps.steps);
 }
 
@@ -1120,12 +1123,13 @@ static void ding_dong(uint32_t queue_id, uint32_t write_offset)
     if (write_offset > queue->ring_dwords) rt_fatal(fn, "a write offset past the end of the ring");
     const uint32_t *ring = queue->ring;
     completing_pipe = (int32_t)queue->pipe; /* its completions raise the pipe's interrupt */
+    completing_queue = queue_id;
     if (write_offset < *done) { /* the engine filled the ring's end and wrapped to its start */
         complete_packets(fn, ring + *done, queue->ring_dwords - *done, 0, 1);
         *done = 0;
     }
     complete_packets(fn, ring + *done, write_offset - *done, 0, 1);
-    completing_pipe = -1;
+    completing_pipe = -1, completing_queue = RT_RENDERER_GRAPHICS_QUEUE;
     *done = write_offset;
     __atomic_store_n(queue->read_pointer, write_offset, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&queues_lock);
@@ -1239,7 +1243,7 @@ static int32_t submit(const char *fn, uint32_t count, void **draw_buffers, const
         if (submitted_constants) finish_constant_program(fn);
         collecting = NULL;
         if (flip && k == count - 1) collect_flip(fn, &steps, flip);
-        rt_renderer_submit(fn, draw_buffers[k], draw_bytes[k], steps.steps, steps.count); /* copied: runs beside the title */
+        rt_renderer_submit(fn, RT_RENDERER_GRAPHICS_QUEUE, draw_buffers[k], draw_bytes[k], steps.steps, steps.count); /* copied: runs beside the title */
         free(steps.steps);
     }
     return 0;
