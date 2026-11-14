@@ -67,6 +67,7 @@ the other per-frame updates.
 |---|---:|---|---|---|
 | `0x01cbdb20` | 979 | `character_frame_update_01cbdb20` | verified | per-frame character update: throw animation event; points stat regeneration (stamina-like; -50..max); time-step descriptor; the 30/60 FPS patches fix its frame time |
 | `0x01cd92b0` | 218 | `character_ai_display_update_01cd92b0` | edge-verified | Chr +0x1f8 module: if its ready check (0x01cd9390) passes, gives ai_debug_set_position the two positions of the state module; if it still passes, points its two objects at its markers |
+| `0x01e19e20` | 308 | `character_throw_event_01e19e20` | edge-verified | Looks a behavior event up by name and appends {id, 0, 0} to the character graph event ring (grown x2 or to 8 when full); skipped when not ready, unknown or no graph |
 | `0x01e4a490` | 375 | `character_state_flags_update_01e4a490` | edge-verified | Chr modules +0x68: folds whether the character is shown into two sticky bytes, copies a param float, sets +0x326 from flags or vtable +0x478, counts the frame, sets the link flag |
 | `0x01e59250` | 477 | `character_event_request_update_01e59250` | edge-verified | Chr modules +0x58: fires the pending numbered event (formatted wide string on the thread heap) unless suppressed, clears it, and clears chr +0x20 field +4 for one record id |
 | `0x01e5c440` | 282 | `character_counters_refill_01e5c440` | edge-verified | Stepped module: five counters gain a global per-second rate * frame time each (fractions carried, truncation), clamped to 0..their maximum |
