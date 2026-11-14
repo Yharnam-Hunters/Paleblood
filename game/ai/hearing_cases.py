@@ -137,6 +137,13 @@ def named_cases():
     yield case('far_end_on_sphere', ORIGIN, (0.0, 4.0, 0.0), 10.0, 6.0, tangent=0x3f800000)
     yield case('far_end_inside_sphere', ORIGIN, (0.0, 4.0, 0.0), 10.0, 6.5, tangent=0x3f800000)
     yield case('listener_inside_far_end_out', ORIGIN, (1.0, 3.0, 0.0), 8.0, 3.2)
+    # The listener exactly on the sphere (3-4-5: the squares are exact), the far end inside it:
+    # heard, since the listener does not lie inside.
+    yield case('listener_on_sphere', ORIGIN, (3.0, 4.0, 0.0), 4.0, 5.0)
+    # One step of float32 above the height angle's edge (a tangent scripted as given): beyond the
+    # angle, where a sphere that holds the whole short segment is not heard; a slope larger by
+    # one step would count the point as within the angle and hear it.
+    yield case('one_step_above_angle', ORIGIN, (1.0, TAN_30_UP, 0.0), 0.1, 10.0, tangent=TAN_30)
     yield case('past_the_far_end', ORIGIN, (30.0, 40.0, 0.0), 2.0, 49.0)
     yield case('past_the_far_end_short', ORIGIN, (30.0, 40.0, 0.0), 2.0, 45.0)
     yield case('negative_reach_behind', ORIGIN, (4.0, 5.0, 0.0), -6.0, 3.0)
@@ -168,6 +175,10 @@ def named_cases():
     yield case('w_lanes_unused', EAR, at(4.0, 5.0, 0.0), 6.0, 3.0, w_ear=NAN_A, w_point=-7.0)
     yield case('radius_upper_lanes', ORIGIN, (4.0, 5.0, 0.0), 6.0,
                f32(3.0) + f32(NAN_A) + f32(-1.0) + f32(9.0))
+
+
+TAN_30 = tangent_bits(as_float(as_float(30.0) * DEGREES_TO_RADIANS))
+TAN_30_UP = TAN_30 + 1           # the next float32 above it
 
 
 def random_cases(count=400, seed=0x6ea2):
@@ -247,6 +258,7 @@ def hearing_case(cid, ear, facing, sound, sound_range, row=None, owner_size=0.0,
 
 
 AHEAD = (0.0, 0.0, 1.0)
+TIE_RANGE = 0x40b33334            # 5.6000004f: (9 - 1.1f) - 2.3f
 NARROW = (300, 1, 60, 45)        # reach 3 per hearing scale, 1 m cut, 60 degrees high, 45 each side
 ALL_AROUND = (300, 1, 90, 180)
 
@@ -268,6 +280,9 @@ def hearing_named_cases():
     yield h('direct_with_sizes', ORIGIN, AHEAD, (0.0, 0.0, 9.0), 5.0, owner_size=2.0, source_size=2.5)
     yield h('direct_exact_gap', ORIGIN, AHEAD, (0.0, 0.0, 9.0), 5.0, owner_size=2.0, source_size=2.0)
     yield h('direct_behind_narrow', ORIGIN, AHEAD, (0.0, 0.0, -3.0), 6.0, row=NARROW)
+    # Sizes whose order of subtraction shows in the last bit: distance 9 less 1.1 and then 2.3 is
+    # 5.6000004f; less 2.3 first it would be 5.6f. A range of exactly 5.6000004f does not cover it.
+    yield h('direct_size_order_tie', ORIGIN, AHEAD, (0.0, 0.0, 9.0), TIE_RANGE, owner_size=1.1, source_size=2.3)
     yield h('direct_negative_sizes', ORIGIN, AHEAD, (0.0, 0.0, 3.0), 6.0, owner_size=-1.0, source_size=-1.5)
     # Remembering: a closer remembered position keeps its place; the id is always written.
     yield h('remember_replaces_farther', ORIGIN, AHEAD, (0.0, 0.0, 2.0), 5.0, remembers=1, remembered=(0.0, 0.0, 8.0))
@@ -275,6 +290,10 @@ def hearing_named_cases():
     yield h('remember_equal_keeps', ORIGIN, AHEAD, (0.0, 0.0, 4.0), 5.0, remembers=1, remembered=(4.0, 0.0, 0.0))
     yield h('remember_with_sizes', ORIGIN, AHEAD, (0.0, 0.0, 6.0), 5.0, owner_size=1.0, source_size=1.0,
             remembers=1, remembered=(0.0, 0.0, 4.5))
+    # The same sizes on the remember path: a remembered position 5.6000004f away is not farther than
+    # the gap, so it stays.
+    yield h('remember_size_order_tie', ORIGIN, AHEAD, (0.0, 0.0, 9.0), 7.0, owner_size=1.1, source_size=2.3,
+            remembers=1, remembered=(0.0, 0.0, TIE_RANGE))
     yield h('remember_nan_previous', ORIGIN, AHEAD, (0.0, 0.0, 2.0), 5.0, remembers=1, remembered=(NAN_A, 0.0, 0.0))
     yield h('remember_byte_flag', ORIGIN, AHEAD, (0.0, 0.0, 2.0), 5.0, remembers=0x80, remembered=(0.0, 0.0, 9.0))
     # No row, out of range: the ear has no reach.
