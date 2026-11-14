@@ -702,6 +702,25 @@ Instead:
           texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
           would move the same bytes through host memory. It is copied again after the target's next draws.
           At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
+          Once the target is written back, an image that took its texels since its last draw stays loaded
+          (its memory changed in no other way since the copy) instead of loading the same bytes again.
+        - **Depth straight to images:** a 32-bit image over a depth target's depth drawn since its
+          write-back (the same address, tiling index and pitch, slice 0; 2D, one level and layer; no other
+          unwritten target over it) takes the depth on the GPU through the depth target's linear rows
+          (`image_from_depth`) instead of a write-back and a load, again after the depth's next draws. In
+          Iosefka's Clinic that was about two depth write-backs and loads a frame, some 35 MB each way
+          through host memory. bbhost and shadPS4 copy depth into an R32 image on the GPU too (facts only).
+        - **Compute fills on the target:** the game clears render targets with a compute program that
+          stores one value from a constant buffer into every element of a buffer descriptor spanning the
+          target's memory (compute shader `0x20d1b00500`, about ten a frame in Iosefka's Clinic). Each
+          used to write the target's draws back, store the whole target into host memory, and load the
+          target and the images over it back. A program of that shape (`gcn_fill_shape`: scalar loads of
+          the value, indexed stores of it at lane + workgroup x n + offset) whose stores cover exactly a
+          render target's memory in its element size runs only its first workgroup; its elements are
+          copied into the target's linear rows, doubled until full, and into the image, and the target
+          counts as drawn: its memory gets the fill when it is written back. Its earlier draws are not
+          written back. bbhost (`detect_fill`) and shadPS4 (`IsComputeImageClear`) recognise the same
+          clears and clear the image instead (facts only).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -1098,3 +1117,18 @@ post-processing passes, go through it, and without it the clinic's tone map, gla
 depth of field never reached the renderer (the scene behind the HUD stayed one flat
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
+
+## Measuring frame rate
+
+Two runs of one build differ: in Iosefka's Clinic the same build measured from 4.81 to 7.15 fps
+over a run, with other work on the machine. A speed change counts only when it is larger than that.
+`tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR` runs two builds alternately, two rounds each
+by default (A1 B1 A2 B2), and measures each over the same window: a fixed settle, then a fixed
+measure window, counted from the moment the run presents its anchor frame (`--anchor-frame`, a
+frame reached at the same point of the same save). Each build's spread over its rounds is its noise
+floor, and a difference counts only when it is larger than both builds' spreads (the rule of
+bbhost's area check). While a run plays, the load average and the CPUs busy with other work than
+the run's own processes are sampled every second; a run whose window met more than
+`--max-other-cpus` of other work is left out, with the reason. The run command builds before it
+starts the game and holds the GPU lock while it plays, so builds and other GPU work stay outside
+the window. `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.

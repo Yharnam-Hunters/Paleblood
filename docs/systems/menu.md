@@ -64,6 +64,16 @@ recorded from a real game run, so none is `verified`.
 |---|---:|---|---|---|
 | `0x01edf560` | 254 | `menu_gaitem_select_entry_copy_into_pool` | edge-verified | GaitemSelectDialog list entry copy into a Dantelion fixed pool slot (0x88 B: int, word, wide string, word, wide string); reports a slot past the in-use count |
 | `0x01f1bca0` | 235 | `menu_gaitem_status_entry_copy` | edge-verified | GaitemStatusDialog list entry copy of entries[index] (0x90 B: two words and wide strings, a ref-counted pointer at +0x80 (count +8 up), a byte) |
+| `0x023411d0` | 116 | `menu_heap_adapter_free_023411d0` | edge-verified | Scaleform heap adapter free (vtable 0x057ab400): null kept; else DLNew release (thread release heap or the owner heap) |
+| `0x02341330` | 188 | `menu_heap_adapter_reallocate_02341330` | edge-verified | Scaleform heap adapter reallocate: same size returns the buffer; else allocate from heaps[index] and copy the smaller size; DLNew release of the old one |
+| `0x023548d0` | 162 | `menu_movie_screen_close_023548d0` | edge-verified | movie screen close: with the menu state flush the SprjScaleform player (if any) and close the movie; then queue the request |
+| `0x02354d90` | 213 | `menu_movie_screen_step_02354d90` | edge-verified | movie screen step: the player step up to twice (+0xd0 counts tries); no player or a failed step marks the menu state and closes the movie; queue the request |
+| `0x02360d80` | 168 | `menu_tex_repository_require_02360d80` | edge-verified | ScaleformTexRepository: a missing key gets a texture from the owner source (+0x940; vtable slot 0x130) |
+| `0x02363c00` | 128 | `menu_work_holder_destroy_02363c00` | edge-verified | work holder destructor (vtable 0x05756bd0): base vtable; one user less (last sets the signal at +0x10); one reference less |
+| `0x02363d20` | 128 | `menu_work_holder_destroy_02363d20` | edge-verified | work holder destructor (vtable 0x05756c00): the same code as 0x02363c00 |
+| `0x02387050` | 144 | `menu_file_set_loader_wait_02387050` | edge-verified | file set loader step: copy the sizes of the loaded files (state 4); one still loading stops it; then the next step and step done |
+| `0x02387650` | 164 | `menu_file_set_loader_build_02387650` | edge-verified | file set loader step: build from the first and third files with the name; 0 declined (+0x19a); other than 1 failed (+0x15b); next step and step done |
+| `0x0238a210` | 166 | `menu_named_resource_release_0238a210` | edge-verified | named resource release when held: handle released; registry entry found by the wide name and released; name emptied; loaded cleared |
 | `0x02415fe0` | 89 | `menu_text_input_destroy` | edge-verified | Text input dialog destructor: closes it, frees the text, destroys the Dantelion dialog object |
 | `0x02416040` | 574 | `menu_text_input_close` | edge-verified | Text input dialog: waits for an open dialog to end, then empties its text and resets the state |
 | `0x024162a0` | 94 | `menu_text_input_open` | edge-verified | Text input dialog: opens the system keyboard dialog with the given settings once no other is open |
