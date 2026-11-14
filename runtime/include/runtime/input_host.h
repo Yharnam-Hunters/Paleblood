@@ -176,21 +176,60 @@ void rt_input_host_pump(void);
    then cross at 47 s:
 
      pbboot ... --display headless --input-script "45:down,47:cross"
-*/
+
+   Walks (closed-loop driving): CONTROLS may instead be
+
+     walk X Z [within R] [every N]
+
+   which steers the left stick towards the ground position (X, Z) until the character is within R
+   (default 1) of it, re-aiming every N presented frames (default 6) from where the game says the
+   character is: the position source (rt_input_position_source), which pbboot takes from the game
+   library. HOLD is the walk's time limit (default 60 s or 600 frames); a walk that reaches it
+   gives up, so a route goes on. Walks run one after another: a walk starts at WHEN, or when the
+   walk before it in the script has finished if that is later. WHEN may also be `+SECONDS`: that
+   long after the walk before the event finished (arrived or gave up), for presses that belong to
+   a place rather than a time, such as opening the door the walk leads to:
+
+     20:walk -10 4.5 within 1.5*90, +1:cross, +3:walk -12 0
+
+   Steering knows nothing of the camera: the stick is camera-relative, so the walk learns how the
+   stick's directions turn into the character's from how far and which way it moved since the
+   last aim, and keeps learning as the camera turns. Headings are measured as atan2(dx, dz) on the
+   source's X and Z, with the stick's angle clockwise from up; a source whose axes run the other
+   way round swaps them. A character that moved less than RT_WALK_MOVED (in the source's units)
+   in an aim is stuck: the walk sidesteps, turning 60, then 120, then 180 degrees from the
+   target's direction, alternating sides, for RT_WALK_SIDESTEP_AIMS aims each, until the
+   character gets RT_WALK_PROGRESS closer to the target than it has been. */
 enum {
     RT_INPUT_SCRIPT_MAX_EVENTS = 256,
     RT_INPUT_SCRIPT_DEFAULT_HOLD_FRAMES = 4,
 };
 #define RT_INPUT_SCRIPT_DEFAULT_HOLD_SECONDS 0.25
 
+enum {
+    RT_INPUT_SCRIPT_DEFAULT_WALK_LIMIT_FRAMES = 600,
+    RT_WALK_DEFAULT_AIM_FRAMES = 6,
+    RT_WALK_SIDESTEP_AIMS = 3,
+};
+#define RT_INPUT_SCRIPT_DEFAULT_WALK_LIMIT_SECONDS 60.0
+#define RT_WALK_DEFAULT_WITHIN 1.0f
+#define RT_WALK_MOVED 0.2f     /* less than this in one aim: stuck */
+#define RT_WALK_PROGRESS 1.0f  /* this much closer than the best so far: the sidesteps are over */
+
 typedef enum { RT_SCRIPT_SECONDS, RT_SCRIPT_FRAMES } rt_script_clock;
+typedef enum { RT_SCRIPT_PRESS, RT_SCRIPT_WALK } rt_script_kind;
 
 typedef struct {
     rt_script_clock clock;
-    double start, hold;     /* on the event's clock */
+    rt_script_kind kind;
+    double start, hold;     /* on the event's clock; a walk's hold is its time limit */
+    int after_walk;         /* for a `+` start or a walk: the walk before it in the script, or -1 */
+    uint8_t chained;        /* the start is `+SECONDS` after that walk finished */
     uint32_t buttons;       /* RT_PAD_BUTTON_* */
     uint8_t stick_set;      /* bit RT_KEY_STICK_* - 1 for each stick byte the event sets */
     uint8_t stick[4];       /* left x, left y, right x, right y, where stick_set says */
+    float target_x, target_z, within; /* a walk's target and arrival distance */
+    int aim_frames;                   /* a walk re-aims every so many presented frames */
 } rt_input_script_event;
 
 typedef struct {
@@ -198,13 +237,53 @@ typedef struct {
     rt_input_script_event events[RT_INPUT_SCRIPT_MAX_EVENTS];
 } rt_input_script;
 
+/* Where the game's character stands, in the game's world units: 0 and position filled in, or
+   nonzero when there is no character to steer (a loading screen, a menu). Called on the thread
+   that reads the pad. */
+typedef int (*rt_input_position_source)(float position[3]);
+
+/* How a walk is going. finished_at and started_at are NAN until it finished or started. */
+typedef struct {
+    double started_at;      /* on the walk's clock */
+    double finished_at;     /* seconds */
+    uint64_t aim_frame;     /* the presented frame of the last aim */
+    float aim_x, aim_z;     /* where the character was at the last aim */
+    float best_distance;    /* the closest the character has been to the target */
+    float stick_angle;      /* degrees clockwise from up */
+    float camera_turn;      /* the character's heading minus the stick's angle, as last seen */
+    int steering;           /* the stick is pushed (the last aim had a position) */
+    int sidestep, sidestep_aims_left;
+    int aims;
+} rt_walk_progress;
+
+typedef struct {
+    rt_walk_progress walks[RT_INPUT_SCRIPT_MAX_EVENTS]; /* by event index; walks only */
+} rt_input_script_progress;
+
 /* Parses a script's text (not @FILE). 0, or -1 with a message in error naming the event. */
 int rt_input_script_parse(const char *text, rt_input_script *script, char *error, size_t error_size);
-/* The sample at a moment, given on both clocks: the pad at rest plus every event that is active. */
+/* Whether the script has a walk, which needs a position source. */
+int rt_input_script_has_walk(const rt_input_script *script);
+/* The sample at a moment, given on both clocks: the pad at rest plus every timed event that is
+   active (walks and `+` events need rt_input_script_play). */
 void rt_input_script_sample(const rt_input_script *script, double seconds, uint64_t frames, rt_pad_sample *sample);
+/* Before playing a script from its start. */
+void rt_input_script_progress_reset(rt_input_script_progress *progress);
+/* The sample at a moment with walks: steers the running walk from source (NULL: none, so walks
+   only wait for their limit), updates progress, and passes report one line for each thing worth a
+   log line (a walk starting, sidestepping, arriving or giving up, and where the character is every
+   tenth aim); report may be NULL. Timed events act on top of the walk, so a scripted stick press
+   wins over the walk's. */
+void rt_input_script_play(const rt_input_script *script, rt_input_script_progress *progress, double seconds,
+                          uint64_t frames, rt_input_position_source source, void (*report)(const char *line),
+                          rt_pad_sample *sample);
 /* pbboot's --input-script: parses SPEC (reading @FILE) and installs a backend that plays it on the
    process time and video out's presented frames, writing a line to stderr when each event starts.
    0, or -1 with a message in error. */
 int rt_input_script_configure(const char *spec, char *error, size_t error_size);
+/* The position source walks steer from (pbboot passes the game library's bbgame_player_position),
+   and whether the installed script needs one. */
+void rt_input_script_set_position_source(rt_input_position_source source);
+int rt_input_script_needs_position(void);
 
 #endif
