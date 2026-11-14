@@ -26,10 +26,21 @@
 //   a decline or a failure. Both end with the loader's next step and mark the step done.
 // - menu_named_resource_release_0238a210: a held named resource lets go of its handle and its
 //   registry entry (found by name) and empties its name.
+// - menu_named_resource_registry_find_013a2a00 and menu_named_resource_registry_release_013a33c0:
+//   while the registry is active and has its table, the table finds an entry by name or lets go
+//   of a (non-null) entry; otherwise nothing is found and nothing let go.
+// - menu_named_resource_handle_release_01401720: a handle with an owner is let go of by the
+//   owner (its vtable slot 16), whose answer is returned; 0 without an owner.
+// - menu_sprj_scaleform_queue_0233ef00: unless the singleton was told to skip it (the flag is
+//   then cleared), a request reaches the player, when there is one: first the Scaleform lock's
+//   static is made, the pending job (if any) is waited for (-1: no time limit), its reference
+//   dropped and the pointer cleared, the singleton read again after the wait. Every queue then
+//   moves the requested flag to requested_before and clears it.
 #include <cstdint>
 
 #include "../engine/buffer_release.h"
 #include "../engine/engine.h"
+#include "../engine/ref_object.h"
 #include "scaleform_glue.h"
 
 using namespace menu::scaleform;
@@ -37,6 +48,51 @@ using namespace menu::scaleform;
 namespace {
 
 constexpr int movie_step_tries = 2;
+
+// The registry's table: finding an entry by name, letting go of one.
+RT_ORIGINAL(0x013abad0, table_find, void *(NamedResourceTable *, const char16_t *name));
+RT_ORIGINAL(0x013abd30, table_release, void(NamedResourceTable *, void *entry, int32_t, int32_t));
+
+// A resource handle and its owner, which lets go of it (vtable slot 16).
+struct ResourceHandle;
+struct HandleOwner;
+struct HandleOwnerVtable {
+    void *unknown_slots[16];
+    uint64_t (*release)(HandleOwner *, ResourceHandle *);
+};
+static_assert(offsetof(HandleOwnerVtable, release) == 0x80);
+struct HandleOwner {
+    const HandleOwnerVtable *vtable;
+};
+struct ResourceHandle {
+    uint64_t unknown_0x00;
+    HandleOwner *owner;
+};
+static_assert(offsetof(ResourceHandle, owner) == 0x8);
+
+// The job the queue waits for before a request reaches the player: a reference-counted object
+// with a waiter at +0x10 (its vtable slot 3 waits, -1 meaning no time limit).
+struct JobWaiter;
+struct JobWaiterVtable {
+    void *unknown_slots[3];
+    void (*wait)(JobWaiter *, int32_t timeout);
+};
+static_assert(offsetof(JobWaiterVtable, wait) == 0x18);
+struct JobWaiter {
+    const JobWaiterVtable *vtable;
+};
+struct PendingJob {
+    engine::RefObject object;
+    JobWaiter waiter;
+};
+static_assert(offsetof(PendingJob, waiter) == 0x10);
+RT_GLOBAL(0x059941f8, pending_job, PendingJob *);
+constexpr int32_t wait_without_limit = -1;
+
+// Makes the Scaleform lock's function-local static on first use (its answer is not used here).
+RT_ORIGINAL(0x02336d40, scaleform_lock, void *());
+// Hands a request to the player.
+RT_ORIGINAL(0x0235b140, player_queue, void(ScaleformPlayer *, uint64_t request));
 
 SprjScaleform *require_scaleform()
 {
@@ -193,4 +249,44 @@ extern "C" void bb_menu_named_resource_release_0238a210(NamedResource *resource)
         text_of(name.inline_text, name.heap, name.capacity, engine::wide_string_inline_capacity)[0] = u'\0';
     }
     resource->loaded = 0;
+}
+
+extern "C" void *bb_menu_named_resource_registry_find_013a2a00(NamedResourceRegistry *registry,
+                                                               const char16_t *name)
+{
+    if (!registry->active || !registry->table) return nullptr;
+    return table_find(registry->table, name);
+}
+
+extern "C" void bb_menu_named_resource_registry_release_013a33c0(NamedResourceRegistry *registry, void *entry,
+                                                                int32_t first, int32_t second)
+{
+    if (!registry->active || !registry->table || !entry) return;
+    table_release(registry->table, entry, first, second);
+}
+
+extern "C" uint64_t bb_menu_named_resource_handle_release_01401720(ResourceHandle *handle)
+{
+    HandleOwner *owner = handle->owner;
+    if (!owner) return 0;
+    return owner->vtable->release(owner, handle);
+}
+
+extern "C" void bb_menu_sprj_scaleform_queue_0233ef00(SprjScaleform *scaleform, uint64_t request)
+{
+    if (scaleform->skip_next_request) {
+        scaleform->skip_next_request = 0;
+    } else if (scaleform->player) {
+        scaleform_lock();
+        if (PendingJob *job = pending_job.get()) {
+            job->waiter.vtable->wait(&job->waiter, wait_without_limit);
+            if ((job = pending_job.get())) {   // read again after the wait
+                engine::release(&job->object);
+                pending_job.get() = nullptr;
+            }
+        }
+        player_queue(scaleform->player, request);
+    }
+    scaleform->requested_before = scaleform->requested;
+    scaleform->requested = 0;
 }

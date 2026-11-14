@@ -364,6 +364,14 @@ int self_test()
     check(log.incomplete != nullptr && native_calls == 1 && log.stopped_at == reinterpret_cast<uintptr_t>(native),
           "native call: incomplete at the native code, and the call still ran");
     rt_trace_log_free(&log);
+    /* An input read again with another value (here changed by an import behind a register an
+       earlier import left, as another thread changes memory): a case gives it one value. */
+    alignas(8) int32_t reread_out[2] = {0, 0};
+    const int32_t stale_before = trace_stale_counter;
+    r = trace(0x700, arguments(reinterpret_cast<uint64_t>(reread_out)), log);
+    check(log.incomplete != nullptr && static_cast<int32_t>(r.rax) == stale_before + 2,
+          "an input changed during the call: incomplete, and the call still ran");
+    rt_trace_log_free(&log);
     setenv("BB_TRACE_STEP_LIMIT", "100", 1);
     trace(0x240, arguments(), log);
     check(log.incomplete != nullptr, "instruction limit: incomplete");
@@ -461,10 +469,10 @@ int self_test()
        copied bytes is refused. */
     unsigned char *copies = rt_map_near_image(image, image_size, 4096);
     size_t copied = 0, written = 0;
-    const bool relocated = copies && !rt_trace_relocate(at(0x700), 14, copies, &copied, &written) && copied == 15 &&
-              written == 15 + 4 + 14 && !rt_trace_relocate(at(0x780), 14, copies + 64, &copied, &written) &&
+    const bool relocated = copies && !rt_trace_relocate(at(0x780), 14, copies, &copied, &written) && copied == 15 &&
+              written == 15 + 4 + 14 && !rt_trace_relocate(at(0x800), 14, copies + 64, &copied, &written) &&
               copied == 14 && written == 14 + 4 + 3 + 14;
-    check(relocated && rt_trace_relocate(at(0x740), 14, copies + 128, &copied, &written),
+    check(relocated && rt_trace_relocate(at(0x7c0), 14, copies + 128, &copied, &written),
           "relocation: short branches in their 32-bit form; a branch into the copied bytes refused");
     if (relocated && !mprotect(copies, 4096, PROT_READ | PROT_EXEC)) {
         struct Pool { uint64_t pad[2], top, end; };

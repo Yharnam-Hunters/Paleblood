@@ -28,8 +28,10 @@ symbol, such as a replacement without a redirect), and no case is written. Fail-
 guest code reads its thread pointer through `gs`, below), thread-local storage more than 1 MiB from
 the thread pointer, a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
 it (cases give only `xmm0` and `xmm1`), a stack argument past the 70th, code outside the traced
-ranges (an import or other native code), unreadable memory, the instruction limit
-(`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
+ranges (an import or other native code), unreadable memory, an input byte that a later read sees
+with another value although neither the traced code nor a scripted import write changed it
+(another thread wrote it; a case gives each input one value, so the replay would take another
+path), the instruction limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
 
 **Case** (`runtime/capture_trace.cpp`). A complete trace becomes a schema-1 case:
 
@@ -86,8 +88,8 @@ the frame, a table index reached through a computed pointer (add and lea forms, 
 load replaced), and a sleep whose length is compared. It checks
 the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
 (one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
-read it), and that an `xmm2` read, an `fs` access, a call into native code and the instruction
-limit give no case while the call still completes.
+read it), and that an `xmm2` read, an `fs` access, a call into native code, an input changed
+between two reads and the instruction limit give no case while the call still completes.
 `test/capture_trace_integration.py` then replays every recorded case with `tools/verify.py`: each
 passes against a native replacement, and a replacement with one deliberate change per function
 fails.
