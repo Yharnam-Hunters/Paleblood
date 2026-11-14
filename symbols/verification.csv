@@ -22,6 +22,7 @@ ai_draw_layer_color_02232a60,edge,,52,52,0,0,e267bbf5ff2ac570,2026-11-13
 ai_draw_world_021d6ea0,edge,,22,22,0,0,057632b510c654b1,2026-11-13
 ai_entity_point_029ae440,recorded,,5,5,0,0,057632b510c654b1,2026-11-14
 ai_entity_point_029ae440,edge,,34,34,0,0,057632b510c654b1,2026-11-13
+ai_func_enable_combo_attack_cancel,edge,,9,9,0,0,2caacd0bc8cb2daa,2026-11-14
 ai_func_get_current_target_state,edge,,198,198,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_hp,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_hp_rate,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
@@ -48,6 +49,9 @@ ai_func_is_finish_timer,recorded,,3,3,0,0,6e8620fd37a797bc,2026-11-14
 ai_func_is_finish_timer,edge,,76,76,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_inside_target_ex,edge,,43,43,0,0,962565c5970bd876,2026-11-13
 ai_func_is_visible_target,edge,,50,50,0,0,962565c5970bd876,2026-11-13
+ai_func_register_goal_no_interrupt,edge,,13,13,0,0,2caacd0bc8cb2daa,2026-11-14
+ai_func_register_goal_no_update,edge,,13,13,0,0,2caacd0bc8cb2daa,2026-11-14
+ai_func_register_goal_update_time,edge,,18,18,0,0,2caacd0bc8cb2daa,2026-11-14
 ai_func_set_number,recorded,,12,12,0,0,6e8620fd37a797bc,2026-11-14
 ai_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_set_timer,recorded,,1,1,0,0,6e8620fd37a797bc,2026-11-14
@@ -60,8 +64,9 @@ ai_goal_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
 ai_group_reset_02224090,recorded,,1500,1500,0,0,e3c2894811c316e5,2026-11-14
 ai_group_reset_02224090,edge,,31,31,0,0,e3c2894811c316e5,2026-11-14
-ai_hearing_in_ear_range,edge,,449,449,0,0,80eeedd42463c342,2026-11-14
-ai_hearing_test,edge,,561,561,0,0,80eeedd42463c342,2026-11-14
+ai_hearing_check_sound,edge,,1642,1642,0,0,9c5b09c7422b29b8,2026-11-14
+ai_hearing_in_ear_range,edge,,449,449,0,0,9c5b09c7422b29b8,2026-11-14
+ai_hearing_test,edge,,561,561,0,0,9c5b09c7422b29b8,2026-11-14
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,60,203,203,0,0,f6e94c85e455f408,2026-10-07
@@ -89,6 +94,7 @@ ai_target_list_refresh_noticed,recorded,,6,6,0,0,0fcc7b78b0c4aab7,2026-11-13
 ai_target_list_refresh_noticed,edge,,103,103,0,0,0fcc7b78b0c4aab7,2026-11-13
 ai_target_speed_record_update,recorded,,426,426,0,0,962565c5970bd876,2026-11-13
 ai_target_speed_record_update,edge,,128,128,0,0,962565c5970bd876,2026-11-13
+ai_update_time_scheduler_reserve,edge,,256,256,0,0,2caacd0bc8cb2daa,2026-11-14
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
 audio_fmod_string_copy,recorded,,77,77,0,0,c17e74fefe35579f,2026-11-12
@@ -1526,6 +1532,7 @@ render_set_esgs_ring_itemsize,edge,,142,142,0,0,529c4831c9cb3cb9,2026-11-14
 render_set_gds_oa,edge,,124,124,0,0,1f7b4a0a659b7c3b,2026-11-13
 render_set_gs_mode,edge,,371,371,0,0,8310151b447ce097,2026-11-14
 render_set_gs_onchip_control,edge,,335,335,0,0,b96dac2f5f4a6535,2026-11-14
+render_set_gs_ring_sizes,edge,,445,445,0,0,65c106200dbd8922,2026-11-14
 render_set_gs_shader,edge,,145,145,0,0,6780a88145eaed82,2026-11-14
 render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12
