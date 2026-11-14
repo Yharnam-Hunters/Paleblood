@@ -263,6 +263,10 @@ address,replacement,system,returns
 0x0165bb70,bb_ai_func_get_current_target_state,ai,i32
 0x0165bb90,bb_ai_func_get_previous_target_state,ai,i32
 0x0165ca50,bb_ai_func_is_visible_target,ai,i8
+0x0167b6b0,bb_ai_func_register_goal_no_update,ai,void
+0x0167b710,bb_ai_func_register_goal_update_time,ai,void
+0x0167b790,bb_ai_func_register_goal_no_interrupt,ai,void
+0x0167b7f0,bb_ai_func_enable_combo_attack_cancel,ai,void
 0x0167f2a0,bb_ai_goal_func_set_timer,ai,void
 0x0167f2d0,bb_ai_goal_func_set_number,ai,void
 0x0167f820,bb_ai_goal_func_get_timer,ai,f32
@@ -273,9 +277,11 @@ address,replacement,system,returns
 0x0169acf0,bb_ai_character_has_effect_state,ai,i8
 0x0169ad80,bb_ai_character_gather_effect_states,ai,void
 0x0169af00,bb_ai_character_ready_check,ai,i8
+0x0169cef0,bb_ai_hearing_check_sound,ai,void
 0x0169d160,bb_ai_hearing_test,ai,void
 0x0169da30,bb_ai_hearing_in_ear_range,ai,i8
 0x0169fad0,bb_ai_character_link_ids,ai,i64
+0x016a3be0,bb_ai_update_time_scheduler_reserve,ai,f32
 0x016a5050,bb_engine_array64_push_back_016a5050,engine,void
 0x016a5130,bb_engine_array64_reserve_016a5130,engine,void
 0x016a52b0,bb_ai_sight_test,ai,i8
