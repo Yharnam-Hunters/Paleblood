@@ -198,8 +198,13 @@ static slot *find(trace_state *t, uint64_t addr)
             return &t->table[i];
 }
 
+enum { NOTE_CHANGED = -2 };
+
 /* Notes `n` bytes at `addr` as read (their first value is an input unless written first) or
-   written. Returns 0, or -1 when a limit is reached or a value cannot be read. */
+   written. Returns 0, -1 when a limit is reached or a value cannot be read, or NOTE_CHANGED when a
+   read sees an input byte with another value than its first read: something outside the traced
+   code (another thread) wrote it, and a case, which gives each input one value, cannot replay
+   the call. */
 static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input)
 {
     if (addr >= t->stack_lo && addr < t->stack_hi) {
@@ -238,6 +243,8 @@ static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input
                     *input = 1;
             } else if (write) {
                 s->flags |= RT_TRACE_WRITTEN;
+            } else if (!(s->flags & RT_TRACE_WRITTEN) && s->value != value[i]) {
+                return NOTE_CHANGED;
             }
         }
         done += chunk;
@@ -734,7 +741,10 @@ static void step(trace_state *t, ucontext_t *uc)
             return stop(t, uc, "too many far reaches from base pointers");
         if (op->access & CS_AC_READ) {
             int input = 0;
-            if (note(t, ea, n, 0, &input))
+            const int noted = note(t, ea, n, 0, &input);
+            if (noted == NOTE_CHANGED)
+                return stop(t, uc, "an input changed during the call (written outside the traced code)");
+            if (noted)
                 return stop(t, uc, "a read the tracer cannot note (limit, or unreadable memory)");
             if (input && op->size == 8 && count == 1) {
                 if (t->qwords >= QWORD_LIMIT)
