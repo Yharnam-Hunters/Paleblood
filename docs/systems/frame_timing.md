@@ -258,6 +258,9 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 |---|---:|---|---|---|
 | `0x004632d0` | 67 | `frame_timing_get_time_us` | original | dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds) |
 | `0x00466810` | 19 | `frame_timing_posix_sleep_ms` | edge-verified | Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true |
+| `0x00b68770` | 60 | `frame_timing_generator_buffer_size_00b68770` | edge-verified | Generator: the buffer size for a number of entries, from the generator's layout (0x00b685f0; its flag is not used) |
+| `0x00b69450` | 120 | `frame_timing_generator_fill_00b69450` | edge-verified | Generator: clears the pending flag of the kind-1 nodes each binding's group lists, then fills the buffer (0x00b694d0, same arguments) |
+| `0x00b6a030` | 216 | `frame_timing_generator_refresh_00b6a030` | edge-verified | Generator: hands each binding group's short records to their targets' slot 7 and long records to slot 5, with the data after each index |
 | `0x01088550` | 83 | `frame_timing_time_of_day_ticks` | edge-verified | Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8 |
 | `0x0111a760` | 131 | `frame_timing_get_monotonic_us` | verified | Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
@@ -276,6 +279,7 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x013dab20` | 187 | `frame_timing_listener_list_prepare_013dab20` | edge-verified | Hands the list's owner (when set) to every listener, then the resource the named resource registry holds under the list's name |
 | `0x0143c360` | 147 | `frame_timing_task_record_open_0143c360` | edge-verified | Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64 |
 | `0x0143c450` | 93 | `frame_timing_task_record_close_0143c450` | edge-verified | Closes a closing group record (state 4): flags cleared, state idle, no index (-1) |
+| `0x0143d760` | 82 | `frame_timing_task_batch_take_next_0143d760` | edge-verified | Task batch take: empty gives null; else the front task (deque of 2-task blocks, map read through the proxy's container), size-1, front+1 or 0 when emptied |
 | `0x0143d7c0` | 62 | `frame_timing_task_batch_add_0143d7c0` | edge-verified | Pushes a job onto the back of a batch's job deque with the game's push_back; a null job is not added |
 | `0x0143de20` | 106 | `frame_timing_task_worker_start_0143de20` | edge-verified | Unless busy: marks the worker busy and starts every slot with a batch (mode 0 lanes via 0x01467500, others via 0x01467300) |
 | `0x0143deb0` | 92 | `frame_timing_task_worker_run_0143deb0` | edge-verified | When busy: runs (0x01467530) every mode 0 lane whose slot has a batch |
@@ -344,6 +348,7 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x024bdd40` | 36 | `frame_timing_job_wait` | edge-verified | Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls |
 | `0x024eba00` | 328 | `frame_timing_config_get_int_024eba00` | edge-verified | Config map lookup (fallback when missing); copy the value, expand each reference marker, return the low 32 bits of a base-10 wcstol; free a heap copy |
 | `0x024f8110` | 170 | `frame_timing_random_generator_seed_024f8110` | edge-verified | Seeds a 64-bit LCG (x*0x5deece66d+11 mod 2^64) with the 32-bit seed stepped once and writes the high 32 bits of that state and the next three to the four words |
+| `0x02aa4080` | 63 | `frame_timing_lane_sync_signal_02aa4080` | edge-verified | Lane sync signal: a sync object whose slot 2 says it was not created is reported (fatal error, returns); then its event at +8 is signalled (0x02a3b050) |
 | `0x02c6d580` | 149 | `frame_timing_thread_random` | edge-verified | This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds |
 | `0x02e61140` | 67 | `frame_timing_time_of_day_us` | edge-verified | Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored |
 | `0x02e61280` | 101 | `frame_timing_time_seed_words` | edge-verified | Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call |
