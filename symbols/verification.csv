@@ -466,13 +466,17 @@ frame_timing_worker_lane_run_01467530,edge,,14,14,0,0,63c2f40e56bce67a,2026-11-1
 frame_timing_worker_lane_start_on_caller_01467500,edge,,13,13,0,0,63c2f40e56bce67a,2026-11-14
 frame_timing_worker_lane_start_on_thread_01467300,edge,,25,25,0,0,63c2f40e56bce67a,2026-11-14
 input_initialize_mouse_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
+input_key_assign_analog_value_01391f60,recorded,,20,20,0,0,211a0070fe407cb0,2026-11-14
 input_key_assign_analog_value_01391f60,edge,,23,23,0,0,211a0070fe407cb0,2026-11-13
+input_key_assign_first_free_id_013983e0,recorded,,2,2,0,0,211a0070fe407cb0,2026-11-14
 input_key_assign_first_free_id_013983e0,edge,,14,14,0,0,211a0070fe407cb0,2026-11-13
+input_key_assign_pressed_01391e30,recorded,,205,205,0,0,211a0070fe407cb0,2026-11-14
 input_key_assign_pressed_01391e30,edge,,28,28,0,0,211a0070fe407cb0,2026-11-13
 input_mouse_b_open_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
 input_mouse_construct,edge,,10,10,0,0,49e10b4c3d13f225,2026-11-10
 input_pad_set_vibration,recorded,,3,3,0,0,49e10b4c3d13f225,2026-11-12
 input_pad_set_vibration,edge,,9,9,0,0,49e10b4c3d13f225,2026-11-12
+input_pad_slot_construct_013914a0,recorded,,15,15,0,0,816af7fd57d8a25f,2026-11-14
 input_pad_slot_construct_013914a0,edge,,4,4,0,0,816af7fd57d8a25f,2026-11-13
 input_pad_step_01972900,recorded,,202,202,0,0,33cd4f4b94e06d58,2026-10-07
 input_pad_step_01972900,recorded,30,202,202,0,0,33cd4f4b94e06d58,2026-10-07
@@ -606,7 +610,7 @@ loading_memory_stream_read_024de230,edge,,12,12,0,0,0de848db403b0c24,2026-11-12
 loading_mount_table_push_back_02470d50,edge,,11,11,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_mount_table_reallocate_024716d0,edge,,9,9,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_owned_object_release_02479710,edge,,6,6,0,0,248aedbec805f26d,2026-11-14
-loading_path_table_find_013e68f0,recorded,,371,371,0,0,b724b5a95193c924,2026-11-14
+loading_path_table_find_013e68f0,recorded,,753,753,0,0,b724b5a95193c924,2026-11-14
 loading_path_table_find_013e68f0,edge,,52,52,0,0,b724b5a95193c924,2026-11-14
 loading_path_token_next_02a2aca0,recorded,,58,58,0,0,d7482430d506fc6c,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
@@ -652,7 +656,9 @@ menu_gaitem_select_direction_keys_20_01ee6080,edge,,18,18,0,0,ee2781c35c41d943,2
 menu_gaitem_select_direction_keys_24_01ee61f0,recorded,,13,13,0,0,ee2781c35c41d943,2026-11-14
 menu_gaitem_select_direction_keys_24_01ee61f0,edge,,25,25,0,0,ee2781c35c41d943,2026-11-14
 menu_gaitem_select_entry_copy_into_pool,edge,,17,17,0,0,dfb810b9d66119e2,2026-11-13
+menu_gaitem_select_list_set_row_01edc580,recorded,,7,7,0,0,0b11e7c3d7dfcdd7,2026-11-14
 menu_gaitem_select_list_set_row_01edc580,edge,,17,17,0,0,0b11e7c3d7dfcdd7,2026-11-13
+menu_gaitem_select_move_cursor_01ed0dd0,recorded,,5,5,0,0,0b11e7c3d7dfcdd7,2026-11-14
 menu_gaitem_select_move_cursor_01ed0dd0,edge,,17,17,0,0,0b11e7c3d7dfcdd7,2026-11-13
 menu_gaitem_select_text_pair_copy_into_vector_01ed7950,edge,,15,15,0,0,385fed467e783c1c,2026-11-13
 menu_gaitem_status_entry_copy,edge,,10,10,0,0,dfb810b9d66119e2,2026-11-13
