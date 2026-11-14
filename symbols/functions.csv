@@ -75,6 +75,10 @@ address,size,name,system,status,notes
 0x01456eb0,28,frame_timing_profile_start_01456eb0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, starts stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448580)"
 0x01456ed0,28,frame_timing_profile_stop_01456ed0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, stops stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448620)"
 0x01456ef0,136,frame_timing_profile_frame_end_01456ef0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, gives each of the ten stopwatches at 0x058b86c0 its end-of-frame tick (0x014486d0) in order"
+0x01467300,161,frame_timing_worker_lane_start_on_thread_01467300,frame_timing,edge-verified,"Unless the batch is null or the lane running or taken: marks it running and keeps the batch; wakes its thread, or in mode 0 runs every task here until empty or stopped"
+0x01467500,34,frame_timing_worker_lane_start_on_caller_01467500,frame_timing,edge-verified,"Unless the batch is null or the lane running or taken: marks the lane taken by its caller and running, clears its stop request and keeps the batch"
+0x01467530,102,frame_timing_worker_lane_run_01467530,frame_timing,edge-verified,"Runs one task of a taken, running lane with the lane's mode as argument; an empty batch stops the lane running"
+0x014675a0,27,frame_timing_worker_lane_finish_014675a0,frame_timing,edge-verified,"Gives a taken lane back: clears taken, running, the stop request and the batch"
 0x01471270,57,render_command_buffer_init,render,verified,"Initialize command pointers and callback; rounding capacity down to complete DWORDs while preserving auxiliary fields."
 0x014712d0,51,render_compose_record_encoding_fields,render,verified,Pack one byte and five masked fields into an encoding DWORD; no memory access.
 0x01471310,544,render_pack_record_mapping_word,render,verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
