@@ -47,6 +47,7 @@ ai_goal_func_is_finish_timer,edge,,76,76,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_is_finish_turn_timer,edge,,12,12,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
+ai_group_reset_02224090,recorded,,1500,1500,0,0,e3c2894811c316e5,2026-11-14
 ai_group_reset_02224090,edge,,31,31,0,0,e3c2894811c316e5,2026-11-14
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
