@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the worker lane's steps (game/frame_timing/worker_lanes.cpp), for tools/verify.py run.
 
-usage: worker_lanes_cases.py OUT_DIR caller|thread|run|finish
+usage: worker_lanes_cases.py OUT_DIR caller|thread|run|finish|take|signal
 
 Writes OUT_DIR/*.json for one function. The lane (0x60 bytes) and its tasks lie in one buffer,
 `mem`, filled with a pattern so that every byte a step leaves or writes is compared. The batch's
@@ -23,6 +23,15 @@ the mode, the batch pointer) through its argument with an offset, as the real on
   (the argument is read after it), a run that writes the argument word.
 - finish (frame_timing_worker_lane_finish_014675a0): not taken (nothing changes, running or not),
   taken by 1, 0x80 and 0xff, with a stop request and a batch.
+- take (frame_timing_task_batch_take_next_0143d760): a batch (proxy, block map, map size, front,
+  size) over blocks of two task pointers: empty, one task left (the front back to 0), more left;
+  the front in a block's first and second slot, past the map (masked), at the 64-bit top (it
+  wraps); a map of one block; a proxy naming another container (its map is read, the batch's
+  front and size are used).
+- signal (frame_timing_lane_sync_signal_02aa4080): the sync object's created slot (a stub)
+  answering 1, 0, 0xff and 0x100 (only the low byte counts); the fatal error (0x024b55b0, with the
+  file, line and message) and the event's signal (0x02a3b050) are stubs; each callee has a spare
+  scripted call.
 """
 import json
 import os
@@ -30,6 +39,8 @@ import struct
 import sys
 
 ADDRESSES = {
+    'take': '0x0143d760',
+    'signal': '0x02aa4080',
     'caller': '0x01467500',
     'thread': '0x01467300',
     'run': '0x01467530',
@@ -42,6 +53,8 @@ FUNCTIONS = {
     'finish': 'frame_timing_worker_lane_finish_014675a0',
 }
 TAKE, SIGNAL = '0x0143d760', '0x02aa4080'
+IS_CREATED, FATAL_ERROR, EVENT_SIGNAL = '0x00500300', '0x024b55b0', '0x02a3b050'
+SYNC_FILE, SYNC_MESSAGE, SYNC_LINE = 0x04c6ea8c, 0x04c6eaf5, 0x83
 RUN = '0x00500200'          # a spare address for the tasks' run slot, stubbed
 
 SYNC, MODE, RUNNING, STOP, TAKEN, BATCH = 0x10, 0x48, 0x4e, 0x4f, 0x50, 0x58
@@ -225,7 +238,73 @@ def finish_cases():
     return out
 
 
-GENERATORS = {'caller': caller_cases, 'thread': thread_cases, 'run': run_cases, 'finish': finish_cases}
+class Plain:
+    """A case built as a dict, for resolve()."""
+    def __init__(self, c):
+        self.c = c
+
+
+def plain(address, cid, returns):
+    return {'schema': 1, 'address': address, 'id': cid, 'returns': returns, 'args': {}, 'buffers': {},
+            'memory': [], 'imports': [], 'stubs': []}
+
+
+def take_case(cid, size=3, front=0, block_count=4, other=False):
+    """Blocks of two task pointers; task k sits at tasks+0x10*k, block b holds tasks 2b and 2b+1."""
+    c = plain(ADDRESSES['take'], cid, 'i64')
+    c['buffers'] = {'batch': {'size': 0x28, 'bytes': 'c6' * 0x28}, 'proxy': {'size': 0x10, 'bytes': '3c' * 0x10},
+                    'tasks': {'size': 0x200, 'bytes': '5a' * 0x200}}
+    container = 'other' if other else 'batch'
+    if other:
+        c['buffers']['other'] = {'size': 0x28, 'bytes': '9d' * 0x28}
+    c['memory'] += [{'addr': 'buf:batch', 'pointer': 'proxy'}, {'addr': 'buf:proxy', 'pointer': container},
+                    {'addr': 'buf:batch+0x18', 'bytes': q(front) + q(size)}]
+    map_name = f'{container}_map'
+    c['buffers'][map_name] = {'size': 8 * block_count, 'bytes': '77' * 8 * block_count}
+    c['memory'] += [{'addr': f'buf:{container}+0x8', 'pointer': map_name},
+                    {'addr': f'buf:{container}+0x10', 'bytes': q(block_count)}]
+    for b in range(block_count):
+        block = f'block{b}'
+        c['buffers'][block] = {'size': 0x10, 'bytes': '88' * 0x10}
+        c['memory'].append({'addr': f'buf:{map_name}+{8 * b:#x}', 'pointer': block})
+        for s in range(2):
+            c['memory'].append({'addr': f'buf:{block}+{8 * s:#x}', 'pointer': f'tasks+{0x10 * (2 * b + s) + 0x40 * other:#x}'})
+    c['args'] = {'rdi': 'buf:batch'}
+    return Plain(c)
+
+
+def take_cases():
+    return [take_case('empty', size=0), take_case('empty_front_kept', size=0, front=5),
+            take_case('one_left', size=1, front=2), take_case('one_left_odd_front', size=1, front=3),
+            take_case('first_slot', front=4), take_case('second_slot', front=5),
+            take_case('front_past_map', front=11), take_case('front_far_past_map', front=0x1000000000000001),
+            take_case('front_at_top', front=0xffffffffffffffff, size=2),
+            take_case('one_block_map', front=3, block_count=1), take_case('eight_block_map', front=13, block_count=8),
+            take_case('size_at_top', size=0xffffffffffffffff, front=6),
+            take_case('proxy_names_other', front=2, other=True),
+            take_case('proxy_names_other_one_left', front=7, size=1, other=True)]
+
+
+def signal_case(cid, created=1):
+    c = plain(ADDRESSES['signal'], cid, 'void')
+    c['buffers'] = {'sync': {'size': 0x38, 'bytes': 'b4' * 0x38}, 'vtable': {'size': 0x20, 'bytes': '6c' * 0x20}}
+    c['memory'] = [{'addr': 'buf:sync', 'pointer': 'vtable'}, {'addr': 'buf:vtable+0x10', 'guest': IS_CREATED}]
+    c['args'] = {'rdi': 'buf:sync'}
+    c['stubs'] = [{'address': IS_CREATED, 'argc': 1, 'ret': created}]
+    if created & 0xff == 0:
+        c['stubs'].append({'address': FATAL_ERROR, 'argc': 3, 'argu32': [1]})
+    c['stubs'] += [{'address': EVENT_SIGNAL, 'argc': 1}, {'address': IS_CREATED, 'argc': 1},
+                   {'address': FATAL_ERROR, 'argc': 3}, {'address': EVENT_SIGNAL, 'argc': 1}]
+    return Plain(c)
+
+
+def signal_cases():
+    return [signal_case('created'), signal_case('not_created', created=0), signal_case('created_ff', created=0xff),
+            signal_case('only_upper_byte', created=0x100), signal_case('created_upper_bits', created=0xffffff01)]
+
+
+GENERATORS = {'caller': caller_cases, 'thread': thread_cases, 'run': run_cases, 'finish': finish_cases,
+              'take': take_cases, 'signal': signal_cases}
 
 
 def resolve(c):

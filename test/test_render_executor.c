@@ -694,6 +694,52 @@ static void sampled_levels(rt_executor *x)
     }
 }
 
+/* A sample at level 0 with a texel offset (image_sample_lz_o, pixel_level_zero_offset): a 16x16 image whose
+   texel (i, j) holds red i * 16 and green j * 16, sampled with point filters at the pixel's own texel
+   moved by (2, -1), clamped to the edge: pixel (x, y) draws red min(x + 2, 15) * 16 and green
+   max(y - 1, 0) * 16. */
+static void offset_samples(rt_executor *x)
+{
+    enum { OFFSET_IMAGE = 0x2e80000, OFFSET_TARGET = 0x2ec0000, OFFSET_CODE = 0x7a00, OFFSET_BUFFER = 0xc10b0000, EDGE = 16,
+           LINEAR_ALIGNED = 8, DATA_8_8_8_8 = 10, NUM_UNORM = 0 };
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(LINEAR_ALIGNED, 4, EDGE, EDGE, &layout, error, sizeof error) == 0);
+    uint8_t *image = (uint8_t *)(uintptr_t)at(OFFSET_IMAGE);
+    for (uint32_t j = 0; j < EDGE; j++)
+        for (uint32_t i = 0; i < EDGE; i++) {
+            uint8_t *texel = image + rt_tiling_offset(&layout, i, j, 0);
+            texel[0] = (uint8_t)(i * 16), texel[1] = (uint8_t)(j * 16), texel[2] = 0, texel[3] = 0xff;
+        }
+    memcpy((void *)(uintptr_t)at(OFFSET_CODE), pixel_level_zero_offset, sizeof pixel_level_zero_offset);
+    uint32_t user[16] = {0};
+    image_descriptor(user + 4, at(OFFSET_IMAGE), DATA_8_8_8_8, NUM_UNORM, EDGE, EDGE);
+    user[7] |= LINEAR_ALIGNED << 20;
+    user[12] = 0x2 | 0x2 << 3 | 0x2 << 6, user[13] = 15u * 256 << 12; /* clamped, MAX_LOD 15, point filters */
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(OFFSET_BUFFER, at(OFFSET_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(OFFSET_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(OFFSET_BUFFER, offset, pixel, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(OFFSET_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(OFFSET_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, OFFSET_BUFFER, record_triangle_draw(OFFSET_BUFFER, offset + 0x30), error, sizeof error);
+    if (drawn) fprintf(stderr, "offset samples: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(OFFSET_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int covered = 0, right = 1;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            if (!p) continue; /* outside the triangle */
+            const uint32_t red = (uint32_t)(px + 2 > 15 ? 15 : px + 2) * 16, green = (uint32_t)(y - 1 < 0 ? 0 : y - 1) * 16;
+            covered++, right &= (p >> 16 & 0xff) == red && (p >> 8 & 0xff) == green;
+            if ((p >> 16 & 0xff) != red || (p >> 8 & 0xff) != green) fprintf(stderr, "offset samples: pixel (%d, %d) %08x\n", px, y, p);
+        }
+    CHECK(covered > 0 && right);
+}
+
 /* Depth compares (image_sample_c_lz, pixel_compared): an 8x8 32-bit float image (DATA_FORMAT 4,
    NUMBER_FORMAT 7, linear) of 0.25 in its left half and 0.75 in its right, compared with 0.5 at
    (x / 16, y / 16) over 16 pixels: pixel column px samples at texel position px / 2 - 0.25 (clamped
@@ -4296,6 +4342,7 @@ int main(void)
     many_images(x, 100);
     many_images(x, 4200);
     sampled_levels(x);
+    offset_samples(x);
     compared_samples(x);
     sampled_cube(x);
     fetch_shader(x);
