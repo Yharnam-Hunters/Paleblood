@@ -114,6 +114,8 @@ How these layers are driven during a real load, and in what order, is still bein
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x00464b90` | 215 | `loading_stdio_stream_open` | verified | fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30 |
+| `0x00829a90` | 33 | `loading_allocator_free_headed_00829a90` | edge-verified | Frees a block with a 16-byte header before its data: clears the header word, sized free of header and size+0x10 (32-bit); null ignored |
+| `0x00836840` | 70 | `loading_tagged_string_release_00836840` | edge-verified | Tagged string word: below 2 left alone; odd frees word-1 through the thread allocator (0x00829a90); then cleared |
 | `0x0084d5a0` | 158 | `loading_fios_directory_delete` | edge-verified | FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator |
 | `0x00857cd0` | 176 | `loading_fios_open_file` | edge-verified | sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open |
 | `0x0085cda0` | 174 | `loading_fios_open_file_read` | edge-verified | sceFiosFHOpenSync to read; on success a 0x18-byte file object (vtable 0x055c2190) open when the handle is not negative |
@@ -141,6 +143,8 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x024bcfa0` | 49 | `loading_result_construct_024bcfa0` | edge-verified | Load result base constructor: vtable, four request words, code and word |
 | `0x024bcfe0` | 89 | `loading_result_copy_024bcfe0` | edge-verified | Load result base copy constructor: vtable, request words cleared then copied, code and word |
 | `0x024bd310` | 65 | `loading_resource_handle_assign_024bd310` | edge-verified | Resource handle assignment: unless the infos match, drops the old info reference, takes the source info and adds a reference; returns the handle |
+| `0x024bd470` | 28 | `loading_resource_handle_construct_024bd470` | edge-verified | Base resource handle constructor: stores its vtable and the info, takes a reference (0x02a3a300) when the info is not null |
+| `0x024bd4c0` | 25 | `loading_resource_handle_destroy_024bd4c0` | edge-verified | Base resource handle destructor: stores its vtable, releases the info (0x024bd930) when not null |
 | `0x024bd930` | 249 | `loading_resource_info_release_024bd930` | edge-verified | DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue |
 | `0x024be250` | 343 | `loading_load_request_construct_024be250` | edge-verified | resource load request base constructor: clear words; keep the third argument at +0x20; name string on the request heap (heap check) from wcslen; tail via 0x024be8e0 |
 | `0x024be3b0` | 558 | `loading_load_request_copy_024be3b0` | edge-verified | resource load request copy constructor: base vtable; words/bytes copied; name on the request heap; strings/array via 0x024be8e0 then assigned (strings skip self-copy) |
@@ -156,6 +160,7 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x024d8210` | 605 | `loading_file_task_prepare_024d8210` | edge-verified | FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks) |
 | `0x024d8470` | 755 | `loading_file_task_begin_read_024d8470` | edge-verified | FileTransferTask read start: build the 0xb0-byte read request and queue it to the task reader under its lock; close status 3 for a held read object or info read flag bit 0 |
 | `0x024dd540` | 487 | `loading_transfer_task_initialize_024dd540` | edge-verified | TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready |
+| `0x024dd8a0` | 40 | `loading_transfer_task_cancel_024dd8a0` | edge-verified | Atomically sets bit 0 (and bit 1 with the flag) of the state at +0x160 unless bit 2 is set; returns true |
 | `0x024dde50` | 200 | `loading_transfer_task_check_read_024dde50` | edge-verified | TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4 |
 | `0x024ddf20` | 190 | `loading_transfer_task_check_close_024ddf20` | edge-verified | TransferTask close step: free read object; closed and not cancelled -> request close; else finish once |
 | `0x024de230` | 116 | `loading_memory_stream_read_024de230` | edge-verified | VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20 |
