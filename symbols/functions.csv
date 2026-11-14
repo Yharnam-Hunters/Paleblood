@@ -74,6 +74,8 @@ address,size,name,system,status,notes
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
 0x013dab20,187,frame_timing_listener_list_prepare_013dab20,frame_timing,edge-verified,"Hands the list's owner (when set) to every listener, then the resource the named resource registry holds under the list's name"
 0x013e68f0,160,loading_path_table_find_013e68f0,loading,edge-verified,"FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0"
+0x013e6ff0,91,loading_resource_base_construct_013e6ff0,loading,edge-verified,"Resource base: builds the object base with the heap reference, then its vtable, an empty file handle, its state bytes and the heap reference's word"
+0x013e7090,56,loading_resource_base_destroy_013e7090,loading,edge-verified,"Resource base: writes its vtable back, lets go of the handle's file, destroys the handle and then the object base"
 0x013e9040,113,engine_fd4_handle_is_valid_013e9040,engine,verified,"FD4 handle check: nonzero handle, index <= table's last index (inclusive), entry (0xe0 B) generation byte at +0x2c equals the handle's"
 0x013e9ee0,8,engine_fd4_handle_is_set_013e9ee0,engine,original,"FD4 handle is set: the 8-byte handle is nonzero as a whole; called out of line by the handle check 0x013e9040; too short to hook, matched byte-exact instead"
 0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
@@ -702,10 +704,14 @@ address,size,name,system,status,notes
 0x02a2d8e0,452,engine_narrow_string_assign_02a2d8e0,engine,edge-verified,"Narrow string assign from counted text: text inside its own characters keeps that part (cut the tail, memmove the front); else count ~0 throws, grow 0x02a2dac0 if needed, memcpy"
 0x02a3a1b0,40,loading_resource_info_reference_count_02a3a1b0,loading,edge-verified,"Dantelion2 DLResourceInfo reference count: read under the info's own engine mutex (lock forever, result ignored)"
 0x02a3a2a0,45,loading_resource_info_drop_reference_02a3a2a0,loading,edge-verified,Dantelion2 DLResourceInfo drop reference: decrement under the info's own engine mutex; a count at zero stays zero
+0x02a3a300,36,loading_resource_info_add_reference_02a3a300,loading,edge-verified,Resource info: adds one to the reference count under the info's own mutex (waiting forever)
 0x02a3a840,19,engine_mutex_construct_02a3a840,engine,edge-verified,Engine mutex constructor (the print lock base): its vtable 0x056b5b70 and a cleared initialized flag; the handle is left as it was
 0x02a3a920,49,engine_mutex_initialize_02a3a920,engine,edge-verified,Engine mutex initialize: asks the vtable; else the PthreadMutex initialize (0x02483fe0) on the handle; a nonzero result is returned and the flag stays as it was
 0x02a3ae00,394,engine_semaphore_wait_02a3ae00,engine,edge-verified,"DLSemaphore wait for one unit, forever or up to a timeout; -3 on ETIMEDOUT; ESRCH..EINVAL report chains, unknown errors reported; 0"
 0x02a3b0d0,122,engine_semaphore_signal_02a3b0d0,engine,edge-verified,DLSemaphore signal: EINVAL ignored; ESRCH and other errors reported; 0
+0x02a3b4d0,32,engine_thread_create_02a3b4d0,engine,edge-verified,DLThread: creates the system thread through 0x02a3b310 with every core and 0 in place of the dropped fifth argument
+0x02a3b8b0,253,engine_block_pool_allocate_02a3b8b0,engine,edge-verified,"Block pool: a block from the current page, else the front partial page, else a new page from the allocator (blocks chained); a page left without free blocks goes to the full ring"
+0x02a3b9b0,142,engine_block_pool_free_02a3b9b0,engine,edge-verified,"Block pool: a block back on its page's free chain; a full page moves to the partial ring, a page with every block free goes back to the allocator"
 0x02a3baa0,378,engine_fast_fixed_allocator_initialize_02a3baa0,engine,edge-verified,"DLFastFixedAllocator set-up: chunk size rounded up to a power of two, chunks aligned to it; blocks rounded to the alignment (at least 8); reports bad sizes and alignment"
 0x02a3bc40,173,engine_fast_fixed_allocator_release_02a3bc40,engine,edge-verified,"DLFastFixedAllocator destructor body: every chunk of both chunk lists, then the spare chunk, freed to the backing allocator"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
