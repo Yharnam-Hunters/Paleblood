@@ -22,6 +22,7 @@
 #include "../engine/havok.h"
 #include "../engine/vector.h"
 #include "../engine/vector_bounds.h"
+#include "../engine/vector_operations.h"
 #include "runtime/original.h"
 
 namespace {
@@ -174,7 +175,7 @@ extern "C" void bb_physics_shape_construct_00ac46a0(ShapeObject *self, int32_t m
 extern "C" void bb_physics_shape_summary_00ac5e00(ShapeObject *self, ShapeSummary *out)
 {
     out->minimum = largest_float.get();
-    out->maximum = engine::bitwise_xor(largest_float.get(), sign_bits.get());
+    out->maximum = engine::vector_operations::bit_xor(largest_float.get(), sign_bits.get());
     const int32_t count = self->shapes->flag_count;   // read before the refresh, as the original
     shape_refresh_entries(self);
     for (int32_t i = 0; i < count; i++) {
@@ -189,7 +190,7 @@ extern "C" void bb_physics_root_update_00ae6180(RootBody *root, float weight)
 {
     RagdollPose pose;
     ragdoll_pose_construct(&pose, root);
-    const Vec4 weights = engine::splat(weight);
+    const Vec4 weights = engine::vector_operations::broadcast(weight);
     ragdoll_pose_apply(root, pose.value_0x00, &weights);
     ragdoll_pose_destruct(&pose);
 }

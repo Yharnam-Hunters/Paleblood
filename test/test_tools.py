@@ -1576,8 +1576,24 @@ class VerificationRecord(unittest.TestCase):
         self.assertTrue(any('is for other code' in e for e in errs))
         self.assertTrue(any('current recorded result' in e for e in errs))
 
-    def test_edge_verified_is_not_held_to_the_rule(self):
-        self.assertEqual(self.v.check(self.root, [dict(self.funcs[0], status='edge-verified')]), [])
+    def test_edge_verified_needs_only_a_current_edge_result(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+
+    def test_edge_verified_without_an_edge_result_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '30', ['e'], [])     # an option's row does not count
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[0])
+
+    def test_edge_verified_with_a_failing_edge_result_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e', 'g'], ['g'])
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[0])
 
     def test_stale_result_of_an_edge_verified_function_is_refused(self):
         funcs = [dict(self.funcs[0], status='edge-verified')]
@@ -1586,8 +1602,9 @@ class VerificationRecord(unittest.TestCase):
         with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
             f.write('// changed\n')
         errs = self.v.check(self.root, funcs)
-        self.assertEqual(len(errs), 1)
+        self.assertEqual(len(errs), 2)
         self.assertIn('the edge result of x_f is for other code', errs[0])
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[1])
         self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
         self.assertEqual(self.v.check(self.root, funcs), [])
 

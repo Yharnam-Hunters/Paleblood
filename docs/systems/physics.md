@@ -64,7 +64,10 @@ reproduce the exact instructions: the truncation works on the float's bits, not 
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x00ae3fc0` | 280 | `physics_controller_construct_00ae3fc0` | edge-verified | Controller: base constructor, vtable, three empty hkArrays (+0x40, +0xc0, +0xd0), +0x68/+0x70 cleared, setup 0x00ae40e0; the 0x30-byte parameter block appended (reserved on the shape heap if needed) |
+| `0x00ae8700` | 414 | `physics_body_set_construct_00ae8700` | edge-verified | Body set: base constructor 0x00f359c0 with all seven arguments, vtable, a reference to the source shape set (+0x78), the source 32-bit indices (+0x80) copied into a shape heap buffer |
 | `0x01c0c2b0` | 3222 | `physics_instance_construct_01c0c2b0` | verified | physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners |
+| `0x02bc1ca0` | 218 | `physics_ids_reserve_02bc1ca0` | edge-verified | Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept |
 
 ## Structs and globals
 
