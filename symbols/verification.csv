@@ -1168,6 +1168,7 @@ render_swap_chain_present_mode,edge,,19,19,0,0,e1616a0a330d07b9,2026-11-03
 render_swap_chain_submit,edge,,53,53,0,0,8424f6556ab52ba2,2026-11-03
 render_translate_record_secondary_02ab7720,edge,,72,72,0,0,cfe70ede045a3fa9,2026-11-13
 render_translate_record_tertiary_02ab78a0,edge,,72,72,0,0,cfe70ede045a3fa9,2026-11-13
+render_update_gs_shader,edge,,145,145,0,0,61823ab0de1ac84a,2026-11-14
 render_update_hs_shader,edge,,245,245,0,0,1174a8774473cb56,2026-11-13
 render_update_model_wind,edge,,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10
