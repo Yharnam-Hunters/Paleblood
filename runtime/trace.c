@@ -348,6 +348,49 @@ static int string_op(const cs_insn *in)
     }
 }
 
+/* How operand `i` (a memory operand) of `in` accesses memory. Capstone 5 marks the memory
+   destination of most vector and x87 stores (`vmovss m, xmm`, `movups m, xmm`, `fstp m`,
+   `setcc m`) as a read, and the destination of `rol m` or `cmpxchg m` as a read only: in the game
+   that is about 165,000 VEX stores. A store noted as a read gives its destination the value from
+   before the store as an input, and a later read of the stored value looks like another thread's
+   write, so the trace gave no case (the perception update's timer). Stores and read-modify-writes
+   whose destination is their first operand are therefore classified here; any other memory
+   operand Capstone gives no access at all (`test m, r`) is a read. */
+static uint8_t memory_access(const cs_insn *in, unsigned i)
+{
+    const cs_x86 *x = &in->detail->x86;
+    const uint8_t marked = x->operands[i].access & (CS_AC_READ | CS_AC_WRITE);
+    if (i != 0 || string_op(in) || (x->op_count > 1 && x->operands[1].type == X86_OP_MEM))
+        return marked ? marked : CS_AC_READ;
+    switch (in->id) {
+    case X86_INS_MOVAPS: case X86_INS_MOVUPS: case X86_INS_MOVAPD: case X86_INS_MOVUPD:
+    case X86_INS_MOVDQA: case X86_INS_MOVDQU: case X86_INS_MOVSS: case X86_INS_MOVSD:
+    case X86_INS_MOVQ: case X86_INS_MOVD: case X86_INS_MOVLPS: case X86_INS_MOVHPS:
+    case X86_INS_MOVLPD: case X86_INS_MOVHPD: case X86_INS_MOVNTPS: case X86_INS_MOVNTPD:
+    case X86_INS_MOVNTDQ: case X86_INS_MOVNTI: case X86_INS_MOVNTQ: case X86_INS_EXTRACTPS:
+    case X86_INS_PEXTRB: case X86_INS_PEXTRW: case X86_INS_PEXTRD: case X86_INS_PEXTRQ:
+    case X86_INS_STMXCSR:
+    case X86_INS_VMOVAPS: case X86_INS_VMOVUPS: case X86_INS_VMOVAPD: case X86_INS_VMOVUPD:
+    case X86_INS_VMOVDQA: case X86_INS_VMOVDQU: case X86_INS_VMOVSS: case X86_INS_VMOVSD:
+    case X86_INS_VMOVQ: case X86_INS_VMOVD: case X86_INS_VMOVLPS: case X86_INS_VMOVHPS:
+    case X86_INS_VMOVLPD: case X86_INS_VMOVHPD: case X86_INS_VMOVNTPS: case X86_INS_VMOVNTPD:
+    case X86_INS_VMOVNTDQ: case X86_INS_VEXTRACTPS: case X86_INS_VEXTRACTF128:
+    case X86_INS_VEXTRACTI128: case X86_INS_VPEXTRB: case X86_INS_VPEXTRW: case X86_INS_VPEXTRD:
+    case X86_INS_VPEXTRQ: case X86_INS_VSTMXCSR: case X86_INS_VCVTPS2PH:
+    case X86_INS_FST: case X86_INS_FSTP: case X86_INS_FIST: case X86_INS_FISTP: case X86_INS_FISTTP:
+    case X86_INS_FBSTP: case X86_INS_FNSTCW: case X86_INS_FNSTSW:
+    case X86_INS_SETA: case X86_INS_SETAE: case X86_INS_SETB: case X86_INS_SETBE: case X86_INS_SETE:
+    case X86_INS_SETG: case X86_INS_SETGE: case X86_INS_SETL: case X86_INS_SETLE: case X86_INS_SETNE:
+    case X86_INS_SETNO: case X86_INS_SETNP: case X86_INS_SETNS: case X86_INS_SETO: case X86_INS_SETP:
+    case X86_INS_SETS:
+        return CS_AC_WRITE;
+    case X86_INS_ROL: case X86_INS_ROR: case X86_INS_RCL: case X86_INS_RCR: case X86_INS_CMPXCHG:
+        return CS_AC_READ | CS_AC_WRITE;
+    default:
+        return marked ? marked : CS_AC_READ;
+    }
+}
+
 /* xor reg, reg and its vector forms only write the register. */
 static int zeroing_idiom(const cs_insn *in)
 {
@@ -762,9 +805,8 @@ static void step(trace_state *t, ucontext_t *uc)
         const cs_x86_op *op = &x->operands[i];
         if (op->type != X86_OP_MEM)
             continue;
-        /* Capstone marks some memory sources with no access at all (`test m, r`, a bitmap test
-           in the heaps); they are reads. lea, nop and prefetch never reach here (no_access). */
-        const uint8_t access = op->access & (CS_AC_READ | CS_AC_WRITE) ? op->access : CS_AC_READ;
+        /* lea, nop and prefetch never reach here (no_access). */
+        const uint8_t access = memory_access(in, i);
         /* gs is the guest's thread pointer block; fs would be the host's own. */
         uint64_t segment_base = 0;
         if (op->mem.segment == X86_REG_GS && t->thread_base)
