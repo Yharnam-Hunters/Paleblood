@@ -56,9 +56,15 @@ increment:
     rep movsb
     ret
 
-/* 0x180: reads xmm2, an argument a case cannot give: no case. */
+/* 0x180: returns xmm2, a third vector argument: the case gives it. */
     .org 0x180
     movaps %xmm2, %xmm0
+    ret
+
+/* 0x1a0: doubles xmm0 through xmm3, which it writes before reading: xmm3 is not an input. */
+    .org 0x1a0
+    movaps %xmm0, %xmm3
+    addss %xmm3, %xmm0
     ret
 
 /* 0x1c0: an fs access: the host's own thread block, which a case cannot give: no case. */

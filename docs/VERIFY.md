@@ -160,7 +160,7 @@ reused run ID and case number cannot silently replace an existing recording.
   argument points at (`"offset"` starts further in); `argf32: [0]` compares the float in xmm0
   (`1`: xmm1) as its bit pattern (for stubs and imports); a function that returns a float is
   scripted with `ret` as the float's bit pattern (`"ret": "0x3f800000"`, for stubs and
-  imports); case `args` may set `xmm0` and `xmm1` (hex bytes) for float arguments; `writes` stores what the real function stored through an argument
+  imports); case `args` may set `xmm0`..`xmm7` (hex bytes) for float and vector arguments; `writes` stores what the real function stored through an argument
   (`bytes`, `pointer` to a buffer, or `guest` address), like library writes.
 - XMM input strings are raw little-endian hexadecimal bytes, without a `0x` prefix. Short
   values are padded with zero bytes to 16 bytes; an empty string supplies zero in every lane.
