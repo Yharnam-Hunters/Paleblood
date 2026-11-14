@@ -200,6 +200,12 @@ Instead:
        VGPR is would depend on how the slice counts, so it still stops by name.
      - **`image_sample_l`** takes its level of detail after the coordinates and samples there
        (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
+     - **`image_sample_lz_o`** is `image_sample_lz` with a texel offset in the first address VGPR
+       (six-bit signed x in bits 5:0 and y in 13:8, before the coordinates: the Sea Islands ISA's
+       address order, as shadPS4 reads it; facts only). Vulkan takes a sample's `Offset` only as a
+       constant, so the coordinates move instead, by the offset over the image's size at level 0, which
+       picks the same texels at level 0. 2D images only; others stop by name. The clinic beast's
+       encounter uses it in pixel shader `0x20d3b9cb00`.
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
        bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at the level the
        coordinates' derivatives pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from

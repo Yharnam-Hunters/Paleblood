@@ -1017,6 +1017,18 @@ static const uint32_t pixel_level_zero[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* image_sample_lz with a texel offset (image_sample_lz_o): the image in s[4:11] at (x / 16, y / 16) of the
+   pixel's position moved 2 texels right and 1 up (the offset VGPR, first: x 2 in bits 5:0, y -1 in 13:8). */
+static const uint32_t pixel_level_zero_offset[] = {
+    0x7e0c02ff, 0x00003f02, /* v_mov_b32_e32 v6, 0x3f02 */
+    0x100e04ff, 0x3d800000, /* v_mul_f32_e32 v7, 0x3d800000 (1/16), v2 */
+    0x101006ff, 0x3d800000, /* v_mul_f32_e32 v8, 0x3d800000 (1/16), v3 */
+    0xf0dc0f00, 0x00610906, /* image_sample_lz_o v[9:12], v[6:8], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0c0b0a09, /* exp mrt0, v9, v10, v11, v12 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* A depth compare at level 0: the reference 0.5 against the image in s[4:11] at (x / 16, y / 16), through
    the sampler in s[12:15] (its compare function and filter); the result in red, green and blue, alpha 1. */
 static const uint32_t pixel_compared[] = {
