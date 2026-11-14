@@ -275,6 +275,32 @@ static void image_programs(void)
     /* a loop back to the load whose pass writes the descriptor's SGPRs after the use (the same shader reuses
        s[72:79] after its image load, and its loop loads them again before the next one): from memory */
     static const uint32_t reloaded_in_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffb, 0xbf810000};
+    /* a load in a block that ends with an s_branch past the use, which only the branch from before the load
+       reaches (the clinic beast's pixel shader at 0x20d5372100 has this shape): the load never runs before
+       the use, which reads the user data's descriptor */
+    static const uint32_t load_branched_past[] = {0xbf840002, 0xc0c00904, 0xbf820002, 0xf0000f00, 0x00000401, 0xbf810000};
+    /* the same with the block writing the pointer instead (s_mov_b32 s8, 0) and the load after the branch's
+       target, through s[8:9]: the pointer reaching the load is the user data's (the same shader's next
+       descriptor) */
+    static const uint32_t pointer_branched_past[] = {0xbf840002, 0xbe880380, 0xbf820003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};
+    const int pointer_past = gcn_image_resources(PROGRAM(pointer_branched_past), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (pointer_past) fprintf(stderr, "pointer_branched_past: %s\n", error);
+    CHECK(pointer_past == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    const int branched_past = gcn_image_resources(PROGRAM(load_branched_past), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (branched_past) fprintf(stderr, "load_branched_past: %s\n", error);
+    CHECK(branched_past == 0 && count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
+    /* a pointer pair spilled to lanes 0 and 1 of v3, overwritten, and restored before the load (the clinic
+       beast's pixel shader at 0x20d444dd00 does this with its user-data pointer): from memory through the
+       user data's pointer; restored from lanes another SGPR filled, refused */
+    static const uint32_t pointer_restored[] = {0x04070008, 0x04070209, 0xbe880380, 0x02110103, 0x02130303,
+                                                0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};
+    static const uint32_t pointer_restored_other[] = {0x04070009, 0x04070209, 0xbe880380, 0x02110103, 0x02130303,
+                                                      0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};
+    const int restored_pointer = gcn_image_resources(PROGRAM(pointer_restored), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (restored_pointer) fprintf(stderr, "pointer_restored: %s\n", error);
+    CHECK(restored_pointer == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(pointer_restored_other), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "loaded through s[8:9], which the program writes"));
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(skipped_load), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
@@ -530,6 +556,24 @@ static void table_copies(void)
     CHECK(gcn_table_copy_shape(PROGRAM(table_copy_store_offset), &shape) == 0);
     CHECK(gcn_table_copy_shape(PROGRAM(scale_add), &shape) == 0);
     CHECK(gcn_table_copy_shape(PROGRAM(indexed_scale_add), &shape) == 0);
+}
+
+/* Constant fills (gcn_fill_shape, gcn_programs.h): the descriptor s[0:3], the workgroup index s12, each
+   store's element offset, and the widest workgroup the global id's split holds for. A table copy or a
+   program storing the lane id is not one. */
+static void fills(void)
+{
+    gcn_fill shape = {0};
+    CHECK(gcn_fill_shape(PROGRAM(fill_one_store), &shape) == 1);
+    CHECK(shape.destination_sgpr == 0 && shape.workgroup_sgpr == 12 && shape.group_elements == 64 && shape.store_count == 1 && shape.offsets[0] == 0 &&
+          shape.most_lanes == UINT32_MAX);
+    CHECK(gcn_fill_shape(PROGRAM(fill_two_stores), &shape) == 1);
+    CHECK(shape.group_elements == 128 && shape.store_count == 2 && shape.offsets[0] == 0 && shape.offsets[1] == 64 && shape.most_lanes == UINT32_MAX);
+    CHECK(gcn_fill_shape(PROGRAM(fill_from_global_id), &shape) == 1);
+    CHECK(shape.group_elements == 128 && shape.store_count == 2 && shape.offsets[0] == 0 && shape.offsets[1] == 64 && shape.most_lanes == 64);
+    CHECK(gcn_fill_shape(PROGRAM(fill_of_lanes), &shape) == 0);
+    CHECK(gcn_fill_shape(PROGRAM(table_copy), &shape) == 0);
+    CHECK(gcn_fill_shape(PROGRAM(scale_add), &shape) == 0);
 }
 
 /* A buffer_store_dwordx4 translates to a valid module that holds a store of the whole 4-dword vector
@@ -855,6 +899,7 @@ int main(void)
     store_resources();
     memory_reads();
     table_copies();
+    fills();
     vector_stores();
     image_programs();
     calls();

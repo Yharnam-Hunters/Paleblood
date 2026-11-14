@@ -64,8 +64,13 @@ constexpr uint64_t fifth_code_unit = 4;
 
 // The page's descriptor (0x20 bytes, in the arrays the page table points at).
 struct MemoryHeap;
+// A link of an engine's ring of pages (the engine holds the ring's own node).
+struct PageLinks {
+    PageLinks *next;
+    PageLinks *prev;
+};
 struct Page {
-    uint8_t unknown_0x00[0x10];
+    PageLinks links;            // in the ring of its engine's pages
     MemoryHeap *heap;           // the heap the page belongs to
     uintptr_t base;             // where the page's 4 KiB start, before rounding to 16 bytes
 };
@@ -112,17 +117,37 @@ struct PageView {
 };
 static_assert(sizeof(PageView) == 0x38);
 
+// What an engine asks when a new page would take its pages past their limit: slot 2 of the
+// handler's vtable, with the heap and the bytes past the limit (true: the handler made room). The
+// engine counts the calls in progress around it.
+struct LimitHandler;
+struct LimitHandlerVtable {
+    void *unknown_slots[2];
+    bool (*on_limit_exceeded)(LimitHandler *handler, MemoryHeap *heap, uint64_t excess);
+};
+struct LimitHandler {
+    const LimitHandlerVtable *vtable;
+    int32_t calls_in_progress;
+};
+static_assert(offsetof(LimitHandlerVtable, on_limit_exceeded) == 0x10);
+static_assert(offsetof(LimitHandler, calls_in_progress) == 8);
+
 // The small-block engine (part of the heap's allocation engine).
 struct Engine {
-    uint8_t unknown_0x00[0x10];
+    uint8_t unknown_0x00[0x8];
+    MemoryHeap *heap;           // the heap the engine allocates for
     uint64_t alignment;         // the heap's minimum alignment: above 16, every allocation is aligned
     Bins bins;
-    uint8_t unknown_0x220[0x18];
+    PageLinks pages;            // the ring of the engine's pages
+    uint64_t page_bytes_taken;  // page_bytes for each page in the ring
     uint64_t used_bytes;        // bytes handed out
-    uint8_t unknown_0x240[0x10];
+    uint64_t limit;             // 0: no limit on page_bytes_taken
+    LimitHandler *limit_handler;
     uint64_t allocation_count;
 };
-static_assert(offsetof(Engine, bins) == 0x18 && offsetof(Engine, used_bytes) == 0x238);
+static_assert(offsetof(Engine, heap) == 8 && offsetof(Engine, bins) == 0x18 && offsetof(Engine, pages) == 0x220);
+static_assert(offsetof(Engine, page_bytes_taken) == 0x230 && offsetof(Engine, used_bytes) == 0x238);
+static_assert(offsetof(Engine, limit) == 0x240 && offsetof(Engine, limit_handler) == 0x248);
 static_assert(offsetof(Engine, allocation_count) == 0x250);
 
 // The heap object, as far as the engine's callers read it.
@@ -150,10 +175,13 @@ struct LargeBlockNode;
 struct PageManager {
     uint8_t unknown_0x00[0x8];
     void *mutex;
-    uint8_t unknown_0x10[0x18];
+    uint8_t unknown_0x10[0x10];
+    uint32_t page_table_entries; // entries of the global page table in use
+    uint8_t unknown_0x24[0x4];
     LargeBlockNode *root;
 };
-static_assert(offsetof(PageManager, mutex) == 0x8 && offsetof(PageManager, root) == 0x28);
+static_assert(offsetof(PageManager, mutex) == 0x8 && offsetof(PageManager, page_table_entries) == 0x20);
+static_assert(offsetof(PageManager, root) == 0x28);
 RT_GLOBAL(0x05940360, page_manager, PageManager *);
 
 RT_ORIGINAL(0x02fbe598, mutex_lock, int(void **mutex));

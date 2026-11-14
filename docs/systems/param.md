@@ -155,7 +155,10 @@ coverage boots #714 describes.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x016da6a0` | 217 | `param_id_array_push_back_copy_016da6a0` | edge-verified | Id array (int32) push_back: grow 1.5x when full (0x016da780), re-find an id inside the array, store unless no buffer; the end moves on regardless |
 | `0x018e4110` | 432 | `param_apply_char_make_face` | edge-verified | Character creation: writes the face being built (sliders; parts/colors/decal for a version 4 table) into a FaceGenParam row |
+| `0x019f8d70` | 217 | `param_protector_id_array_push_back_019f8d70` | edge-verified | Id array (int32) push_back: grow 1.5x when full (0x02bc1ca0), re-find an id inside the array, store unless no buffer; the end moves on regardless |
+| `0x01b0d5f0` | 217 | `param_weapon_id_array_push_back_01b0d5f0` | edge-verified | Id array (int32) push_back: grow 1.5x when full (0x016da780), re-find an id inside the array, store unless no buffer; the end moves on regardless |
 | `0x01c92e90` | 372 | `param_lock_cam_range` | edge-verified | SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924 |
 | `0x01f82cc0` | 457 | `param_find_rows_new_menu_color_table` | edge-verified | NewMenuColorTableParam run of consecutive ids from an id: first row (a built-in default row when none) and count |
 | `0x01f83130` | 457 | `param_find_rows_char_make_menu_list_item` | edge-verified | Character creation menu list items: first CharMakeMenuListItemParam row of an id and the count of rows with consecutive ids after it |
@@ -292,6 +295,7 @@ coverage boots #714 describes.
 | `0x0232bf50` | 411 | `param_list_row_ids_equip_param_weapon` | edge-verified | SoloParamRepository every EquipParamWeapon (type 0) row id; with the flag, rows whose int at +0x4 is -1 are skipped |
 | `0x0232c110` | 481 | `param_list_versions_equip_param_weapon` | edge-verified | SoloParamRepository EquipParamWeapon rows whose byte +0xe2 equals value: id plus one per leading non-negative entry at +0x60 (up to 15) |
 | `0x0232c930` | 283 | `param_find_row_reinforce_param_weapon` | edge-verified | SoloParamRepository row lookup for ReinforceParamWeapon (type 4): binary search of the loader index by id; writes id and row data pointer (null if none) |
+| `0x02bc1bb0` | 217 | `param_id_array_push_back_02bc1bb0` | edge-verified | Id array (int32) push_back: grow 1.5x when full (0x02bc1ca0), re-find an id inside the array, store unless no buffer; the end moves on regardless |
 
 ## Structs and globals
 

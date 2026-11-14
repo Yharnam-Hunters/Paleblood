@@ -5,7 +5,7 @@
 usage: transfer_task_cases.py OUT_DIR MODE
 
 Modes and what each case gives:
-- initialize (0x024dd540): a task filled with a pattern, a manager whose two heap pointers sit at
+- initialize (0x024dd540): a task filled with a pattern, a manager whose two reader pointers sit at
   +0x5d0 aligned up to 8 (the manager may be passed at an address that is not 8-aligned), an info,
   a word and the request's flags byte. The disk device getter (0x0246be70) and its locate
   (0x0246e3d0, compared with the preferred flag it is given) are scripted stubs.

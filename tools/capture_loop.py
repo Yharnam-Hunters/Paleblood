@@ -37,10 +37,10 @@ import fcntl
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
-import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STAMP = '.capture-loop.json'
@@ -79,19 +79,30 @@ def boot_command(scene: dict, captures: str, frames: str | None) -> list[str]:
     return cmd
 
 
+class LockWaitExpired(Exception):
+    pass
+
+
 def hold_lock(path: str, wait: int):
-    """The GPU lock, held until the returned file is closed; None when it stays busy."""
+    """The GPU lock, held until the returned file is closed; None when it stays busy for `wait`
+    seconds. It waits in the kernel's queue like `flock -w` (the other sessions' boots and tests),
+    under an alarm: polling with LOCK_NB lost every handover to those blocked waiters, so a busy
+    lock starved the loop until its wait ran out."""
     f = open(path, 'a')
-    deadline = time.monotonic() + wait
-    while True:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return f
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                f.close()
-                return None
-            time.sleep(5)
+
+    def expired(signum, frame):
+        raise LockWaitExpired()
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.alarm(max(1, wait))
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return f
+    except LockWaitExpired:
+        f.close()
+        return None
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def run_scene(scene: dict, captures: str, lock: str, wait: int) -> bool:

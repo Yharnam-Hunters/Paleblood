@@ -9,14 +9,15 @@
 // source's owns byte. The first word of each string object is left as it was.
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 #include "../engine/engine.h"
 #include "../engine/wide_string_assign.h"
+#include "gaitem_dialog.h"
 
 namespace {
 
 using engine::WideString;
+using namespace menu::gaitem_dialog;
 
 // An entry of the select dialog's list.
 struct SelectEntry {
@@ -30,15 +31,14 @@ struct SelectEntry {
 static_assert(offsetof(SelectEntry, first) == 0x10 && offsetof(SelectEntry, word_0x48) == 0x48);
 static_assert(offsetof(SelectEntry, second) == 0x50 && sizeof(SelectEntry) == 0x88);
 
-// The select dialog keeps its entries in a fixed pool (a Dantelion container): the slots start
-// at the pool's address rounded up to 8, and the pool's count says how many are in use.
-constexpr size_t select_pool_count_offset = 0x888;
-constexpr uintptr_t slot_alignment = 8;
-
-// The pool's out-of-range report (Dantelion's Core/Util header and its message).
-RT_GLOBAL(0x04d39639, pool_check_file, const char);
-RT_GLOBAL(0x04d40099, pool_check_message, const char);
-constexpr int32_t pool_check_line = 0x27;
+// The select dialog keeps its entries in a fixed pool (gaitem_dialog.h): sixteen slots from
+// first_slot(), then the count in use.
+constexpr uint64_t select_pool_capacity = 16;
+struct SelectPool {
+    uint8_t slots[select_pool_capacity * sizeof(SelectEntry) + slot_alignment];   // from first_slot()
+    uint64_t count;
+};
+static_assert(offsetof(SelectPool, count) == 0x888);
 
 // An entry of the status dialog's list.
 struct SharedObject {
@@ -70,13 +70,10 @@ void copy_string(WideString *target, const WideString &source)
 
 // Copies `source` into pool slot `slot` (null: nothing). A slot at or past the pool's in-use
 // slots is reported, then copied into all the same; a slot before the pool is not checked.
-extern "C" void bb_menu_gaitem_select_entry_copy_into_pool(const uint8_t *pool, SelectEntry *slot,
+extern "C" void bb_menu_gaitem_select_entry_copy_into_pool(const SelectPool *pool, SelectEntry *slot,
                                                            const SelectEntry *source)
 {
-    const uintptr_t first_slot = (reinterpret_cast<uintptr_t>(pool) + slot_alignment - 1) & ~(slot_alignment - 1);
-    uint64_t in_use;
-    std::memcpy(&in_use, pool + select_pool_count_offset, sizeof(in_use));
-    const uintptr_t end = first_slot + sizeof(SelectEntry) * in_use;
+    const uintptr_t end = first_slot(pool) + sizeof(SelectEntry) * pool->count;
     if (end <= reinterpret_cast<uintptr_t>(slot))
         engine::fatal_error(pool_check_file.address(), pool_check_line, pool_check_message.address());
     if (slot == nullptr) return;

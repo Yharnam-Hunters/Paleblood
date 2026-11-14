@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 18133 of 157757 functions are verified (11.49%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 18137 of 157757 functions are verified (11.50%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -140,6 +140,9 @@ files. Run `tools/session_report.py` on your branch (attach `verify.py` results 
 and the case directories with `--captures`) and paste its output into the PR. CI checks that
 every function replacement in the report has matching, non-empty, passing verification evidence,
 and that the report includes each replacement status change found in `symbols/functions.csv`.
+Cases quarantined with a reason ([docs/VERIFY.md](docs/VERIFY.md)) stay in the report's table as
+quarantined: attach the summary of the `verify.py run --record` run, whose counts CI compares
+with `symbols/verification.csv`.
 
 Every pull request that replaces game code contains, in the description:
 
@@ -153,7 +156,7 @@ A function's status in `symbols/functions.csv` goes through three levels:
 | Status | Means |
 |---|---|
 | `replaced` | it is in the hook registry and builds |
-| `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original |
+| `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original, recorded as a current `edge` row (`verify.py run --record edge`) |
 | `verified` | it also passes on inputs recorded in the game (the capture library), and the independent review approved it |
 
 `edge-verified` is for functions whose code the game doesn't reach where you can record (a
@@ -164,6 +167,11 @@ and edge case passes. A failure leaves it where it was and is reported. The runt
 inputs itself: `tools/capture_loop.py` boots every scene it reaches with recording on, then runs
 `tools/promote.py` and lists the functions that pass and await their independent review
 ([docs/VERIFY.md](docs/VERIFY.md), "Recording in the game").
+
+`tools/validate_functions.py` refuses `edge-verified` (and `verified`) for a function without a
+current, passing `edge` row without an option in `symbols/verification.csv`: run its edge cases
+with `tools/verify.py run --record edge` in the pull request that sets the status, and again in
+any pull request that changes its source or a header it includes.
 
 ### Generated progress and merging main
 

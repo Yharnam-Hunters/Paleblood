@@ -12,12 +12,20 @@
 
 namespace menu {
 
+// The settings Dantelion's dialog opens its system dialog with: copied in by the set-up
+// (0x02d03520) and handed to the dialog backend's open, never read by the game.
+struct SystemTextDialogSettings {
+    uint8_t unknown_0x00[0xc8];
+};
+
 // Dantelion's text input dialog object: whether its system dialog is open, then the settings it
-// opens with (not read here).
+// opens with (system_text_dialog.cpp).
 struct SystemTextDialog {
     bool open;
-    uint8_t unknown_0x01[0xcf];
+    uint8_t unknown_0x01[0x7];
+    SystemTextDialogSettings settings;
 };
+static_assert(offsetof(SystemTextDialog, settings) == 0x8 && sizeof(SystemTextDialog) == 0xd0);
 
 // What Dantelion's dialog reports (0x02d03420). The two finishing values follow its reading of the
 // system dialog's result (0x02d03df0): an accepted text, or a cancel, an abort or a failed read.

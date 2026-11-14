@@ -50,6 +50,9 @@ typedef struct {
     void (*unguard)(uint64_t address, uint64_t length);
     void *gds;
     uint32_t gds_bytes;
+    /* Whether collect_cpu_writes may report anything now; NULL: always. The executor asks it first, so
+       that it builds and sorts the ranges only for a collect that happens. */
+    int (*cpu_writes_due)(void);
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no

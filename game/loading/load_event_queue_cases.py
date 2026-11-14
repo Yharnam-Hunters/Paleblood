@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Edge cases for queuing a resource load request and for the file load queue's removal
-(game/loading/load_event_queue.cpp), for tools/verify.py run.
+"""Edge cases for queuing a resource load request and for the file load queue's removal and cancel
+event (game/loading/load_event_queue.cpp), for tools/verify.py run.
 
-usage: load_event_queue_cases.py OUT_DIR request|request_kind_4|remove
+usage: load_event_queue_cases.py OUT_DIR request|request_kind_4|remove|cancel_event
 
 request (0x02a698e0, kind 0) and request_kind_4 (0x02a69cd0): a queue (`queue`, its vtable's first
 slot a scripted report stub, its lock at +0xa0 with scripted lock and unlock slots), a request
@@ -18,13 +18,18 @@ array's address is aligned up.
 remove (0x02a6af30): a file load queue whose transfer tasks (+0x28) hold six lists of synthetic
 tasks (+0x10: the info, or a decoy). The read-write lock's read and unlock (0x0247f640,
 0x0247f710) and the task cancel (0x024dd8a0) are scripted stubs.
+
+cancel_event (0x02a6abc0): the same task lists, passed directly with an event whose +0x08 word is
+the info (the first argument is not used). Not covered: no task lists, after which the original
+asserts and then faults on the null pointer.
 """
 import json
 import os
 import struct
 import sys
 
-ADDRESSES = {'request': '0x02a698e0', 'request_kind_4': '0x02a69cd0', 'remove': '0x02a6af30'}
+ADDRESSES = {'request': '0x02a698e0', 'request_kind_4': '0x02a69cd0', 'remove': '0x02a6af30',
+             'cancel_event': '0x02a6abc0'}
 KINDS = {'request': 0, 'request_kind_4': 4}
 LOCK, UNLOCK, REPORT, VALID, FREE = '0x00500200', '0x00500240', '0x00500280', '0x005002c0', '0x00500300'
 INFO_FOR, HANDLE_NEW, HANDLE_DROP = '0x024c17e0', '0x024bd470', '0x024bd4c0'
@@ -142,15 +147,21 @@ def request_cases(mode):
     ]
 
 
-def remove_case(cid, lists, target=(None, None), tasks_null=False):
+def remove_case(cid, lists, target=(None, None), mode='remove'):
     """lists: per list (6), how many tasks; target: (list, index) of the task loading the info,
-    or None. Other tasks load a decoy info."""
-    c = Case('remove', cid)
+    or None. Other tasks load a decoy info. mode: remove (the queue holds the lists and its lock is
+    taken) or cancel_event (the lists and an event come as arguments)."""
+    c = Case(mode, cid)
     c.raw['info'] = bytearray(8)
     c.raw['decoy'] = bytearray(8)
     c.raw['tasks'] = bytearray([0x5e]) * TASKS
-    c.memory.append({'addr': 'buf:queue+40', 'pointer': 'tasks+0'})
-    c.args = {'rdi': 'buf:queue', 'rsi': 'buf:info'}
+    if mode == 'remove':
+        c.memory.append({'addr': 'buf:queue+40', 'pointer': 'tasks+0'})
+        c.args = {'rdi': 'buf:queue', 'rsi': 'buf:info'}
+    else:
+        c.raw['event'] = bytearray([0x45]) * 0x158
+        c.memory.append({'addr': 'buf:event+8', 'pointer': 'info+0'})
+        c.args = {'rdi': '0x5151515151515151', 'rsi': 'buf:event', 'rdx': 'buf:tasks'}
     found = None
     for k, count in enumerate(lists):
         name = f'list{k}'
@@ -166,28 +177,32 @@ def remove_case(cid, lists, target=(None, None), tasks_null=False):
                          {'addr': f'buf:{task}+16', 'pointer': 'info+0' if hit else 'decoy+0'}]
             if hit and found is None:
                 found = task
-    c.stubs.append({'address': LOCK, 'argc': 1, 'argu32': [1]})
+    if mode == 'remove':
+        c.stubs.append({'address': LOCK, 'argc': 1, 'argu32': [1]})
     c.stubs.append({'address': RW_READ, 'argc': 1, 'argu32': [1]})
     c.stubs.append({'address': RW_UNLOCK, 'argc': 1})
     if found:
         c.stubs.append({'address': CANCEL, 'argc': 1, 'argu8': [1]})
-    c.stubs.append({'address': UNLOCK, 'argc': 1})
+    if mode == 'remove':
+        c.stubs.append({'address': UNLOCK, 'argc': 1})
     return c.json('void')
 
 
-def remove_cases():
+def remove_cases(mode):
     return [
-        remove_case('all_empty', [0] * 6),
-        remove_case('first_list_first', [3, 0, 0, 0, 0, 0], (0, 0)),
-        remove_case('first_list_last', [3, 2, 0, 0, 0, 0], (0, 2)),
-        remove_case('second_list', [2, 2, 2, 2, 2, 2], (1, 1)),
-        remove_case('third_list', [2, 2, 2, 2, 2, 2], (2, 0)),
-        remove_case('fourth_list', [1, 1, 1, 1, 1, 1], (3, 0)),
-        remove_case('fifth_list', [0, 0, 0, 0, 3, 0], (4, 2)),
-        remove_case('last_list', [1, 1, 1, 1, 1, 2], (5, 1)),
-        remove_case('not_found', [2, 2, 2, 2, 2, 2]),
-        remove_case('first_of_several', [0, 3, 0, 0, 0, 0], (1, 'all')),
-        remove_case('third_list_second', [0, 0, 2, 0, 0, 2], (2, 1)),
+        remove_case('all_empty', [0] * 6, mode=mode),
+        remove_case('first_list_first', [3, 0, 0, 0, 0, 0], (0, 0), mode),
+        remove_case('first_list_last', [3, 2, 0, 0, 0, 0], (0, 2), mode),
+        remove_case('second_list', [2, 2, 2, 2, 2, 2], (1, 1), mode),
+        remove_case('third_list', [2, 2, 2, 2, 2, 2], (2, 0), mode),
+        remove_case('fourth_list', [1, 1, 1, 1, 1, 1], (3, 0), mode),
+        remove_case('fifth_list', [0, 0, 0, 0, 3, 0], (4, 2), mode),
+        remove_case('last_list', [1, 1, 1, 1, 1, 2], (5, 1), mode),
+        remove_case('not_found', [2, 2, 2, 2, 2, 2], mode=mode),
+        remove_case('first_of_several', [0, 3, 0, 0, 0, 0], (1, 'all'), mode),
+        remove_case('third_list_second', [0, 0, 2, 0, 0, 2], (2, 1), mode),
+        remove_case('sixth_list_only', [0, 0, 0, 0, 0, 3], (5, 2), mode),
+        remove_case('sixth_list_not_found', [0, 0, 0, 0, 0, 3], mode=mode),
     ]
 
 
@@ -196,7 +211,7 @@ def main():
         sys.exit(__doc__)
     out = sys.argv[1]
     mode = sys.argv[2]
-    generated = remove_cases() if mode == 'remove' else request_cases(mode)
+    generated = remove_cases(mode) if mode in ('remove', 'cancel_event') else request_cases(mode)
     os.makedirs(out, exist_ok=True)
     for c in generated:
         with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:

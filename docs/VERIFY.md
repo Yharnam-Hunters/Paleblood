@@ -160,7 +160,7 @@ reused run ID and case number cannot silently replace an existing recording.
   argument points at (`"offset"` starts further in); `argf32: [0]` compares the float in xmm0
   (`1`: xmm1) as its bit pattern (for stubs and imports); a function that returns a float is
   scripted with `ret` as the float's bit pattern (`"ret": "0x3f800000"`, for stubs and
-  imports); case `args` may set `xmm0` and `xmm1` (hex bytes) for float arguments; `writes` stores what the real function stored through an argument
+  imports); case `args` may set `xmm0`..`xmm7` (hex bytes) for float and vector arguments; `writes` stores what the real function stored through an argument
   (`bytes`, `pointer` to a buffer, or `guest` address), like library writes.
 - XMM input strings are raw little-endian hexadecimal bytes, without a `0x` prefix. Short
   values are padded with zero bytes to 16 bytes; an empty string supplies zero in every lane.
@@ -363,12 +363,23 @@ A case that can't be used goes in `symbols/quarantine.csv` (function, case set, 
 file name without `.json`, reason, date), and only when it can't be fixed: for example a
 recording made under an earlier version of an option, which lacks inputs the current option
 needs. A quarantined case that fails counts as quarantined, not failed. Quarantine is not for a
-mismatch between the original and the replacement: that is a bug to fix.
+mismatch between the original and the replacement: that is a bug to fix. The session report
+(`tools/session_report.py --verify`, given the summary of the `--record` run) shows such cases in a
+Quarantined column with their reasons; its CI check accepts them only when the run's counts match
+the function's row in `symbols/verification.csv`.
 
 `tools/validate_functions.py` (CI) refuses `verified` for a function without current `recorded`
 and `edge` results without an option, with any failure that is not quarantined in any of its
-current results, or with a result for other code. `promote.py` records the runs it makes and
+current results, or with a result for other code. It refuses `edge-verified` for a function without a
+current `edge` result without an option that passed every case: the status is what that row
+records. `promote.py` records the runs it makes and
 applies the same rule.
+
+It also refuses a result for other code of any function, whatever its status: a change to a
+replacement or to a header it includes (a shared container or heap header, say) has to run the
+sets of every function that includes it again, with `--record`, in the same pull request. When
+you cannot run a set (its recordings are in someone else's library), remove its row instead: a
+result for other code counts for nothing, and a verified function still needs current rows.
 
 ## Community patches and hooks
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The wide string's assign from part of another string, and the growth it calls (structs in
-// wide_string.h).
+// The wide string's assign from part of another string, its assign from counted text, and the
+// growth they call (structs in wide_string.h).
 //
 // engine_wide_string_assign_from_02a279a0 (0x02a279a0) gives `target` the `count` characters of
 // `source` from `position` (fewer when the source ends first). A position past the source's end
@@ -9,6 +9,12 @@
 // that part in place: the text after it is cut off first, then the text before it is moved to the
 // front. Otherwise the target grows when its capacity is smaller than the length, and the
 // characters are copied in.
+//
+// engine_wide_string_assign_counted_02a2a720 (0x02a2a720) gives the string `count` characters
+// from `characters`. Text that starts inside the string's own characters is the assign from part
+// of itself, inlined (the part from that position). Any other text, a null pointer included, is
+// copied as for another string: too long throws, the string grows when its capacity is smaller,
+// and a count of 0 only empties it.
 //
 // engine_wide_string_grow_02a27b70 (0x02a27b70) gives the string a new buffer for at least
 // `length` characters and keeps its first `keep`. The capacity is the length with its low three
@@ -111,6 +117,28 @@ extern "C" WideString *bb_engine_wide_string_assign_from_02a279a0(WideString *ta
     c_wmemcpy(text(target), text(source) + position, length);
     set_length(target, length);
     return target;
+}
+
+extern "C" WideString *bb_engine_wide_string_assign_counted_02a2a720(WideString *s, const char16_t *characters,
+                                                                      uint64_t count)
+{
+    char16_t *own = text(s);
+    if (characters != nullptr && own <= characters && characters < own + s->size)
+        return bb_engine_wide_string_assign_from_02a279a0(s, s, characters - own, count);
+
+    if (count > max_length) {
+        throw_too_long(s);
+        __builtin_unreachable();
+    }
+    if (s->capacity < count) {
+        wide_string_grow(s, count, s->size);
+    } else if (count == 0) {
+        set_length(s, 0);
+        return s;
+    }
+    c_wmemcpy(text(s), characters, count);
+    set_length(s, count);
+    return s;
 }
 
 extern "C" void bb_engine_wide_string_grow_02a27b70(WideString *s, uint64_t length, uint64_t keep)

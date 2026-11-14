@@ -28,7 +28,8 @@ program. You always bring your own copy of the game.
 - **Boot and menus.** In the maintainer's local runs the game plays its logos and title screen,
   takes "Play Offline", creates its save data, shows the brightness and controls screens, plays its
   opening cinematic in 3D, goes through character creation and loads the first area, Iosefka's
-  Clinic, drawn in 3D. The boot record in STATUS.md is the plain run (no display, no input,
+  Clinic, drawn in 3D. From a save at the clinic's start with a scripted controller, the hunter
+  walks into the first beast, dies, and wakes in the Hunter's Dream. The boot record in STATUS.md is the plain run (no display, no input,
   30 seconds), so its milestone stays at the first flip.
 - **System libraries.** Every system function the executable imports is answered, either by the
   game's own bundled modules or by Paleblood's runtime, from public facts. Online features answer
