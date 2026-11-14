@@ -199,7 +199,7 @@ address,size,name,system,status,notes
 0x01624e50,109,ai_character_flag_module_set,ai,verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
 0x0162d840,897,ai_target_speed_record_update,ai,edge-verified,"Target speed record: 30-sample ring of the followed target's speed along the line to the character, weighted average"
 0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
-0x01657b20,90,ai_func_get_random_int,ai,edge-verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
+0x01657b20,90,ai_func_get_random_int,ai,verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
 0x01657b80,19,ai_func_set_timer,ai,edge-verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
 0x01657ba0,22,ai_func_set_number,ai,edge-verified,AI script binding SetNumber: think script number 0..63 (index checked unsigned)
 0x01658770,205,ai_func_is_inside_target_ex,ai,edge-verified,"IsInsideTargetEx: finds both characters, direction number -> heading (table) and target-line flag (5-8), then the inside test"
@@ -210,12 +210,12 @@ address,size,name,system,status,notes
 0x0165aff0,23,ai_func_get_timer,ai,edge-verified,"AI script binding GetTimer: think timer 0..15, 0.0 above"
 0x0165b010,28,ai_func_is_finish_timer,ai,edge-verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
 0x0165b030,26,ai_func_get_number,ai,edge-verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
-0x0165baf0,22,ai_func_is_battle_state,ai,edge-verified,AI script binding IsBattleState: perception target state == 3 (battle)
+0x0165baf0,22,ai_func_is_battle_state,ai,verified,AI script binding IsBattleState: perception target state == 3 (battle)
 0x0165bb10,27,ai_func_is_change_state,ai,verified,AI script binding IsChangeState: target state differs from last frame's
-0x0165bb30,22,ai_func_is_caution_state,ai,edge-verified,AI script binding IsCautionState: perception target state == 1 (caution)
-0x0165bb50,22,ai_func_is_find_state,ai,edge-verified,AI script binding IsFindState: perception target state == 2 (find)
+0x0165bb30,22,ai_func_is_caution_state,ai,verified,AI script binding IsCautionState: perception target state == 1 (caution)
+0x0165bb50,22,ai_func_is_find_state,ai,verified,AI script binding IsFindState: perception target state == 2 (find)
 0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
-0x0165bb90,18,ai_func_get_previous_target_state,ai,edge-verified,AI script binding GetPrevTargetState: the perception's target state last frame
+0x0165bb90,18,ai_func_get_previous_target_state,ai,verified,AI script binding GetPrevTargetState: the perception's target state last frame
 0x0165ca50,130,ai_func_is_visible_target,ai,edge-verified,"IsVisibleTarget: stores the player's set entry; selectors -2,-1,20-22,24,25 and points 100-123 are visible, else the current target's visible flag"
 0x0167f2a0,22,ai_goal_func_set_timer,ai,edge-verified,AI goal script binding SetTimer: goal timer 0..15 (index checked signed)
 0x0167f2d0,22,ai_goal_func_set_number,ai,edge-verified,AI goal script binding SetNumber: goal script number 0..63 (index checked unsigned)
