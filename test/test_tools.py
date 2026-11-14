@@ -427,6 +427,55 @@ class SessionReport(unittest.TestCase):
         report['verify'][0]['failed'] = 1
         self.assertTrue(any('failing' in e for e in self.sr.check_body(self.sr.render(report))))
 
+    def test_quarantined_cases_need_their_record(self):
+        verification = ('function,cases,option,total,passed,failed,quarantined,source,date\n'
+                        'f,recorded,,10,8,0,2,abcd,2026-11-14\n')
+        quarantine = ('function,cases,option,case,reason,date\n'
+                      'f,recorded,,r_0001,padding bytes the original never writes,2026-11-14\n'
+                      'f,recorded,,r_0002,padding bytes the original never writes,2026-11-14\n')
+        files = {'symbols/verification.csv': verification, 'symbols/quarantine.csv': quarantine}
+
+        def read(path):
+            return files.get(path)
+        d = tempfile.mkdtemp()
+        try:
+            summary = os.path.join(d, 'summary.json')
+            with open(summary, 'w') as f:
+                json.dump({'function': 'f', 'cases': 10, 'passed': 8, 'failed': 2,
+                           'recorded': {'cases': 'recorded', 'option': '', 'failed': '0',
+                                        'quarantined': '2', 'source': 'abcd'}}, f)
+            [entry] = self.sr.verify_results([summary])
+        finally:
+            shutil.rmtree(d)
+        self.assertEqual((entry['failed'], entry['quarantined']), (0, 2))
+        entry['reasons'] = self.sr.quarantine_reasons(entry, read)
+        self.assertEqual(entry['reasons'], ['padding bytes the original never writes'])
+        replaced = {'named': [], 'replaced': [], 'edge-verified': [],
+                    'verified': [{'address': '0x1', 'name': 'f'}]}
+        report = {'schema': 1, 'base': 'origin/main', 'branch': 'x', 'commits': 1, 'functions': replaced,
+                  'verify': [entry], 'captures': [], 'findings': [], 'questions': []}
+        body = self.sr.render(report)
+        self.assertIn('| `f` | 10 | 8 | 0 | 2 |', body)
+        self.assertIn('padding bytes the original never writes', body)
+        self.assertEqual(self.sr.check_body(body, read_record=read), [])
+
+        def errors(**changes):
+            bad = dict(entry, **changes)
+            return self.sr.check_body(self.sr.render(dict(report, verify=[bad])), read_record=read)
+        # a failure that is not quarantined still fails the check
+        self.assertTrue(any('failing' in e for e in errors(failed=1, passed=7)))
+        # counts that verification.csv does not hold
+        self.assertTrue(any('verification.csv' in e for e in errors(quarantined=3, passed=7)))
+        self.assertTrue(any('verification.csv' in e for e in errors(record={'cases': 'edge', 'option': ''})))
+        self.assertTrue(any('case set' in e for e in errors(record=None)))
+        # quarantine.csv must list the cases with their reasons
+        files['symbols/quarantine.csv'] = quarantine.splitlines(True)[0] + quarantine.splitlines(True)[1]
+        self.assertTrue(any('quarantine.csv' in e for e in self.sr.check_body(body, read_record=read)))
+        files['symbols/quarantine.csv'] = quarantine
+        # a run without a matching row in the branch at all
+        files['symbols/verification.csv'] = verification.splitlines(True)[0]
+        self.assertTrue(any('verification.csv' in e for e in self.sr.check_body(body, read_record=read)))
+
     def test_body_structure_is_checked(self):
         def report(**changes):
             r = {'schema': 1, 'base': 'origin/main', 'branch': 'x', 'commits': 0,
