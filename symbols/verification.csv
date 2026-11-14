@@ -51,7 +51,8 @@ ai_is_inside_direction,edge,,442,442,0,0,c6caf9cb1a9ffc34,2026-11-13
 ai_pending_event_fire,recorded,,33,33,0,0,f963cbb2620dee66,2026-11-13
 ai_pending_event_fire,edge,,21,21,0,0,f963cbb2620dee66,2026-11-13
 ai_perception_target_visible,edge,,109,109,0,0,c6caf9cb1a9ffc34,2026-11-13
-ai_target_list_mark_main_matches,edge,,12,12,0,0,f963cbb2620dee66,2026-11-13
+ai_target_list_mark_main_matches,recorded,,47,47,0,0,f963cbb2620dee66,2026-11-13
+ai_target_list_mark_main_matches,edge,,18,18,0,0,f963cbb2620dee66,2026-11-13
 ai_target_speed_record_update,edge,,128,128,0,0,c6caf9cb1a9ffc34,2026-11-13
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
@@ -164,10 +165,13 @@ engine_robust_heap_check_block_02486080,edge,,41,41,0,0,3ad2d20cc9031713,2026-11
 engine_robust_heap_free_02487b50,edge,,20,20,0,0,0e3cf68f6b668d27,2026-11-13
 engine_robust_heap_initialize_024863f0,edge,,17,17,0,0,b88ac5b837769baa,2026-11-12
 engine_scaleform_heap_add_page_0233bbe0,recorded,,53,53,0,0,a3fcd5f1b7493c82,2026-11-13
+engine_scaleform_heap_add_page_0233bbe0,edge,,26,26,0,0,a3fcd5f1b7493c82,2026-11-13
 engine_scaleform_heap_add_page_locked_0233bd20,recorded,,50,50,0,0,a3fcd5f1b7493c82,2026-11-13
+engine_scaleform_heap_add_page_locked_0233bd20,edge,,26,26,0,0,a3fcd5f1b7493c82,2026-11-13
 engine_scaleform_heap_allocate_0233c870,edge,,22,22,0,0,ddfb7426e26d4b07,2026-11-14
 engine_scaleform_heap_allocate_aligned_0233ca70,edge,,22,22,0,0,810aa8bb1d5cd139,2026-11-14
 engine_scaleform_heap_allocate_large_0233c660,recorded,,82,82,0,0,a933c8a1519d8f01,2026-11-14
+engine_scaleform_heap_allocate_large_0233c660,edge,,39,39,0,0,a933c8a1519d8f01,2026-11-13
 engine_scaleform_heap_bin_allocate_0233a7f0,edge,,24,24,0,0,631ace2145451f96,2026-11-14
 engine_scaleform_heap_bin_allocate_aligned_0233ae40,edge,,15,15,0,0,da56f7d1072ce505,2026-11-14
 engine_scaleform_heap_bin_free_0233ab20,edge,,18,18,0,0,08e599541ac84d53,2026-11-14
@@ -179,6 +183,8 @@ engine_scaleform_heap_bitset_mark_027ec640,edge,,156,156,0,0,13b4b26fbf674fba,20
 engine_scaleform_heap_bitset_units_027ec890,edge,,169,169,0,0,d77e8b06ebc01d9f,2026-11-14
 engine_scaleform_heap_free_0233c0a0,edge,,12,12,0,0,6c23af8d5d6927d6,2026-11-14
 engine_scaleform_heap_reallocate_023392d0,edge,,29,29,0,0,46ee1d1f106e57ce,2026-11-14
+engine_scaleform_heap_reallocate_small_moving_0233d140,edge,,23,23,0,0,dbf3780048b40c59,2026-11-13
+engine_scaleform_heap_release_page_0233be70,edge,,21,21,0,0,a933c8a1519d8f01,2026-11-13
 engine_segregated_bi_heap_allocate_bottom_02488030,edge,,25,25,0,0,b7d264f4a2acb1db,2026-11-13
 engine_segregated_bi_heap_allocate_top_024882f0,edge,,29,29,0,0,ad25567b394bf685,2026-11-12
 engine_segregated_bi_heap_finalize_02488650,edge,,6,6,0,0,c25ef851b263d52b,2026-11-12
@@ -247,6 +253,7 @@ event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
 event_flag_write,recorded,,101,101,0,0,1a46ef419f934205,2026-11-12
 event_flag_write,edge,,15,15,0,0,1a46ef419f934205,2026-11-12
+frame_timing_append_slot_item_01e9d960,edge,,32,32,0,0,99aebc085c437b75,2026-11-13
 frame_timing_config_get_int_024eba00,recorded,,48,48,0,0,ddcaf2bc1351e4b0,2026-11-13
 frame_timing_config_get_int_024eba00,edge,,21,21,0,0,ddcaf2bc1351e4b0,2026-11-13
 frame_timing_create_handle_from_levels_02265580,edge,,40,40,0,0,a3a0cba6b12c8685,2026-11-14
@@ -321,6 +328,7 @@ frame_timing_job_wait,edge,,16,16,0,0,28e2fcb9414a9bc0,2026-11-10
 frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,,37,37,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,60,37,37,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_listener_list_notify_013daac0,edge,,10,10,0,0,ef8ef3f096df299e,2026-11-13
+frame_timing_lookup_session_object_02265290,edge,,33,33,0,0,e19b24011b8a7938,2026-11-13
 frame_timing_pace_frame,recorded,,585,585,0,0,a3d44cba82dab3c2,2026-10-09
 frame_timing_pace_frame,recorded,30,585,585,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,recorded,60,585,585,0,0,a3d44cba82dab3c2,2026-10-07
@@ -331,6 +339,10 @@ frame_timing_pace_frame,edge,60,26,26,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,edge,uncapped,26,26,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,option-recorded,60,209,209,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,option-recorded,uncapped,51,29,0,22,a3d44cba82dab3c2,2026-10-07
+frame_timing_pass_handle_on_01e9cb80,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
+frame_timing_pass_handle_on_with_items_01e9cd20,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
+frame_timing_pass_on_in_local_mode_02265170,edge,,36,36,0,0,e19b24011b8a7938,2026-11-13
+frame_timing_pass_on_in_server_mode_02265960,edge,,21,21,0,0,20d642ef8efa172d,2026-11-13
 frame_timing_posix_sleep_ms,edge,,11,11,0,0,316683d176b2d7b8,2026-11-10
 frame_timing_profile_frame_end_01456ef0,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_profile_start_01456eb0,edge,,12,12,0,0,ef8ef3f096df299e,2026-11-13
@@ -473,6 +485,7 @@ kernel_semaphore_wait,recorded,,366,366,0,0,ce742838186d2510,2026-11-12
 kernel_semaphore_wait,edge,,22,22,0,0,ce742838186d2510,2026-11-12
 kernel_thread_self,recorded,,17,17,0,0,75626151a8bb5eab,2026-11-12
 kernel_thread_self,edge,,7,7,0,0,75626151a8bb5eab,2026-11-12
+loading_allocator_free_headed_00829a90,edge,,12,12,0,0,113e786783d3cc08,2026-11-13
 loading_disk_device_find_named_device_0246e630,recorded,,146,146,0,0,7caf1e5fbd051bde,2026-11-13
 loading_disk_device_find_named_device_0246e630,edge,,19,19,0,0,7caf1e5fbd051bde,2026-11-12
 loading_disk_device_open_0246d550,edge,,19,19,0,0,7caf1e5fbd051bde,2026-11-12
@@ -538,7 +551,9 @@ loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
 loading_request_pointer_array_push_back_02a6c690,edge,,17,17,0,0,9baf056c92fddc18,2026-11-13
 loading_resource_handle_assign_024bd310,edge,,8,8,0,0,248aedbec805f26d,2026-11-14
 loading_resource_handle_construct_024bd470,recorded,,2,2,0,0,113e786783d3cc08,2026-11-14
+loading_resource_handle_construct_024bd470,edge,,4,4,0,0,113e786783d3cc08,2026-11-13
 loading_resource_handle_destroy_024bd4c0,recorded,,1,1,0,0,113e786783d3cc08,2026-11-14
+loading_resource_handle_destroy_024bd4c0,edge,,4,4,0,0,113e786783d3cc08,2026-11-13
 loading_resource_info_drop_reference_02a3a2a0,edge,,10,10,0,0,272d54091b9fc428,2026-11-14
 loading_resource_info_reference_count_02a3a1b0,edge,,10,10,0,0,272d54091b9fc428,2026-11-14
 loading_resource_info_release_024bd930,edge,,10,10,0,0,7af34104bc184d6e,2026-11-14
@@ -558,7 +573,9 @@ loading_stream_handle_construct_02a70a90,edge,,4,4,0,0,e0bcdd2e3aca3b3e,2026-11-
 loading_stream_queue_remove_02a6d8e0,edge,,12,12,0,0,7d17a2204c59cf95,2026-11-14
 loading_stream_queue_request_02a6cd90,edge,,11,11,0,0,e0bcdd2e3aca3b3e,2026-11-14
 loading_tagged_string_release_00836840,recorded,,2,2,0,0,113e786783d3cc08,2026-11-14
+loading_tagged_string_release_00836840,edge,,16,16,0,0,113e786783d3cc08,2026-11-13
 loading_transfer_task_cancel_024dd8a0,recorded,,3,3,0,0,113e786783d3cc08,2026-11-14
+loading_transfer_task_cancel_024dd8a0,edge,,45,45,0,0,113e786783d3cc08,2026-11-13
 loading_transfer_task_check_close_024ddf20,edge,,32,32,0,0,57fb66e79062e48d,2026-11-14
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,57fb66e79062e48d,2026-11-14
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,57fb66e79062e48d,2026-11-14
