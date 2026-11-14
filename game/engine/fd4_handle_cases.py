@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the FD4 handle check and ordering (game/engine/fd4_handle.cpp), for tools/verify.py run.
 
-usage: fd4_handle_cases.py OUT_DIR valid|less
+usage: fd4_handle_cases.py OUT_DIR valid|less|refresh
 
 - valid: a zero handle; handles with only the generation or only the padding bytes nonzero;
   indices 0, in the middle, the last index itself and one past it; a last index of 0 and
@@ -12,6 +12,11 @@ usage: fd4_handle_cases.py OUT_DIR valid|less
   equal (no refresh) and different (both refreshed by the game's own refresh, 0x013e99b0, which
   runs as original code and copies the entries' values and the table's version, so the order is
   decided on the refreshed values); a refresh that turns the order around.
+- refresh: the handle checks of valid (a zero handle, the index past the last one, a different
+  generation: the reference is left as it is) and valid handles copying the table's version and
+  the entry's value (negative, the extremes); a reference lying over its own entry (its version
+  over the entry's value) and over its table (its value over the table's version), so both are
+  read before either is stored.
 Generated fixtures, not inputs recorded in a game run.
 """
 import json
@@ -19,7 +24,7 @@ import os
 import struct
 import sys
 
-ADDRESSES = {'valid': '0x013e9040', 'less': '0x01398290'}
+ADDRESSES = {'valid': '0x013e9040', 'less': '0x01398290', 'refresh': '0x013e99b0'}
 ENTRY = 0xe0
 ENTRIES = 6
 
@@ -106,7 +111,46 @@ def less_cases():
             less_case('same_reference_entry', (2, 3, 1, 10), (2, 3, 2, 20))]
 
 
+def refresh_case(cid, index, generation, padding=b'\0\0\0', ref_version=3, ref_value=0x1111, over=None,
+                 **table):
+    c = base('refresh', cid)
+    c['returns'] = 'void'
+    add_table(c, 'table', **table)
+    ref = reference(index, generation, padding, version=ref_version, value=ref_value)
+    if over == 'entry':
+        # The reference's handle is the entry's first 8 bytes, its version the entry's value.
+        at = f'table_entries+{0xe0 * index - 8:#x}'
+        c['memory'].append({'addr': f'buf:{at}', 'bytes': (b'\x77' * 8 + ref[:0x10]).hex()})
+        c['args'] = {'rdi': 'buf:table', 'rsi': f'buf:{at}'}
+    elif over == 'table':
+        # The reference's value lies over the table's version.
+        c['memory'].append({'addr': 'buf:table+0x50', 'bytes': ref[:0x10].hex()})
+        c['args'] = {'rdi': 'buf:table', 'rsi': 'buf:table+0x48'}
+    else:
+        c['buffers']['reference'] = {'size': 0x20, 'bytes': (b'\0' * 8 + ref).hex()}
+        c['memory'].append({'addr': 'buf:reference', 'pointer': 'table'})
+        c['args'] = {'rdi': 'buf:table', 'rsi': 'buf:reference'}
+    return c
+
+
+def refresh_cases():
+    values = [-1, 0x7fffffffffffffff, -0x8000000000000000, 400, 500, 600]
+    return [refresh_case('zero_handle', 0, 0, generations=(0,) * 6),
+            refresh_case('generation_mismatch', 2, 4), refresh_case('index_past_last', 5, 6, last_index=4),
+            refresh_case('padding_only', 0, 0, b'\0\x01\0', generations=(0,) * 6),
+            refresh_case('copies_middle', 3, 4, values=values, version=-5),
+            refresh_case('copies_first', 0, 1, values=values, version=0x7fffffff),
+            refresh_case('copies_extreme', 2, 3, values=values, version=-0x80000000),
+            refresh_case('copies_last_index', 5, 6, values=values),
+            refresh_case('same_version_still_copied', 4, 5, ref_version=7, ref_value=1, values=values),
+            refresh_case('generation_top_bit', 1, 0x82, generations=(1, 0x82, 3, 4, 5, 6), values=values),
+            refresh_case('over_its_entry', 3, 4, values=values, version=0x12345678, over='entry'),
+            refresh_case('over_its_table', 2, 3, values=values, version=0x2468ace, over='table')]
+
+
 def cases(variant):
+    if variant == 'refresh':
+        return refresh_cases()
     return valid_cases() if variant == 'valid' else less_cases()
 
 

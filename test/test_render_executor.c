@@ -1833,6 +1833,57 @@ static void compute_cleared_target(rt_executor *x)
     }
 }
 
+/* An image a compute shader stored while a render target of its texel size was at its address is left to
+   that target (write_back_image). When a target of another format takes the address before that target
+   draws again, the image's texels reach the memory then, and the new target loads them: a 16_16_16_16
+   float target is drawn, the shader stores (0.25, 0.5, 0.75, 1) as 16_16_16_16 float over it, and an
+   8_8_8_8 target that keeps what is there (blend ZERO + ONE) is drawn at the same address. Its first two
+   texels are the stored halves' bytes, half(0.25) | half(0.5) << 16 and half(0.75) | half(1) << 16. */
+static void image_left_to_set_aside_target(rt_executor *x)
+{
+    enum { HALVES_BUFFER = 0xc10b0000, CLEAR_BUFFER = 0xc10c0000, DRAW_BUFFER = 0xc10d0000, CLEAR_CODE = 0x3200, LEFT_TARGET = 0x3fe0000,
+           HALVES_FORMAT = 0xc, NUMBER_FLOAT = 7, LINEAR_ALIGNED = 8, HALF_QUARTER = 0x3400, HALF_HALF = 0x3800, HALF_THREE_QUARTERS = 0x3a00,
+           HALF_ONE = 0x3c00 };
+    char error[200] = "";
+    const uint64_t target = at(LEFT_TARGET);
+    memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 8);
+    memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t halves_offset = record_setup(HALVES_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t halves[RT_COLOR_TARGET_WORDS];
+    color_target(halves, target, HALVES_FORMAT, SWAP_STD);
+    halves[4] |= NUMBER_FLOAT << 8;
+    CHECK(rt_render_record_color_target(HALVES_BUFFER, halves_offset, 0, halves, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, HALVES_BUFFER, record_triangle_draw(HALVES_BUFFER, halves_offset + 0x10), error, sizeof error) == 0);
+
+    rt_render_forget();
+    const uint64_t code = at(CLEAR_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
+    CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
+    uint32_t user[8];
+    image_descriptor(user, target, HALVES_FORMAT, NUMBER_FLOAT, SIZE, SIZE);
+    user[3] |= LINEAR_ALIGNED << 20;
+    CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(CLEAR_BUFFER, 0x30, one, error, sizeof error) == 0);
+    const int stored = rt_executor_run(x, CLEAR_BUFFER, 0x40, error, sizeof error);
+    if (stored) fprintf(stderr, "halves stored over a halves target: %s\n", error);
+    CHECK(stored == 0);
+
+    rt_render_forget();
+    const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_register(DRAW_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0); /* ZERO + ONE */
+    const int drawn = rt_executor_run(x, DRAW_BUFFER, record_triangle_draw(DRAW_BUFFER, offset + 0x10), error, sizeof error);
+    if (drawn) fprintf(stderr, "8_8_8_8 target over a stored halves image: %s\n", error);
+    CHECK(drawn == 0);
+    rt_render_forget();
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t *texels = (const uint32_t *)(uintptr_t)target;
+    if (texels[0] != (HALF_QUARTER | HALF_HALF << 16) || texels[1] != (HALF_THREE_QUARTERS | (uint32_t)HALF_ONE << 16))
+        fprintf(stderr, "8_8_8_8 target over a stored halves image: %08x %08x\n", texels[0], texels[1]);
+    CHECK(texels[0] == (HALF_QUARTER | HALF_HALF << 16) && texels[1] == (HALF_THREE_QUARTERS | (uint32_t)HALF_ONE << 16));
+}
+
 /* Fast clears: a target with CB_COLOR_INFO's FAST_CLEAR whose 128-byte CMASK (TILE_MAX 0) is all 0 is
    cleared to CB_COLOR0_CLEAR_WORD0 (0xff336699: red 0x99 first) before a draw that keeps what is there
    (blend ZERO + ONE), and its CMASK becomes all ones; the next draw (the triangle) draws over it as
@@ -3258,13 +3309,15 @@ static float small_float_value(uint32_t bits, int mantissa_bits)
    10_11_11 float one, a 32 float one and a 16_16 float one (Thin1DThin, tiling index 13) is written
    back to their memory as halves (x first), as unsigned 11-, 11- and 10-bit floats (x in the low
    bits), as one float (red) and as two halves (red, green): red (x + 0.5) / 16, green (y + 0.5) / 16,
-   blue 0.25 (alpha 1 in the halves). Reading them as BGRA stops by name. */
+   blue 0.25 (alpha 1 in the halves). An 8 UNORM target (one byte) takes red as a byte. Reading them as
+   BGRA stops by name. */
 static void float_targets(rt_executor *x)
 {
     enum { FLOAT_BUFFER = 0xc0fb0000, HALVES = 0x1b00000, SMALL_FLOATS = 0x1b80000, ONE_FLOAT = 0x1b40000, TWO_HALVES = 0x1ae0000,
-           THIN_1D = 13, NUMBER_FLOAT = 7 };
-    static const struct { uint32_t address, format, bytes, channels; } cases[] = {
-        {HALVES, 0xc, 8, 4}, {SMALL_FLOATS, 0x6, 4, 3}, {ONE_FLOAT, 0x4, 4, 1}, {TWO_HALVES, 0x5, 4, 2}};
+           ONE_BYTE = 0x2b00000, THIN_1D = 13, NUMBER_FLOAT = 7, NUMBER_UNORM = 0 };
+    static const struct { uint32_t address, format, bytes, channels, number; } cases[] = {
+        {HALVES, 0xc, 8, 4, NUMBER_FLOAT}, {SMALL_FLOATS, 0x6, 4, 3, NUMBER_FLOAT}, {ONE_FLOAT, 0x4, 4, 1, NUMBER_FLOAT},
+        {TWO_HALVES, 0x5, 4, 2, NUMBER_FLOAT}, {ONE_BYTE, 0x1, 1, 1, NUMBER_UNORM}};
     char error[200] = "";
     for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
         rt_tiling layout;
@@ -3275,7 +3328,7 @@ static void float_targets(rt_executor *x)
         const uint32_t offset = record_setup(FLOAT_BUFFER, at(cases[c].address), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         uint32_t words[RT_COLOR_TARGET_WORDS];
         color_target(words, at(cases[c].address), cases[c].format, SWAP_STD);
-        words[4] |= NUMBER_FLOAT << 8, words[5] = THIN_1D;
+        words[4] |= cases[c].number << 8, words[5] = THIN_1D;
         CHECK(rt_render_record_color_target(FLOAT_BUFFER, offset, 0, words, error, sizeof error) == 0);
         const int ran = rt_executor_run(x, FLOAT_BUFFER, record_triangle_draw(FLOAT_BUFFER, offset + 0x10), error, sizeof error);
         if (ran) fprintf(stderr, "float target %#x: %s\n", cases[c].format, error);
@@ -3291,13 +3344,16 @@ static void float_targets(rt_executor *x)
                     for (unsigned k = 0; k < cases[c].channels; k++) got[k] = half_value(h[k]);
                 } else if (cases[c].format == 0x4) {
                     memcpy(&got[0], texel, 4);
+                } else if (cases[c].format == 0x1) { /* COLOR_8 UNORM: red as a byte */
+                    got[0] = texel[0] / 255.0f;
                 } else {
                     uint32_t p;
                     memcpy(&p, texel, 4);
                     got[0] = small_float_value(p & 0x7ff, 6), got[1] = small_float_value(p >> 11 & 0x7ff, 6), got[2] = small_float_value(p >> 22, 5);
                 }
                 const float want[4] = {((float)px + 0.5f) / SIZE, ((float)y + 0.5f) / SIZE, 0.25f, 1};
-                for (unsigned k = 0; k < cases[c].channels; k++) placed &= fabsf(got[k] - want[k]) <= want[k] / 32 + 1e-3f;
+                const float rounding = cases[c].bytes == 1 ? 1.0f / 255 : 0; /* a byte's step */
+                for (unsigned k = 0; k < cases[c].channels; k++) placed &= fabsf(got[k] - want[k]) <= want[k] / 32 + 1e-3f + rounding;
             }
         if (!placed) fprintf(stderr, "float target %#x: texels not as drawn\n", cases[c].format);
         CHECK(placed);
@@ -3681,6 +3737,7 @@ int main(void)
     clip_control(x);
     multiple_targets(x);
     compute_cleared_target(x);
+    image_left_to_set_aside_target(x);
     null_image_descriptor(x);
     reshaped_target(x);
     many_targets(x);
