@@ -259,7 +259,7 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x004632d0` | 67 | `frame_timing_get_time_us` | original | dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds) |
 | `0x00466810` | 19 | `frame_timing_posix_sleep_ms` | edge-verified | Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true |
 | `0x01088550` | 83 | `frame_timing_time_of_day_ticks` | edge-verified | Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8 |
-| `0x0111a760` | 131 | `frame_timing_get_monotonic_us` | edge-verified | Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state |
+| `0x0111a760` | 131 | `frame_timing_get_monotonic_us` | verified | Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
 | `0x0111a880` | 19 | `frame_timing_sleep_ms` | edge-verified | Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result |
 | `0x01381580` | 139 | `frame_timing_task_manager_add_01381580` | edge-verified | Task add: with both wait objects set: state 2 and hand to 0x013e7170; else group in bits 2-4 of +0x79, queue (manager+0xd8)[group] add, optional order after |
@@ -270,8 +270,10 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x01389e10` | 59 | `frame_timing_task_entry_at_01389e10` | edge-verified | Registered task entry at an index; null for a negative index or one past the end (unsigned count) |
 | `0x0138a370` | 330 | `frame_timing_task_dispatch_0138a370` | verified | task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step |
 | `0x013d3520` | 87 | `frame_timing_task_013d3520` | verified | per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it |
+| `0x013d4810` | 86 | `frame_timing_item_update_013d4810` | edge-verified | Brings the item's group up to date, then switches the item on or off when its requested enabled byte differs; an enabled item is switched on again |
 | `0x013d5440` | 346 | `frame_timing_part_0x10_update_013d5440` | edge-verified | Per-frame task part +0x10: for seconds > 0 steps the source, flags an idle generator, then fills an output buffer (switch on) or steps into a freed scratch buffer |
 | `0x013daac0` | 96 | `frame_timing_listener_list_notify_013daac0` | edge-verified | Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call |
+| `0x013dab20` | 187 | `frame_timing_listener_list_prepare_013dab20` | edge-verified | Hands the list's owner (when set) to every listener, then the resource the named resource registry holds under the list's name |
 | `0x0143c360` | 147 | `frame_timing_task_record_open_0143c360` | edge-verified | Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64 |
 | `0x0143c450` | 93 | `frame_timing_task_record_close_0143c450` | edge-verified | Closes a closing group record (state 4): flags cleared, state idle, no index (-1) |
 | `0x0143d7c0` | 62 | `frame_timing_task_batch_add_0143d7c0` | edge-verified | Pushes a job onto the back of a batch's job deque with the game's push_back; a null job is not added |
@@ -287,6 +289,7 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60 |
 | `0x01448580` | 149 | `frame_timing_stopwatch_start` | edge-verified | Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c |
 | `0x01448620` | 168 | `frame_timing_stopwatch_stop` | edge-verified | Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start |
+| `0x014486d0` | 111 | `frame_timing_stopwatch_frame_end_014486d0` | edge-verified | Every 30 frames turns the total seconds and start count into per-frame averages; every frame folds the frame starts and seconds into their peaks |
 | `0x01456c80` | 39 | `frame_timing_item_list_update_01456c80` | edge-verified | Calls 0x013d4810 on each item pointer between +0x8 and +0x10 (the ends read once) |
 | `0x01456eb0` | 28 | `frame_timing_profile_start_01456eb0` | edge-verified | When the profiling switch at 0x058b8718 is set, starts stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448580) |
 | `0x01456ed0` | 28 | `frame_timing_profile_stop_01456ed0` | edge-verified | When the profiling switch at 0x058b8718 is set, stops stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448620) |

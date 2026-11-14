@@ -170,7 +170,8 @@ def goal_slot_cases():
 
 # ---- target states ----
 
-STATES = [0, 1, 2, 3, 4, -1, 0x7fffffff, -2147483648]
+# 0x101 has the low byte of caution (1) but is not caution: catches a byte-wide comparison.
+STATES = [0, 1, 2, 3, 4, -1, 0x7fffffff, -2147483648, 0x101]
 
 
 def state_cases():

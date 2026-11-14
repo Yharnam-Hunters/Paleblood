@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Render: three callees of the frame update and the swap-chain resource setup.
+// Render: three callees of the frame update and the swap-chain resource setup, and the two calls of
+// the notify request's parameter set.
 //
 // - render_list_prepare_02379d60 (the frame update's prepare call, frame_update.cpp): the engine
 //   list's splice. It moves the nodes [first, last) of another list in front of `where` in this
@@ -23,6 +24,14 @@
 //   data through the box copy: the whole level from the origin, its width and height in
 //   texels, or in 4x4 blocks for block-compressed formats and levels flagged as blocked. A null
 //   level is refused with the unsupported status without copying.
+// - render_set_parameter_02c51f60: sets the value of a key of a parameter set. The keys are sorted
+//   (the set's creation sorts them), so it finds the first key not below the given one by binary
+//   search, as std::lower_bound does, and stores the value beside it only when that key is the one
+//   given; an unknown key changes nothing.
+// - render_clear_parameter_set_02c51fc0: frees the set's block of keys and values through the
+//   set's allocator (its free, slot 0x70) and clears the pointer, when there is one. The values
+//   pointer and the count are left as they were.
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
@@ -125,7 +134,15 @@ struct MaskPair {
 };
 static_assert(sizeof(MaskPair) == 0x20);
 
-struct ParameterSet;
+// A parameter set: its allocator and one block holding the sorted keys, then their values.
+struct ParameterSet {
+    engine::Allocator *allocator;
+    uint32_t *keys;
+    uint32_t *values;
+    uint32_t count;
+};
+static_assert(offsetof(ParameterSet, keys) == 0x8 && offsetof(ParameterSet, values) == 0x10);
+static_assert(offsetof(ParameterSet, count) == 0x18);
 struct UpdatedObject;
 struct UpdatedObjectVtable {
     void *unknown_slots[4];
@@ -371,4 +388,21 @@ extern "C" uint32_t bb_render_copy_initial_level_014a3410(uintptr_t destination,
         height = to_blocks(height);
     }
     return copy_box(destination, source, level, &box, width, height * width);
+}
+
+extern "C" void bb_render_set_parameter_02c51f60(ParameterSet *set, uint32_t key, uint32_t value)
+{
+    const uint32_t *keys = set->keys;
+    const uint32_t *end = keys + set->count;
+    const uint32_t *found = std::lower_bound(keys, end, key);
+    if (found != end && *found == key)
+        set->values[found - keys] = value;
+}
+
+extern "C" void bb_render_clear_parameter_set_02c51fc0(ParameterSet *set)
+{
+    if (uint32_t *block = set->keys) {
+        set->allocator->free(block);
+        set->keys = nullptr;
+    }
 }

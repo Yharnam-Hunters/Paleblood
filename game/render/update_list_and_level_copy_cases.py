@@ -3,7 +3,7 @@
 """Edge cases for the frame update's list splice and object update and the swap-chain level copy
 (game/render/update_list_and_level_copy.cpp), for tools/verify.py run.
 
-usage: update_list_and_level_copy_cases.py OUT_DIR list|object|copy
+usage: update_list_and_level_copy_cases.py OUT_DIR list|object|copy|set|clear
 
 - list: circular lists with a sentinel (next +0x0, prev +0x8, value +0x10) and a header (sentinel
   +0x8, size +0x10, allocator +0x18). One heap: whole lists, a middle range, an empty range, a
@@ -22,14 +22,22 @@ usage: update_list_and_level_copy_cases.py OUT_DIR list|object|copy
 - copy: a null level, plain and block-compressed formats (each end of the block range, a value
   above the low byte, zero), the blocked level flag, widths and heights 0 to 5 and at the 32-bit
   wrap, a product past 32 bits, and a failed box copy.
+- set: a parameter set (allocator, keys, values, count) over sorted keys: no keys, one, an odd and
+  an even count, the key found first, in the middle and last, missing below, between and above
+  the keys, keys listed twice (the first one is set), keys with the top bit set (compared
+  unsigned), keys out of order (the search's probes decide), and values 0 and all ones.
+- clear: a set without a block (nothing happens) and with one, freed through its allocator's
+  slot 0x70 (a scripted stub with a spare call), once with the free writing into the block.
 """
 import json
 import os
 import struct
 import sys
 
-ADDRESSES = {'list': '0x02379d60', 'object': '0x02373850', 'copy': '0x014a3410'}
-RETURNS = {'list': 'void', 'object': 'i8', 'copy': 'i32'}
+ADDRESSES = {'list': '0x02379d60', 'object': '0x02373850', 'copy': '0x014a3410', 'set': '0x02c51f60',
+             'clear': '0x02c51fc0'}
+RETURNS = {'list': 'void', 'object': 'i8', 'copy': 'i32', 'set': 'void', 'clear': 'void'}
+SET_FREE = '0x004003c0'
 GUARD_GOT = '0x057e3be0'
 INSERT, LENGTH_ERROR, FATAL_ERROR = '0x02379f00', '0x02fbf1b8', '0x024b55b0'
 SELF_HEAP, OTHER_HEAP, FREE, ALLOCATE = '0x00400100', '0x00400140', '0x00400180', '0x004001c0'
@@ -324,11 +332,69 @@ def copy_cases():
     return out
 
 
+# ---- parameter set ---------------------------------------------------------------------------
+
+def parameter_set(c, keys, count=None):
+    """The set (allocator, keys, values, count), its keys and a values block filled with a pattern."""
+    c['buffers'].update({'set': {'size': 0x20, 'bytes': '5c' * 0x20},
+                         'keys': {'size': max(4, 4 * len(keys)), 'bytes': ''.join(u32(k) for k in keys) or 'a1' * 4},
+                         'values': {'size': max(4, 4 * len(keys)) + 4,
+                                    'bytes': bytes((0x30 + i * 5) & 0xff for i in range(max(4, 4 * len(keys)) + 4)).hex()},
+                         'heap': {'size': 0x10, 'bytes': '3c' * 0x10}, 'heap_vtable': {'size': 0x78}})
+    c['memory'] += [{'addr': 'buf:set', 'pointer': 'heap'}, {'addr': 'buf:set+0x8', 'pointer': 'keys'},
+                    {'addr': 'buf:set+0x10', 'pointer': 'values'},
+                    {'addr': 'buf:set+0x18', 'bytes': u32(len(keys) if count is None else count)},
+                    {'addr': 'buf:heap', 'pointer': 'heap_vtable'},
+                    {'addr': 'buf:heap_vtable+0x70', 'guest': SET_FREE}]
+
+
+def set_case(cid, keys, key, value=0x3f800000, count=None):
+    c = base('set', cid)
+    parameter_set(c, keys, count)
+    c['args'] = {'rdi': 'buf:set', 'rsi': hex(key), 'rdx': hex(value)}
+    c['stubs'] = [{'address': SET_FREE, 'argc': 2}]
+    return c
+
+
+def set_cases():
+    five = [2, 9, 0x40, 0x41, 0x1000]
+    six = [0, 3, 3, 7, 0x80000000, 0xffffffff]
+    return [set_case('no_keys', [], 3), set_case('one_found', [5], 5), set_case('one_missing_below', [5], 4),
+            set_case('one_missing_above', [5], 6),
+            set_case('first', five, 2), set_case('middle', five, 0x40), set_case('last', five, 0x1000),
+            set_case('below_all', five, 1), set_case('between', five, 0x30), set_case('above_all', five, 0x1001),
+            set_case('even_count_each', six, 7), set_case('listed_twice', six, 3, value=0),
+            set_case('top_bit_key', six, 0x80000000, value=0xffffffff), set_case('all_ones_key', six, 0xffffffff),
+            set_case('zero_key', six, 0), set_case('top_bit_missing', six, 0x80000001),
+            set_case('out_of_order_found', [9, 1, 5, 3, 7], 5), set_case('out_of_order_missed', [9, 1, 5, 3, 7], 1),
+            set_case('out_of_order_right', [8, 1, 2, 30, 4, 20], 20),
+            set_case('count_below_keys', five, 0x1000, count=3), set_case('count_one_of_five', five, 2, count=1),
+            set_case('key_just_past_count', five, 0x41, count=3)]
+
+
+def clear_case(cid, block=True, free_writes=None):
+    c = base('clear', cid)
+    parameter_set(c, [4, 8, 0xc])
+    if not block:
+        c['memory'].append({'addr': 'buf:set+0x8', 'bytes': q(0)})
+    c['args'] = {'rdi': 'buf:set'}
+    if block:
+        c['stubs'].append({'address': SET_FREE, 'argc': 2, 'writes': free_writes or []})
+    c['stubs'].append({'address': SET_FREE, 'argc': 2})
+    return c
+
+
+def clear_cases():
+    return [clear_case('no_block', block=False), clear_case('block_freed'),
+            clear_case('free_writes_block', free_writes=[{'arg': 1, 'offset': 0, 'bytes': 'ee' * 4}])]
+
+
 def main():
     if len(sys.argv) != 3 or sys.argv[2] not in ADDRESSES:
         print(__doc__, file=sys.stderr)
         return 2
-    out = {'list': list_cases, 'object': object_cases, 'copy': copy_cases}[sys.argv[2]]()
+    out = {'list': list_cases, 'object': object_cases, 'copy': copy_cases, 'set': set_cases,
+           'clear': clear_cases}[sys.argv[2]]()
     os.makedirs(sys.argv[1], exist_ok=True)
     for c in out:
         with open(os.path.join(sys.argv[1], f"{c['id']}.json"), 'w') as f:

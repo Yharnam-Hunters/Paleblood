@@ -27,7 +27,7 @@ address,size,name,system,status,notes
 0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads
 0x0111a720,22,kernel_file_seek_absolute,kernel,edge-verified,Forward the full opaque descriptor and zero-extended unsigned32 absolute offset; full64 seek result sign maps to 0 or 19; synthetic wire edge cases only
 0x0111a740,20,engine_write_stderr,engine,edge-verified,Forward the string and imported _Stderr object address to fputs; ignore its return and return zero; synthetic wire edge cases only
-0x0111a760,131,frame_timing_get_monotonic_us,frame_timing,edge-verified,Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state
+0x0111a760,131,frame_timing_get_monotonic_us,frame_timing,verified,Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state
 0x0111a7f0,131,frame_timing_get_monotonic_ms,frame_timing,verified,Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object
 0x0111a880,19,frame_timing_sleep_ms,frame_timing,edge-verified,Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result
 0x0111a8a0,26,kernel_thread_self,kernel,verified,Copy the complete opaque current-thread handle to the output and return zero
@@ -66,11 +66,11 @@ address,size,name,system,status,notes
 0x01389df0,19,frame_timing_task_entry_count_01389df0,frame_timing,edge-verified,"Number of the dispatcher's registered task entries (vector of 0x88-byte entries), cut to 32 bits"
 0x01389e10,59,frame_timing_task_entry_at_01389e10,frame_timing,edge-verified,Registered task entry at an index; null for a negative index or one past the end (unsigned count)
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
-0x013914a0,142,input_pad_slot_construct_013914a0,input,edge-verified,"Pad slot constructor (vtable 0x056f1be0): label ""pad not set"", +0x24..+0x50 cleared, empty wide name at +0x50 (owns 1), +0x88 cleared"
-0x01391e30,299,input_key_assign_pressed_01391e30,input,edge-verified,"Key assign pressed: mapper (+0x28) button index; enabled +0x20; key state map +0x40 enabled and not suppressed; pressed bit, else alternate input in the held set"
-0x01391f60,215,input_key_assign_analog_value_01391f60,input,edge-verified,"Key assign analog value: as the pressed query (no mapper null check), then the input state float at the button index; 0 otherwise"
+0x013914a0,142,input_pad_slot_construct_013914a0,input,verified,"Pad slot constructor (vtable 0x056f1be0): label ""pad not set"", +0x24..+0x50 cleared, empty wide name at +0x50 (owns 1), +0x88 cleared"
+0x01391e30,299,input_key_assign_pressed_01391e30,input,verified,"Key assign pressed: mapper (+0x28) button index; enabled +0x20; key state map +0x40 enabled and not suppressed; pressed bit, else alternate input in the held set"
+0x01391f60,215,input_key_assign_analog_value_01391f60,input,verified,"Key assign analog value: as the pressed query (no mapper null check), then the input state float at the button index; 0 otherwise"
 0x01398290,127,engine_fd4_handle_less_01398290,engine,edge-verified,"FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed)"
-0x013983e0,192,input_key_assign_first_free_id_013983e0,input,edge-verified,"Smallest id 0-7 that no assignment (id at +0x24) of table +0x38[table] uses, every entry visited per id; 0xffffffff when all taken"
+0x013983e0,192,input_key_assign_first_free_id_013983e0,input,verified,"Smallest id 0-7 that no assignment (id at +0x24) of table +0x38[table] uses, every entry visited per id; 0xffffffff when all taken"
 0x013a2a00,22,menu_named_resource_registry_find_013a2a00,menu,edge-verified,"Scaleform glue: while the named resource registry is active and has its table, the table finds the entry by name (0x013abad0); null otherwise"
 0x013a33c0,25,menu_named_resource_registry_release_013a33c0,menu,edge-verified,"Scaleform glue: while the named resource registry is active and has its table, the table lets go of a non-null entry (0x013abd30)"
 0x013d3520,87,frame_timing_task_013d3520,frame_timing,verified,per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it
@@ -78,10 +78,10 @@ address,size,name,system,status,notes
 0x013d5440,346,frame_timing_part_0x10_update_013d5440,frame_timing,edge-verified,"Per-frame task part +0x10: for seconds > 0 steps the source, flags an idle generator, then fills an output buffer (switch on) or steps into a freed scratch buffer"
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
 0x013dab20,187,frame_timing_listener_list_prepare_013dab20,frame_timing,edge-verified,"Hands the list's owner (when set) to every listener, then the resource the named resource registry holds under the list's name"
-0x013e68f0,160,loading_path_table_find_013e68f0,loading,edge-verified,"FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0"
+0x013e68f0,160,loading_path_table_find_013e68f0,loading,verified,"FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0"
 0x013e6ff0,91,loading_resource_base_construct_013e6ff0,loading,edge-verified,"Resource base: builds the object base with the heap reference, then its vtable, an empty file handle, its state bytes and the heap reference's word"
 0x013e7090,56,loading_resource_base_destroy_013e7090,loading,edge-verified,"Resource base: writes its vtable back, lets go of the handle's file, destroys the handle and then the object base"
-0x013e9040,113,engine_fd4_handle_is_valid_013e9040,engine,edge-verified,"FD4 handle check: nonzero handle, index <= table's last index (inclusive), entry (0xe0 B) generation byte at +0x2c equals the handle's"
+0x013e9040,113,engine_fd4_handle_is_valid_013e9040,engine,verified,"FD4 handle check: nonzero handle, index <= table's last index (inclusive), entry (0xe0 B) generation byte at +0x2c equals the handle's"
 0x013e9ee0,8,engine_fd4_handle_is_set_013e9ee0,engine,original,"FD4 handle is set: the 8-byte handle is nonzero as a whole; called out of line by the handle check 0x013e9040; too short to hook, matched byte-exact instead"
 0x01401720,34,menu_named_resource_handle_release_01401720,menu,edge-verified,"Scaleform glue: a resource handle with an owner is let go of by the owner (vtable slot 16), returning its answer; 0 without an owner"
 0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
@@ -250,17 +250,17 @@ address,size,name,system,status,notes
 0x0167f840,32,ai_goal_func_is_finish_timer,ai,edge-verified,AI goal script binding IsFinishTimer: goal timer <= 0 (false above index 15)
 0x0167f860,20,ai_goal_func_is_finish_turn_timer,ai,edge-verified,AI goal script binding IsFinishTimerForTurnBeforeAtk: the turn-before-attack timer <= 0
 0x0167f880,26,ai_goal_func_get_number,ai,edge-verified,"AI goal script binding GetNumber: goal script number 0..63, 0.0 above"
-0x01693850,1175,ai_is_inside_direction,ai,edge-verified,"Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series)"
+0x01693850,1175,ai_is_inside_direction,ai,verified,"Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series)"
 0x0169acf0,114,ai_character_has_effect_state,ai,edge-verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,edge-verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
-0x016a52b0,1936,ai_sight_test,ai,edge-verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"
+0x016a52b0,1936,ai_sight_test,ai,verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"
 0x016a5a50,43,ai_sight_query_reset_target,ai,edge-verified,"Sight query: target half reset (origin, no height or size, visibility 1, light, seeable)"
 0x016a85c0,1463,ai_perception_update,ai,edge-verified,"Perception update per think: target-list update, then target state and type from the list (kind 4/5 battle, main entry's state, kind 3/11 caution), facing check, force battle"
-0x016acfa0,384,ai_perception_current_handle,ai,edge-verified,"Perception: handle of the current target (kind-4 node, kind-5 node, main entry, kind-3 node), character or place"
-0x016ad400,287,ai_perception_target_visible,ai,edge-verified,"Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11"
-0x016b2760,512,ai_target_list_refresh_noticed,ai,edge-verified,"Target list: refresh the noticed character's entry (clock 0, visible, refreshed bit) or allocate and link a new 0xa0-byte entry; notice record update"
+0x016acfa0,384,ai_perception_current_handle,ai,verified,"Perception: handle of the current target (kind-4 node, kind-5 node, main entry, kind-3 node), character or place"
+0x016ad400,287,ai_perception_target_visible,ai,verified,"Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11"
+0x016b2760,512,ai_target_list_refresh_noticed,ai,verified,"Target list: refresh the noticed character's entry (clock 0, visible, refreshed bit) or allocate and link a new 0xa0-byte entry; notice record update"
 0x016b30a0,368,ai_target_list_mark_main_matches,ai,verified,"Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x01708410,168,ai_pending_event_fire,ai,verified,"Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index"
@@ -270,8 +270,8 @@ address,size,name,system,status,notes
 0x0183fb20,43,camera_follow_yaw,camera,edge-verified,Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged
 0x018e4110,432,param_apply_char_make_face,param,edge-verified,Character creation: writes the face being built (sliders; parts/colors/decal for a version 4 table) into a FaceGenParam row
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries; advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
-0x0198bf70,161,engine_map_ins_request_update_0198bf70,engine,edge-verified,"MapInsUpdateHelper: set update request bit 4, queue the instance id once (queued byte bit 0); a full queue is reported and pushed anyway"
-0x019a7090,115,engine_obj_ins_request_update_019a7090,engine,edge-verified,"ObjInsUpdateHelper: step part +0x210, set request 0x20, queue the id once (flag 0x1000); full queue: report's return | 0x1000 becomes the flags"
+0x0198bf70,161,engine_map_ins_request_update_0198bf70,engine,verified,"MapInsUpdateHelper: set update request bit 4, queue the instance id once (queued byte bit 0); a full queue is reported and pushed anyway"
+0x019a7090,115,engine_obj_ins_request_update_019a7090,engine,verified,"ObjInsUpdateHelper: step part +0x210, set request 0x20, queue the id once (flag 0x1000); full queue: reported, then the flags reloaded, | 0x1000, id pushed"
 0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners"
 0x01c44210,212,engine_obj_ins_set_registration_01c44210,engine,edge-verified,"ObjInsUpdateHelper: move a registration to a new item in the owner's pointer array (swap-remove the old, append, grow 0x00819100 when full)"
 0x01c92e90,372,param_lock_cam_range,param,edge-verified,"SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924"
@@ -281,11 +281,11 @@ address,size,name,system,status,notes
 0x01e4a490,375,character_state_flags_update_01e4a490,character,edge-verified,"Chr modules +0x68: folds whether the character is shown into two sticky bytes, copies a param float, sets +0x326 from flags or vtable +0x478, counts the frame, sets the link flag"
 0x01e59250,477,character_event_request_update_01e59250,character,edge-verified,"Chr modules +0x58: fires the pending numbered event (formatted wide string on the thread heap) unless suppressed, clears it, and clears chr +0x20 field +4 for one record id"
 0x01e5c440,282,character_counters_refill_01e5c440,character,edge-verified,"Stepped module: five counters gain a global per-second rate * frame time each (fractions carried, truncation), clamped to 0..their maximum"
-0x01e88da0,242,character_gaitem_resolve_handle_01e88da0,character,edge-verified,"SprjGaitem handle resolve through the manager's index table (slot handle; zero when out of range); reports a missing table / busy / not ready and goes on"
+0x01e88da0,242,character_gaitem_resolve_handle_01e88da0,character,verified,"SprjGaitem handle resolve through the manager's index table (slot handle; zero when out of range); reports a missing table / busy / not ready and goes on"
 0x01e8bae0,132,character_gaitem_handle_copy_01e8bae0,character,edge-verified,"SprjGaitem handle copy: one more reference on the live slot it names (bit 23 managed, low 16 bits slot index)"
-0x01e8bb70,132,character_gaitem_handle_copy_01e8bb70,character,edge-verified,"SprjGaitem handle copy, second copy of the same code"
-0x01e8bc00,164,character_gaitem_handle_release_01e8bc00,character,edge-verified,"SprjGaitem handle release: one reference less on its live slot; the last frees the item (0x01e86e60)"
-0x01e8bcb0,202,character_gaitem_handle_move_assign_01e8bcb0,character,edge-verified,"SprjGaitem handle move assignment: releases the old handle, takes the source's, clears the source"
+0x01e8bb70,132,character_gaitem_handle_copy_01e8bb70,character,verified,"SprjGaitem handle copy, second copy of the same code"
+0x01e8bc00,164,character_gaitem_handle_release_01e8bc00,character,verified,"SprjGaitem handle release: one reference less on its live slot; the last frees the item (0x01e86e60)"
+0x01e8bcb0,202,character_gaitem_handle_move_assign_01e8bcb0,character,verified,"SprjGaitem handle move assignment: releases the old handle, takes the source's, clears the source"
 0x01e9cb80,390,frame_timing_pass_handle_on_01e9cb80,frame_timing,edge-verified,With a handle: copies its object items (+0x70) into a new list on the heap at 0x05940428; passes the handle and list to 0x022658b0; frees the list. False without a handle
 0x01e9cd20,397,frame_timing_pass_handle_on_with_items_01e9cd20,frame_timing,edge-verified,"As 0x01e9cb80, but passes the caller list to 0x022658b0; the list it builds from the handle object is only freed. False without a handle"
 0x01e9d960,271,frame_timing_append_slot_item_01e9d960,frame_timing,edge-verified,push_back of a 12-byte item: grows a full list by half (at least one) through 0x01e9da70; an item inside the list is copied by index after growth
@@ -306,12 +306,12 @@ address,size,name,system,status,notes
 0x01ebf060,176,frame_timing_dungeon_gate_on_event_3000,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 3000: when idle; request 10 and advance the gate state one fixed step"
 0x01ec3000,235,frame_timing_step_machine_count_step_01ec3000,frame_timing,edge-verified,Gate step machine: counts a step (+0x54); when the step after the current one (+0x50) is 27 or more (unsigned) formats a wide debug message on the default heap and passes it on
 0x01ec3ef0,795,frame_timing_leave_modes_around_owner_check_01ec3ef0,frame_timing,edge-verified,"state method on the Chalice Dungeon gate: leaves ritual/dungeon modes (request 7); the error mode (request 10); true when check 0x01ea5280 says yes in server dungeon mode"
-0x01ed0dd0,203,menu_gaitem_select_move_cursor_01ed0dd0,menu,edge-verified,"GaitemSelectDialog cursor move: column +0x84 and list row clamped to the limits (0x01ed11f0, read twice); on change store, list set row, vtable +0x38"
+0x01ed0dd0,203,menu_gaitem_select_move_cursor_01ed0dd0,menu,verified,"GaitemSelectDialog cursor move: column +0x84 and list row clamped to the limits (0x01ed11f0, read twice); on change store, list set row, vtable +0x38"
 0x01ed7950,188,menu_gaitem_select_text_pair_copy_into_vector_01ed7950,menu,edge-verified,"GaitemSelectDialog text pair (two narrow strings, 0x70 B) copied into a fixed-vector slot; slot past the in-use count (+0x708) reported, still copied"
-0x01edc580,197,menu_gaitem_select_list_set_row_01edc580,menu,edge-verified,"Item list set row (clamped; -1 when empty), vtable +8 scrollable, then scroll thumb placed and sized from the row and first shown row shares"
+0x01edc580,197,menu_gaitem_select_list_set_row_01edc580,menu,verified,"Item list set row (clamped; -1 when empty), vtable +8 scrollable, then scroll thumb placed and sized from the row and first shown row shares"
 0x01edf560,254,menu_gaitem_select_entry_copy_into_pool,menu,edge-verified,"GaitemSelectDialog list entry copy into a Dantelion fixed pool slot (0x88 B: int, word, wide string, word, wide string); reports a slot past the in-use count"
-0x01ee6080,114,menu_gaitem_select_direction_keys_20_01ee6080,menu,edge-verified,"GaitemSelectDialog direction reader: first held of key assign keys 0x20-0x23 gives {x,y} = up/down/left, or right's state byte as x"
-0x01ee61f0,134,menu_gaitem_select_direction_keys_24_01ee61f0,menu,edge-verified,"GaitemSelectDialog direction reader of keys 0x24-0x27; without a key assign skips up/down and asks left/right with null"
+0x01ee6080,114,menu_gaitem_select_direction_keys_20_01ee6080,menu,verified,"GaitemSelectDialog direction reader: first held of key assign keys 0x20-0x23 gives {x,y} = up/down/left, or right's state byte as x"
+0x01ee61f0,134,menu_gaitem_select_direction_keys_24_01ee61f0,menu,verified,"GaitemSelectDialog direction reader of keys 0x24-0x27; without a key assign skips up/down and asks left/right with null"
 0x01f03210,307,frame_timing_holygrail_wait_for_dungeon_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate (event flags 9020..9026 pick it) one fixed step while busy; then report whether it is in a dungeon mode; not reached by the routes yet"
 0x01f03680,296,frame_timing_holygrail_wait_for_ritual_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate one fixed step while busy; then report whether it is in a ritual mode; not reached by the routes yet"
 0x01f1bca0,235,menu_gaitem_status_entry_copy,menu,edge-verified,"GaitemStatusDialog list entry copy of entries[index] (0x90 B: two words and wide strings, a ref-counted pointer at +0x80 (count +8 up), a byte)"
@@ -531,6 +531,7 @@ address,size,name,system,status,notes
 0x0246e810,390,loading_disk_device_open_on_device_0246e810,loading,edge-verified,Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy
 0x0246e9a0,714,loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,edge-verified,Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
+0x024712e0,46,loading_disk_file_device_release_at_quit_024712e0,loading,edge-verified,"Disk file device release at quit: unless the destroyed byte is set, destroys the instance (0x0246caa0), clears the instance pointer and sets the byte to 1"
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x02479710,156,loading_owned_object_release_02479710,loading,edge-verified,"Releases the two parts a transfer task owns at +0x90 (+0x10 then +0x08): slot +0xb0, then destroy and free through its allocator; clears the slot"
 0x0247b720,338,engine_allocator_of_0247b720,engine,edge-verified,Allocator owning a pointer: the thread temporary heap if it holds it; else the last registry range holding it (under the read-write lock); else the fallback allocator 0x0247fa50
@@ -640,6 +641,7 @@ address,size,name,system,status,notes
 0x0248b200,532,engine_thread_construct_sized_0248b200,engine,edge-verified,DLThread constructor with a stack size: same members; failures reported
 0x024bcfa0,49,loading_result_construct_024bcfa0,loading,edge-verified,"Load result base constructor: vtable, four request words, code and word"
 0x024bcfe0,89,loading_result_copy_024bcfe0,loading,edge-verified,"Load result base copy constructor: vtable, request words cleared then copied, code and word"
+0x024bd080,50,loading_result_assign_024bd080,loading,edge-verified,"Result base's copy assignment: the four request words one by one, the code and the word; the vtable and the handle stay. Returns the entry"
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bd310,65,loading_resource_handle_assign_024bd310,loading,edge-verified,"Resource handle assignment: unless the infos match, drops the old info reference, takes the source info and adds a reference; returns the handle"
 0x024bd470,28,loading_resource_handle_construct_024bd470,loading,edge-verified,"Base resource handle constructor: stores its vtable and the info, takes a reference (0x02a3a300) when the info is not null"
@@ -808,6 +810,8 @@ address,size,name,system,status,notes
 0x02b4d100,477,engine_byte_array_assign_02b4d100,engine,edge-verified,"Engine byte array copy assign: self no-op; slot 0x10 queries; empty source empties; memmove over the size or within capacity (rest constructed); else free, allocate exact (align 1), copy"
 0x02bc0e00,196,engine_wide_string_construct_02bc0e00,engine,edge-verified,"Wide string from null-terminated text: default allocator (created on first use), container heap check, empty inline string, counted assign 0x02a2a720 with wcslen (0 for empty)"
 0x02bc1ca0,218,physics_ids_reserve_02bc1ca0,physics,edge-verified,"Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept"
+0x02c51f60,87,render_set_parameter_02c51f60,render,edge-verified,Parameter set: finds the key among the sorted keys (lower bound) and stores the value beside it when found
+0x02c51fc0,42,render_clear_parameter_set_02c51fc0,render,edge-verified,"Parameter set: frees its block of keys and values through its allocator (slot 0x70) and clears the pointer, when there is one"
 0x02c6d580,149,frame_timing_thread_random,frame_timing,edge-verified,This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds
 0x02d03420,46,menu_system_text_dialog_status_02d03420,menu,edge-verified,"Dantelion text dialog: the dialog backend's status while the system dialog is open, -1 otherwise (the backend made on first use)"
 0x02d03450,60,menu_system_text_dialog_open_02d03450,menu,edge-verified,"Dantelion text dialog: unless open, asks the dialog backend to open the system dialog with the settings and records the answer as the open flag"

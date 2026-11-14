@@ -3402,13 +3402,14 @@ static int same_origin(const gcn_resource_origin *a, const gcn_resource_origin *
 /* MIMG fields (the Sea Islands ISA manual): word 0 DMASK bits 8-11, UNORM 12, GLC 13, DA 14, R128 15,
    TFE 16, LWE 17, OP 18-24, SLC 25; word 1 VADDR bits 0-7, VDATA 8-15, SRSRC 16-20 (4 SGPRs each),
    SSAMP 21-25. */
-enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_D = 0x22, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_OP_SAMPLE_C_LZ = 0x2f, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
+enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_D = 0x22, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_OP_SAMPLE_C_LZ = 0x2f, MIMG_OP_SAMPLE_LZ_O = 0x37, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
        SAMPLER_DWORDS = 4 };
 
 /* Whether a MIMG opcode is one of the samples the translator does (through a sampler). */
 static int mimg_samples(unsigned op)
 {
-    return op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_D || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ;
+    return op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_D || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ ||
+           op == MIMG_OP_SAMPLE_LZ_O;
 }
 
 static unsigned mimg_resource_sgpr(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * MIMG_SRSRC_UNIT; }
@@ -3618,9 +3619,14 @@ static uint32_t compared_sample(translator *t, const uint32_t *w, const gcn_imag
    write their VGPRs. image_sample_c_lz is image_sample_lz with a depth compare (compared_sample).
    image_sample_d (given_gradients) takes the derivatives from VADDR, before the coordinates: x's for each
    spatial coordinate, then y's (the ISA's address order); cubes stop by name, their derivatives being in
-   the cube's own space. */
+   the cube's own space. image_sample_lz_o (`offset`) is image_sample_lz with a texel offset in the first
+   address VGPR: six-bit signed integers, x in bits 5:0 and y in 13:8 (the Sea Islands ISA manual's
+   address order and shadPS4's reading of the field, facts only). Vulkan takes a sample's offset only as
+   a constant, so the offset moves the coordinates instead, by offset / the image's size at level 0, which
+   at level 0 samples the same texels; 2D images only. */
 static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
-                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod, int compare, int given_gradients)
+                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod, int compare, int given_gradients,
+                         int offset)
 {
     enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
     const uint32_t *w = code + at;
@@ -3660,8 +3666,13 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: a depth compare of other than one component of a 2D float image is not translated yet", ins->name);
         return;
     }
-    /* a compare's reference comes first (the ISA's address order: offset, bias, z-compare, derivatives,
-       the coordinates, LOD) */
+    if (offset && (b->dim != GCN_IMAGE_2D || b->cube)) {
+        fail(t, "%s: a texel offset on other than a 2D image is not translated yet", ins->name);
+        return;
+    }
+    /* the ISA's address order: offset, bias, z-compare, derivatives, the coordinates, LOD */
+    const uint32_t packed_offset = offset ? load(t, t_uint(t), vgpr(t, vaddr)) : 0;
+    if (offset) vaddr++;
     const uint32_t reference = compare ? as_float(t, load(t, t_uint(t), vgpr(t, vaddr))) : 0;
     if (compare) vaddr++;
     const unsigned coordinates = (b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3) + (b->arrayed ? 1 : 0);
@@ -3686,6 +3697,19 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         c[0] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[0], one), c[1] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[1], one);
         const uint32_t cubes = glsl(t, t_float(t), SPV_GLSL_FLOOR, value(t, SPV_OP_F_MUL, t_float(t), 2, c[2], konst_float(t, 0.125f)), 0, 0, 1);
         c[2] = glsl(t, t_float(t), SPV_GLSL_FMA, cubes, konst_float(t, -2.0f), c[2], 3);
+    }
+    if (offset) {
+        const unsigned size_components = b->arrayed ? 3 : 2;
+        const uint32_t uvec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), size_components}, 2);
+        const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE_LOD, uvec, 2, load(t, image_type(t, b), image_variable(t, binding)), konst(t, 0));
+        t->queries_images = 1;
+        for (unsigned i = 0; i < 2; i++) { /* the field's sign moved to bit 31 and back */
+            const uint32_t up = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, packed_offset, konst(t, 26 - 8 * i));
+            const uint32_t texels = value(t, SPV_OP_BITCAST, t_int(t), 1, value(t, SPV_OP_SHIFT_RIGHT_ARITHMETIC, t_uint(t), 2, up, konst(t, 26)));
+            const uint32_t extent = value(t, SPV_OP_CONVERT_U_TO_F, t_float(t), 1, value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, size, i));
+            const uint32_t shift = value(t, SPV_OP_F_DIV, t_float(t), 2, value(t, SPV_OP_CONVERT_S_TO_F, t_float(t), 1, texels), extent);
+            c[i] = value(t, SPV_OP_F_ADD, t_float(t), 2, c[i], shift);
+        }
     }
     uint32_t coordinate = c[0];
     if (coordinates > 1) {
@@ -3790,7 +3814,8 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     if (sample) {
         const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
         image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L,
-                     op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_D);
+                     op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ || op == MIMG_OP_SAMPLE_LZ_O, op == MIMG_OP_SAMPLE_C_LZ,
+                     op == MIMG_OP_SAMPLE_D, op == MIMG_OP_SAMPLE_LZ_O);
         return;
     }
     if (b->sampled && op == MIMG_OP_STORE) {

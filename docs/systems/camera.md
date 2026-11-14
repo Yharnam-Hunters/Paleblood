@@ -131,8 +131,11 @@ it stored last time instead of computing a meaningless one.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x00829b00` | 138 | `camera_quaternion_rotation_rows_00829b00` | edge-verified | Camera math: a quaternion's three rotation rows (the first two rows' w lanes carry the third's x and y), in the original's lane operations |
+| `0x0083b7e0` | 75 | `camera_matrix4_affine_finish_0083b7e0` | edge-verified | Camera math: copies a 4x4 matrix with the three axis rows' w lanes set to 0 and the position's to 1 |
 | `0x0083d4d0` | 237 | `camera_transform_matrix_0083d4d0` | edge-verified | 4x4 transform from position, rotation quaternion and per-axis scale: quaternion rows times the diagonal scale, position last, affine w lanes |
 | `0x00848e80` | 354 | `camera_axis_angle_quaternion_00848e80` | edge-verified | Quaternion (axis * sin(angle/2), cos(angle/2)) from the octant sine/cosine polynomial, clamped to 1 (NaN angle gives 1) |
+| `0x0084b9d0` | 148 | `camera_rows3_multiply_0084b9d0` | edge-verified | Camera math: output row i = left.x * right.i.x + left.y * right.i.y + left.z * right.i.z on every lane, z row first |
 | `0x0183ac60` | 20077 | `camera_update_follow` | edge-verified | Updates subject-relative camera position and orientation through input; chase; collision avoidance and territory constraints; applies selected frame-rate gains |
 | `0x0183fad0` | 79 | `camera_follow_pitch` | edge-verified | Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits |
 | `0x0183fb20` | 43 | `camera_follow_yaw` | edge-verified | Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged |
