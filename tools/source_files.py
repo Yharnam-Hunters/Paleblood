@@ -25,11 +25,15 @@ when regenerating, the executable (read only).
 4. Ranges. Untagged functions between two direct tags of the same file get that file
    (evidence `range`); between two files of the same library they get the library only.
    Anything else stays untagged.
+5. Extents. Libraries built without assertion paths (Scaleform) are placed by hand: each row of
+   game/library_extents.csv gives a first and last function address, the library and the evidence
+   for it. Every function in that span without a direct tag gets the library (evidence `extent`,
+   no file), replacing any range tag.
 
 The table holds one row per run of consecutive functions (in ghidra_functions.csv order) that
 share library, file and evidence: `address` (first function), `last` (last function's address),
-`functions`, `bytes`, `library`, `file`, `evidence` (direct|range), `confidence` (high for
-direct, medium for a file range, low for a library-only range). Only the normalized path inside
+`functions`, `bytes`, `library`, `file`, `evidence` (direct|range|extent), `confidence` (high
+for direct, medium for a file range or an extent, low for a library-only range). Only the normalized path inside
 the library is recorded, never the build machine's drive or directories.
 
 Regenerating also rewrites the coverage table between the `source-files` markers of
@@ -54,6 +58,7 @@ import sys
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FUNCTIONS = 'symbols/ghidra_functions.csv'
 RULES = 'game/source_libraries.csv'
+EXTENTS = 'game/library_extents.csv'
 TABLE = 'symbols/source_files.csv'
 DOC = 'docs/FUNCTION_CATALOG.md'
 DOC_BLOCK = re.compile(r'(<!-- source-files:start -->\n)(.*?)(<!-- source-files:end -->)', re.S)
@@ -79,6 +84,18 @@ def read_functions(path: str) -> list[tuple[int, int]]:
 def read_rules(path: str) -> list[tuple[re.Pattern, str, str]]:
     with open(path, newline='') as f:
         return [(re.compile(r['pattern']), r['library'], r['prefix']) for r in csv.DictReader(f)]
+
+
+def read_extents(path: str) -> list[tuple[int, int, str]]:
+    """(first, last, library) per row of the hand-placed library extents; none without the file."""
+    if not os.path.isfile(path):
+        return []
+    with open(path, newline='') as f:
+        rows = [(int(r['first'], 16), int(r['last'], 16), r['library']) for r in csv.DictReader(f)]
+    for first, last, library in rows:
+        if last < first or not library:
+            raise ValueError(f'{EXTENTS}: bad extent 0x{first:08x}..0x{last:08x} {library!r}')
+    return rows
 
 
 def classify(path: str, rules) -> tuple[str, str] | None:
@@ -253,9 +270,26 @@ def propagate(functions, direct: dict) -> list[tuple[str, str, str] | None]:
     return out
 
 
+def apply_extents(functions, tags: list, extents) -> list:
+    """Step 5: the library of each extent for the functions inside it that have no direct tag."""
+    out = list(tags)
+    for first, last, library in extents:
+        for k, (address, _) in enumerate(functions):
+            if first <= address <= last and (out[k] is None or out[k][2] != 'direct'):
+                out[k] = (library, '', 'extent')
+    return out
+
+
+def tags_for(root: str, functions, direct: dict) -> list:
+    """Steps 4 and 5 from the surviving direct tags."""
+    return apply_extents(functions, propagate(functions, direct), read_extents(os.path.join(root, EXTENTS)))
+
+
 def confidence(evidence: str, file: str) -> str:
     if evidence == 'direct':
         return 'high'
+    if evidence == 'extent':
+        return 'medium'
     return 'medium' if file else 'low'
 
 
@@ -309,21 +343,21 @@ def summary(functions, rows) -> str:
     per: dict = collections.defaultdict(lambda: collections.Counter())
     for r in rows:
         c = per[r['library']]
-        key = r['evidence'] if r['file'] or r['evidence'] == 'direct' else 'library'
+        key = r['evidence'] if r['file'] or r['evidence'] in ('direct', 'extent') else 'library'
         c[f'{key}_f'] += int(r['functions'])
         c[f'{key}_b'] += int(r['bytes'])
-    lines = ['| Library | Functions | Bytes | Direct | File range | Library range |',
-             '| --- | ---: | ---: | ---: | ---: | ---: |']
+    lines = ['| Library | Functions | Bytes | Direct | File range | Library range | Extent |',
+             '| --- | ---: | ---: | ---: | ---: | ---: | ---: |']
     tagged_f = tagged_b = 0
     for lib in sorted(per, key=lambda k: -sum(v for n, v in per[k].items() if n.endswith('_b'))):
         c = per[lib]
-        f = c['direct_f'] + c['range_f'] + c['library_f']
-        b = c['direct_b'] + c['range_b'] + c['library_b']
+        f = c['direct_f'] + c['range_f'] + c['library_f'] + c['extent_f']
+        b = c['direct_b'] + c['range_b'] + c['library_b'] + c['extent_b']
         tagged_f += f
         tagged_b += b
-        lines.append(f"| {lib} | {f:,} | {b:,} | {c['direct_f']:,} | {c['range_f']:,} | {c['library_f']:,} |")
-    lines.append(f'| untagged | {total_f - tagged_f:,} | {total_b - tagged_b:,} | | | |')
-    lines.append(f'| all | {total_f:,} | {total_b:,} | | | |')
+        lines.append(f"| {lib} | {f:,} | {b:,} | {c['direct_f']:,} | {c['range_f']:,} | {c['library_f']:,} | {c['extent_f']:,} |")
+    lines.append(f'| untagged | {total_f - tagged_f:,} | {total_b - tagged_b:,} | | | | |')
+    lines.append(f'| all | {total_f:,} | {total_b:,} | | | | |')
     return '\n'.join(lines)
 
 
@@ -335,7 +369,7 @@ def generate(root: str, elf: str, stats: bool = False) -> str:
     candidates, unknown = direct_candidates(image, functions, read_rules(os.path.join(root, RULES)))
     chosen = choose_files(candidates)
     kept, dropped = anchors(candidates)
-    rows = to_rows(functions, propagate(functions, kept))
+    rows = to_rows(functions, tags_for(root, functions, kept))
     if stats:
         several = sum(1 for tags in candidates.values() if len(tags) > 1)
         files = len(set(chosen.values()))
@@ -383,9 +417,9 @@ def check(root: str, elf: str | None) -> list[str]:
         functions = read_functions(os.path.join(root, FUNCTIONS))
         try:
             direct = direct_from_table(functions, rows)
+            expected = render(to_rows(functions, tags_for(root, functions, direct)))
         except ValueError as e:
             return [str(e)]
-        expected = render(to_rows(functions, propagate(functions, direct)))
     if text != expected:
         return [f'{TABLE} is stale: run tools/source_files.py --elf ELF (with the target executable)']
     return update_doc(root, text, write=False)

@@ -36,6 +36,7 @@
 #include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/write_watch.h"
 
 #include <errno.h>
 #if defined(__APPLE__) && defined(__MACH__)
@@ -174,6 +175,12 @@ int rt_gpu_memory_pool(int *fd, uint64_t *size)
     return created ? 0 : -1;
 }
 
+uint8_t *rt_gpu_memory_gds(void)
+{
+    static _Alignas(RT_GPU_GDS_BYTES) uint8_t gds[RT_GPU_GDS_BYTES];
+    return gds;
+}
+
 /* Non-replacing placement in the address window. A declined POSIX hint is stepped over
    without assuming the reason was occupancy; other host failures still stop by name. */
 static void *window_place(const char *caller, uint64_t length, uint64_t alignment, int host_protection, int map_flags,
@@ -270,11 +277,16 @@ static pthread_mutex_t mappings_lock = PTHREAD_MUTEX_INITIALIZER;
 static guest_mapping mappings[MAX_MAPPINGS];
 static int mapping_count;
 
+/* Records a mapping. The CPU's writes to a direct map are watched (runtime/write_watch.h), so the
+   renderer loads a texture again only when its memory was written; a watch that cannot start
+   leaves the renderer taking all memory as changed. */
 static void note_mapping(const char *caller, guest_mapping mapping)
 {
     pthread_mutex_lock(&mappings_lock);
     if (mapping_count == MAX_MAPPINGS) rt_fatal(caller, "more mappings than the runtime records");
     mappings[mapping_count++] = mapping;
+    const int host_protection = (mapping.protection & PROT_CPU_READ ? PROT_READ : 0) | (mapping.protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
+    if (mapping.direct) rt_write_watch_add((void *)mapping.start, mapping.length, (uint64_t)mapping.offset, host_protection);
     pthread_mutex_unlock(&mappings_lock);
 }
 
@@ -564,6 +576,7 @@ static int32_t unmap_range(const char *caller, void *address, uint64_t length, i
             i++;
             continue;
         }
+        if (m.direct) rt_write_watch_remove((void *)m.start, m.length);
         if (munmap((void *)m.start, m.length)) rt_fatal(caller, "the host could not unmap the memory");
         mappings[i] = mappings[--mapping_count];
         if (m.direct) {
@@ -595,7 +608,10 @@ static int32_t kernel_mprotect(const void *address, uint64_t length, int32_t pro
     pthread_mutex_lock(&mappings_lock);
     const int i = mapping_index(name, (uintptr_t)address, length);
     const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
+    /* memory the renderer guards (runtime/write_watch.h) is made current first, then keeps the new protection */
+    rt_write_watch_touch(address, length);
     if (mprotect((void *)(uintptr_t)address, length, host_protection)) rt_fatal(name, "the host refused the protection");
+    rt_write_watch_protect((void *)(uintptr_t)address, length, host_protection);
     mappings[i].protection = protection;
     pthread_mutex_unlock(&mappings_lock);
     return 0;

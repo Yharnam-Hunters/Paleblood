@@ -16,6 +16,7 @@ struct KernelFile {
 };
 static_assert(offsetof(KernelFile, flags) == 0x4);
 constexpr uint8_t file_open = 0x01;
+constexpr int32_t no_descriptor = -1;   // what a closed file holds
 
 // The platform layer's open mode bits (the caller's, translated to FreeBSD open flags below).
 constexpr uint32_t mode_read = 0x01;
@@ -41,5 +42,8 @@ constexpr uint16_t permissions_none = 0;
 
 RT_ORIGINAL(0x02fbf3f8, kernel_open, int32_t(const char *path, uint32_t flags, uint32_t mode));
 RT_ORIGINAL(0x02fbf408, kernel_read, int64_t(int32_t descriptor, void *buffer, uint64_t size));
+RT_ORIGINAL(0x02fbf418, kernel_write, int64_t(int32_t descriptor, const void *buffer, uint64_t size));
+RT_ORIGINAL(0x02fbf428, kernel_seek, int64_t(int32_t descriptor, int64_t offset, int32_t origin));
+RT_ORIGINAL(0x02fbf438, kernel_close, int32_t(int32_t descriptor));
 
 }  // namespace loading::kernel_file
