@@ -207,14 +207,42 @@ it does not provide path-sensitive initialization analysis.
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.
 
-Readback is tightly packed BGRA, matching the display API. Images are separate GPU resources:
-they are not copied back into the guest pool or interpreted as tiled console surfaces.
+Readback is tightly packed BGRA, matching the display API. Sampled textures are separate
+resources loaded from their descriptors; colour and depth/stencil attachments use canonical
+guest memory.
 The generic register events validate this backend's supported opaque-triangle profile: blending,
-depth, non-copy colour operations and partial colour masks stop with a reason.
+non-copy colour operations and partial colour masks stop with a reason.
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
 
+Depth/stencil draws support single-sample D16, D32 and S8, all eight comparisons, front/back
+stencil references and masks, keep/zero/replace/invert, and clamped or wrapping steps of one.
+Replacement with STENCILOPVAL stops if it conflicts with a distinct comparison or replacement
+reference. Explicit zero formats disable their tests; Z_WRITE alone does not enable depth.
+A null pixel shader requires an active depth/stencil attachment and no colour writes. Colour
+mode CB_DISABLE also suppresses colour writes while the draw executes.
+
+The shared GFX7 layout decoder uses direct DB geometry and independent slice strides. Macro
+tile splits above 1024 bytes require an unmodeled guest DRAM-row profile and stop explicitly. Each
+active aspect requires explicit geometry, extent, stride, one selected view slice and its read
+base; writable aspects also require the same write base. Larger depth/stencil surfaces preserve
+texels outside the colour extent. View read-only bits disable native writes and CPU publication.
+Before every draw the executor loads canonical guest bytes into private Metal textures through
+aspect-specific staging blits, then publishes completed writable texels back after GPU completion.
+Selected slices retain their bank rotation; padding and other slices remain untouched. This first
+path allocates attachment resources per draw rather than keeping a dirty depth-image cache.
+
+HTILE and expanded clears stop when an active aspect depends on them. A stencil-only draw
+with `DB_STENCIL_INFO.TILE_STENCIL_DISABLE` set uses the uncompressed S8 plane even when the
+inactive Z format retains HTILE or expanded-clear flags; it requires no Z base and does not
+read or modify Z metadata. Stencil expanded-clear flags still stop explicitly. Clear/copy/
+resummarize operations, multisampling, layered views, distinct read/write bases, depth bounds,
+overlapping attachments and unsupported register fields stop explicitly. The pipeline cache includes depth/stencil formats, and every draw rebinds its test
+state and references. Default front-face orientation matches the existing Vulkan profile with
+both viewport Y signs; additional raster face/cull modes remain outside the profile. D32/S8 uses
+combined textures with separate plane blits. D16/S8 requires Apple GPU family 2 for separate
+attachments. These paths have run on an M4 Max; other hardware remains unqualified.
 Triangle strips (`VGT_PRIMITIVE_TYPE` 6) select Metal's native triangle-strip primitive for
 auto draws and every admitted 16/32-bit direct or offset indexed route. Triangle lists retain
 their existing mapping and pipeline cache; topology is selected at each draw. Geometry shaders,
@@ -476,8 +504,14 @@ recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bi
 formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logical index-size
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, missing image/sampler descriptor guards, descriptors loaded from memory, fetch rendering through live target and
-program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip/depth-target
-guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
+program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip guards, depth/stencil admission, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
+`test_metal_depth` additionally checks depth/stencil comparisons, operations and masks, both face
+orientations and viewport signs, native read-only behavior through overlapping triangles,
+scissored writes, padded selected slices, mixed attachment extents, null-pixel draws, retained
+state, required-register presence and canonical-memory updates. Stencil-only metadata cases
+use literal S8/BGRA results and complete pool comparisons to preserve the inactive Z plane,
+metadata bytes, padding and other slices; active metadata-dependent aspects retain prework
+refusals.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
 offscreen test establishes neither window presentation nor execution of a game on macOS.
