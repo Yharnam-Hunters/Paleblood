@@ -171,6 +171,7 @@ address,replacement,system,returns
 0x014759d0,bb_render_set_gs_shader,render,void
 0x01475a30,bb_render_update_gs_shader,render,void
 0x01475a90,bb_render_set_esgs_ring_itemsize,render,void
+0x01475af0,bb_render_set_gs_ring_sizes,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x01475e10,bb_render_emit_shader_preparation_range_01475e10,render,void
 0x01476030,bb_render_set_shader_stages_01476030,render,void
