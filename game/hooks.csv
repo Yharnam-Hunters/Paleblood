@@ -273,6 +273,7 @@ address,replacement,system,returns
 0x0169acf0,bb_ai_character_has_effect_state,ai,i8
 0x0169ad80,bb_ai_character_gather_effect_states,ai,void
 0x0169af00,bb_ai_character_ready_check,ai,i8
+0x0169cef0,bb_ai_hearing_check_sound,ai,void
 0x0169d160,bb_ai_hearing_test,ai,void
 0x0169da30,bb_ai_hearing_in_ear_range,ai,i8
 0x0169fad0,bb_ai_character_link_ids,ai,i64
