@@ -864,6 +864,7 @@ static int blended_misses(rt_executor *x, uint64_t target, void (*f)(float rgba[
 }
 
 static void doubled(float c[4]) { for (int i = 0; i < 4; i++) c[i] = fminf(2 * c[i], 1); }
+static void unchanged(float c[4]) { (void)c; }
 static void halved(float c[4]) { for (int i = 0; i < 4; i++) c[i] *= 0.5f; }
 static void colour_halved_alpha_kept(float c[4]) { for (int i = 0; i < 3; i++) c[i] *= 0.5f; }
 
@@ -909,6 +910,46 @@ static void draws_in_one_batch(rt_executor *x)
     if (ran) fprintf(stderr, "draws in one batch: %s\n", error);
     CHECK(ran == 0);
     CHECK(blended_misses(x, at(TWICE), doubled) == 0);
+}
+
+/* Records into `buffer` the triangle's draws, blended ONE + ONE, into each of `count` targets in turn,
+   in slot 0; the buffer's size. */
+static uint32_t record_draws_into(uint64_t buffer, const uint64_t *targets, int count)
+{
+    enum { ONE = 1 };
+    char error[200] = "";
+    uint32_t offset = record_setup(buffer, targets[0], COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_register(buffer, offset, 0xa1e0, 1u << 30 | ONE | ONE << 8, error, sizeof error) == 0);
+    offset = record_triangle_draw(buffer, offset + 0x10);
+    for (int i = 1; i < count; i++) {
+        uint32_t words[RT_COLOR_TARGET_WORDS];
+        color_target(words, targets[i], COLOR_8_8_8_8, SWAP_STD);
+        CHECK(rt_render_record_color_target(buffer, offset, 0, words, error, sizeof error) == 0);
+        offset = record_triangle_draw(buffer, offset + 0x10);
+    }
+    return offset;
+}
+
+static void tripled(float c[4]) { for (int i = 0; i < 4; i++) c[i] = fminf(3 * c[i], 1); }
+
+/* Draws in a row go without a barrier between them, and a target drawn in one render pass, then
+   another target, then the first again, keeps its draws in order through the render passes'
+   dependency. With ONE + ONE into two new (zero) targets, in one buffer, the first target, the
+   second, and so on, five draws: the first target holds the triangle tripled, the second doubled.
+   The first two draws load their targets; the last three record nothing between them, so only the
+   passes' dependency orders a target's draws. Under the validation layer's synchronization check a
+   pass without it is named (a write after write); the pixels check the order. */
+static void draws_across_passes(rt_executor *x)
+{
+    enum { PASSES_BUFFER = 0xc1090000, FIRST = 0x3a00000, SECOND = 0x3a40000 };
+    char error[200] = "";
+    const uint64_t targets[5] = {at(FIRST), at(SECOND), at(FIRST), at(SECOND), at(FIRST)};
+    rt_render_forget(), rt_executor_reset(x);
+    const int ran = rt_executor_run(x, PASSES_BUFFER, record_draws_into(PASSES_BUFFER, targets, 5), error, sizeof error);
+    if (ran) fprintf(stderr, "draws across passes: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(blended_misses(x, at(FIRST), tripled) == 0);
+    CHECK(blended_misses(x, at(SECOND), doubled) == 0);
 }
 
 /* Two buffers recorded without submitting (rt_executor_record_calls) join one open batch: both name the
@@ -1221,8 +1262,6 @@ static int run_instanced(rt_executor *x, uint64_t buffer, uint64_t target, uint6
     CHECK(rt_render_record_instances(buffer, offset, instances, error, error_size) == 0);
     return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset + 0x10), error, error_size);
 }
-
-static void unchanged(float c[4]) { (void)c; }
 
 /* Instancing (NUM_INSTANCES): 2 instances blended ONE + ONE double the colour. A vertex shader taking the
    instance index (v3) reads instance 1's colours past the triangle's, where they are 0: the colour is the
@@ -3425,6 +3464,7 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), dual_source, 1, 0, error, sizeof error) == -1 && strstr(error, "blend factor 15"));
     blending(x);
     draws_in_one_batch(x);
+    draws_across_passes(x);
     indirect_draws(x);
     instanced_draws(x);
     other_viewports(x);
