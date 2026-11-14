@@ -531,6 +531,7 @@ address,size,name,system,status,notes
 0x0246e810,390,loading_disk_device_open_on_device_0246e810,loading,edge-verified,Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy
 0x0246e9a0,714,loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,edge-verified,Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
+0x024712e0,46,loading_disk_file_device_release_at_quit_024712e0,loading,edge-verified,"Disk file device release at quit: unless the destroyed byte is set, destroys the instance (0x0246caa0), clears the instance pointer and sets the byte to 1"
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x02479710,156,loading_owned_object_release_02479710,loading,edge-verified,"Releases the two parts a transfer task owns at +0x90 (+0x10 then +0x08): slot +0xb0, then destroy and free through its allocator; clears the slot"
 0x0247b720,338,engine_allocator_of_0247b720,engine,edge-verified,Allocator owning a pointer: the thread temporary heap if it holds it; else the last registry range holding it (under the read-write lock); else the fallback allocator 0x0247fa50
@@ -640,6 +641,7 @@ address,size,name,system,status,notes
 0x0248b200,532,engine_thread_construct_sized_0248b200,engine,edge-verified,DLThread constructor with a stack size: same members; failures reported
 0x024bcfa0,49,loading_result_construct_024bcfa0,loading,edge-verified,"Load result base constructor: vtable, four request words, code and word"
 0x024bcfe0,89,loading_result_copy_024bcfe0,loading,edge-verified,"Load result base copy constructor: vtable, request words cleared then copied, code and word"
+0x024bd080,50,loading_result_assign_024bd080,loading,edge-verified,"Result base's copy assignment: the four request words one by one, the code and the word; the vtable and the handle stay. Returns the entry"
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bd310,65,loading_resource_handle_assign_024bd310,loading,edge-verified,"Resource handle assignment: unless the infos match, drops the old info reference, takes the source info and adds a reference; returns the handle"
 0x024bd470,28,loading_resource_handle_construct_024bd470,loading,edge-verified,"Base resource handle constructor: stores its vtable and the info, takes a reference (0x02a3a300) when the info is not null"
@@ -808,6 +810,8 @@ address,size,name,system,status,notes
 0x02b4d100,477,engine_byte_array_assign_02b4d100,engine,edge-verified,"Engine byte array copy assign: self no-op; slot 0x10 queries; empty source empties; memmove over the size or within capacity (rest constructed); else free, allocate exact (align 1), copy"
 0x02bc0e00,196,engine_wide_string_construct_02bc0e00,engine,edge-verified,"Wide string from null-terminated text: default allocator (created on first use), container heap check, empty inline string, counted assign 0x02a2a720 with wcslen (0 for empty)"
 0x02bc1ca0,218,physics_ids_reserve_02bc1ca0,physics,edge-verified,"Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept"
+0x02c51f60,87,render_set_parameter_02c51f60,render,edge-verified,Parameter set: finds the key among the sorted keys (lower bound) and stores the value beside it when found
+0x02c51fc0,42,render_clear_parameter_set_02c51fc0,render,edge-verified,"Parameter set: frees its block of keys and values through its allocator (slot 0x70) and clears the pointer, when there is one"
 0x02c6d580,149,frame_timing_thread_random,frame_timing,edge-verified,This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds
 0x02d03420,46,menu_system_text_dialog_status_02d03420,menu,edge-verified,"Dantelion text dialog: the dialog backend's status while the system dialog is open, -1 otherwise (the backend made on first use)"
 0x02d03450,60,menu_system_text_dialog_open_02d03450,menu,edge-verified,"Dantelion text dialog: unless open, asks the dialog backend to open the system dialog with the settings and records the answer as the open flag"

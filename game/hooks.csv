@@ -529,6 +529,7 @@ address,replacement,system,returns
 0x0246e810,bb_loading_disk_device_open_on_device_0246e810,loading,i64
 0x0246e9a0,bb_loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,i64
 0x02470d50,bb_loading_mount_table_push_back_02470d50,loading,void
+0x024712e0,bb_loading_disk_file_device_release_at_quit_024712e0,loading,void
 0x024716d0,bb_loading_mount_table_reallocate_024716d0,loading,void
 0x02479710,bb_loading_owned_object_release_02479710,loading,void
 0x0247b720,bb_engine_allocator_of_0247b720,engine,i64
@@ -638,6 +639,7 @@ address,replacement,system,returns
 0x0248b200,bb_engine_thread_construct_sized_0248b200,engine,void
 0x024bcfa0,bb_loading_result_construct_024bcfa0,loading,void
 0x024bcfe0,bb_loading_result_copy_024bcfe0,loading,void
+0x024bd080,bb_loading_result_assign_024bd080,loading,i64
 0x024bd150,bb_frame_timing_job_take_result,frame_timing,i64
 0x024bd310,bb_loading_resource_handle_assign_024bd310,loading,i64
 0x024bd470,bb_loading_resource_handle_construct_024bd470,loading,void
@@ -806,6 +808,8 @@ address,replacement,system,returns
 0x02b4d100,bb_engine_byte_array_assign_02b4d100,engine,i64
 0x02bc0e00,bb_engine_wide_string_construct_02bc0e00,engine,void
 0x02bc1ca0,bb_physics_ids_reserve_02bc1ca0,physics,void
+0x02c51f60,bb_render_set_parameter_02c51f60,render,void
+0x02c51fc0,bb_render_clear_parameter_set_02c51fc0,render,void
 0x02c6d580,bb_frame_timing_thread_random,frame_timing,i64
 0x02d03420,bb_menu_system_text_dialog_status_02d03420,menu,i32
 0x02d03450,bb_menu_system_text_dialog_open_02d03450,menu,i8

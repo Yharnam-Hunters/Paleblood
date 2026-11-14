@@ -10,6 +10,10 @@
 // loading_finished_entry_assign_02aa4b90 (0x02aa4b90): a finished entry's copy assignment: the
 // result base's assignment (0x024bd080, every field but the vtable), then the handle's
 // assignment. Returns the entry.
+// loading_result_assign_024bd080 (0x024bd080): the result base's copy assignment: the four
+// request words one by one, the code and the word, each read just before it is written (an entry
+// overlapping its source sees its own writes); the vtable, the bytes after the code and the handle
+// are left as they were. Returns the entry.
 // loading_resource_handle_assign_024bd310 (0x024bd310): a resource handle's copy assignment:
 // nothing when both point to the same info; otherwise drops the reference to its info (if any),
 // takes the source's info (read again after the drop) and adds a reference to it (if any).
@@ -129,4 +133,13 @@ extern "C" void bb_loading_owned_object_release_02479710(OwnedObject *object)
     auto *parts = reinterpret_cast<OwnedParts *>(object);
     release_part(&parts->part_0x10);
     release_part(&parts->part_0x08);
+}
+
+extern "C" FinishedEntry *bb_loading_result_assign_024bd080(FinishedEntry *entry, const FinishedEntry *source)
+{
+    for (int i = 0; i < loading::resource_queue::request_word_count; ++i)
+        entry->request_words.words[i] = source->request_words.words[i];
+    entry->code = source->code;
+    entry->request_word_0x20 = source->request_word_0x20;
+    return entry;
 }
