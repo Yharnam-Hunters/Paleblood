@@ -24,18 +24,18 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,404 |
-| Replaced | 843 (0.53%) | 278,197 (0.65%) |
-| Edge-verified (includes verified) | 843 (0.53%) | 278,197 (0.65%) |
-| Verified | 172 (0.11%) | 44,776 (0.11%) |
+| Replaced | 844 (0.54%) | 278,280 (0.65%) |
+| Edge-verified (includes verified) | 844 (0.54%) | 278,280 (0.65%) |
+| Verified | 173 (0.11%) | 44,902 (0.11%) |
 
 Counts are cumulative: verified functions are included in edge-verified and replaced totals.
 
 | With function families | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Members of 19 function families | 18,019 (11.42%) | 62,426 (0.15%) |
-| Replaced, with family members | 18,862 (11.96%) | 340,623 (0.80%) |
-| Edge-verified, with family members | 18,862 (11.96%) | 340,623 (0.80%) |
-| Verified, with family members | 18,191 (11.53%) | 107,202 (0.25%) |
+| Replaced, with family members | 18,863 (11.96%) | 340,706 (0.80%) |
+| Edge-verified, with family members | 18,863 (11.96%) | 340,706 (0.80%) |
+| Verified, with family members | 18,192 (11.53%) | 107,328 (0.25%) |
 
 Family members are tiny functions (one to a few bytes each) that share one replacement per family: they add far more to the function count than to the bytes.
 
@@ -43,7 +43,7 @@ Matching tier: 127 functions compile byte for byte to the original from their ow
 
 | System | Tracked | Replaced | Edge-verified (includes verified) | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|---:|
-| ai | 51 | 51 | 51 | 28 | 15,264 |
+| ai | 51 | 51 | 51 | 29 | 15,264 |
 | audio | 5 | 5 | 5 | 2 | 413 |
 | camera | 8 | 8 | 8 | 0 | 21,151 |
 | character | 11 | 11 | 11 | 6 | 3,511 |
@@ -56,4 +56,4 @@ Matching tier: 127 functions compile byte for byte to the original from their ow
 | menu | 30 | 30 | 30 | 6 | 4,830 |
 | param | 141 | 141 | 141 | 0 | 44,134 |
 | physics | 10 | 10 | 10 | 1 | 4,711 |
-| render | 185 | 185 | 185 | 79 | 73,795 |
+| render | 186 | 186 | 186 | 79 | 73,878 |

@@ -93,7 +93,7 @@ will be labeled as observations until their implementation is traced.
 | `0x01693850` | 1175 | `ai_is_inside_direction` | verified | Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series) |
 | `0x0169acf0` | 114 | `ai_character_has_effect_state` | verified | AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0) |
 | `0x0169ad80` | 134 | `ai_character_gather_effect_states` | verified | AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes |
-| `0x0169af00` | 126 | `ai_character_ready_check` | edge-verified | AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff |
+| `0x0169af00` | 126 | `ai_character_ready_check` | verified | AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff |
 | `0x0169fad0` | 155 | `ai_character_link_ids` | verified | The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1 |
 | `0x016a52b0` | 1936 | `ai_sight_test` | verified | Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins |
 | `0x016a5a50` | 43 | `ai_sight_query_reset_target` | edge-verified | Sight query: target half reset (origin, no height or size, visibility 1, light, seeable) |

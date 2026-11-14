@@ -324,6 +324,9 @@ static void *renderer_thread(void *unused)
         queue_head = b->next;
         if (!queue_head) queue_tail = NULL;
         running = 1, running_submission = b->submission;
+        /* a submit held by RENDER_LAG_LIMIT may go on now: without this it slept until the batch had
+           run, however long its steps took (a gate step held it for good in a loaded test) */
+        pthread_cond_broadcast(&queue_changed);
         pthread_mutex_unlock(&queue_lock);
         run_batch(b);
         pthread_mutex_lock(&queue_lock);

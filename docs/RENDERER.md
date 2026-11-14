@@ -596,7 +596,7 @@ Instead:
        flip waited for all work and then read the target back, so the GPU sat idle while the CPU
        recorded the next frame. A submit returns only once the renderer's thread has taken a buffer
        at most four before it (`RENDER_LAG_LIMIT`), except while that thread performs a wait step,
-       which may wait for memory the submitting thread has yet to write. The console's GPU starts on a
+       which may wait for memory the submitting thread has yet to write; a held submit goes on as soon as the renderer's thread takes a buffer (before, it slept until that buffer had run, however long its steps took). The console's GPU starts on a
        buffer soon after it is submitted, and the game's per-frame GPU memory rings rely on that:
        without the bound the renderer fell tens of seconds behind during the clinic's load, the
        rings' allocations came back empty, and the game wrote draws whose vertex shader's fetch table
