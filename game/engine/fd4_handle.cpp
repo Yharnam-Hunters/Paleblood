@@ -58,6 +58,8 @@ static_assert(offsetof(OrderedItem, reference) == 0x10);
 // Copies the entry's value and the table's version into the reference when its handle is valid.
 RT_ORIGINAL(0x013e99b0, refresh, void(Table *table, Reference *reference));
 
+// The game tests this out of line (engine_fd4_handle_is_set_013e9ee0, 8 bytes: too short to
+// hook, so it stays the original's).
 bool is_empty(const Handle &handle)
 {
     uint64_t bits;
