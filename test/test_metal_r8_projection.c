@@ -8,7 +8,7 @@
 #include <string.h>
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
 enum { OP_LOAD, OP_STORE, OP_RW, OP_RAW, OP_ALIAS, OP_SAMPLE };
-enum { EXPECT_OK, EXPECT_PROFILE, EXPECT_PARTIAL, EXPECT_OTHER, EXPECT_RANGE, EXPECT_SUPPRESSED };
+enum { EXPECT_OK, EXPECT_PROFILE, EXPECT_PARTIAL, EXPECT_OTHER, EXPECT_REPLACEMENT, EXPECT_SUPPRESSED };
 enum { POOL=2<<20, CODE=0x1000, RAW_CODE=0x6000, OUTPUT=0x10000, CONTROL=OUTPUT+1024,
        RAW_OUTPUT=0x20000, RAW_CAPACITY=0x20000, IMAGE=0x80000, CANARY=0xa5 };
 typedef struct { uint16_t word; unsigned char red, selectors[4]; } Projection;
@@ -91,6 +91,7 @@ static const char *operation(unsigned op)
 }
 static const char *kind(const Case *c)
 {
+    if (c->expect==EXPECT_REPLACEMENT) return "replacement";
     if (c->expect!=EXPECT_OK && c->expect!=EXPECT_SUPPRESSED) return "refusal";
     return c->expect==EXPECT_SUPPRESSED ? "suppressed" : operation(c->op);
 }
@@ -110,7 +111,6 @@ static void emit(Visitor visit, Case *c, const char *family, const char *id)
     if(c->expect!=EXPECT_OK && c->expect!=EXPECT_SUPPRESSED) c->raw=0,c->baseline_pass=0;
     if(c->expect==EXPECT_PROFILE)c->reason="swizzle must preserve";
     else if(c->expect==EXPECT_PARTIAL)c->reason="partial stores are not translated";
-    else if(c->expect==EXPECT_RANGE)c->reason="image access is outside its view";
     visit(c);
 }
 static void suite(Visitor visit)
@@ -215,14 +215,14 @@ static void suite(Visitor visit)
         snprintf(id,sizeof id,"bounds/d%u/view-store/da%u",d,da);emit(visit,&c,"view-bounds",id);
         c.x=8;c.expect=EXPECT_SUPPRESSED;
         snprintf(id,sizeof id,"bounds/d%u/x-suppressed/da%u",d,da);emit(visit,&c,"view-bounds",id);
-        c.op=OP_LOAD;c.expect=EXPECT_RANGE;
-        snprintf(id,sizeof id,"bounds/d%u/x-read-stop/da%u",d,da);emit(visit,&c,"view-bounds",id);
+        c.op=OP_LOAD;c.expect=EXPECT_REPLACEMENT;
+        snprintf(id,sizeof id,"bounds/d%u/x-read-replacement/da%u",d,da);emit(visit,&c,"view-bounds",id);
         c.x=3;c.op=OP_STORE;c.raw=1;c.expect=EXPECT_OK;
         if(arrayed(c.type)){
             c.z=2;c.expect=EXPECT_SUPPRESSED;
             snprintf(id,sizeof id,"bounds/d%u/slice-suppressed/da%u",d,da);emit(visit,&c,"view-bounds",id);
-            c.op=OP_LOAD;c.expect=EXPECT_RANGE;
-            snprintf(id,sizeof id,"bounds/d%u/slice-read-stop/da%u",d,da);emit(visit,&c,"view-bounds",id);
+            c.op=OP_LOAD;c.expect=EXPECT_REPLACEMENT;
+            snprintf(id,sizeof id,"bounds/d%u/slice-read-replacement/da%u",d,da);emit(visit,&c,"view-bounds",id);
             c.op=OP_STORE;c.z=0;c.first=2;c.last=1;c.expect=EXPECT_OTHER;c.reason="array view exceeds";
             snprintf(id,sizeof id,"bounds/d%u/reversed-view/da%u",d,da);emit(visit,&c,"view-bounds",id);
             c.first=0;c.last=3;c.expect=EXPECT_OTHER;
@@ -419,9 +419,9 @@ static unsigned mark_expected(World *w,const Case *c,unsigned image_offset)
     if(c->op==OP_LOAD||c->op==OP_RW){
         for(unsigned lane=0;lane<c->local;++lane){unsigned output=0;
             for(unsigned logical=0;logical<4;++logical){if(!(c->mask>>logical&1))continue;
-                const unsigned sel=selected(c,logical);const uint32_t expected=sel==0?0:sel==1?0x3f800000u:c->number==7?0x3f400000u:bits((float)c->fill/255.0f);
+                const unsigned sel=selected(c,logical);const uint32_t expected=sel==0?0:sel==1?0x3f800000u:c->expect==EXPECT_REPLACEMENT?0:c->number==7?0x3f400000u:bits((float)c->fill/255.0f);
                 const size_t at=OUTPUT+16u*lane+4u*output++;const uint32_t got=read_word(w->pool+at);
-                if(sel==4&&c->number==0){const int ok=fabsf(as_float(got)-as_float(expected))<=0.000001f;CHECK(ok);if(ok)memcpy(w->expected+at,&got,4);else memcpy(w->expected+at,&expected,4);}
+                if(sel==4&&c->number==0&&c->expect!=EXPECT_REPLACEMENT){const int ok=fabsf(as_float(got)-as_float(expected))<=0.000001f;CHECK(ok);if(ok)memcpy(w->expected+at,&got,4);else memcpy(w->expected+at,&expected,4);}
                 else memcpy(w->expected+at,&expected,4);
             }
         }
@@ -453,9 +453,13 @@ static void run_case(const Case *c)
         descriptor(user,&a);descriptor(user+8,&b);
     }else{buffer(user,OUTPUT,1040);memcpy(user+4,payload,sizeof payload);descriptor(user+8,c);}
     require(program->dwords*4<RAW_CODE-CODE,"main program bound");memcpy(world.pool+CODE,program->words,program->dwords*4);
+    if(c->expect==EXPECT_REPLACEMENT){
+        unsigned x,y,physical;int inside;coordinates(c,0,&x,&y,&physical,&inside);
+        require(!inside,"replacement fixture must address a texel outside the view");
+    }
     memcpy(world.before,world.pool,POOL);memcpy(world.expected,world.pool,POOL);
     const int rc=dispatch(&world,program,user,16,c->local,1,0);unsigned written=0;
-    if(c->expect!=EXPECT_OK&&c->expect!=EXPECT_SUPPRESSED){CHECK(rc==-1);CHECK(c->reason&&strstr(r8_error,c->reason));}
+    if(c->expect!=EXPECT_OK&&c->expect!=EXPECT_SUPPRESSED&&c->expect!=EXPECT_REPLACEMENT){CHECK(rc==-1);CHECK(c->reason&&strstr(r8_error,c->reason));}
     else{CHECK(rc==0);if(rc==0)written=mark_expected(&world,c,image_offset);}
     compare_data(world.pool,world.expected,POOL,"canonical");
     const size_t image_changes=changed(world.pool+image_offset,world.before+image_offset,span);
