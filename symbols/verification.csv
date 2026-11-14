@@ -74,10 +74,13 @@ audio_fmod_string_copy,edge,,40,40,0,0,c17e74fefe35579f,2026-11-12
 audio_fmod_string_copy_counted,recorded,,71,71,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_string_copy_counted,edge,,54,54,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-11-03
-camera_axis_angle_quaternion_00848e80,edge,,866,866,0,0,5e1c5cd50cc93e2a,2026-11-13
+camera_axis_angle_quaternion_00848e80,edge,,866,866,0,0,1bbcc2f491ba3af5,2026-11-14
 camera_follow_pitch,edge,,32,32,0,0,b597553f9e6c9fc4,2026-11-03
 camera_follow_yaw,edge,,30,30,0,0,8724717f0deed29b,2026-11-03
-camera_transform_matrix_0083d4d0,edge,,168,168,0,0,5e1c5cd50cc93e2a,2026-11-13
+camera_matrix4_affine_finish_0083b7e0,edge,,9,9,0,0,1bbcc2f491ba3af5,2026-11-14
+camera_quaternion_rotation_rows_00829b00,edge,,103,103,0,0,1bbcc2f491ba3af5,2026-11-14
+camera_rows3_multiply_0084b9d0,edge,,58,58,0,0,1bbcc2f491ba3af5,2026-11-14
+camera_transform_matrix_0083d4d0,edge,,168,168,0,0,1bbcc2f491ba3af5,2026-11-14
 camera_update_follow,edge,,72,72,0,0,3197f1903529bfe6,2026-11-13
 camera_update_follow,edge,30,72,72,0,0,3197f1903529bfe6,2026-11-13
 camera_update_follow,edge,60,72,72,0,0,3197f1903529bfe6,2026-11-13
