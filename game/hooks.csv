@@ -175,6 +175,9 @@ address,replacement,system,returns
 0x016243a0,bb_ai_character_negated_third_column,ai,vec
 0x01624760,bb_ai_character_id,ai,i32
 0x01624e50,bb_ai_character_flag_module_set,ai,i8
+0x016334b0,bb_ai_debug_set_position_016334b0,ai,void
+0x01633ac0,bb_ai_debug_flush_01633ac0,ai,void
+0x0163bb50,bb_ai_debug_end_0163bb50,ai,void
 0x01657ac0,bb_ai_func_get_random_float,ai,f32
 0x01657b20,bb_ai_func_get_random_int,ai,i32
 0x01657b80,bb_ai_func_set_timer,ai,void
@@ -258,6 +261,7 @@ address,replacement,system,returns
 0x0206ecc0,bb_param_menu_property_spec,param,i64
 0x0217ffb0,bb_engine_initialize_static_wide_string_0217ffb0,engine,void
 0x021d6ea0,bb_ai_draw_world_021d6ea0,ai,void
+0x02224090,bb_ai_group_reset_02224090,ai,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
 0x02232a60,bb_ai_draw_layer_color_02232a60,ai,vec
 0x02311c80,bb_param_find_row_equip_param_accessory,param,void
