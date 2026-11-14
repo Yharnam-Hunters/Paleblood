@@ -114,6 +114,7 @@ How these layers are driven during a real load, and in what order, is still bein
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x00464b90` | 215 | `loading_stdio_stream_open` | verified | fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30 |
+| `0x00829a40` | 39 | `loading_allocator_allocate_headed_00829a40` | edge-verified | Allocates a block with a 16-byte header before its data (size+0x10 in 32 bits, unchecked): the header gets the allocator and the size; returns the data |
 | `0x00829a90` | 33 | `loading_allocator_free_headed_00829a90` | edge-verified | Frees a block with a 16-byte header before its data: clears the header word, sized free of header and size+0x10 (32-bit); null ignored |
 | `0x00836840` | 70 | `loading_tagged_string_release_00836840` | edge-verified | Tagged string word: below 2 left alone; odd frees word-1 through the thread allocator (0x00829a90); then cleared |
 | `0x0084d5a0` | 158 | `loading_fios_directory_delete` | edge-verified | FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator |
