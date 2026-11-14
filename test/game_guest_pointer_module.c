@@ -31,6 +31,11 @@ int rt_capture_hooks_prepare(unsigned char *image,uint64_t image_size,const rt_h
     for (size_t i=0;i<count;++i) targets[i]=(const void *)table[i].fn;
     return 0;
 }
+/* Not a counted seam: the owned registry has no family members to prepare. */
+int rt_capture_families_prepare(unsigned char *image,uint64_t image_size,const rt_family_hook *table,size_t count)
+{
+    (void)image;(void)image_size;(void)table;(void)count;return 0;
+}
 int rt_probes_install(unsigned char *image,uint64_t image_size)
 {
     (void)image;(void)image_size;++peripheral_calls;return 0;

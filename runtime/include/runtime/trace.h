@@ -71,6 +71,7 @@ typedef struct {
     size_t link_count;         /* far reaches through a base pointer (256 B .. 1 MiB from it) */
     uint64_t (*link)[2];       /* {base pointer, address reached}: the two belong in one buffer */
     unsigned stack_slots;      /* stack arguments read: 0 .. RT_TRACE_STACK_SLOTS */
+    unsigned xmm_inputs;       /* bit n: xmm n (2..7) read before the traced code wrote it */
     size_t import_count;       /* imports called, in order */
     rt_trace_import_call *imports;
     size_t write_count;
