@@ -12,6 +12,9 @@
      reached in one buffer, so the replay keeps their distance.
    - Arguments and stack arguments that point into a buffer or the image are written the same way;
      other values are numbers.
+   - Thread-local storage: a variable is reached through the thread pointer read at gs:[0] (the
+     tracer notes it as a far reach from that pointer, so it and the thread block are one buffer),
+     and the case's `gs` points at the block, so the variable stays at its offset from it.
    - Imports the call made are scripted in order: return value, and the bytes each changed behind
      its pointer arguments. */
 #include "runtime/capture_trace.h"
@@ -333,11 +336,12 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
     std::string stack;
     for (unsigned i = 0; i < log.stack_slots; i++)
         stack += (i ? ", \"" : "\"") + b.describe(args.stack[i]) + "\"";
+    const std::string thread = log.thread_base ? ", \"gs\": \"" + b.describe(log.thread_base) + "\"" : "";
     char id[32];
     std::snprintf(id, sizeof id, "capture_%04d", number);
     return "{\"schema\": 1, \"address\": \"" + guest_hex(f.address) + "\", \"id\": \"" + id + "\", \"returns\": \"" +
            f.returns + "\", \"capture\": {\"function\": \"" + f.function + "\", \"run_id\": \"" + run +
-           "\"}, \"args\": {" + arguments + "}, \"stack\": [" + stack + "], \"buffers\": {" + b.buffers() +
+           "\"}, \"args\": {" + arguments + "}, \"stack\": [" + stack + "]" + thread + ", \"buffers\": {" + b.buffers() +
            "}, \"memory\": [" + b.memory() + "], \"stubs\": [], \"imports\": [" + imports(log, b) + "]}";
 }
 
