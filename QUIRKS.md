@@ -193,3 +193,21 @@ The caller at `0x01118420` accepts a name argument; it does not establish that e
 one the lookup recognizes. The creation wrapper remains original until this path's contract
 is established. Adding a default affinity mask would invent behavior; testing only recognized
 names would leave this path unresolved.
+
+## Face table setters assume the row exists
+
+The FaceGenParam and FaceParam setters that character creation uses (`game/param/face_params.cpp`)
+never handle an id the table has no row for. Most of them (`0x02317ad0`, `0x02317be0`,
+`0x02317cf0`, the seven hair and left eye setters `0x023189f0`..`0x02318ff0`, `0x0231a5e0`..
+`0x0231a8e0`, `0x0231a9e0`, `0x0231aaf0`, `0x0231ac00`) inline the index's binary search with no
+low-above-high exit, so a missing id never returns; an entry with a negative row number is used as
+a huge unsigned offset. The part color setter `0x02318280`, both decal setters (`0x023188b0`,
+`0x0231a340`) and the body scale setter `0x0231a480` do bound the search, but then write the field
+at its offset from a null row (the body scale setter only for an index below 5: it checks the index
+after the search). The face apply function `0x018e4110` looks the row up first (`0x02317560`)
+and returns without one; the setters' other callers have not been checked.
+
+The replacements stop the process by name there (`engine::stop`, `game/engine/stop.h`, which
+reaches the boot harness's `rt_fatal`) rather than writing nothing: quietly skipping the write would
+hide a caller that passes a bad id. Verification cannot compare these paths (the original hangs or
+faults), so no case covers them.

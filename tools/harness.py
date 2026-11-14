@@ -36,6 +36,9 @@ IMAGE = 0x800000000         # host address of guest offset 0, as in the scaffold
 EBOOT_BASE = 0x400000       # PS4 virtual address of guest offset 0
 SANDBOX = 0x900000000       # case buffers
 SANDBOX_SIZE = 16 << 20
+# The runtime's guest mapping window (runtime/syslib/kernel_memory.c, MAP_WINDOW_START/END): a
+# buffer recorded there may be put back at its origin.
+GUEST_WINDOW = (0x2000000000, 0xe000000000)
 DATA = 0x910000000          # data imports, one page each
 CODE = 0x920000000          # trampoline and import stubs
 PAGE = 4096
@@ -48,15 +51,23 @@ MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE = 0x02, 0x20, 0x100000
 
 # call_capture(block): see docs/VERIFY.md. Block layout: 0 target, 8..48 rdi..r9, 56 rax,
 # 64 rdx, 72 xmm0, 88 xmm1, 104 rbx, 112 rbp, 120 r12, 128 r13, 136 r14, 144 r15,
-# 152 rsp before the call, 160 rsp after it. Callee-saved registers hold sentinels. xmm0 and
-# xmm1 are loaded from their slots before the call (float arguments) and stored back after it.
+# 152 rsp before the call, 160 rsp after it, 168..216 rdi, rsi, rcx, r8, r9, r10, r11 after it,
+# 224..304 xmm2..xmm7. Callee-saved registers hold sentinels. xmm0 and xmm1 are loaded from
+# their slots before the call (float arguments) and stored back after it; xmm2..xmm7 are only
+# loaded (the third to eighth float arguments; zero unless a case gives them).
 # The rax slot also supplies an optional incoming machine-register value; it defaults to zero.
+XMM_ARGS = {'xmm0': 72, 'xmm1': 88, **{f'xmm{n}': 224 + 16 * (n - 2) for n in range(2, 8)}}
+BLOCK_QWORDS = 40
+_LOAD_XMM1 = bytes.fromhex('f3410f6f4b58')                      # movdqu xmm1, [r11+0x58]
 TRAMPOLINE = bytes.fromhex(
     '53554154415541564157574989fb48bb111111111111111148bd222222222222222249bc3333333333333333'
     '49bd444444444444444449be555555555555555549bf66666666666666664989a398000000498b7b08498b73'
     '10498b5318498b4b204d8b43284d8b4b304d8b13f3410f6f4348f3410f6f4b5831c041ffd24c8b1c24498943'
     '3849895340f3410f7f4348f3410f7f4b5849895b6849896b704d8963784d89ab800000004d89b3880000004d'
-    '89bb900000004989a3a00000005f415f415e415d415c5d5bc3')
+    '89bb900000004989a3a00000005f415f415e415d415c5d5bc3').replace(
+    _LOAD_XMM1, _LOAD_XMM1 + b''.join(                         # movdqu xmmN, [r11+disp32]
+        bytes([0xf3, 0x41, 0x0f, 0x6f, 0x83 | n << 3]) + struct.pack('<i', XMM_ARGS[f'xmm{n}'])
+        for n in range(2, 8)))
 SENTINELS = {'rbx': 0x1111111111111111, 'rbp': 0x2222222222222222, 'r12': 0x3333333333333333,
              'r13': 0x4444444444444444, 'r14': 0x5555555555555555, 'r15': 0x6666666666666666}
 ARG_REGS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
@@ -128,6 +139,18 @@ libc.mmap.restype = ctypes.c_void_p
 libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
 libc.mprotect.restype = ctypes.c_int
 libc.mprotect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+libc.munmap.restype = ctypes.c_int
+libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+
+
+def map_page(address: int) -> bool:
+    """Maps one page at `address` when nothing is there yet; whether it did."""
+    got = libc.mmap(address, PAGE, PROT_RWX, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0)
+    if got == address:
+        return True
+    if got not in (None, ctypes.c_void_p(-1).value):
+        libc.munmap(got, PAGE)              # an old kernel ignoring NOREPLACE mapped it elsewhere
+    return False
 
 
 def mmap_fixed(address: int, size: int) -> None:
@@ -247,7 +270,7 @@ class Run:
         self.boot, self.case = boot, case
         self.calls: list[dict] = []
         self.errors: list[str] = []
-        self.block = (ctypes.c_uint64 * 28)()
+        self.block = (ctypes.c_uint64 * BLOCK_QWORDS)()
         for field in ('imports', 'stubs'):
             entries = case.get(field, [])
             if not isinstance(entries, list):
@@ -271,6 +294,51 @@ class Run:
             self.stub_scripts.setdefault(hexint(entry['address']), []).append(entry)
 
     # memory layout ---------------------------------------------------------------------
+    def origin_layout(self) -> dict[str, tuple[int, int]]:
+        """Buffers placed where they lay in the recorded run (their `origin`), as name -> (start,
+        end of their redzone). Code may depend on where its memory lies, not only on what it
+        holds: a heap block's size is the distance to the next block, which can be another
+        buffer, and a heap checks a block against its own recorded bounds. A buffer goes back to
+        its origin when that lies in the runtime's guest mapping window and its pages are free in
+        this process; otherwise it goes to the sandbox, as a case without origins does. Pages two
+        buffers share are mapped once; the page after each run of pages is a guard page when free."""
+        buffers = self.case.get('buffers', {})
+        wanted = []
+        for name in sorted(buffers):
+            spec = buffers[name]
+            if 'origin' not in spec:
+                continue
+            try:
+                start, size = int(str(spec['origin']), 16), int(spec['size'])
+            except ValueError as error:
+                raise BadInput(f'buffer {name}: origin is not a hex address') from error
+            if size >= 0 and GUEST_WINDOW[0] <= start and start + max(size, 1) <= GUEST_WINDOW[1]:
+                wanted.append((start, size, name))
+        wanted.sort()
+        for (a, sa, na), (b, _, nb) in zip(wanted, wanted[1:]):
+            if a + sa > b:
+                raise BadInput(f'buffers {na} and {nb} overlap at their origins')
+        mapped: set[int] = set()
+        placed: dict[str, tuple[int, int]] = {}
+        for i, (start, size, name) in enumerate(wanted):
+            first, last = start // PAGE * PAGE, (start + max(size, 1) + PAGE - 1) // PAGE * PAGE
+            pages = [p for p in range(first, last, PAGE) if p not in mapped]
+            if not all(map_page(p) for p in pages):
+                continue                            # taken in this process: the sandbox instead
+            mapped.update(pages)
+            following = wanted[i + 1][0] if i + 1 < len(wanted) else None
+            placed[name] = (start, min(last, following) if following is not None else last)
+            if (following is None or following >= last + PAGE) and last not in mapped and map_page(last):
+                libc.mprotect(last, PAGE, PROT_NONE)
+                mapped.add(last)
+        return placed
+
+    def add_redzone(self, name: str, start: int, end: int) -> None:
+        if end > start:
+            redzone = bytes((0xA5 ^ ((i * 29 + len(name)) & 0xff)) for i in range(end - start))
+            ctypes.memmove(start, redzone, len(redzone))
+            self.redzones.append((start, redzone, name))
+
     def setup(self, machine: 'Machine') -> None:
         """Lay out this case on a mapped machine: buffers, stubs, memory presets."""
         machine.current = self
@@ -301,6 +369,7 @@ class Run:
         if len(self.stub_scripts) > STUB_SLOTS:
             raise BadInput(f'more than {STUB_SLOTS} stubbed functions')
         off = 0
+        origins = self.origin_layout()
         for name in sorted(self.case.get('buffers', {})):
             spec = self.case['buffers'][name]
             size = int(spec['size'])
@@ -309,16 +378,17 @@ class Run:
             data = bytes.fromhex(spec.get('bytes', ''))
             if len(data) > size:
                 raise BadInput(f'buffer {name}: more bytes than its size')
+            if name in origins:
+                start, redzone_end = origins[name]
+                self.buffers[name] = (start, size)
+                ctypes.memmove(start, data + bytes(size - len(data)), size)
+                self.add_redzone(name, start + size, redzone_end)
+                continue
             start = SANDBOX + off
             self.buffers[name] = (start, size)
             ctypes.memmove(start, data + bytes(size - len(data)), size)
             payload_pages = max(1, (size + PAGE - 1) // PAGE)
-            redzone_start = start + size
-            redzone_end = start + payload_pages * PAGE
-            if redzone_end > redzone_start:
-                redzone = bytes((0xA5 ^ ((i * 29 + len(name)) & 0xff)) for i in range(redzone_end - redzone_start))
-                ctypes.memmove(redzone_start, redzone, len(redzone))
-                self.redzones.append((redzone_start, redzone, name))
+            self.add_redzone(name, start + size, start + payload_pages * PAGE)
             guard = start + payload_pages * PAGE
             if off + (payload_pages + 1) * PAGE > SANDBOX_SIZE:
                 raise BadInput('buffers and guard pages exceed the sandbox')
@@ -340,8 +410,7 @@ class Run:
             if libc.syscall(SYS_ARCH_PRCTL, ARCH_SET_GS, ctypes.c_ulong(self.value(self.case['gs']))):
                 raise BadInput(f'arch_prctl(ARCH_SET_GS) failed: errno {ctypes.get_errno()}')
         for m in self.case.get('memory', []):
-            target = m['addr']
-            addr = self.value(target) if isinstance(target, str) and target.startswith('buf:') else self.guest(hexint(target))
+            addr = self.location(m['addr'])
             if 'pointer' in m:
                 data = struct.pack('<Q', self.value(f"buf:{m['pointer']}"))
             elif 'guest' in m:
@@ -350,6 +419,10 @@ class Run:
                 data = bytes.fromhex(m['bytes'])
             self.check_memory(addr, len(data), write=True, source="fixture_setup")
             ctypes.memmove(addr, data, len(data))
+
+    def location(self, target) -> int:
+        """A `memory` or write address: buf:NAME+off, or a PS4 address in the image."""
+        return self.value(target) if isinstance(target, str) and target.startswith('buf:') else self.guest(hexint(target))
 
     def guest(self, ps4: int) -> int:
         if not EBOOT_BASE <= ps4 < EBOOT_BASE + self.boot['size']:
@@ -507,7 +580,8 @@ class Run:
             data = bytes.fromhex(w['bytes'])
             if 'size' in w and len(data) != int(w['size']):
                 self.errors.append(f"{entry['name']}: write of {len(data)} bytes, the case says {w['size']}")
-            address = args[int(w['arg'])] + int(w.get('offset', 0))
+            # At a fixed place (a buffer or the image), or through an argument register.
+            address = self.location(w['addr']) if 'addr' in w else args[int(w['arg'])] + int(w.get('offset', 0))
             self.check_memory(address, len(data), write=True, source="import_write")
             ctypes.memmove(address, data, len(data))
         return self.value(entry.get('ret', 0)) & 0xffffffffffffffff
@@ -547,7 +621,7 @@ class Run:
 
     def run(self, target: int) -> dict:
         args = self.case.get('args', {})
-        unknown = set(args) - set(ARG_REGS) - {'rax', 'xmm0', 'xmm1'}
+        unknown = set(args) - set(ARG_REGS) - {'rax'} - set(XMM_ARGS)
         if unknown:
             raise BadInput(f'unknown argument registers {sorted(unknown)}')
         observed = self.case.get('observe_registers', [])
@@ -564,7 +638,7 @@ class Run:
         for i, reg in enumerate(ARG_REGS):
             self.block[1 + i] = self.value(args.get(reg, 0))
         self.block[7] = self.value(args.get('rax', 0))
-        for reg, off in (('xmm0', 72), ('xmm1', 88)):
+        for reg, off in XMM_ARGS.items():
             raw = bytes.fromhex(args.get(reg, '')).ljust(16, b'\0')[:16]
             ctypes.memmove(ctypes.addressof(self.block) + off, raw, 16)
         before = self.snapshot()

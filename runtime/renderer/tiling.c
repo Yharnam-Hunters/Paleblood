@@ -117,7 +117,6 @@ int rt_tiling_depth_layout(uint32_t depth_info, uint32_t z_info, uint32_t stenci
         if (format != 1 && format != 3) return failed(error,error_size,"depth format %u is not modeled",format);
         bytes = format == 1 ? 2 : 4;
     }
-    if (depth_info & 15u) return failed(error,error_size,"depth ADDR5 swizzle is not modeled");
     rt_depth_layout d = {0};
     d.width = ((depth_size & 0x7ffu) + 1) * MICRO;
     d.height = (((depth_size >> 11) & 0x7ffu) + 1) * MICRO;

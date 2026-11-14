@@ -77,8 +77,8 @@ This is the runtime's side; FMOD's own code above these calls is still mostly un
 | `0x0111a8c0` | 290 | `audio_fmod_thread_affinity_lookup` | edge-verified | FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched |
 | `0x0111b060` | 14 | `audio_fmod_output_driver_count` | edge-verified | FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero |
 | `0x0111b0b0` | 37 | `audio_fmod_output_defaults` | edge-verified | FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses |
-| `0x011c4810` | 34 | `audio_fmod_string_copy` | edge-verified | NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered |
-| `0x011c4840` | 38 | `audio_fmod_string_copy_counted` | edge-verified | FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer |
+| `0x011c4810` | 34 | `audio_fmod_string_copy` | verified | NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered |
+| `0x011c4840` | 38 | `audio_fmod_string_copy_counted` | verified | FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer |
 
 ## Structs and globals
 

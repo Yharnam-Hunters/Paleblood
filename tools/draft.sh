@@ -3,17 +3,15 @@
 # Write local drafts for functions from your own analyzed Ghidra project.
 #   tools/draft.sh ADDRESS [ADDRESS ...]
 # Needs $BB_GHIDRA (the Ghidra install), $BB_GHIDRA_PROJECT (directory) and
-# $BB_GHIDRA_NAME (project name), all with defaults for the maintainer's machine. Drafts go to
-# $BB_DRAFTS (default $BB_DATA_ROOT/drafts), outside the repository: they are never committed.
+# $BB_GHIDRA_NAME (project name), all with defaults (tools/ghidra_env.sh). Drafts go to
+# $BB_DRAFTS (default ${XDG_CACHE_HOME:-~/.cache}/paleblood/drafts), outside the repository, where
+# they are never committed, and outside the game data, which stays read-only.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-G=${BB_GHIDRA:-$repo/../tools/ghidra_12.0.3_PUBLIC}
-data_root=${BB_DATA_ROOT:-$repo/../data}
-P=${BB_GHIDRA_PROJECT:-$data_root/ghidra/run1-classes}
-N=${BB_GHIDRA_NAME:-bb_eboot}
-out=${BB_DRAFTS:-$data_root/drafts}
-out=$(realpath -m "$out")
+. "$repo/tools/ghidra_env.sh"
+out=$(realpath -m "${BB_DRAFTS:-${XDG_CACHE_HOME:-$HOME/.cache}/paleblood/drafts}")
 case "$out/" in "$(realpath -m "$repo")"/*) echo "draft: BB_DRAFTS must be outside the repository" >&2; exit 2;; esac
+refuse_under_data "BB_DRAFTS" "$out"
 mkdir -p "$out"
 nice -n 10 "$G/support/analyzeHeadless" "$P" "$N" -process eboot.elf -noanalysis -readOnly \
     -scriptPath "$repo/tools/ghidra" -postScript DraftExport.java "$out" "$@" 2>&1 \
