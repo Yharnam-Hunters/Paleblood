@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the loading queue helpers (game/loading/queue_helpers.cpp), for tools/verify.py run.
 
-usage: queue_helpers_cases.py OUT_DIR free|string|construct|destroy|cancel
+usage: queue_helpers_cases.py OUT_DIR free|string|construct|destroy|cancel|allocate
 
 - free: a null block (nothing called); data sizes 0, small, at and around the 32-bit wrap once the
   header is added, with a nonzero header word (cleared) and junk in the header's last word.
@@ -13,6 +13,9 @@ usage: queue_helpers_cases.py OUT_DIR free|string|construct|destroy|cancel
   calls (0x02a3a300, 0x024bd930) are stubbed.
 - cancel: every state from 0 to 0xf and states with high bits, with and without the flag, and
   flag arguments with junk above the low byte.
+- allocate: data sizes 0, small, and around the 32-bit wrap once the header is added (the
+  allocator's allocate, a stub, is asked for the wrapped size), over a block filled with junk;
+  the allocate has a spare scripted call, so a second one is recorded.
 Generated fixtures, not inputs recorded in a game run.
 """
 import json
@@ -23,8 +26,9 @@ import sys
 import fios_fixtures as fixtures
 
 ADDRESSES = {'free': '0x00829a90', 'string': '0x00836840', 'construct': '0x024bd470',
-             'destroy': '0x024bd4c0', 'cancel': '0x024dd8a0'}
-RETURNS = {'free': 'void', 'string': 'void', 'construct': 'void', 'destroy': 'void', 'cancel': 'i8'}
+             'destroy': '0x024bd4c0', 'cancel': '0x024dd8a0', 'allocate': '0x00829a40'}
+RETURNS = {'free': 'void', 'string': 'void', 'construct': 'void', 'destroy': 'void', 'cancel': 'i8',
+           'allocate': 'i64'}
 FREE_SIZED_FN = fixtures.FREE_SIZED_FN
 ADD_REFERENCE = '0x02a3a300'
 RELEASE = '0x024bd930'
@@ -136,7 +140,28 @@ def cancel_cases():
     return out
 
 
+def allocate_case(cid, size):
+    c = base('allocate', cid)
+    c['buffers'] = {'allocator': {'size': 0x10, 'bytes': '3c' * 0x10}, 'allocator_vt': {'size': 0x20},
+                    'block': {'size': 0x30, 'bytes': 'a7' * 0x30}}
+    c['memory'] = [{'addr': 'buf:allocator', 'pointer': 'allocator_vt'},
+                   {'addr': 'buf:allocator_vt+0x10', 'guest': fixtures.ALLOCATE_FN}]
+    c['args'] = {'rdi': 'buf:allocator', 'rsi': hex(size)}
+    c['stubs'] = [{'address': fixtures.ALLOCATE_FN, 'argc': 2, 'ret': 'buf:block'},
+                  {'address': fixtures.ALLOCATE_FN, 'argc': 2, 'ret': 0}]
+    return c
+
+
+def allocate_cases():
+    return [allocate_case('zero', 0), allocate_case('small', 0x20), allocate_case('odd', 0x13),
+            allocate_case('large', 0x7fff0000), allocate_case('wraps_to_zero', 0xfffffff0),
+            allocate_case('wraps_small', 0xfffffffc), allocate_case('just_below_wrap', 0xffffffef),
+            allocate_case('upper_bits_ignored', 0xdeadbeef00000040)]
+
+
 def cases(variant):
+    if variant == 'allocate':
+        return allocate_cases()
     if variant == 'free':
         return free_cases()
     if variant == 'string':
