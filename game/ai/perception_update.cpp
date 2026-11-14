@@ -167,7 +167,8 @@ struct CurrentTarget {
 };
 
 // The state and type the precedence order in the header comment gives. With entries but none
-// above priority -1 the original reads address 0x20 (it would crash); so does this.
+// above priority -1 the original reads its state at address 0 (a cmove turns the missing entry into
+// a null pointer); this reads address 0x20. Both crash.
 CurrentTarget current_target(TargetList *list)
 {
     if (first_node_of_kind(list, node_kind_4)) return {TargetState::battle, TargetType::node_kind_4};
@@ -241,7 +242,7 @@ extern "C" void bb_ai_perception_update(Perception *perception, float frame_seco
 
     if (perception->current_state != perception->previous_state && bb_ai_perception_current_handle(perception)
         && has_entries(list)) {
-        // With entries but none above priority -1 this reads address 0x20, as the original does.
+        // With entries but none above priority -1 this crashes, as the original does (see current_target).
         TargetEntryState *main = entry_state(main_entry(list));
         if (main->state == TargetState::battle && main->battle_notice_value > 0.0f) {
             owner->vtable->battle_target_became_current(owner, bb_ai_perception_current_handle(perception));
@@ -257,7 +258,7 @@ extern "C" void bb_ai_perception_update(Perception *perception, float frame_seco
     }
 
     if (perception->flags & force_battle) {
-        // Same null read as above when no entry has a priority above -1.
+        // Same crash as above when no entry has a priority above -1 (the original writes address 0).
         if (has_entries(list)) entry_state(main_entry(list))->state = TargetState::battle;
         perception->flags &= ~force_battle;
     }

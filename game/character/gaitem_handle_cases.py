@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the item handles (game/character/gaitem_handle.cpp), for tools/verify.py run.
 
-usage: gaitem_handle_cases.py OUT_DIR copy_a|copy_b|release|move|resolve
+usage: gaitem_handle_cases.py OUT_DIR copy_a|copy_b|release|move|resolve|free
 
 - copy_a / copy_b / release / move: handles zero, unmanaged (bit 23 clear), without a slot
   (index 0xffff, also 0xffffff and all ones), naming a live slot, naming a slot that holds
@@ -14,6 +14,12 @@ usage: gaitem_handle_cases.py OUT_DIR copy_a|copy_b|release|move|resolve
 - resolve: the three manager checks (index table missing, busy, not ready: each reported, then
   resolved anyway), unmanaged and zero handles, indices 0, 0xffe, 0xfff, 0x1000, 0xffff and the
   index table's entries 0, 0xfff, 0x1000, -1 and large negatives.
+- free: handles zero, unmanaged, without a slot (0xffff, 0xffffff, all ones), slot indices 0, 0x7a,
+  0xfff and 0x1000 (out of range: nothing happens); with and without an item (the heap lookup,
+  the destructor and the heap's free are scripted stubs, compared in order); slot handles of
+  every shape (the same handle, another generation, generation 0x7f wrapping to 0, high bits set,
+  another index, unmanaged, index 0xffff, 0xffffff, all ones, zero); free ring tails 0, 5, 0xffe,
+  0xfff (wraps), -1, -5 (a negative remainder, written before the ring), 0x7fffffff and 0x12345.
 Generated fixtures, not inputs recorded in a game run.
 """
 import json
@@ -21,12 +27,16 @@ import os
 import struct
 import sys
 
+FREE_ITEM = '0x01e86e60'
 ADDRESSES = {'copy_a': '0x01e8bae0', 'copy_b': '0x01e8bb70', 'release': '0x01e8bc00',
-             'move': '0x01e8bcb0', 'resolve': '0x01e88da0'}
-RETURNS = {'copy_a': 'void', 'copy_b': 'void', 'release': 'void', 'move': 'i64', 'resolve': 'i64'}
+             'move': '0x01e8bcb0', 'resolve': '0x01e88da0', 'free': FREE_ITEM}
+RETURNS = {'copy_a': 'void', 'copy_b': 'void', 'release': 'void', 'move': 'i64', 'resolve': 'i64', 'free': 'void'}
 MANAGER_GLOBAL = '0x0593e990'
 FATAL_ERROR = '0x024b55b0'
-FREE_ITEM = '0x01e86e60'
+HEAP_OWNING = '0x0247b720'
+# Fake vtable targets (any address: the case stubs them).
+DESTROY, HEAP_FREE = '0x00500100', '0x00500200'
+ITEMS, FREE_INDICES, FREE_TAIL = 0x8, 0x10008, 0x1400c
 SLOTS = 0x8008
 INDEX_TABLE, BUSY, READY = 0x14028, 0x14030, 0x14031
 MANAGED = 0x800000
@@ -188,7 +198,66 @@ def resolve_cases():
     return out
 
 
+def free_case(cid, handle, slot_handle=None, item=True, tail=0, references=3, slot_index=None):
+    """slot_index: where the slot entry is written (the handle's own index unless given)."""
+    c = base('free', cid)
+    c['buffers']['manager'] = {'size': FREE_TAIL + 0x20, 'bytes': ''}
+    c['buffers']['item'] = {'size': 0x20, 'bytes': '7e' * 0x20}
+    c['buffers']['item_vtable'] = {'size': 8}
+    c['buffers']['heap'] = {'size': 8}
+    c['buffers']['heap_vtable'] = {'size': 0x78}
+    c['memory'] += [{'addr': 'buf:item+0', 'pointer': 'item_vtable'}, {'addr': 'buf:item_vtable+0', 'guest': DESTROY},
+                    {'addr': 'buf:heap+0', 'pointer': 'heap_vtable'}, {'addr': 'buf:heap_vtable+0x70', 'guest': HEAP_FREE},
+                    {'addr': f'buf:manager+{FREE_TAIL:#x}', 'bytes': struct.pack('<i', tail).hex()},
+                    {'addr': f'buf:manager+{FREE_TAIL - 4:#x}', 'bytes': '5b5b5b5b'}]
+    index = handle & 0xffff
+    if slot_index is None:
+        slot_index = index
+    if slot_index < 0x1000:
+        c['memory'].append(slot_entry(slot_index, handle if slot_handle is None else slot_handle, references))
+        # Neighbouring item pointers and ring entries, which must stay as they are.
+        c['memory'].append({'addr': f'buf:manager+{ITEMS + slot_index * 8:#x}',
+                            'pointer': 'item'} if item else
+                           {'addr': f'buf:manager+{ITEMS + slot_index * 8:#x}', 'bytes': '00' * 8})
+    c['memory'].append({'addr': f'buf:manager+{FREE_INDICES:#x}', 'bytes': '3a' * 0x20})
+    in_range = handle & MANAGED and index < 0x1000
+    if in_range and item and slot_index == index:
+        c['stubs'] += [{'address': HEAP_OWNING, 'argc': 1, 'argi': [0], 'ret': 'buf:heap'},
+                       {'address': DESTROY, 'argc': 1, 'argi': [0],
+                        'writes': [{'arg': 0, 'offset': 0, 'bytes': '1122334455667788'}]},
+                       {'address': HEAP_FREE, 'argc': 2, 'argi': [0, 1]}]
+    c['args'] = {'rdi': 'buf:manager', 'rsi': handle}
+    return c
+
+
+def free_cases():
+    out = []
+    for cid, handle in (('zero', 0), ('unmanaged', 0x00123456), ('no_slot_index', managed(0xffff)),
+                        ('no_slot_id_ffffff', 0x00ffffff), ('all_ones', 0xffffffff),
+                        ('index_1000', managed(0x1000))):
+        out.append(free_case(cid, handle, slot_index=0x56 if handle == 0x00123456 else 0x1000))
+    for index in (0, 0x7a, 0xfff):
+        h = managed(index)
+        out.append(free_case(f'index_{index:04x}', h))
+        out.append(free_case(f'index_{index:04x}_no_item', h, item=False))
+    h = managed(0x7a)
+    for cid, slot in (('slot_other_generation', h ^ (0x15 << 16)), ('slot_generation_7f', MANAGED | (0x7f << 16) | 0x7a),
+                      ('slot_high_bits', 0xff800000 | (0x3 << 16) | 0x7a), ('slot_other_index', managed(0x321)),
+                      ('slot_unmanaged', 0x00453210), ('slot_index_ffff', managed(0xffff)),
+                      ('slot_id_ffffff', 0x00ffffff), ('slot_all_ones', 0xffffffff), ('slot_zero', 0),
+                      ('slot_index_fffe', managed(0xfffe)), ('slot_managed_bit_only', MANAGED)):
+        out.append(free_case(cid, h, slot_handle=slot))
+    out.append(free_case('references_zero', h, references=0))
+    out.append(free_case('references_negative', h, references=-7))
+    for tail in (5, 0xffe, 0xfff, -1, -5, 0x7fffffff, 0x12345):
+        out.append(free_case(f'tail_{tail & 0xffffffff:08x}', h, tail=tail))
+    out.append(free_case('tail_negative_no_item', h, item=False, tail=-0x1000))
+    return out
+
+
 def cases(variant):
+    if variant == 'free':
+        return free_cases()
     if variant in ('copy_a', 'copy_b'):
         return copy_cases(variant)
     if variant == 'release':
