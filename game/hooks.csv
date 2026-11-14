@@ -96,6 +96,7 @@ address,replacement,system,returns
 0x014739b0,bb_render_set_depth_render_target,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x01474a30,bb_render_set_dispatch_draw_index,render,void
 0x01474f30,bb_render_set_vertex_reuse,render,void
 0x01474f90,bb_render_set_instance_step_rates,render,void
 0x01475000,bb_render_emit_shader_link_words,render,void
@@ -106,6 +107,7 @@ address,replacement,system,returns
 0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
 0x01475640,bb_render_update_hs_shader,render,void
 0x014758a0,bb_render_set_border_color_base,render,void
+0x01475900,bb_render_set_primitive_id_enable,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x01475e10,bb_render_emit_shader_preparation_range_01475e10,render,void
 0x01476030,bb_render_set_shader_stages_01476030,render,void
@@ -217,6 +219,9 @@ address,replacement,system,returns
 0x01e4a490,bb_character_state_flags_update_01e4a490,character,void
 0x01e59250,bb_character_event_request_update_01e59250,character,void
 0x01e5c440,bb_character_counters_refill_01e5c440,character,void
+0x01e9cb80,bb_frame_timing_pass_handle_on_01e9cb80,frame_timing,i8
+0x01e9cd20,bb_frame_timing_pass_handle_on_with_items_01e9cd20,frame_timing,i8
+0x01e9d960,bb_frame_timing_append_slot_item_01e9d960,frame_timing,void
 0x01ea47a0,bb_frame_timing_gate_create_handle,frame_timing,i8
 0x01ea4a10,bb_frame_timing_gate_entry_check,frame_timing,i8
 0x01ea4cb0,bb_frame_timing_gate_create_handle_from_levels,frame_timing,i8
