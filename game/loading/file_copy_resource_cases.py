@@ -4,13 +4,17 @@
 
 usage: file_copy_resource_cases.py OUT_DIR ADDRESS
 
-ADDRESS is one of the twelve functions (three classes, four functions each). Every case lays out
+ADDRESS is one of the twelve functions (three classes, four functions each) or the resource
+base's constructor (0x013e6ff0) or destructor (0x013e7090). Every case lays out
 an invented 0x98-byte resource with a handle to an invented loaded file (bytes in the file, or in
 a first part), the job lock with a fake vtable whose lock and unlock are scripted stubs, and the
 heaps (fake vtables, scripted allocate / free). The destructor's DLNew release reads a thread
 pointer (`tls`, the pointer itself at gs:[0]) and the per-thread state at the offset its global
 holds. The resource base's constructor and destructor, the heap lookup, the unload, the memory
-copy, operator delete and the fatal error report are scripted too. No game data is used.
+copy, operator delete and the fatal error report are scripted too. The resource base's own
+cases script the object base's constructor and destructor and the file handle's release and
+destructor, each with a spare scripted call, so an unexpected call is recorded. No game data is
+used.
 """
 import json
 import os
@@ -23,7 +27,9 @@ FUNCTIONS = {
     '0x0237e780': DESTROY, '0x0237f530': DESTROY, '0x023802e0': DESTROY,
     '0x0237e6d0': DELETE, '0x0237f480': DELETE, '0x02380230': DELETE,
     '0x0237e820': COPY, '0x0237f5d0': COPY, '0x02380380': COPY,
+    '0x013e6ff0': 'base_construct', '0x013e7090': 'base_destroy',
 }
+OBJECT_CONSTRUCT, OBJECT_DESTROY, HANDLE_RELEASE, HANDLE_DESTROY = '0x01384700', '0x01384750', '0x024bd360', '0x024bd4c0'
 
 JOB_LOCK, RESOURCE_HEAP, FILE_COPY_HEAP = '0x05aa4578', '0x05940408', '0x05940410'
 NEW_STATE_OFFSET_GLOBAL = '0x057e44a8'
@@ -153,8 +159,34 @@ def copy_case(address, cid, file=True, parts=0, data=True, size=0x40, holders=0,
     return fixture(address, cid, buffers, memory, stubs)
 
 
+def base_case(address, cid, fill=0xa5, heap_word=0x1122334455667788, base_writes=False):
+    buffers = {'resource': {'size': 0xa0, 'bytes': f'{fill:02x}' * 0xa0},
+               'heap_reference': {'size': 0x18, 'bytes': '3c' * 0x10 + u64(heap_word)}}
+    spares = [{'address': OBJECT_CONSTRUCT, 'argc': 2}, {'address': OBJECT_DESTROY, 'argc': 1},
+              {'address': HANDLE_RELEASE, 'argc': 1}, {'address': HANDLE_DESTROY, 'argc': 1}]
+    rewrite = [{'arg': 0, 'offset': 0, 'bytes': u64(0x5566778899aabbcc)}]
+    if address == '0x013e6ff0':
+        made = {'address': OBJECT_CONSTRUCT, 'argc': 2, 'argi': [0, 1], 'argmem': [{'arg': 1, 'size': 0x18}]}
+        if base_writes:
+            made['writes'] = rewrite + [{'arg': 0, 'offset': 0x78, 'bytes': '1122334455667788' + u64(0)}]
+        stubs = [made]
+    else:
+        release = {'address': HANDLE_RELEASE, 'argc': 1, 'argmem': [{'arg': 0, 'size': 0x10}]}
+        if base_writes:   # the vtable is written before the handle goes
+            release['writes'] = [{'arg': 0, 'offset': -0x68, 'bytes': u64(0x5566778899aabbcc)}]
+        stubs = [release, {'address': HANDLE_DESTROY, 'argc': 1},
+                 {'address': OBJECT_DESTROY, 'argc': 1, 'argmem': [{'arg': 0, 'size': 0x98}]}]
+    f = fixture(address, cid, buffers, [], stubs + spares)
+    f['args']['rsi'] = 'buf:heap_reference'
+    return f
+
+
 def cases_for(address):
     kind = FUNCTIONS[address]
+    if kind in ('base_construct', 'base_destroy'):
+        return [base_case(address, 'ordinary'), base_case(address, 'zero_filled', fill=0, heap_word=0),
+                base_case(address, 'all_bits', fill=0xff, heap_word=0xffffffffffffffff),
+                base_case(address, 'base_writes', base_writes=True)]
     if kind == CONSTRUCT:
         return [construct_case(address, 'ordinary'),
                 construct_case(address, 'no_resource_heap', heap=False),

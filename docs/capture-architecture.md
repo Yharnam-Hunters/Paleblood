@@ -23,8 +23,9 @@ would fault is reported instead of crashing.
 The call always runs to the end and returns its real result to the game. When anything cannot be
 expressed in a case, tracing stops and the rest of the call runs natively; the log names the reason
 and no case is written. Fail-closed reasons today: an instruction the tracer does not model
-(`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), a segment-relative access (thread-local
-storage), a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
+(`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), an `fs` access (the host's own thread block;
+guest code reads its thread pointer through `gs`, below), thread-local storage more than 1 MiB from
+the thread pointer, a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
 it (cases give only `xmm0` and `xmm1`), a stack argument past the 70th, code outside the traced
 ranges (an import or other native code), unreadable memory, an input byte that a later read sees
 with another value although neither the traced code nor a scripted import write changed it
@@ -48,6 +49,14 @@ path), the instruction limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byt
   buffer down to it, so it is written as `buf:NAME+off` and keeps its distance to those bytes.
 - Bytes of the executable's read-only segments are not inputs: the verifier maps the same
   executable, and presetting them would write into read-only memory.
+- Thread-local storage. The loader rewrites the game's `mov rax, fs:[0]` to read `gs`, which the
+  runtime points at each guest thread's block (TLS variant II: the thread pointer's first word
+  points to itself, the executable's variables lie below it). The tracer reads `gs` accesses at the
+  calling thread's GS base, and follows the thread pointer read at `gs:[0]` through an offset added
+  from memory (`add rax, [rip + offset]`, the offset a global the case carries): a variable reached
+  that way is a far reach from the thread pointer, so the variable and the block are one buffer at
+  their distance, and the case's `gs` points at the block (docs/VERIFY.md, `gs`). Whatever the
+  variable points to (the thread's temporary heap) is ordinary memory.
 - An access 256 bytes to 1 MiB away from the base pointer it went through (a large object whose
   fields lie in separate runs) keeps the pointer and the bytes it reached in one buffer, so the
   replay keeps their distance. A buffer's `bytes` leave out its trailing zeros. A pointer computed
@@ -76,9 +85,10 @@ arguments, a float argument and result, a call between guest functions, `rep mov
 write through two registers at once, change memory far past what they wrote, or write a zero into
 the frame, a table index reached through a computed pointer (add and lea forms, and a register a
 load replaced), and a sleep whose length is compared. It checks
-the results and the inputs, and that an `xmm2` read, a thread-local access, a call into native code,
-an input changed between two reads and the instruction limit give no case while the call still
-completes.
+the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
+(one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
+read it), and that an `xmm2` read, an `fs` access, a call into native code, an input changed
+between two reads and the instruction limit give no case while the call still completes.
 `test/capture_trace_integration.py` then replays every recorded case with `tools/verify.py`: each
 passes against a native replacement, and a replacement with one deliberate change per function
 fails.
@@ -207,9 +217,7 @@ import stub bound by NID (`capture_trace_replay`, `capture_hooks_replay`).
 
 ### Next steps
 
-1. **Thread-local storage**: a `gs:` access becomes a buffer for the thread block and the case's
-   `gs` value.
-2. **Import arguments**: compare an import's arguments once their count is data (a declaration
+1. **Import arguments**: compare an import's arguments once their count is data (a declaration
    list per import), as hooks carry their return class.
 
 ## Typed descriptors (earlier proof)
