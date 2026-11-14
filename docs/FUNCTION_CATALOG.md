@@ -13,8 +13,11 @@ prerequisites separately and uses the same SQLite state as this catalog.
 
 ## Evidence and unknowns
 
-The current `symbols/ghidra_functions.csv` has an entry address and byte size for every function in
-the Ghidra export. Those are Ghidra-defined extents, not independently confirmed boundaries. The
+The current `symbols/ghidra_functions.csv` has an entry address and byte size for every function of
+the executable, built by `tools/function_bounds.py` from the unwind and relocation tables
+([GHIDRA.md](GHIDRA.md), "The function list"). The catalog's field values still call these extents
+`ghidra-defined`; they are the unwind table's own where a function has an entry, and walked
+otherwise. The
 catalog does not infer instruction counts from byte sizes. `symbols/functions.csv` and
 `symbols/verification.csv` provide named replacement and verification status; verification records
 are compared with the current replacement source hash so stale evidence is visible. No call
@@ -260,13 +263,13 @@ of the current table, in functions and bytes (generated):
 <!-- source-files:start -->
 | Library | Functions | Bytes | Direct | File range | Library range | Extent |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| engine | 84,129 | 20,843,315 | 682 | 3,297 | 80,150 | 0 |
-| havok | 21,098 | 8,391,800 | 325 | 596 | 20,177 | 0 |
-| scaleform | 20,188 | 4,470,137 | 0 | 0 | 0 | 20,188 |
-| fmod | 4,272 | 1,065,798 | 402 | 1,182 | 2,688 | 0 |
-| yebis | 2,183 | 823,127 | 74 | 805 | 1,304 | 0 |
-| havokscript | 1,278 | 469,776 | 188 | 405 | 685 | 0 |
-| sce-gnmx | 113 | 30,745 | 7 | 20 | 86 | 0 |
-| untagged | 24,496 | 6,392,706 | | | | |
-| all | 157,757 | 42,487,404 | | | | |
+| engine | 101,048 | 22,181,362 | 777 | 8,385 | 91,886 | 0 |
+| havok | 21,778 | 8,522,147 | 328 | 598 | 20,852 | 0 |
+| scaleform | 21,192 | 4,575,814 | 0 | 0 | 0 | 21,192 |
+| fmod | 4,311 | 1,090,192 | 403 | 1,187 | 2,721 | 0 |
+| yebis | 2,214 | 840,720 | 74 | 810 | 1,330 | 0 |
+| havokscript | 1,353 | 478,316 | 188 | 448 | 717 | 0 |
+| sce-gnmx | 113 | 31,093 | 7 | 20 | 86 | 0 |
+| untagged | 27,029 | 6,703,155 | | | | |
+| all | 179,038 | 44,422,799 | | | | |
 <!-- source-files:end -->

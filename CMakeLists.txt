@@ -195,6 +195,8 @@ add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/to
 # generated progress text this branch changes is current (main regenerates it: tools/progress_pr.py)
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check-touched)
 add_test(NAME source_files COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/source_files.py --check)
+# the function list is well formed and leaves no room for a function it does not name
+add_test(NAME function_bounds COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/function_bounds.py --check)
 
 # Compiled-SDK wire validation over the loader-owned process parameters.
 add_executable(test_compiled_sdk test/test_compiled_sdk.c
