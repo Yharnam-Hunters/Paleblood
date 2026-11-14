@@ -14,7 +14,9 @@
    modules and thread objects. It is the runtime's choice, not the PS4's value: the engine only
    maps it and hands it back to the GPU calls. */
 #include "runtime/equeue.h"
+#include "runtime/gpu_memory.h"
 #include "runtime/process.h"
+#include "runtime/render_calls.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
 #include "runtime/video_out.h"
@@ -26,7 +28,7 @@
 #include <string.h>
 #include <time.h>
 
-#define TESSELLATION_FACTOR_RING_BASE 0xfe00000000ull
+#define TESSELLATION_FACTOR_RING_BASE RT_TESSELLATION_FACTOR_RING
 
 static uint64_t tessellation_factor_ring_base(void)
 {
@@ -126,7 +128,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmSetCsShader, set_cs_shader);
        buffer before drawing into it.
    Paleblood has no GPU to hold shader registers, no GPU debugger to read markers, and no GPU that
    could draw into a buffer early, so each fills its reserved space with one PM4 NOP packet and
-   answers 0, as sceGnmSetCsShader does: the command buffer stays well-formed and nothing in it
+   answers 0, as sceGnmSetCsShader does (the shader stages also hand the renderer their registers, below): the command buffer stays well-formed and nothing in it
    acts. The arguments after the count are not used. */
 static int32_t write_nothing_for_the_gpu(uint32_t *command_buffer, uint32_t dwords)
 {
@@ -174,12 +176,79 @@ RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, gnm_set_vs_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, gnm_update_vs_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, gnm_set_ps_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, gnm_update_ps_shader);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, write_nothing_for_the_gpu);
+
+/* The tessellation and geometry-shader stages hand the renderer theirs the same way
+   (runtime/renderer.h), with the argument orders of shadPS4's gnmdriver.cpp (facts only):
+     sceGnmSetLsShader(command buffer, dwords, registers, modifier): 4 words. The modifier replaces
+       PGM_RSRC1's SGPR count (bits 6-9) alone when it has no other bit, else that and the input VGPR
+       count (bits 24-25); a modifier with any other bit is refused there and stops here by name.
+     sceGnmSetEsShader(command buffer, dwords, registers, modifier): 4 words, the modifier as the
+       vertex shader's (both fields).
+     sceGnmSetHsShader / sceGnmUpdateHsShader(command buffer, dwords, registers, VGT_LS_HS_CONFIG):
+       7 words, then the configuration as an eighth.
+     sceGnmSetGsShader / sceGnmUpdateGsShader(command buffer, dwords, registers): 7 words.
+   A boot shows the local and hull blocks' code addresses, resources and tessellation settings matching
+   the shaders' own code (docs/RENDERER.md). Missing registers stop by name. */
+enum { LS_MODIFIER_SGPRS = 0x000003c0u };
+static void bind_stage(const char *function, rt_renderer_shader kind, uint32_t *command_buffer, uint32_t dwords, const uint32_t *words)
+{
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, kind, command_buffer, words);
+}
+
+static int32_t set_ls_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t modifier)
+{
+    static const char fn[] = "sceGnmSetLsShader";
+    if (!r) rt_fatal(fn, "no local shader registers: the answer is not established");
+    const uint32_t fields = (modifier & ~LS_MODIFIER_SGPRS) ? VS_MODIFIER_FIELDS : LS_MODIFIER_SGPRS;
+    if (modifier & ~fields) rt_fatal(fn, "a shader modifier with bits outside PGM_RSRC1's SGPRS and VGPR_COMP_CNT");
+    uint32_t words[RT_LOCAL_SHADER_WORDS];
+    memcpy(words, r, sizeof words);
+    if (modifier) words[2] = (words[2] & ~fields) | modifier;
+    bind_stage(fn, RT_RENDERER_LOCAL_SHADER, b, n, words);
+    return 0;
+}
+
+static int32_t set_es_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t modifier)
+{
+    static const char fn[] = "sceGnmSetEsShader";
+    if (!r) rt_fatal(fn, "no export shader registers: the answer is not established");
+    if (modifier & ~VS_MODIFIER_FIELDS) rt_fatal(fn, "a shader modifier with bits outside PGM_RSRC1's SGPRS and VGPR_COMP_CNT");
+    uint32_t words[RT_EXPORT_SHADER_WORDS];
+    memcpy(words, r, sizeof words);
+    if (modifier) words[2] = (words[2] & ~VS_MODIFIER_FIELDS) | modifier;
+    bind_stage(fn, RT_RENDERER_EXPORT_SHADER, b, n, words);
+    return 0;
+}
+
+static int32_t set_hs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t config, const char *function)
+{
+    if (!r) rt_fatal(function, "no hull shader registers: the answer is not established");
+    uint32_t words[RT_HULL_SHADER_WORDS];
+    memcpy(words, r, (RT_HULL_SHADER_WORDS - 1) * sizeof *words);
+    words[RT_HULL_SHADER_WORDS - 1] = config;
+    bind_stage(function, RT_RENDERER_HULL_SHADER, b, n, words);
+    return 0;
+}
+
+static int32_t set_gs_shader(uint32_t *b, uint32_t n, const uint32_t *r, const char *function)
+{
+    if (!r) rt_fatal(function, "no geometry shader registers: the answer is not established");
+    bind_stage(function, RT_RENDERER_GEOMETRY_SHADER, b, n, r);
+    return 0;
+}
+
+static int32_t gnm_set_hs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t c) { return set_hs_shader(b, n, r, c, "sceGnmSetHsShader"); }
+static int32_t gnm_update_hs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t c) { return set_hs_shader(b, n, r, c, "sceGnmUpdateHsShader"); }
+static int32_t gnm_set_gs_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_gs_shader(b, n, r, "sceGnmSetGsShader"); }
+static int32_t gnm_update_gs_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_gs_shader(b, n, r, "sceGnmUpdateGsShader"); }
+
+RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, set_es_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, gnm_set_gs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, gnm_set_hs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, set_ls_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, gnm_update_gs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, gnm_update_hs_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPushMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPopMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetMarker, write_nothing_for_the_gpu);
@@ -278,19 +347,20 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
    the end is full, then rings the doorbell with the queue id from sceGnmMapComputeQueue and the new
    write offset. Before writing, it checks the free space against the read pointer the GPU advances.
 
-   TEMPORARY STAND-IN (maintainer decision, 4 November 2026): Paleblood has no GPU, and the engine's
-   own renderer is to replace this layer (issue #39). Until then the doorbell completes the work at
-   once, on the calling thread: it follows each indirect buffer and acts only on the packets whose
-   effect the CPU can see. A boot on 4 November found four kinds in the engine's compute buffers
-   (packet types from AMD's public PM4 packet format):
-     NOP and SET_SH_REG      skipped: padding and shader registers, with no GPU to hold them;
-     DISPATCH_DIRECT         skipped: compute shaders do not run, so their output is never written;
-     RELEASE_MEM             performed: the "work done" value goes to its memory address, which is
-                             what the CPU waits on.
-   Each indirect buffer is then handed to the renderer, which drops its recorded calls without
-   running them (rt_renderer_skip, runtime/renderer.h). Then the read pointer moves to the write
-   offset, so the ring never fills. Any other packet, or a
-   completion this stand-in does not perform, stops by name. */
+   TEMPORARY STAND-IN (maintainer decision, 4 November 2026): the engine's own renderer is to
+   replace this layer (issue #39). Until then the doorbell reads each indirect buffer on the calling
+   thread, as sceGnmSubmitCommandBuffers below reads a graphics buffer, and hands it to the renderer
+   like a submitted one: its dispatches run (the compute shaders' recorded calls, on the renderer's
+   one queue, in submission order with the graphics work), and its completions are steps after its
+   work. A boot on 4 November found four kinds in the engine's compute buffers (packet types from
+   AMD's public PM4 packet format):
+     NOP and SET_SH_REG      skipped: padding and shader registers (the renderer's record has them);
+     DISPATCH_DIRECT         run by the renderer, with the buffer;
+     RELEASE_MEM             a step: the "work done" value goes to its memory address once the
+                             buffer's work has run (at once with the display off).
+   Then the read pointer moves to the write offset, so the ring never fills. Any other packet, or a
+   completion this stand-in does not perform, stops by name. The character creation screen needs
+   the queues' work: they fill the colour volume, images and light data its passes read. */
 #define PM4_TYPE_SHIFT 30
 #define PM4_TYPE3 3u
 #define PM4_OPCODE_SHIFT 8
@@ -304,6 +374,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define PM4_INDIRECT_BUFFER 0x3fu
 #define PM4_EVENT_WRITE 0x46u
 #define PM4_EVENT_WRITE_EOP 0x47u
+#define PM4_EVENT_WRITE_EOS 0x48u
 #define PM4_RELEASE_MEM 0x49u
 #define PM4_ACQUIRE_MEM 0x58u
 #define PM4_SET_SH_REG 0x76u
@@ -317,6 +388,12 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define PM4_INDEX_BUFFER_SIZE 0x13u
 #define PM4_DRAW_INDEX_2 0x27u
 #define PM4_DRAW_INDEX_OFFSET_2 0x35u
+#define PM4_WRITE_CONST_RAM 0x81u
+#define PM4_DUMP_CONST_RAM 0x83u
+#define PM4_INCREMENT_CE_COUNTER 0x84u
+#define PM4_INCREMENT_DE_COUNTER 0x85u
+#define PM4_WAIT_ON_CE_COUNTER 0x86u
+#define PM4_WAIT_ON_DE_COUNTER_DIFF 0x88u
 
 /* DMA_DATA (AMD's public cikd.h): control; source address (or data); destination address;
    command, with the byte count in bits 0-20. */
@@ -328,10 +405,43 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define DMA_DATA_DESTINATION_IS_REGISTER (1u << 27)            /* DAS */
 #define DMA_DATA_SOURCE_FIXED (1u << 28)                       /* SAIC: the source is not incremented */
 #define DMA_DATA_DESTINATION_FIXED (1u << 29)                  /* DAIC: the destination is not incremented */
+#define DMA_DATA_FROM_GDS 1u
+#define DMA_DATA_FROM_DATA 2u
+#define DMA_DATA_TO_GDS 1u
+#define DMA_DATA_DESTINATION_RESERVED 2u
+/* WRITE_DATA (opcode 0x37): control, address low, address high, then the dwords to write. In the
+   control, DST_SEL bits 8-11 (2 memory through L2, 5 memory) and WR_ONE_ADDR bit 16 (every dword
+   to the same address). */
+#define PM4_WRITE_DATA 0x37u
+#define PM4_SET_BASE 0x11u
+#define PM4_DISPATCH_INDIRECT 0x16u
+#define SET_BASE_DWORDS 4
+#define SET_BASE_INDEX_MASK 0xfu
+#define SET_BASE_DRAW_INDEX_INDIRECT 1u /* the draw and dispatch indirect arguments' base */
+#define DISPATCH_INDIRECT_DWORDS 3
+#define PM4_DRAW_INDIRECT 0x24u
+#define DRAW_INDIRECT_DWORDS 5
+#define WRITE_DATA_HEADER_DWORDS 4
+#define WRITE_DATA_DESTINATION(control) ((control) >> 8 & 0xfu)
+#define WRITE_DATA_TO_L2 2u
+#define WRITE_DATA_TO_MEMORY 5u
+#define WRITE_DATA_ONE_ADDRESS (1u << 16)
 #define CP_DMA_READ_TAGS_BYTE_ADDRESS (0xc08bu * 4)             /* mmCP_DMA_READ_TAGS, gfx_7_2_d.h */
 
 #define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
+/* EVENT_WRITE with two more dwords (AMD's public PM4 format: event type bits 0-5, event index bits 8-11) */
+#define EVENT_WRITE_WITH_MEMORY_DWORDS 4
+#define EVENT_TYPE(control) ((control) & 0x3fu)
+#define EVENT_INDEX(control) ((control) >> 8 & 0xfu)
+#define EVENT_INDEX_ZPASS_DONE 1u
+#define PIXEL_PIPE_STAT_CONTROL 0x38u /* VGT_EVENT_TYPE (Mesa's sid.h, facts only) */
+#define PIXEL_PIPE_STAT_DUMP 0x39u
 #define EVENT_WRITE_EOP_DWORDS 6
+/* EVENT_WRITE_EOS: event control, address low, address high (bits 0-15) with a command in bits
+   29-31 (1 stores GDS data, 2 stores the packet's 32-bit value), the value */
+#define EVENT_WRITE_EOS_DWORDS 5
+#define EVENT_WRITE_EOS_COMMAND_SHIFT 29
+#define EVENT_WRITE_EOS_STORE_VALUE 2u
 #define EVENT_WRITE_EOP_DATA_SHIFT 29
 #define INTERRUPT_SELECT_SHIFT 24      /* EVENT_WRITE_EOP and RELEASE_MEM: the interrupt the GPU raises */
 #define EOP_INTERRUPT_SELECT_MASK 3u   /* two bits in EVENT_WRITE_EOP */
@@ -442,6 +552,9 @@ static void raise_interrupt(uint64_t id)
 /* Which interrupt a completion packet raises: the graphics queue's end of pipe, or, while a
    compute queue's ring is completed (sceGnmDingDong), that queue's pipe. */
 static _Thread_local int32_t completing_pipe = -1;
+/* The queue whose work is being completed: the graphics queue, or while a compute queue's ring is
+   completed, that queue's id (the renderer keeps each queue's compute state apart). */
+static _Thread_local unsigned completing_queue = RT_RENDERER_GRAPHICS_QUEUE;
 
 /* The GPU's steps after a submitted command buffer's work (runtime/renderer.h): while a submission's
    packets are read, its "work done" writes and memory waits are collected here instead of performed,
@@ -532,6 +645,46 @@ static void write_completion_value(const char *fn, uint32_t data_size, uint32_t 
         __atomic_store_n((uint64_t *)address, data_low | (uint64_t)data_high << 32, __ATOMIC_RELEASE);
     else
         rt_fatal(fn, "a completion writing a value other than the packet's own data");
+}
+
+/* A WRITE_DATA's dwords and where they go, copied at submission (the title may reuse the buffer). */
+typedef struct {
+    uint32_t *address;
+    uint32_t dwords;
+    uint32_t data[];
+} data_write;
+
+/* A step: the command processor writes the dwords into memory, in order with the work around it
+   (the draws after it may read them). */
+static void data_write_step(const rt_gpu_step *step)
+{
+    data_write *const write = (data_write *)(uintptr_t)step->words[0];
+    memcpy(write->address, write->data, write->dwords * sizeof(uint32_t));
+    free(write);
+}
+
+/* WRITE_DATA to memory: a step that writes the packet's dwords at its address (shadPS4's
+   liverpool.cpp copies them the same way, facts only). Writes to registers, to one address, and
+   without an address stop by name. */
+static void write_data(const char *fn, const uint32_t *packet, uint32_t length)
+{
+    const uint32_t control = packet[1], destination = WRITE_DATA_DESTINATION(control);
+    if (destination != WRITE_DATA_TO_L2 && destination != WRITE_DATA_TO_MEMORY)
+        rt_fatal(fn, "a WRITE_DATA to a destination other than memory: the stand-in writes memory only");
+    if (control & WRITE_DATA_ONE_ADDRESS) rt_fatal(fn, "a WRITE_DATA of every dword to one address: not established");
+    uint32_t *const address = (uint32_t *)(uintptr_t)(packet[2] | (uint64_t)packet[3] << 32);
+    const uint32_t dwords = length - WRITE_DATA_HEADER_DWORDS;
+    if (!address && dwords) rt_fatal(fn, "a WRITE_DATA without an address");
+    data_write *const write = malloc(sizeof *write + dwords * sizeof(uint32_t));
+    if (!write) rt_fatal(fn, "no memory for a WRITE_DATA");
+    write->address = address, write->dwords = dwords;
+    memcpy(write->data, packet + WRITE_DATA_HEADER_DWORDS, dwords * sizeof(uint32_t));
+    const rt_gpu_step step = {.words = {(uintptr_t)write}};
+    if (!collecting) {
+        data_write_step(&step);
+        return;
+    }
+    collect(fn, data_write_step, step.words);
 }
 
 static void release_memory(const char *fn, const release_mem_packet *packet)
@@ -627,17 +780,243 @@ static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint3
     return holds;
 }
 
-/* The one DMA_DATA form the stand-in knows: a read from memory into CP_DMA_READ_TAGS, which only
-   brings the source into the GPU's cache. Any other form stops by name. */
-static void check_dma_data(const char *fn, const uint32_t *packet)
+/* The GPU's global data share (runtime/gpu_memory.h), which the shaders on the GPU reach too. The
+   engine keeps counters there (structured append buffers: a DMA_DATA loads each from memory before
+   its passes, the shaders' ds_append and ds_consume move it, and another DMA_DATA saves it back after),
+   at offsets from 0x20. */
+enum { DMA_DATA_BYTE_COUNT_MASK = 0x1fffff };
+
+/* The byte offset and count inside the GDS, or a stop by name. */
+static uint8_t *gds_bytes(const char *fn, uint32_t offset, uint32_t bytes)
+{
+    if (offset > RT_GPU_GDS_BYTES || bytes > RT_GPU_GDS_BYTES - offset) rt_fatal(fn, "a DMA_DATA reaching past the 64 KB GDS");
+    return rt_gpu_memory_gds() + offset;
+}
+
+/* A step: the command processor's DMA, after the work before it and before the work after it. The
+   words: control, source low and high (or the data), destination low and high, command. */
+static void dma_data_step(const rt_gpu_step *step)
+{
+    const char *fn = step->function;
+    const uint32_t control = (uint32_t)step->words[0], command = (uint32_t)step->words[5];
+    const uint32_t source = DMA_DATA_SOURCE_SELECT(control), destination = DMA_DATA_DESTINATION_SELECT(control);
+    const uint32_t bytes = command & DMA_DATA_BYTE_COUNT_MASK;
+    const uint64_t source_address = step->words[1] | step->words[2] << 32, destination_address = step->words[3] | step->words[4] << 32;
+    uint8_t *to = destination == DMA_DATA_TO_GDS ? gds_bytes(fn, (uint32_t)step->words[3], bytes) : (uint8_t *)(uintptr_t)destination_address;
+    if (!to && bytes) rt_fatal(fn, "a DMA_DATA without a destination address");
+    if (source == DMA_DATA_FROM_DATA) { /* the packet's own 32-bit value, in every dword */
+        const uint32_t value = (uint32_t)step->words[1];
+        if (bytes % sizeof value) rt_fatal(fn, "a DMA_DATA fill of a byte count that is not whole dwords");
+        for (uint32_t at = 0; at < bytes; at += sizeof value) memcpy(to + at, &value, sizeof value);
+        return;
+    }
+    const uint8_t *from = source == DMA_DATA_FROM_GDS ? gds_bytes(fn, (uint32_t)step->words[1], bytes) : (const uint8_t *)(uintptr_t)source_address;
+    if (!from && bytes) rt_fatal(fn, "a DMA_DATA without a source address");
+    memmove(to, from, bytes);
+}
+
+/* DMA_DATA: a read from memory into CP_DMA_READ_TAGS only brings the source into the GPU's cache,
+   which the stand-in has none of: skipped. Copies and fills between memory (sources 0 and 3,
+   destinations 0 and 3), the GDS (1) and the packet's data (source 2) become a step (shadPS4's
+   liverpool.cpp handles the same five pairs, facts only). Register addresses, addresses that do not
+   advance, byte swaps and a GDS destination with a data source of other than whole dwords stop by
+   name. */
+static void dma_data(const char *fn, const uint32_t *packet)
 {
     const uint32_t control = packet[1], destination_low = packet[4], destination_high = packet[5], command = packet[6];
-    const uint32_t source = DMA_DATA_SOURCE_SELECT(control);
-    const int read_tags = (source == 0 || source == 3) && DMA_DATA_DESTINATION_SELECT(control) == 0 &&
+    const uint32_t source = DMA_DATA_SOURCE_SELECT(control), destination = DMA_DATA_DESTINATION_SELECT(control);
+    const int read_tags = (source == 0 || source == 3) && destination == 0 &&
                           (command & DMA_DATA_DESTINATION_IS_REGISTER) && (command & DMA_DATA_DESTINATION_FIXED) &&
                           !(command & (DMA_DATA_SOURCE_IS_REGISTER | DMA_DATA_SOURCE_FIXED)) && !DMA_DATA_SWAPS(command) &&
                           destination_low == CP_DMA_READ_TAGS_BYTE_ADDRESS && destination_high == 0;
-    if (!read_tags) rt_fatal(fn, "a DMA_DATA other than a read into CP_DMA_READ_TAGS: the stand-in does not copy or fill");
+    if (read_tags) return;
+    if (command & (DMA_DATA_SOURCE_IS_REGISTER | DMA_DATA_DESTINATION_IS_REGISTER | DMA_DATA_SOURCE_FIXED | DMA_DATA_DESTINATION_FIXED) ||
+        DMA_DATA_SWAPS(command))
+        rt_fatal(fn, "a DMA_DATA with register addresses, addresses that do not advance or byte swaps: the stand-in does not copy those");
+    if (destination == DMA_DATA_DESTINATION_RESERVED) rt_fatal(fn, "a DMA_DATA to destination select 2, which the format does not define");
+    const uint64_t words[6] = {control, packet[2], packet[3], destination_low, destination_high, command};
+    if (!collecting) {
+        const rt_gpu_step step = {.function = fn, .words = {words[0], words[1], words[2], words[3], words[4], words[5]}};
+        dma_data_step(&step);
+        return;
+    }
+    collect(fn, dma_data_step, words);
+}
+
+
+/* Occlusion counts (AMD's public PM4 format; the PS4's layout as Gnm's occlusion queries use it, from
+   the notes of two public PS4 runtime projects, facts only). Each of the GPU's 8 depth blocks (DBs)
+   counts the samples that pass the depth test; an EVENT_WRITE of PIXEL_PIPE_STAT_DUMP with the ZPASS_DONE
+   index makes every DB store its 64-bit count, bit 63 (valid) set, at the packet's address + 16 * DB.
+   A Gnm query is a 128-byte block of 8 {begin, end} pairs: the game zeroes it (DMA_DATA), dumps into it
+   before the draws it measures (+0) and after them (+8), and waits for every valid bit; the samples that
+   passed are the sum of end - begin. Before each dump the game sends PIXEL_PIPE_STAT_CONTROL with the
+   same index, whose two dwords are a control value (0x7fc00, 0 in the game), not an address: it
+   configures the counters and writes nothing.
+
+   The stand-in counts no samples yet: each dump stores one running count that grows by
+   OCCLUSION_COUNT_STEP per dump, the same in every DB, so every query reads visible (end > begin):
+   what the game tests is drawn, never hidden by a wrong "occluded". The dump is a step, in order with
+   the work and the DMA_DATA that zeroed the block. */
+enum { OCCLUSION_DEPTH_BLOCKS = 8, OCCLUSION_PAIR_BYTES = 16, OCCLUSION_COUNT_STEP = 0x10000 };
+#define OCCLUSION_COUNT_VALID (UINT64_C(1) << 63)
+
+static void occlusion_dump_step(const rt_gpu_step *step)
+{
+    static uint64_t count;
+    const uint64_t stored = __atomic_add_fetch(&count, OCCLUSION_COUNT_STEP, __ATOMIC_RELAXED) | OCCLUSION_COUNT_VALID;
+    uint8_t *const block = (uint8_t *)(uintptr_t)step->words[0];
+    for (unsigned db = 0; db < OCCLUSION_DEPTH_BLOCKS; db++) memcpy(block + db * OCCLUSION_PAIR_BYTES, &stored, sizeof stored);
+}
+
+/* An EVENT_WRITE carrying two more dwords: the occlusion events above; others stop by name. */
+static void event_write_with_memory(const char *fn, const uint32_t *packet)
+{
+    const uint32_t control = packet[1], type = EVENT_TYPE(control), index = EVENT_INDEX(control);
+    if (index == EVENT_INDEX_ZPASS_DONE && type == PIXEL_PIPE_STAT_CONTROL) return;
+    if (index != EVENT_INDEX_ZPASS_DONE || type != PIXEL_PIPE_STAT_DUMP) {
+        static char message[128];
+        snprintf(message, sizeof message, "an EVENT_WRITE of event type %#x, index %u, with an address: not done yet", type, index);
+        rt_fatal(fn, message);
+    }
+    const uint64_t address = (uint64_t)(packet[3] & 0xffffu) << 32 | (packet[2] & ~7u);
+    if (!address) rt_fatal(fn, "an occlusion dump to address 0");
+    const uint64_t words[6] = {address};
+    if (!collecting) {
+        const rt_gpu_step step = {.function = fn, .words = {address}};
+        occlusion_dump_step(&step);
+        return;
+    }
+    collect(fn, occlusion_dump_step, words);
+}
+
+/* The constant engine (CE): a second command processor beside the draw engine (DE), with its own
+   48 KB constant RAM, that runs a submission's constant command buffer (AMD's public PM4 format;
+   shadPS4's liverpool.cpp runs it the same way, facts only). Character creation's Finish (the
+   loading screen and the transfusion cutscene) is the first to submit one: for each draw, a
+   WRITE_CONST_RAM of an 8-dword image descriptor into the constant RAM, a DUMP_CONST_RAM of it into
+   memory (a ring of 0x200-byte slots, reused within one submission), and an INCREMENT_CE_COUNTER;
+   the draw buffer has a WAIT_ON_CE_COUNTER before each draw (the DE waits until the CE's counter is
+   past its own) and an INCREMENT_DE_COUNTER after it; WAIT_ON_DE_COUNTER_DIFF keeps the CE at most
+   that many draws ahead.
+     WRITE_CONST_RAM     byte offset (bits 0-15, dword-aligned), then the dwords to write;
+     DUMP_CONST_RAM      byte offset (bits 0-15), dword count (bits 0-14), address low, high;
+     INCREMENT_CE_COUNTER, NOP, and WAIT_ON_DE_COUNTER_DIFF (its limit: the runtime never runs the
+                         CE ahead of the DE, so it always holds).
+   The runtime runs the CE lazily, in the DE's order: each WAIT_ON_CE_COUNTER becomes a step that
+   runs the CE's packets up to the increment the wait needs, so a dump lands in memory just before
+   the draws that read it and after the ones that read the slot's previous contents. The constant
+   buffer is copied at submission (the title may reuse it). A wait the CE's increments never reach,
+   counters in a draw buffer without a constant buffer, and any other CE packet stop by name. */
+enum { CONSTANT_RAM_BYTES = 48 * 1024, CONSTANT_OFFSET_MASK = 0xffff, CONSTANT_DUMP_DWORDS_MASK = 0x7fff };
+static uint8_t constant_ram[CONSTANT_RAM_BYTES]; /* touched only by steps, which run in order */
+
+/* A submitted draw buffer's constant command buffer: its copy, where each of its counter
+   increments ends (the dword after it), and how far the DE's waits have run it. */
+typedef struct {
+    uint32_t *words, dwords;
+    uint32_t *increment_ends, increments;
+    uint32_t de_count, ran_to;
+} constant_program;
+static _Thread_local constant_program *submitted_constants;
+
+static uint32_t packet_dwords(const uint32_t *packet)
+{
+    return ((packet[0] >> PM4_COUNT_SHIFT) & PM4_COUNT_MASK) + PM4_HEADER_AND_COUNT_BIAS;
+}
+
+/* Copies a constant command buffer and checks its packets. */
+static constant_program *read_constant_program(const char *fn, const uint32_t *buffer, uint32_t bytes)
+{
+    if (!buffer) rt_fatal(fn, "a constant command buffer without an address");
+    constant_program *program = calloc(1, sizeof *program);
+    const uint32_t dwords = bytes / sizeof(uint32_t);
+    const size_t capacity = (dwords ? dwords : 1) * sizeof(uint32_t); /* at most one increment per dword */
+    if (!program || !(program->words = malloc(capacity)) || !(program->increment_ends = malloc(capacity)))
+        rt_fatal(fn, "no memory for a constant command buffer");
+    memcpy(program->words, buffer, (size_t)dwords * sizeof(uint32_t));
+    program->dwords = dwords;
+    for (uint32_t at = 0; at < dwords;) {
+        const uint32_t *packet = program->words + at;
+        if (packet[0] >> PM4_TYPE_SHIFT != PM4_TYPE3) rt_fatal(fn, "a constant command buffer packet other than PM4 type 3");
+        const uint32_t opcode = (packet[0] >> PM4_OPCODE_SHIFT) & PM4_OPCODE_MASK, length = packet_dwords(packet);
+        if (length > dwords - at) rt_fatal(fn, "a constant command buffer packet running past the end of its buffer");
+        if (opcode == PM4_WRITE_CONST_RAM && length >= 3) {
+            const uint32_t offset = packet[1] & CONSTANT_OFFSET_MASK, data_bytes = (length - 2) * (uint32_t)sizeof(uint32_t);
+            if (offset % sizeof(uint32_t) || offset + data_bytes > CONSTANT_RAM_BYTES)
+                rt_fatal(fn, "a WRITE_CONST_RAM outside the constant RAM");
+        } else if (opcode == PM4_DUMP_CONST_RAM && length == 5) {
+            const uint32_t offset = packet[1] & CONSTANT_OFFSET_MASK, dump_bytes = (packet[2] & CONSTANT_DUMP_DWORDS_MASK) * (uint32_t)sizeof(uint32_t);
+            if (offset % sizeof(uint32_t) || offset + dump_bytes > CONSTANT_RAM_BYTES) rt_fatal(fn, "a DUMP_CONST_RAM outside the constant RAM");
+            if (dump_bytes && !(packet[3] | packet[4])) rt_fatal(fn, "a DUMP_CONST_RAM without an address");
+        } else if (opcode == PM4_INCREMENT_CE_COUNTER && length == 2) {
+            program->increment_ends[program->increments++] = at + length;
+        } else if (opcode != PM4_NOP && !(opcode == PM4_WAIT_ON_DE_COUNTER_DIFF && length == 2)) {
+            static char message[112];
+            snprintf(message, sizeof message, "a constant command buffer packet the stand-in does not know (opcode 0x%02x, %u dwords)", opcode,
+                     length);
+            rt_fatal(fn, message);
+        }
+        at += length;
+    }
+    return program;
+}
+
+/* Runs the constant program's packets from dword `from` to `to`: writes into the constant RAM, and
+   dumps of it into memory. */
+static void run_constant_packets(const constant_program *program, uint32_t from, uint32_t to)
+{
+    for (uint32_t at = from; at < to;) {
+        const uint32_t *packet = program->words + at;
+        const uint32_t opcode = (packet[0] >> PM4_OPCODE_SHIFT) & PM4_OPCODE_MASK, length = packet_dwords(packet);
+        if (opcode == PM4_WRITE_CONST_RAM) {
+            memcpy(constant_ram + (packet[1] & CONSTANT_OFFSET_MASK), packet + 2, (length - 2) * sizeof(uint32_t));
+        } else if (opcode == PM4_DUMP_CONST_RAM) {
+            void *const address = (void *)(uintptr_t)(packet[3] | (uint64_t)packet[4] << 32);
+            const size_t bytes = (packet[2] & CONSTANT_DUMP_DWORDS_MASK) * sizeof(uint32_t);
+            if (bytes) memcpy(address, constant_ram + (packet[1] & CONSTANT_OFFSET_MASK), bytes);
+        }
+        at += length;
+    }
+}
+
+/* A step: the CE runs from words[1] to words[2] of the program at words[0]; words[3] set frees the
+   program afterwards (the submission's last CE step). */
+static void constant_step(const rt_gpu_step *step)
+{
+    constant_program *const program = (constant_program *)(uintptr_t)step->words[0];
+    run_constant_packets(program, (uint32_t)step->words[1], (uint32_t)step->words[2]);
+    if (step->words[3]) {
+        free(program->words), free(program->increment_ends), free(program);
+    }
+}
+
+/* A WAIT_ON_CE_COUNTER: the CE runs up to the increment that puts its counter past the DE's. */
+static void wait_on_constant_engine(const char *fn)
+{
+    constant_program *const program = submitted_constants;
+    if (!program) rt_fatal(fn, "a WAIT_ON_CE_COUNTER in a draw buffer without a constant command buffer");
+    if (program->de_count >= program->increments) rt_fatal(fn, "a WAIT_ON_CE_COUNTER the constant engine's counter never passes");
+    const uint32_t to = program->increment_ends[program->de_count];
+    if (to > program->ran_to) {
+        collect(fn, constant_step, (const uint64_t[6]){(uintptr_t)program, program->ran_to, to, 0, 0, 0});
+        program->ran_to = to;
+    }
+}
+
+static void increment_draw_engine_counter(const char *fn)
+{
+    if (!submitted_constants) rt_fatal(fn, "an INCREMENT_DE_COUNTER in a draw buffer without a constant command buffer");
+    submitted_constants->de_count++;
+}
+
+/* After the draw buffer: the CE's remaining packets, then the program is freed. */
+static void finish_constant_program(const char *fn)
+{
+    constant_program *const program = submitted_constants;
+    packet_offset = RT_GPU_STEP_AFTER_ALL;
+    collect(fn, constant_step, (const uint64_t[6]){(uintptr_t)program, program->ran_to, program->dwords, 1, 0, 0});
+    submitted_constants = NULL;
 }
 
 /* Stops naming the packet's opcode: the next packet kind to understand. */
@@ -650,8 +1029,8 @@ static _Noreturn void unknown_packet(const char *fn, uint32_t opcode, uint32_t l
 
 static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth, int is_ring);
 
-/* Completes an indirect buffer's packets. One a compute ring points to is also handed to the
-   renderer, which drops its recorded calls (rt_renderer_skip): compute queues do not run there yet. */
+/* Completes an indirect buffer's packets. One a compute ring points to is a submission of its own:
+   its completions are collected as steps after its work, and the renderer runs it (sceGnmDingDong). */
 static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth, int from_ring)
 {
     if (depth == MAX_INDIRECT_BUFFER_DEPTH) rt_fatal(fn, "indirect buffers nested deeper than the stand-in follows");
@@ -659,8 +1038,18 @@ static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int d
                              (uint64_t)(packet[2] & INDIRECT_BUFFER_ADDRESS_HIGH_MASK) << 32);
     const uint32_t dwords = packet[3] & INDIRECT_BUFFER_SIZE_MASK;
     if (!buffer && dwords) rt_fatal(fn, "an INDIRECT_BUFFER without an address");
-    complete_packets(fn, buffer, dwords, depth + 1, 0);
-    if (from_ring) rt_renderer_skip(fn, buffer, dwords * (uint32_t)sizeof(uint32_t));
+    if (!from_ring) {
+        complete_packets(fn, buffer, dwords, depth + 1, 0);
+        return;
+    }
+    step_list steps = {0};
+    step_list *const saved = collecting;
+    const uint32_t saved_offset = packet_offset;
+    collecting = &steps; /* its steps' offsets count in this buffer, as a submitted buffer's do */
+    complete_packets(fn, buffer, dwords, 0, 0);
+    collecting = saved, packet_offset = saved_offset;
+    rt_renderer_submit(fn, completing_queue, buffer, dwords * (uint32_t)sizeof(uint32_t), steps.steps, steps.count);
+    free(steps.steps);
 }
 
 /* Acts on each packet in turn. A compute ring holds only INDIRECT_BUFFER packets; a command buffer
@@ -683,23 +1072,40 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             release_mem_packet release;
             memcpy(&release, packet + 1, sizeof release);
             release_memory(fn, &release);
+        } else if (opcode == PM4_WRITE_DATA && length >= WRITE_DATA_HEADER_DWORDS) {
+            write_data(fn, packet, length);
         } else if (opcode == PM4_EVENT_WRITE_EOP && length == EVENT_WRITE_EOP_DWORDS) {
             const uint32_t interrupt_select = (packet[3] >> INTERRUPT_SELECT_SHIFT) & EOP_INTERRUPT_SELECT_MASK;
             if (interrupt_select == INTERRUPT_RELEASE_MEM_OTHER) rt_fatal(fn, "an EVENT_WRITE_EOP interrupt select of 3, which the packet format does not define");
             write_completion(fn, packet[3] >> EVENT_WRITE_EOP_DATA_SHIFT, packet[2], packet[3], packet[4], packet[5], interrupt_select);
+        } else if (opcode == PM4_EVENT_WRITE_EOS && length == EVENT_WRITE_EOS_DWORDS) {
+            if (packet[3] >> EVENT_WRITE_EOS_COMMAND_SHIFT != EVENT_WRITE_EOS_STORE_VALUE)
+                rt_fatal(fn, "an EVENT_WRITE_EOS storing GDS data: the stand-in has no GDS");
+            write_completion(fn, RELEASE_MEM_DATA_32_BITS, packet[2], packet[3], packet[4], 0, INTERRUPT_NONE);
         } else if (opcode == PM4_WAIT_REG_MEM && length == WAIT_REG_MEM_DWORDS) {
             wait_reg_mem_packet wait;
             memcpy(&wait, packet + 1, sizeof wait);
             check_wait(fn, &wait);
         } else if (opcode == PM4_DMA_DATA && length == DMA_DATA_DWORDS) {
-            check_dma_data(fn, packet);
+            dma_data(fn, packet);
+        } else if (opcode == PM4_SET_BASE && length == SET_BASE_DWORDS) {
+            if ((packet[1] & SET_BASE_INDEX_MASK) != SET_BASE_DRAW_INDEX_INDIRECT)
+                rt_fatal(fn, "a SET_BASE of a base other than the indirect arguments': not established");
+        } else if (opcode == PM4_WAIT_ON_CE_COUNTER && length == 2) {
+            wait_on_constant_engine(fn);
+        } else if (opcode == PM4_INCREMENT_DE_COUNTER && length == 2) {
+            increment_draw_engine_counter(fn);
+        } else if (opcode == PM4_EVENT_WRITE && length == EVENT_WRITE_WITH_MEMORY_DWORDS) {
+            event_write_with_memory(fn, packet);
         } else if (opcode == PM4_EVENT_WRITE && length != EVENT_WRITE_WITHOUT_MEMORY_DWORDS) {
-            unknown_packet(fn, opcode, length); /* an event that also writes memory */
+            unknown_packet(fn, opcode, length);
         } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT &&
                    opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
                    opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
                    opcode != PM4_INDEX_TYPE && opcode != PM4_INDEX_BASE && opcode != PM4_INDEX_BUFFER_SIZE &&
-                   opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2) {
+                   opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2 &&
+                   !(opcode == PM4_DISPATCH_INDIRECT && length == DISPATCH_INDIRECT_DWORDS) &&
+                   !(opcode == PM4_DRAW_INDIRECT && length == DRAW_INDIRECT_DWORDS)) {
             unknown_packet(fn, opcode, length);
         }
         at += length;
@@ -717,12 +1123,13 @@ static void ding_dong(uint32_t queue_id, uint32_t write_offset)
     if (write_offset > queue->ring_dwords) rt_fatal(fn, "a write offset past the end of the ring");
     const uint32_t *ring = queue->ring;
     completing_pipe = (int32_t)queue->pipe; /* its completions raise the pipe's interrupt */
+    completing_queue = queue_id;
     if (write_offset < *done) { /* the engine filled the ring's end and wrapped to its start */
         complete_packets(fn, ring + *done, queue->ring_dwords - *done, 0, 1);
         *done = 0;
     }
     complete_packets(fn, ring + *done, write_offset - *done, 0, 1);
-    completing_pipe = -1;
+    completing_pipe = -1, completing_queue = RT_RENDERER_GRAPHICS_QUEUE;
     *done = write_offset;
     __atomic_store_n(queue->read_pointer, write_offset, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&queues_lock);
@@ -746,25 +1153,49 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    boot to reach it (4 November 2026) found, besides the compute kinds, these (AMD's public PM4
    format):
      EVENT_WRITE_EOP              a step: the end-of-work value goes to its memory address;
+     EVENT_WRITE_EOS              the same for the end of the shaders' work: a 32-bit value, no
+                                  interrupt (found 11 November 2026, the loading screen after
+                                  character creation; shadPS4's pm4_cmds.h has the fields, facts
+                                  only); one storing GDS data stops;
      WAIT_REG_MEM                 a step: the renderer's thread waits for the memory to hold what
                                   the GPU waits for (two seconds at most);
-     ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches
-                                  (an EVENT_WRITE that also writes memory stops);
+     ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches;
+     EVENT_WRITE occlusion events  PIXEL_PIPE_STAT_CONTROL skipped, PIXEL_PIPE_STAT_DUMP a step that
+                                  stores the occlusion counts (above; found 12 November 2026, entering
+                                  Iosefka's Clinic); another EVENT_WRITE with an address stops;
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
                                   skipped: draw state and draws (the first frame's);
      INDEX_TYPE, INDEX_BASE, INDEX_BUFFER_SIZE, DRAW_INDEX_2, DRAW_INDEX_OFFSET_2
                                   skipped: an indexed draw's state (index size, buffer address and
                                   length) and the draw itself (found 6 November 2026); like the
                                   other draws they only read memory;
+     DMA_DATA copies and fills  a step: between memory, the GDS and the packet's data (found 12
+                                  November 2026, loading Iosefka's Clinic: a counter loaded into the
+                                  GDS);
      DMA_DATA to CP_DMA_READ_TAGS skipped: memory read into the command processor's read tags,
                                   the destination not incremented (found 6 November 2026, a
                                   100-byte read). It changes no memory and no state a shader
                                   sees, so it only brings the source into the GPU's cache, and the
-                                  stand-in has none. Any other DMA_DATA stops.
+                                  stand-in has none.
+     WRITE_DATA                   a step: its dwords go to memory in order with the work (found 11
+                                  November 2026, the loading screen after character creation);
+                                  writes to registers or to one address stop;
    The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h)
    with its steps, each at its packet's offset: it runs the drawing calls recorded before a step,
-   then the step, then the calls after it, so a wait holds before the draws after it read memory. A constant command buffer
-   that holds anything, and any other packet, stops by name. */
+   then the step, then the calls after it, so a wait holds before the draws after it read memory.
+     SET_BASE, DISPATCH_INDIRECT  skipped: the indirect arguments' base (base index 1; another base
+                                  stops) and a dispatch whose workgroup counts the GPU reads there
+                                  (found 11 November 2026, loading Iosefka's Clinic; shadPS4's
+                                  pm4_cmds.h has the fields, facts only): the renderer runs it from
+                                  its recorded calls;
+     DRAW_INDIRECT                skipped: an auto-index draw whose counts the GPU reads at that
+                                  base (found the same day, right after); it only reads memory;
+     WAIT_ON_CE_COUNTER, INCREMENT_DE_COUNTER
+                                  the draw engine's side of the constant engine (above): a wait
+                                  becomes a step that runs the constant buffer up to the
+                                  increment it waits for (found 11 November 2026, after
+                                  character creation's Finish);
+   Any other packet stops by name. */
 
 /* A flip after a submission's last buffer: video out shows the buffer once the work is done. */
 typedef struct {
@@ -783,11 +1214,14 @@ static void flip_step(const rt_gpu_step *step)
 
 static void collect_flip(const char *fn, step_list *steps, const flip_request *flip)
 {
-    const uint64_t words[6] = {(uint32_t)flip->handle, (uint32_t)flip->buffer, (uint32_t)flip->mode, (uint64_t)flip->argument, 0, 0};
+    /* words[4]: the buffer's address, the target the renderer copies for the flip (RT_GPU_STEP_SHOWS_TARGET) */
+    const uint64_t words[6] = {(uint32_t)flip->handle, (uint32_t)flip->buffer, (uint32_t)flip->mode, (uint64_t)flip->argument,
+                               rt_video_out_buffer_address(fn, flip->handle, flip->buffer), 0};
     step_list *const saved = collecting;
     collecting = steps;
     packet_offset = RT_GPU_STEP_AFTER_ALL; /* after every call of the last buffer */
     collect(fn, flip_step, words);
+    steps->steps[steps->count - 1].flags = RT_GPU_STEP_SHOWS_TARGET;
     collecting = saved;
 }
 
@@ -799,17 +1233,17 @@ static int32_t submit(const char *fn, uint32_t count, void **draw_buffers, const
     if (!count || !draw_buffers || !draw_bytes) rt_fatal(fn, "no command buffers: the answer is not established");
     if (!constant_buffers != !constant_bytes) rt_fatal(fn, "constant command buffers without their sizes, or sizes without buffers");
     for (uint32_t k = 0; k < count; k++) {
-        if (constant_buffers && (constant_buffers[k] || constant_bytes[k]))
-            rt_fatal(fn, "a constant command buffer: the stand-in does not run them");
-    }
-    for (uint32_t k = 0; k < count; k++) {
         if (!draw_buffers[k] && draw_bytes[k]) rt_fatal(fn, "a command buffer without an address");
         step_list steps = {0};
         collecting = &steps; /* its completion writes and waits come after its work */
+        submitted_constants = NULL; /* (a stop in an earlier submission may have left one) */
+        if (constant_buffers && (constant_buffers[k] || constant_bytes[k]))
+            submitted_constants = read_constant_program(fn, constant_buffers[k], constant_bytes[k]);
         complete_packets(fn, draw_buffers[k], draw_bytes[k] / sizeof(uint32_t), 0, 0);
+        if (submitted_constants) finish_constant_program(fn);
         collecting = NULL;
         if (flip && k == count - 1) collect_flip(fn, &steps, flip);
-        rt_renderer_submit(fn, draw_buffers[k], draw_bytes[k], steps.steps, steps.count); /* copied: runs beside the title */
+        rt_renderer_submit(fn, RT_RENDERER_GRAPHICS_QUEUE, draw_buffers[k], draw_bytes[k], steps.steps, steps.count); /* copied: runs beside the title */
         free(steps.steps);
     }
     return 0;

@@ -8,6 +8,12 @@
    be recorded at all.
 
    --self-test  checks those behaviours, recording into a temporary directory.
+   --native-self-test  with BB_CAPTURE_NATIVE naming increment: twice's traced call reaches
+                increment's replacement, so its trace ends there (no case) and increment's
+                replacement runs, as a renderer-reporting replacement must.
+   --original-self-test  the same image with BB_CAPTURE_ORIGINAL=1: no replacement may run; a
+                recorded function's unsampled calls run its original, every other hook is left
+                out, and a repeated case is not written twice.
    --emit DIR   records into DIR for test/capture_trace_integration.py.
    --image FILE writes the image before binding and hooking, which the replay builds its
                 executable from. */
@@ -15,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -32,7 +39,8 @@ namespace {
 struct Inner { int32_t pad, value; };
 struct Outer { int64_t pad; Inner *inner; };
 
-int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls, use_import_calls;
+int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls, use_import_calls,
+    leaf_caller_calls, leaf_field_calls;
 
 /* The import use_import calls; the test binds its slot as a loader would. */
 int32_t fill(int32_t *out, int32_t v)
@@ -56,6 +64,8 @@ static void copy_replacement(char *dst, const char *src, size_t n) { ++copy_call
 static void call_native_replacement(void (**fn)()) { ++call_native_calls; (*fn)(); }
 static int32_t count_down_replacement(int32_t) { ++count_down_calls; return 7; }
 static int32_t use_import_replacement(int32_t *out) { ++use_import_calls; return fill(out, 7) + *out; }
+static int32_t leaf_caller_replacement(const int32_t *p) { ++leaf_caller_calls; return p[2] + 1; }
+static int32_t leaf_field_replacement(const int32_t *p) { ++leaf_field_calls; return p[2]; }
 
 /* The table plugin.c installs, sorted by address. */
 extern const rt_hook_entry game_hooks[];
@@ -67,9 +77,18 @@ const rt_hook_entry game_hooks[] = {
     {0x00400200u, 0x40u, "bb_capture_trace_call_native", reinterpret_cast<rt_hook_fn>(call_native_replacement), "void"},
     {0x00400280u, 0x40u, "bb_capture_trace_count_down", reinterpret_cast<rt_hook_fn>(count_down_replacement), "i32"},
     {0x004002c0u, 0x20u, "bb_capture_trace_use_import", reinterpret_cast<rt_hook_fn>(use_import_replacement), "i32"},
+    {0x00400880u, 0x40u, "bb_capture_trace_leaf_caller", reinterpret_cast<rt_hook_fn>(leaf_caller_replacement), "i32"},
 };
 extern const unsigned game_hook_count;
 const unsigned game_hook_count = sizeof game_hooks / sizeof game_hooks[0];
+
+/* The family table plugin.c installs after the hooks: one member, as tools/gen_hooks.py writes it. */
+extern const rt_family_hook game_family_hooks[];
+const rt_family_hook game_family_hooks[] = {
+    {0x00400860u, 0x20u, "leaf_field", reinterpret_cast<rt_hook_fn>(leaf_field_replacement)},
+};
+extern const unsigned game_family_hook_count;
+const unsigned game_family_hook_count = sizeof game_family_hooks / sizeof game_family_hooks[0];
 }
 
 namespace {
@@ -105,12 +124,22 @@ int run(const std::string &dir, bool self_test)
     setenv("BB_CAPTURE_RUN", "hooks", 1);
     setenv("BB_CAPTURE_TRACE", "1", 1);
     setenv("BB_CAPTURE_ONLY", "capture_trace_scale,capture_trace_twice,capture_trace_copy,capture_trace_call_native,capture_trace_count_down,"
-           "capture_trace_use_import", 1);
+           "capture_trace_use_import,capture_trace_leaf_caller", 1);
     rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
     if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
         std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
         return 1;
     }
+
+    /* The family member's code is overwritten by its hook; the traced caller still runs the
+       member's original (a copy taken before the hook), and gives a case. */
+    const int32_t fields[3] = {0, 0, 41};
+    auto leaf_caller = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x880);
+    check(leaf_caller(fields) == 42 && leaf_caller_calls == 0 && leaf_field_calls == 0,
+          "leaf_caller: traced, and its call to a family member follows the member's original");
+    check(exists(dir + "/capture_trace_leaf_caller/hooks_0000.json"), "leaf_caller: a case through the family member");
+    auto leaf_field = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x860);
+    check(leaf_field(fields) == 41 && leaf_field_calls == 1, "leaf_field: an untraced call reaches the family replacement");
 
     Inner inner{0, 7};
     Outer outer{0, &inner};
@@ -166,6 +195,75 @@ int run(const std::string &dir, bool self_test)
     return failures ? 1 : 0;
 }
 
+/* BB_CAPTURE_NATIVE: a replacement that must run for every call, traced callers included. */
+int run_native(const std::string &dir)
+{
+    const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
+    auto *image = static_cast<unsigned char *>(mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (image == MAP_FAILED) return 1;
+    std::memcpy(image, capture_trace_guest_start, size);
+    setenv("BB_CAPTURE_DIR", dir.c_str(), 1);
+    setenv("BB_CAPTURE_RUN", "native", 1);
+    setenv("BB_CAPTURE_TRACE", "1", 1);
+    setenv("BB_CAPTURE_NATIVE", "capture_trace_increment", 1);
+    rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
+    if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
+        std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
+        return 1;
+    }
+    int32_t counter = 40;
+    auto twice = reinterpret_cast<int32_t (*)(int32_t *)>(image + 0x0c0);
+    check(twice(&counter) == 42 && counter == 42 && twice_calls == 0 && increment_calls == 2,
+          "native: a traced caller runs the native replacement for both calls");
+    check(!exists(dir + "/capture_trace_twice") && !exists(dir + "/capture_trace_increment"),
+          "native: the caller's trace ended, and the native function is never recorded");
+    if (!failures) std::puts("capture hooks native self-test: traced callers run the native replacement");
+    return failures ? 1 : 0;
+}
+
+/* BB_CAPTURE_ORIGINAL=1: the game's own code runs everywhere, recorded or not. */
+int run_original(const std::string &dir)
+{
+    const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
+    auto *image = static_cast<unsigned char *>(mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (image == MAP_FAILED) return 1;
+    std::memcpy(image, capture_trace_guest_start, size);
+    setenv("BB_CAPTURE_DIR", dir.c_str(), 1);
+    setenv("BB_CAPTURE_RUN", "original", 1);
+    setenv("BB_CAPTURE_TRACE", "1", 1);
+    setenv("BB_CAPTURE_ORIGINAL", "1", 1);
+    setenv("BB_CAPTURE_MAX", "1", 1);
+    /* increment is not wanted; count_down is wanted but cannot be recorded. */
+    setenv("BB_CAPTURE_ONLY", "capture_trace_scale,capture_trace_twice,capture_trace_count_down", 1);
+    rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
+    if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
+        std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
+        return 1;
+    }
+    Inner inner{0, 7};
+    Outer outer{0, &inner};
+    int32_t result = 0;
+    auto scale = reinterpret_cast<int32_t (*)(int32_t *, const Outer *, int32_t)>(image + 0x000);
+    check(scale(&result, &outer, 6) == 1042 && exists(dir + "/capture_trace_scale/original_0000.json"),
+          "original: the first call is traced and recorded");
+    check(scale(&result, &outer, 6) == 1042 && !exists(dir + "/capture_trace_scale/original_0001.json"),
+          "original: the same inputs again give no second case");
+    check(scale(&result, &outer, 5) == 1035 && !exists(dir + "/capture_trace_scale/original_0002.json"),
+          "original: past BB_CAPTURE_MAX distinct cases, the call runs the original unrecorded");
+    int32_t counter = 40;
+    auto increment = reinterpret_cast<int32_t (*)(int32_t *)>(image + 0x100);
+    check(increment(&counter) == 41 && counter == 41, "original: an unwanted hook is left out, so its original runs");
+    auto count_down = reinterpret_cast<int32_t (*)(int32_t)>(image + 0x280);
+    check(count_down(3) == 7, "original: an unrecordable hook is left out, so its original runs");
+    auto twice = reinterpret_cast<int32_t (*)(int32_t *)>(image + 0x0c0);
+    check(twice(&counter) == 43 && exists(dir + "/capture_trace_twice/original_0000.json"), "original: twice traced");
+    check(scale_calls + twice_calls + increment_calls + count_down_calls == 0, "original: no replacement ran");
+    if (!failures) std::puts("capture hooks original self-test: only originals ran, repeats dropped");
+    return failures ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -182,12 +280,28 @@ int main(int argc, char **argv)
         if (std::system(cleanup.c_str())) return 1;
         return rc;
     }
+    if (argc == 2 && !std::strcmp(argv[1], "--native-self-test")) {
+        char dir[] = "/tmp/pb-capture-native-XXXXXX";
+        if (!mkdtemp(dir)) return 1;
+        const int rc = run_native(dir);
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
+        return ec ? 1 : rc;
+    }
+    if (argc == 2 && !std::strcmp(argv[1], "--original-self-test")) {
+        char dir[] = "/tmp/pb-capture-original-XXXXXX";
+        if (!mkdtemp(dir)) return 1;
+        const int rc = run_original(dir);
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
+        return ec ? 1 : rc;
+    }
     if (argc == 3 && !std::strcmp(argv[1], "--emit")) return run(argv[2], false);
     if (argc == 3 && !std::strcmp(argv[1], "--image")) {
         FILE *out = std::fopen(argv[2], "wb");
         const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
         return out && std::fwrite(capture_trace_guest_start, 1, size, out) == size && !std::fclose(out) ? 0 : 1;
     }
-    std::fprintf(stderr, "usage: %s --self-test | --emit DIR\n", argv[0]);
+    std::fprintf(stderr, "usage: %s --self-test | --native-self-test | --original-self-test | --emit DIR\n", argv[0]);
     return 2;
 }
