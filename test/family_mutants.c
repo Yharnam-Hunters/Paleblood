@@ -113,3 +113,13 @@ __attribute__((naked)) void bb_mutant_zeroes_xmm0_and_xmm1(void)
 {
     __asm__("pxor %xmm0, %xmm0\n\tpxor %xmm1, %xmm1\n\tret");
 }
+
+/* Publishes the static wide string's guard (0x05acebc8) and does nothing else: wrong for the
+   initialize_static_wide_string family, which builds the string and registers its destructor
+   first on a clear guard and leaves a set guard alone. The guest image is mapped where
+   tools/harness.py maps it (IMAGE: guest 0x00400000 at host 0x800000000). */
+void bb_mutant_static_wide_string_guard_only(void)
+{
+    const uint64_t harness_image = 0x800000000ull, eboot_base = 0x400000u, guard = 0x05acebc8u;
+    *(volatile uint64_t *)(uintptr_t)(harness_image + guard - eboot_base) = 1;
+}

@@ -55,6 +55,29 @@ class Shapes(unittest.TestCase):
             with self.assertRaises(fam.ShapeError):
                 fam.parse_shape(text)
 
+    def test_relative_fields_must_reach_their_targets(self):
+        shape = fam.parse_shape('e8 {rel:0x00402000} 80 3d {rel:0x00403000+1} 00 c3')
+        self.assertEqual(shape.size, 13)
+
+        def code(address, call_target=0x402000, global_target=0x403000, last=b'\xc3'):
+            call = struct.pack('<i', call_target - (address + 5))
+            cmp = struct.pack('<i', global_target - (address + 5 + 2 + 4 + 1))
+            return b'\xe8' + call + b'\x80\x3d' + cmp + b'\x00' + last
+
+        for address in (0x401000, 0x401100, 0x5f0000):
+            self.assertTrue(shape.matches(code(address), address))
+            self.assertIsNone(shape.value(code(address), address))
+        self.assertFalse(shape.matches(code(0x401000), 0x401100))           # same bytes, another address
+        self.assertFalse(shape.matches(code(0x401000, call_target=0x402010), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, global_target=0x403001), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, last=b'\x90'), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000)[:-1], 0x401000))
+        with self.assertRaises(fam.ShapeError):
+            shape.value(code(0x401000))                                     # no address
+        for text in ('e8 {rel:0x402000+0} c3', 'e8 {rel:402000} c3', 'b8 {u32} {rel:0x402000}'):
+            with self.assertRaises(fam.ShapeError):
+                fam.parse_shape(text)
+
     def test_names(self):
         family = {'family': 'returns_constant', 'system': 'leaf'}
         self.assertEqual(fam.member_name(family, '0x00401230'), 'leaf_returns_constant_00401230')
@@ -464,7 +487,10 @@ class MatchingValues(unittest.TestCase):
 
 class MatchingSources(unittest.TestCase):
     def test_every_family_has_a_matching_template_and_its_symbols(self):
-        self.assertEqual(set(family_emit.MATCHING_TEMPLATES), {f['family'] for f in fam.families(ROOT)})
+        # A relative family's members are large enough to record (docs/FAMILIES.md, "Relative
+        # shapes"), so they take the recorded path to verified and need no matching template.
+        exact = {f['family'] for f in fam.families(ROOT) if not fam.parse_shape(f['shape']).rels}
+        self.assertEqual(set(family_emit.MATCHING_TEMPLATES), exact)
         text = family_emit.render_matching(ROOT, 'reads_qword_field')
         self.assertIn('uint64_t leaf_reads_qword_field_0x8(const struct object_with_qword_at_0x8 *object)', text)
         self.assertNotIn('bb_leaf_', text)      # the replacements' source hash must not see it

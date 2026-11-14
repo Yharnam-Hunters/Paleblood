@@ -15,6 +15,8 @@ symbols/families.csv               one row per family
   shape      the members' exact bytes: hex bytes and at most one parameter field, for example
              `b8 {u32} c3`. Fields: {u8} one byte, {d8} a positive signed 8-bit displacement,
              {u32} four bytes little-endian. A member's bytes must match the shape exactly.
+             Or a relative shape: hex bytes and {rel:TARGET} fields (rel32 displacements
+             that must reach TARGET from the member's own address; docs/FAMILIES.md).
   returns    the return class its replacement declares (game/hooks.csv's returns column)
   members    how many members the family has, written before the members are generated
   bytes      their total size in bytes, likewise (a member table that differs is refused)
@@ -56,6 +58,11 @@ HOOK_JUMP = 14
 FAMILY_NAME = re.compile(r'^[a-z][a-z0-9]*(_[a-z0-9]+)*$')
 FIELD = re.compile(r'\{(u8|d8|u32)\}')
 FIELD_WIDTH = {'u8': 1, 'd8': 1, 'u32': 4}
+# A relative field: a rip-relative or call/jump displacement (rel32) whose absolute target is
+# fixed. `{rel:0x05aceb90}` reaches 0x05aceb90 from the end of the field; `{rel:0x05aceb90+1}`
+# from N bytes after it (the instruction ends with an immediate after its displacement).
+REL = re.compile(r'\{rel:0x([0-9a-f]{1,16})(?:\+([1-9]))?\}')
+REL_WIDTH = 4
 
 
 class ShapeError(ValueError):
@@ -64,19 +71,28 @@ class ShapeError(ValueError):
 
 @dataclass(frozen=True)
 class Shape:
-    """A family's byte template: fixed bytes and at most one parameter field."""
+    """A family's byte template: fixed bytes and at most one parameter field, or fixed bytes and
+    relative fields (`rels`: offset, absolute target, bytes from the field's end to the end of
+    its instruction). A shape with relative fields matches only at an address, where every
+    field must reach its target: the members are then the same code reaching the same globals
+    and functions, at different addresses."""
     text: str
     prefix: bytes
     field: str | None
     suffix: bytes
+    rels: tuple[tuple[int, int, int], ...] = ()
 
     @property
     def size(self) -> int:
         return len(self.prefix) + (FIELD_WIDTH[self.field] if self.field else 0) + len(self.suffix)
 
-    def value(self, code: bytes) -> int | None:
+    def value(self, code: bytes, address: int | None = None) -> int | None:
         """The parameter of CODE when CODE is exactly this shape; None for no parameter.
-        Raises ShapeError when CODE does not match."""
+        Raises ShapeError when CODE does not match (and, for a shape with relative fields, when
+        no ADDRESS is given)."""
+        if self.rels:
+            self.check_relative(code, address)
+            return None
         if len(code) != self.size or not code.startswith(self.prefix) or not code.endswith(self.suffix):
             raise ShapeError(f'{code.hex()} is not {self.text}')
         if self.field is None:
@@ -87,18 +103,51 @@ class Shape:
             raise ShapeError(f'{code.hex()}: displacement {value:#x} is not a positive signed byte')
         return value
 
-    def matches(self, code: bytes) -> bool:
+    def check_relative(self, code: bytes, address: int | None) -> None:
+        if address is None:
+            raise ShapeError(f'{self.text[:40]}...: a shape with relative fields matches only at an address')
+        if len(code) != self.size:
+            raise ShapeError(f'{len(code)} bytes, the shape has {self.size}')
+        masked = bytearray(code)
+        for offset, target, after in self.rels:
+            disp = int.from_bytes(code[offset:offset + REL_WIDTH], 'little', signed=True)
+            reached = address + offset + REL_WIDTH + after + disp
+            if reached != target:
+                raise ShapeError(f'0x{address:08x}+{offset:#x} reaches 0x{reached:08x}, not 0x{target:08x}')
+            masked[offset:offset + REL_WIDTH] = bytes(REL_WIDTH)
+        if bytes(masked) != self.prefix:
+            raise ShapeError(f'0x{address:08x}: the bytes outside the relative fields differ')
+
+    def matches(self, code: bytes, address: int | None = None) -> bool:
         try:
-            self.value(code)
+            self.value(code, address)
         except ShapeError:
             return False
         return True
+
+
+def parse_relative_shape(text: str, parts: list[str]) -> Shape:
+    """Hex bytes and {rel:...} fields (no parameter field): the fields are zero in `prefix`."""
+    code = bytearray()
+    rels = []
+    for p in parts:
+        m = REL.fullmatch(p)
+        if m:
+            rels.append((len(code), int(m.group(1), 16), int(m.group(2) or 0)))
+            code += bytes(REL_WIDTH)
+        elif re.fullmatch(r'[0-9a-f]{2}', p):
+            code += bytes.fromhex(p)
+        else:
+            raise ShapeError(f'{text[:40]}...: {p!r} is neither a lowercase hex byte nor a relative field')
+    return Shape(text, bytes(code), None, b'', tuple(rels))
 
 
 def parse_shape(text: str) -> Shape:
     parts = text.split()
     if not parts:
         raise ShapeError('empty shape')
+    if any(REL.fullmatch(p) for p in parts):
+        return parse_relative_shape(text, parts)
     fields = [i for i, p in enumerate(parts) if FIELD.fullmatch(p)]
     if len(fields) > 1:
         raise ShapeError(f'{text}: at most one parameter field')
