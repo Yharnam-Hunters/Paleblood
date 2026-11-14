@@ -134,7 +134,7 @@ int main(void)
     const uint64_t length = PAGES * page_size;
     int result = 1;
     guest = MAP_FAILED;
-    unsigned char *other = MAP_FAILED;
+    other = MAP_FAILED;
     const int fd = backing_file();
     if (fd < 0) { perror("backing file"); return 1; }
     if (ftruncate(fd, (off_t)(POOL_OFFSET + length))) { perror("ftruncate"); goto cleanup; }
