@@ -264,6 +264,8 @@ address,replacement,system,returns
 0x021d6ea0,bb_ai_draw_world_021d6ea0,ai,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
 0x02232a60,bb_ai_draw_layer_color_02232a60,ai,vec
+0x02265170,bb_frame_timing_pass_on_in_local_mode_02265170,frame_timing,i8
+0x02265290,bb_frame_timing_lookup_session_object_02265290,frame_timing,i64
 0x02311c80,bb_param_find_row_equip_param_accessory,param,void
 0x02311da0,bb_param_row_name_equip_param_accessory,param,i64
 0x02312070,bb_param_next_row_id_equip_param_accessory,param,i32
