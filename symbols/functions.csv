@@ -765,6 +765,9 @@ address,size,name,system,status,notes
 0x02a6f140,645,loading_stream_event_array_reallocate_02a6f140,loading,edge-verified,DLResourceStreamLoadEventQueue event array reallocate (same code as 0x02a6bc50 for 0x160 events)
 0x02a70890,141,loading_kernel_file_open,loading,verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
 0x02a70920,46,loading_kernel_file_read,loading,edge-verified,"sceKernelRead the file's descriptor; -1 on a negative count; else store the count when asked and return 0"
+0x02a70950,46,loading_kernel_file_write,loading,edge-verified,"sceKernelWrite to the file's descriptor; -1 on a negative count; else store the count when asked and return 0"
+0x02a70980,53,loading_kernel_file_seek,loading,edge-verified,"sceKernelLseek the file's descriptor with the origin handed on; -1 on a negative position; else store the position when asked and return 0"
+0x02a709c0,33,loading_kernel_file_close,loading,edge-verified,sceKernelClose the file's descriptor; set the descriptor to -1 and clear the open bit whatever the kernel answers
 0x02a70a90,84,loading_stream_handle_construct_02a70a90,loading,edge-verified,Stream handle constructor: resource handle; stream vtable; queue; info remembers the queue when both are set
 0x02a85e30,153,render_fractal_noise_02a85e30,render,edge-verified,"Sums octaves of the base noise 0x02a85950: scale from 1 times the step, amplitude from 0.5 times the persistence; zero octaves give +0"
 0x02a8bf30,108,input_mouse_b_open_for_initial_user,input,edge-verified,"Second mouse device class's open: initial user; close a positive handle at +0x128; sceMouseOpen(user; 0; 0; null); true when the new handle is positive"

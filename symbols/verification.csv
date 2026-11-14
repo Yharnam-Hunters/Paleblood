@@ -622,9 +622,12 @@ loading_finished_queue_post_02a6b0e0,edge,,10,10,0,0,84ac5c8e52eaa87b,2026-11-14
 loading_fios_directory_delete,edge,,11,11,0,0,7ab84c80827c7021,2026-11-10
 loading_fios_open_file,edge,,15,15,0,0,7ab84c80827c7021,2026-11-10
 loading_fios_open_file_read,edge,,14,14,0,0,7ab84c80827c7021,2026-11-10
-loading_kernel_file_open,recorded,,2,2,0,0,366f5fb3b55177d3,2026-11-12
-loading_kernel_file_open,edge,,72,72,0,0,366f5fb3b55177d3,2026-11-12
-loading_kernel_file_read,edge,,19,19,0,0,366f5fb3b55177d3,2026-11-10
+loading_kernel_file_close,edge,,11,11,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_open,recorded,,2,2,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_open,edge,,72,72,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_read,edge,,19,19,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_seek,edge,,25,25,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_write,edge,,20,20,0,0,e006d78a8c26d2a3,2026-11-14
 loading_load_event_array_push_back_02a69b70,edge,,11,11,0,0,2a61e0ae85506c29,2026-11-14
 loading_load_event_array_reallocate_02a6bc50,edge,,11,11,0,0,2a61e0ae85506c29,2026-11-14
 loading_load_queue_cancel_event_02a6abc0,edge,,13,13,0,0,6b1e50cc8cb8a162,2026-11-14
