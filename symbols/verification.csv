@@ -625,7 +625,7 @@ loading_path_table_find_013e68f0,recorded,,753,753,0,0,b724b5a95193c924,2026-11-
 loading_path_table_find_013e68f0,edge,,52,52,0,0,b724b5a95193c924,2026-11-14
 loading_path_token_next_02a2aca0,recorded,,58,58,0,0,d7482430d506fc6c,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
-loading_request_pointer_array_push_back_02a6c690,edge,,17,17,0,0,9baf056c92fddc18,2026-11-13
+loading_request_pointer_array_push_back_02a6c690,edge,,17,17,0,0,cf4e84c04a124f4b,2026-11-14
 loading_resource_base_construct_013e6ff0,edge,,4,4,0,0,a4bef1106c9fa4ad,2026-11-14
 loading_resource_base_destroy_013e7090,edge,,4,4,0,0,a4bef1106c9fa4ad,2026-11-14
 loading_resource_handle_assign_024bd310,edge,,8,8,0,0,c80ba02b17a3eaa8,2026-11-14
@@ -637,7 +637,7 @@ loading_resource_info_add_reference_02a3a300,edge,,10,10,0,0,1f3c74ceb645bdc2,20
 loading_resource_info_drop_reference_02a3a2a0,edge,,10,10,0,0,1f3c74ceb645bdc2,2026-11-14
 loading_resource_info_reference_count_02a3a1b0,edge,,10,10,0,0,1f3c74ceb645bdc2,2026-11-14
 loading_resource_info_release_024bd930,edge,,10,10,0,0,7af34104bc184d6e,2026-11-14
-loading_resource_manager_find_info_024c1630,edge,,34,34,0,0,9baf056c92fddc18,2026-11-13
+loading_resource_manager_find_info_024c1630,edge,,34,34,0,0,cf4e84c04a124f4b,2026-11-14
 loading_resource_manager_release_024c1530,edge,,11,11,0,0,0ee15f7eaa080aac,2026-11-14
 loading_resource_manager_remove_released_024c3260,edge,,21,21,0,0,0ee15f7eaa080aac,2026-11-14
 loading_result_assign_024bd080,edge,,8,8,0,0,c80ba02b17a3eaa8,2026-11-14
@@ -660,7 +660,7 @@ loading_transfer_task_cancel_024dd8a0,edge,,45,45,0,0,a6803c3e4220721d,2026-11-1
 loading_transfer_task_check_close_024ddf20,edge,,32,32,0,0,57fb66e79062e48d,2026-11-14
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,57fb66e79062e48d,2026-11-14
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,57fb66e79062e48d,2026-11-14
-loading_transfer_task_list_push_back_02a6b340,edge,,17,17,0,0,9baf056c92fddc18,2026-11-13
+loading_transfer_task_list_push_back_02a6b340,edge,,17,17,0,0,cf4e84c04a124f4b,2026-11-14
 menu_file_set_loader_build_02387650,edge,,12,12,0,0,99d14ad81370e4cc,2026-11-14
 menu_file_set_loader_wait_02387050,edge,,11,11,0,0,99d14ad81370e4cc,2026-11-14
 menu_gaitem_select_direction_keys_20_01ee6080,recorded,,13,13,0,0,ee2781c35c41d943,2026-11-14
@@ -785,6 +785,8 @@ param_gem_gen_first_row_from,edge,,20,20,0,0,81240509ea85581e,2026-11-12
 param_gem_gen_last_row_to,edge,,20,20,0,0,81240509ea85581e,2026-11-12
 param_gem_gen_row_id,edge,,13,13,0,0,81240509ea85581e,2026-11-12
 param_holygrail_ex_row_number,edge,,13,13,0,0,81240509ea85581e,2026-11-12
+param_id_array_push_back_02bc1bb0,edge,,18,18,0,0,0e7184a6b5e19683,2026-11-14
+param_id_array_push_back_copy_016da6a0,edge,,18,18,0,0,0e7184a6b5e19683,2026-11-14
 param_list_gem_category_by_selector_08,edge,,10,10,0,0,81240509ea85581e,2026-11-12
 param_list_gem_category_by_selector_0c,edge,,10,10,0,0,81240509ea85581e,2026-11-12
 param_list_listed_ids_equip_param_accessory,edge,,14,14,0,0,ae9f971000891e1c,2026-11-13
@@ -809,6 +811,7 @@ param_previous_row_id_equip_param_goods,edge,,45,45,0,0,ae9f971000891e1c,2026-11
 param_previous_row_id_equip_param_protector,edge,,45,45,0,0,ae9f971000891e1c,2026-11-13
 param_previous_row_id_magic,edge,,45,45,0,0,ae9f971000891e1c,2026-11-13
 param_previous_weapon_id_with_flag,edge,,87,87,0,0,8520ed25e0cecf1b,2026-11-13
+param_protector_id_array_push_back_019f8d70,edge,,18,18,0,0,0e7184a6b5e19683,2026-11-14
 param_return_point_entity,edge,,20,20,0,0,7ad89fb7da19707c,2026-11-12
 param_return_point_warp_chair,edge,,19,19,0,0,7ad89fb7da19707c,2026-11-12
 param_return_points_of_map,edge,,17,17,0,0,7ad89fb7da19707c,2026-11-12
@@ -832,6 +835,7 @@ param_row_name_gem_gen_2,edge,,37,37,0,0,c5f03adf370f96e3,2026-11-12
 param_row_name_holygrail_ex,edge,,37,37,0,0,c5f03adf370f96e3,2026-11-12
 param_row_name_weapon_gen,edge,,37,37,0,0,c5f03adf370f96e3,2026-11-12
 param_table_view,edge,,9,9,0,0,81240509ea85581e,2026-11-12
+param_weapon_id_array_push_back_01b0d5f0,edge,,18,18,0,0,0e7184a6b5e19683,2026-11-14
 physics_body_set_construct_00ae8700,edge,,16,16,0,0,185a13827bd89898,2026-11-13
 physics_controller_construct_00ae3fc0,edge,,10,10,0,0,185a13827bd89898,2026-11-13
 physics_ids_reserve_02bc1ca0,recorded,,11,11,0,0,185a13827bd89898,2026-11-13
