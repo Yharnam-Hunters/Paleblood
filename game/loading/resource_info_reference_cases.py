@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for a resource info's reference count (game/loading/resource_info_reference.cpp).
 
-usage: resource_info_reference_cases.py OUT_DIR count|drop
+usage: resource_info_reference_cases.py OUT_DIR count|drop|add
 
 Counts of zero, one, many, the largest positive and negative 32-bit values, with garbage around
 the count. The engine mutex lock and unlock (0x02484110, 0x02484290) are stubbed; a stub that
@@ -14,7 +14,7 @@ import os
 import sys
 
 LOCK, UNLOCK = '0x02484110', '0x02484290'
-ADDRESSES = {'count': '0x02a3a1b0', 'drop': '0x02a3a2a0'}
+ADDRESSES = {'count': '0x02a3a1b0', 'drop': '0x02a3a2a0', 'add': '0x02a3a300'}
 MASK = (1 << 64) - 1
 MUTEX = 0x1122334455667788
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the camera math helpers (game/camera/math_helpers.cpp), for tools/verify.py run.
 
-usage: math_helpers_cases.py OUT_DIR quaternion|transform
+usage: math_helpers_cases.py OUT_DIR quaternion|transform|rotation_rows|rows3_multiply|affine_finish
 
 - quaternion: angles at 0 and -0, every octant boundary and both sides of it, a sweep and 300 random angles over
   several turns, large angles (the octant conversion's integer overflow at and past 2^31),
@@ -12,6 +12,10 @@ usage: math_helpers_cases.py OUT_DIR quaternion|transform
 - transform: identity and turned quaternions, non-unit and NaN quaternions, scales with 0, -0,
   denormals, infinities and NaN payloads, positions with NaN and junk w lanes, a deterministic
   random set, and the output written over the source.
+- rotation_rows, rows3_multiply, affine_finish: the three helpers the transform calls, on their
+  own: unit, turned, non-unit, zero, infinite, denormal and NaN-payload inputs (NaNs in both
+  operands of a lane, to check which payload wins), deterministic random sets, and the output
+  written over each input.
 """
 import json
 import math
@@ -20,7 +24,8 @@ import random
 import struct
 import sys
 
-ADDRESSES = {'quaternion': '0x00848e80', 'transform': '0x0083d4d0'}
+ADDRESSES = {'quaternion': '0x00848e80', 'transform': '0x0083d4d0', 'rotation_rows': '0x00829b00',
+             'rows3_multiply': '0x0084b9d0', 'affine_finish': '0x0083b7e0'}
 GUARD_GOT = '0x057e3be0'
 JUNK_LANES = struct.pack('<3I', 0x7fa11111, 0xdeadbeef, 0xff812345)
 
@@ -172,11 +177,135 @@ def transform_cases():
     return out
 
 
+SPECIAL_QUATERNIONS = {
+    'identity': (0.0, 0.0, 0.0, 1.0), 'half_turn_x': (1.0, 0.0, 0.0, 0.0), 'mixed': (0.5, -0.5, 0.5, 0.5),
+    'not_unit': (1.0, 2.0, 3.0, 4.0), 'zero': (0.0, 0.0, 0.0, 0.0),
+    'negative_zero': (NEGATIVE_ZERO, NEGATIVE_ZERO, NEGATIVE_ZERO, NEGATIVE_ZERO),
+    'nan_x': (QUIET_NAN_PAYLOAD, 0.5, 0.5, 0.5), 'nan_y': (0.5, SIGNALING_NAN, 0.5, 0.5),
+    'nan_z': (0.5, 0.5, NEGATIVE_NAN_PAYLOAD, 0.5), 'nan_w': (0.0, 0.0, 0.0, NEGATIVE_SIGNALING_NAN),
+    'nan_all': (QUIET_NAN_PAYLOAD, SIGNALING_NAN, NEGATIVE_NAN_PAYLOAD, NEGATIVE_SIGNALING_NAN),
+    'nan_xy': (NEGATIVE_QUIET_NAN, QUIET_NAN_PAYLOAD, 1.0, 0.0), 'nan_zw': (1.0, 0.0, SIGNALING_NAN, QUIET_NAN),
+    'infinite': (INFINITY, NEGATIVE_INFINITY, 1.0, 0.0), 'infinite_w': (0.0, 0.0, 0.0, INFINITY),
+    'denormal': (SMALLEST_DENORMAL, LARGEST_DENORMAL, NEGATIVE_DENORMAL, 1.0),
+    'huge': (LARGEST_FLOAT, 1.0e30, -1.0e30, 1.0),
+    # Signed zeros in the products, so a lane added to 0 where the original keeps it shows.
+    'signed_zeros_a': (0.0, -1.0, 0.0, -1.0), 'signed_zeros_b': (NEGATIVE_ZERO, 0.5, NEGATIVE_ZERO, -0.5),
+    'signed_zeros_c': (0.0, 0.0, -1.0, NEGATIVE_ZERO), 'signed_zeros_d': (-1.0, 0.0, 0.0, NEGATIVE_ZERO)}
+
+
+def shifted(c, buffer, offset, size):
+    """The output written inside an input, `offset` bytes in (the buffer grown to `size`)."""
+    c['buffers'][buffer]['size'] = size
+    c['args']['rsi' if c['address'] == ADDRESSES['affine_finish'] else 'rdi'] = f'buf:{buffer}+{offset:#x}'
+    del c['buffers']['out']
+    return c
+
+
+def rows_case(variant, cid, inputs, alias=None):
+    """inputs: name -> bytes, in argument order after the output; alias: the input the output overwrites."""
+    c = base(variant, cid)
+    regs = ['rsi', 'rdx'] if variant != 'affine_finish' else ['rdi']
+    out_size = 0x40 if variant == 'affine_finish' else 0x30
+    for name, data in inputs.items():
+        c['buffers'][name] = {'size': max(len(data), out_size), 'bytes': data.hex()}
+    out = alias or 'out'
+    if not alias:
+        c['buffers']['out'] = {'size': out_size, 'bytes': 'a5' * out_size}
+    for reg, name in zip(regs, inputs):
+        c['args'][reg] = f'buf:{name}'
+    c['args']['rsi' if variant == 'affine_finish' else 'rdi'] = f'buf:{out}'
+    return c
+
+
+def rotation_rows_cases():
+    out = []
+    for name, q in SPECIAL_QUATERNIONS.items():
+        out.append(rows_case('rotation_rows', f'quaternion_{name}', {'quaternion': vec(*q)}))
+    rng = random.Random(0x00829b00)
+    for i in range(60):
+        out.append(rows_case('rotation_rows', f'random_unit_{i}', {'quaternion': vec(*unit_quaternion(rng))}))
+    for i in range(20):
+        q = tuple(rng.uniform(-50.0, 50.0) for _ in range(4))
+        out.append(rows_case('rotation_rows', f'random_wide_{i}', {'quaternion': vec(*q)}))
+    out.append(rows_case('rotation_rows', 'output_over_quaternion', {'quaternion': vec(0.5, -0.5, 0.5, 0.5)},
+                         alias='quaternion'))
+    out.append(rows_case('rotation_rows', 'output_over_quaternion_nan',
+                         {'quaternion': vec(QUIET_NAN_PAYLOAD, 1.0, SIGNALING_NAN, 0.25)}, alias='quaternion'))
+    return out
+
+
+def rows(*vectors):
+    return b''.join(vec(*v) for v in vectors)
+
+
+def rows3_multiply_cases():
+    out = []
+    identity = rows((1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0))
+    turned = rows((0.0, 0.0, -1.0, 0.5), (0.0, 1.0, 0.0, -0.25), (1.0, 0.0, 0.0, 2.0))
+    scaled = rows((2.0, 0.0, 0.0, 0.0), (0.0, -3.0, 0.0, 0.0), (0.0, 0.0, 0.5, 7.0))
+    nan_left = rows((QUIET_NAN_PAYLOAD, 1.0, 2.0, SIGNALING_NAN), (NEGATIVE_NAN_PAYLOAD, 3.0, QUIET_NAN, 4.0),
+                    (5.0, NEGATIVE_SIGNALING_NAN, 6.0, 7.0))
+    nan_right = rows((SIGNALING_NAN, 1.0, NEGATIVE_QUIET_NAN, 0.0), (2.0, QUIET_NAN_PAYLOAD, 3.0, 0.0),
+                     (NEGATIVE_NAN_PAYLOAD, NEGATIVE_SIGNALING_NAN, 4.0, 9.0))
+    special = rows((INFINITY, NEGATIVE_ZERO, SMALLEST_DENORMAL, LARGEST_FLOAT), (0.0, NEGATIVE_INFINITY, 1.0, -1.0),
+                   (LARGEST_DENORMAL, 1.0e30, NEGATIVE_DENORMAL, 0.0))
+    pairs = {'identity_identity': (identity, identity), 'turned_scaled': (turned, scaled),
+             'scaled_turned': (scaled, turned), 'nan_left': (nan_left, turned), 'nan_right': (turned, nan_right),
+             'nan_both': (nan_left, nan_right), 'special_left': (special, turned), 'special_right': (scaled, special),
+             'special_both': (special, special), 'zero_infinite': (rows((0.0,) * 4, (0.0,) * 4, (0.0,) * 4), special)}
+    for name, (left, right) in pairs.items():
+        out.append(rows_case('rows3_multiply', name, {'left': left, 'right': right}))
+    rng = random.Random(0x0084b9d0)
+    for i in range(40):
+        left = b''.join(vec(*(rng.uniform(-100.0, 100.0) for _ in range(4))) for _ in range(3))
+        right = b''.join(vec(*(rng.uniform(-100.0, 100.0) for _ in range(4))) for _ in range(3))
+        out.append(rows_case('rows3_multiply', f'random_{i}', {'left': left, 'right': right}))
+    out.append(rows_case('rows3_multiply', 'output_over_left', {'left': turned, 'right': scaled}, alias='left'))
+    out.append(rows_case('rows3_multiply', 'output_over_right', {'left': turned, 'right': scaled}, alias='right'))
+    out.append(rows_case('rows3_multiply', 'output_over_left_nan', {'left': nan_left, 'right': nan_right},
+                         alias='left'))
+    out.append(rows_case('rows3_multiply', 'output_over_right_nan', {'left': nan_left, 'right': nan_right},
+                         alias='right'))
+    for offset in (0x10, 0x20):
+        out.append(shifted(rows_case('rows3_multiply', f'output_inside_right_{offset:x}',
+                                     {'left': turned, 'right': scaled}), 'right', offset, 0x30 + offset))
+        out.append(shifted(rows_case('rows3_multiply', f'output_inside_left_{offset:x}',
+                                     {'left': turned, 'right': scaled}), 'left', offset, 0x30 + offset))
+    return out
+
+
+def affine_finish_cases():
+    out = []
+    matrices = {
+        'ordinary': rows((1.0, 0.0, 0.0, 5.0), (0.0, 1.0, 0.0, 6.0), (0.0, 0.0, 1.0, 7.0), (10.0, 20.0, 30.0, 8.0)),
+        'w_already_set': rows((1.0, 2.0, 3.0, 0.0), (4.0, 5.0, 6.0, 0.0), (7.0, 8.0, 9.0, 0.0), (1.0, 1.0, 1.0, 1.0)),
+        'nan_w': rows((1.0, 2.0, 3.0, QUIET_NAN_PAYLOAD), (4.0, 5.0, 6.0, SIGNALING_NAN),
+                      (7.0, 8.0, 9.0, NEGATIVE_NAN_PAYLOAD), (1.0, 1.0, 1.0, NEGATIVE_SIGNALING_NAN)),
+        'nan_xyz': rows((QUIET_NAN_PAYLOAD, SIGNALING_NAN, NEGATIVE_QUIET_NAN, 1.0),
+                        (NEGATIVE_SIGNALING_NAN, 0.0, 1.0, 2.0), (INFINITY, NEGATIVE_INFINITY, NEGATIVE_ZERO, 3.0),
+                        (SMALLEST_DENORMAL, LARGEST_FLOAT, NEGATIVE_DENORMAL, 4.0)),
+        'negative_zero_w': rows((1.0, 0.0, 0.0, NEGATIVE_ZERO), (0.0, 1.0, 0.0, NEGATIVE_ZERO),
+                                (0.0, 0.0, 1.0, NEGATIVE_ZERO), (0.0, 0.0, 0.0, NEGATIVE_ZERO))}
+    for name, m in matrices.items():
+        out.append(rows_case('affine_finish', name, {'source': m}))
+    out.append(rows_case('affine_finish', 'output_over_source', {'source': matrices['ordinary']}, alias='source'))
+    out.append(rows_case('affine_finish', 'output_over_source_nan', {'source': matrices['nan_w']}, alias='source'))
+    for offset in (0x10, 0x30):
+        out.append(shifted(rows_case('affine_finish', f'output_inside_source_{offset:x}',
+                                     {'source': matrices['ordinary']}), 'source', offset, 0x40 + offset))
+    return out
+
+
+MAKERS = {'quaternion': lambda: quaternion_cases(), 'transform': lambda: transform_cases(),
+          'rotation_rows': lambda: rotation_rows_cases(), 'rows3_multiply': lambda: rows3_multiply_cases(),
+          'affine_finish': lambda: affine_finish_cases()}
+
+
 def main():
     if len(sys.argv) != 3 or sys.argv[2] not in ADDRESSES:
         print(__doc__, file=sys.stderr)
         return 2
-    out = quaternion_cases() if sys.argv[2] == 'quaternion' else transform_cases()
+    out = MAKERS[sys.argv[2]]()
     os.makedirs(sys.argv[1], exist_ok=True)
     for c in out:
         with open(os.path.join(sys.argv[1], f"{c['id']}.json"), 'w') as f:

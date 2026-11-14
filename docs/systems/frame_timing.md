@@ -262,12 +262,15 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x0111a760` | 131 | `frame_timing_get_monotonic_us` | edge-verified | Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
 | `0x0111a880` | 19 | `frame_timing_sleep_ms` | edge-verified | Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result |
+| `0x01381580` | 139 | `frame_timing_task_manager_add_01381580` | edge-verified | Task add: with both wait objects set: state 2 and hand to 0x013e7170; else group in bits 2-4 of +0x79, queue (manager+0xd8)[group] add, optional order after |
 | `0x01388c60` | 16 | `frame_timing_task_run_all_01388c60` | verified | task manager: run the tasks of every group (0x01388c70 with -1) |
 | `0x01388c70` | 171 | `frame_timing_task_run_01388c70` | verified | task manager run: prepare the frame; dispatch through +0x40 (virtual +0x30) with +0x38 set; finish |
+| `0x013894f0` | 108 | `frame_timing_task_debug_menu_add_013894f0` | edge-verified | Adds the "Task" debug menu node once (+0x58) and its settings node with the +0x39 switch; the final call (task manager +0x30, node) goes to an empty leaf |
 | `0x01389df0` | 19 | `frame_timing_task_entry_count_01389df0` | edge-verified | Number of the dispatcher's registered task entries (vector of 0x88-byte entries), cut to 32 bits |
 | `0x01389e10` | 59 | `frame_timing_task_entry_at_01389e10` | edge-verified | Registered task entry at an index; null for a negative index or one past the end (unsigned count) |
 | `0x0138a370` | 330 | `frame_timing_task_dispatch_0138a370` | verified | task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step |
 | `0x013d3520` | 87 | `frame_timing_task_013d3520` | verified | per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it |
+| `0x013d5440` | 346 | `frame_timing_part_0x10_update_013d5440` | edge-verified | Per-frame task part +0x10: for seconds > 0 steps the source, flags an idle generator, then fills an output buffer (switch on) or steps into a freed scratch buffer |
 | `0x013daac0` | 96 | `frame_timing_listener_list_notify_013daac0` | edge-verified | Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call |
 | `0x0143c360` | 147 | `frame_timing_task_record_open_0143c360` | edge-verified | Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64 |
 | `0x0143c450` | 93 | `frame_timing_task_record_close_0143c450` | edge-verified | Closes a closing group record (state 4): flags cleared, state idle, no index (-1) |
@@ -278,6 +281,7 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x0143e030` | 55 | `frame_timing_task_worker_assign_0143e030` | edge-verified | Assigns a batch to a worker slot by index; false when busy, for a null batch, a negative index or one past the end (unsigned count) |
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock; run; destroy and free every queued object; empty the list; unlock |
 | `0x0143ec40` | 185 | `frame_timing_task_clear_items_0143ec40` | edge-verified | Under the task lock (+0x90): frees the pending items last first and their array via the allocator at +0x80; empties the list; empties +0x70/+0x78 when counted |
+| `0x0143ed00` | 264 | `frame_timing_task_refill_queue_0143ed00` | edge-verified | Under the task lock (+0x90): empties the queue (+0x58 deque) with 0x0143ec40, then pushes every 16-byte item of the list at +0x38/+0x40 onto it (0x02dd7150) |
 | `0x0143f720` | 82 | `frame_timing_task_lookup_0143f720` | edge-verified | Task under an id in the task table's map (std::map lower bound), null when absent; id 0 is never looked up |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60 |
@@ -287,6 +291,10 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x01456eb0` | 28 | `frame_timing_profile_start_01456eb0` | edge-verified | When the profiling switch at 0x058b8718 is set, starts stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448580) |
 | `0x01456ed0` | 28 | `frame_timing_profile_stop_01456ed0` | edge-verified | When the profiling switch at 0x058b8718 is set, stops stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448620) |
 | `0x01456ef0` | 136 | `frame_timing_profile_frame_end_01456ef0` | edge-verified | When the profiling switch at 0x058b8718 is set, gives each of the ten stopwatches at 0x058b86c0 its end-of-frame tick (0x014486d0) in order |
+| `0x01467300` | 161 | `frame_timing_worker_lane_start_on_thread_01467300` | edge-verified | Unless the batch is null or the lane running or taken: marks it running and keeps the batch; wakes its thread, or in mode 0 runs every task here until empty or stopped |
+| `0x01467500` | 34 | `frame_timing_worker_lane_start_on_caller_01467500` | edge-verified | Unless the batch is null or the lane running or taken: marks the lane taken by its caller and running, clears its stop request and keeps the batch |
+| `0x01467530` | 102 | `frame_timing_worker_lane_run_01467530` | edge-verified | Runs one task of a taken, running lane with the lane's mode as argument; an empty batch stops the lane running |
+| `0x014675a0` | 27 | `frame_timing_worker_lane_finish_014675a0` | edge-verified | Gives a taken lane back: clears taken, running, the stop request and the batch |
 | `0x01e9cb80` | 390 | `frame_timing_pass_handle_on_01e9cb80` | edge-verified | With a handle: copies its object items (+0x70) into a new list on the heap at 0x05940428; passes the handle and list to 0x022658b0; frees the list. False without a handle |
 | `0x01e9cd20` | 397 | `frame_timing_pass_handle_on_with_items_01e9cd20` | edge-verified | As 0x01e9cb80, but passes the caller list to 0x022658b0; the list it builds from the handle object is only freed. False without a handle |
 | `0x01e9d960` | 271 | `frame_timing_append_slot_item_01e9d960` | edge-verified | push_back of a 12-byte item: grows a full list by half (at least one) through 0x01e9da70; an item inside the list is copied by index after growth |

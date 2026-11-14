@@ -59,16 +59,24 @@ struct HeapReference {
 };
 static_assert(sizeof(HeapReference) == 0x18);
 
+// The three bytes the resource base's constructor sets after its state byte.
+constexpr int resource_base_bit_count = 3;
+constexpr uint8_t resource_base_bits[resource_base_bit_count] = {0x82, 0xf8, 0xff};
+
 struct FileCopyResource {
     const uint8_t *vtable;
     uint8_t unknown_0x08[0x60];
     FileHandle handle;    // built and dropped by the resource base
-    uint8_t unknown_0x78[0x10];
+    uint8_t base_state;       // cleared by the resource base's constructor
+    uint8_t base_bits[resource_base_bit_count];   // set to resource_base_bits by it (the byte after is kept)
+    uint8_t unknown_0x7c[0x4];
+    uint64_t heap_word;       // the heap reference's word_0x10, copied by it
     void *copy;           // the copy of the file's bytes, from file_copy_heap
     uint64_t copy_size;
 };
 static_assert(offsetof(FileCopyResource, handle) == 0x68 && offsetof(FileCopyResource, copy) == 0x88);
 static_assert(offsetof(FileCopyResource, copy_size) == 0x90 && sizeof(FileCopyResource) == 0x98);
+static_assert(offsetof(FileCopyResource, base_bits) == 0x79 && offsetof(FileCopyResource, heap_word) == 0x80);
 
 // The engine resource base's constructor and destructor.
 RT_ORIGINAL(0x013e6ff0, resource_construct, void(FileCopyResource *, const HeapReference *));
