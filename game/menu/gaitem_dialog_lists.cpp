@@ -8,7 +8,6 @@
 // word of each string object is left as it was.
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 #include "../engine/engine.h"
 #include "../engine/narrow_string.h"
@@ -48,8 +47,13 @@ struct TextPair {
 };
 static_assert(offsetof(TextPair, second) == 0x38 && sizeof(TextPair) == 0x70);
 
-// The vector's count of slots in use follows its slots.
-constexpr size_t text_vector_count_offset = 0x708;
+// The select dialog's text vector: sixteen slots from first_slot(), then the count in use.
+constexpr uint64_t text_capacity = 16;
+struct TextVector {
+    uint8_t slots[text_capacity * sizeof(TextPair) + slot_alignment];   // from first_slot()
+    uint64_t count;
+};
+static_assert(offsetof(TextVector, count) == 0x708);
 
 // An entry of the status dialog's label vector.
 struct Label {
@@ -72,12 +76,10 @@ static_assert(offsetof(LabelVector, count) == 0x98);
 // Copies `source` into slot `slot` of the select dialog's text vector (null: nothing). A slot at
 // or past the slots in use is reported, then copied into all the same; a slot before the vector
 // is not checked.
-extern "C" void bb_menu_gaitem_select_text_pair_copy_into_vector_01ed7950(const uint8_t *vector, TextPair *slot,
+extern "C" void bb_menu_gaitem_select_text_pair_copy_into_vector_01ed7950(const TextVector *vector, TextPair *slot,
                                                                          const TextPair *source)
 {
-    uint64_t in_use;
-    std::memcpy(&in_use, vector + text_vector_count_offset, sizeof(in_use));
-    const uintptr_t end = first_slot(vector) + sizeof(TextPair) * in_use;
+    const uintptr_t end = first_slot(vector) + sizeof(TextPair) * vector->count;
     if (end <= reinterpret_cast<uintptr_t>(slot))
         engine::fatal_error(pool_check_file.address(), pool_check_line, pool_check_message.address());
     if (slot == nullptr) return;
