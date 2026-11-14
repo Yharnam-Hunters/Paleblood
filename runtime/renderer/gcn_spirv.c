@@ -3453,7 +3453,9 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
     const size_t checked_end = loops_to_load && last_loop_back > (size_t)writer ? last_loop_back : (size_t)writer;
     /* writes to a pointer spilled and restored before the load (pointer_spilled_at) are undone after the spill */
     const long spilled = loops_to_load ? -1 : pointer_spilled_at(code, program, callee, (size_t)writer, pointer);
-    for (size_t p = 0; p < checked_end;) {
+    /* nor do writes to it that reach the load on no path: it holds the user data's pointer there */
+    const int pointer_unwritten = !loops_to_load && written_on_a_path_to(code, program, callee, (size_t)writer, pointer, 2) == 0;
+    for (size_t p = 0; p < checked_end && !pointer_unwritten;) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */

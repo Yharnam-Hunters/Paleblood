@@ -279,6 +279,13 @@ static void image_programs(void)
        reaches (the clinic beast's pixel shader at 0x20d5372100 has this shape): the load never runs before
        the use, which reads the user data's descriptor */
     static const uint32_t load_branched_past[] = {0xbf840002, 0xc0c00904, 0xbf820002, 0xf0000f00, 0x00000401, 0xbf810000};
+    /* the same with the block writing the pointer instead (s_mov_b32 s8, 0) and the load after the branch's
+       target, through s[8:9]: the pointer reaching the load is the user data's (the same shader's next
+       descriptor) */
+    static const uint32_t pointer_branched_past[] = {0xbf840002, 0xbe880380, 0xbf820003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};
+    const int pointer_past = gcn_image_resources(PROGRAM(pointer_branched_past), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (pointer_past) fprintf(stderr, "pointer_branched_past: %s\n", error);
+    CHECK(pointer_past == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     const int branched_past = gcn_image_resources(PROGRAM(load_branched_past), found, GCN_MAX_IMAGES, &count, error, sizeof error);
     if (branched_past) fprintf(stderr, "load_branched_past: %s\n", error);
     CHECK(branched_past == 0 && count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
