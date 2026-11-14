@@ -61,9 +61,9 @@ increment:
     movaps %xmm2, %xmm0
     ret
 
-/* 0x1c0: thread-local storage: no case. */
+/* 0x1c0: an fs access: the host's own thread block, which a case cannot give: no case. */
     .org 0x1c0
-    mov %gs:0, %rax
+    mov %fs:0, %rax
     ret
 
 /* 0x200: calls native code through a pointer: no case. */
@@ -237,6 +237,18 @@ zero_thunk:
     .org 0x6b0
 usleep_thunk:
     jmp *usleep_slot(%rip)
+/* 0x6c0: int32_t thread_counter(void) { int32_t *p = *(int32_t **)(tp + tls_offset); return ++*p; }
+   A thread-local variable reached as the game reaches one: the thread pointer from gs:[0] (the
+   loader's rewrite of fs:[0]) plus the variable's offset, read from a global. */
+    .org 0x6c0
+    mov %gs:0, %rax
+    add tls_offset(%rip), %rax
+    mov (%rax), %rax
+    mov (%rax), %ecx
+    add $1, %ecx
+    mov %ecx, (%rax)
+    mov %ecx, %eax
+    ret
     .org 0x1000
 global:
     .long 1000
@@ -259,6 +271,9 @@ zero_slot:
     .quad 0
 usleep_slot:
     .quad 0
+/* 0x1838: thread_counter's variable, 4 KiB below the thread pointer (TLS variant II). */
+tls_offset:
+    .quad -0x1000
     .org 0x2000
     .globl capture_trace_guest_end
 capture_trace_guest_end:

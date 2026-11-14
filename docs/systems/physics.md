@@ -64,7 +64,13 @@ reproduce the exact instructions: the truncation works on the float's bits, not 
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x0083d6d0` | 54 | `physics_transform_from_frame_0083d6d0` | edge-verified | Frame (three axes, position) to a transform: rotation by 0x00849900 from the axes at +0x10, the position at +0x0, a scale of 1.0 at +0x20 |
+| `0x00ac46a0` | 96 | `physics_shape_construct_00ac46a0` | edge-verified | Shape object: keeps the shape set at +0x0, empties the four hkArrays (+0x8, +0x18, +0x28, +0x40), then tail-jumps into the fill at 0x00ac4700 |
+| `0x00ac5e00` | 124 | `physics_shape_summary_00ac5e00` | edge-verified | Lane-wise min/max of each shape entry first row (count from the set at +0x30, read before the refresh 0x00ac4f20), starting from FLT_MAX and -FLT_MAX |
 | `0x00ae3fc0` | 280 | `physics_controller_construct_00ae3fc0` | edge-verified | Controller: base constructor, vtable, three empty hkArrays (+0x40, +0xc0, +0xd0), +0x68/+0x70 cleared, setup 0x00ae40e0; the 0x30-byte parameter block appended (reserved on the shape heap if needed) |
+| `0x00ae6180` | 110 | `physics_root_update_00ae6180` | edge-verified | Ragdoll update of a root body: a pose built on the stack (0x00ae6620), applied (0x00ae61f0) with the float weight in all four lanes, then freed (0x00ae6510) |
+| `0x00ae6d00` | 177 | `physics_tracker_construct_00ae6d00` | edge-verified | Tracker: Havok header and vtable, keeps the setup shape set and pair, one 32-bit entry per shape flag set to 1 (reserved on the shape heap), byte +0x38 cleared |
+| `0x00ae6dc0` | 16 | `physics_tracker_setup_defaults_00ae6dc0` | edge-verified | Clears a tracker setup: its pair (+0x8) and shape set (+0x0) |
 | `0x00ae8700` | 414 | `physics_body_set_construct_00ae8700` | edge-verified | Body set: base constructor 0x00f359c0 with all seven arguments, vtable, a reference to the source shape set (+0x78), the source 32-bit indices (+0x80) copied into a shape heap buffer |
 | `0x01c0c2b0` | 3222 | `physics_instance_construct_01c0c2b0` | verified | physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners |
 | `0x02bc1ca0` | 218 | `physics_ids_reserve_02bc1ca0` | edge-verified | Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept |

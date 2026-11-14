@@ -15,6 +15,13 @@
 // does. The destructor frees the copy through DLNew's release and destroys the base; the
 // deleting destructor then deletes the object. The resource cache creates class a (0x01824320,
 // which inlines the constructor); the destructors and the copy run at boot.
+//
+// The resource base itself (vtable 0x056f65d0) is here too:
+// - loading_resource_base_construct_013e6ff0: builds the object base with the heap reference
+//   (0x01384700), then writes its vtable, an empty file handle (vtable 0x057b4b00), its state and
+//   bits and the heap reference's word.
+// - loading_resource_base_destroy_013e7090: writes its vtable back, lets go of the handle's file
+//   (0x024bd360) and destroys the handle (0x024bd4c0) and then the object base (0x01384750).
 #include <cstdint>
 
 #include "../engine/buffer_release.h"
@@ -27,6 +34,16 @@ using frame_timing::job::wait_forever;
 namespace {
 
 constexpr auto &shared_lock = frame_timing::job::job_lock;
+
+// The resource base's vtable and its file handle's (their address points).
+RT_GLOBAL(0x056f65d0, resource_base_vtable, const uint8_t);
+RT_GLOBAL(0x057b4b00, file_handle_vtable, const uint8_t);
+// The object base under the resource base: built with the heap reference, destroyed.
+RT_ORIGINAL(0x01384700, object_base_construct, void(FileCopyResource *, const HeapReference *));
+RT_ORIGINAL(0x01384750, object_base_destroy, void(FileCopyResource *));
+// The file handle's let go of its file (releasing the file's info, 0x024bd930) and destructor.
+RT_ORIGINAL(0x024bd360, file_handle_release, void(FileHandle *));
+RT_ORIGINAL(0x024bd4c0, file_handle_destroy, void(FileHandle *));
 
 void lock_shared()
 {
@@ -142,3 +159,23 @@ extern "C" void bb_loading_file_copy_delete_02380230(FileCopyResource *resource)
 extern "C" void bb_loading_file_copy_copy_file_0237e820(FileCopyResource *resource) { copy_file(resource); }
 extern "C" void bb_loading_file_copy_copy_file_0237f5d0(FileCopyResource *resource) { copy_file(resource); }
 extern "C" void bb_loading_file_copy_copy_file_02380380(FileCopyResource *resource) { copy_file(resource); }
+
+extern "C" void bb_loading_resource_base_construct_013e6ff0(FileCopyResource *resource, const HeapReference *heap)
+{
+    object_base_construct(resource, heap);
+    resource->vtable = resource_base_vtable.address();
+    resource->handle.file = nullptr;
+    resource->handle.vtable = file_handle_vtable.address();
+    resource->base_state = 0;
+    for (int i = 0; i < resource_base_bit_count; ++i)
+        resource->base_bits[i] = resource_base_bits[i];
+    resource->heap_word = heap->word_0x10;
+}
+
+extern "C" void bb_loading_resource_base_destroy_013e7090(FileCopyResource *resource)
+{
+    resource->vtable = resource_base_vtable.address();
+    file_handle_release(&resource->handle);
+    file_handle_destroy(&resource->handle);
+    object_base_destroy(resource);
+}
