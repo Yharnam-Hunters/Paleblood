@@ -94,6 +94,7 @@ target_link_libraries(test_capture_hooks bbrt)
 add_test(NAME capture_hooks COMMAND test_capture_hooks --self-test)
 add_test(NAME capture_hooks_original COMMAND test_capture_hooks --original-self-test)
 add_test(NAME capture_hooks_native COMMAND test_capture_hooks --native-self-test)
+add_test(NAME capture_hooks_many COMMAND test_capture_hooks --many-self-test)
 add_test(NAME capture_hooks_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_hooks>
                  capture_trace_scale capture_trace_twice capture_trace_copy capture_trace_use_import
@@ -151,6 +152,9 @@ target_include_directories(pbtiling PUBLIC runtime/include)
 add_executable(test_tiling test/test_tiling.c)
 target_link_libraries(test_tiling PRIVATE pbtiling)
 add_test(NAME tiling COMMAND test_tiling)
+add_executable(test_depth_layout test/test_depth_layout.c)
+target_link_libraries(test_depth_layout PRIVATE pbtiling)
+add_test(NAME depth_layout COMMAND test_depth_layout)
 add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c runtime/renderer/tile_copy.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)

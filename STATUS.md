@@ -33,6 +33,13 @@ patch edit is broken in v1.09, [QUIRKS.md](QUIRKS.md)). The task manager's frame
 
 ## Recent results
 
+- Runtime and renderer (14 November 2026, main at `c595e3e7` and later): two local boots of
+  clean main, from a save at the clinic's start with a scripted controller (`tools/boot.py
+  --input-script`, 900 s each), ran the clinic's first encounter with no stop: the beast attacks
+  (about frame 3700), the hunter dies ("YOU DIED", about frame 3950), the loading screen, and the
+  hunter wakes and walks in the Hunter's Dream (to frames 8859 and 9355). Such boots are not
+  recorded (they start from a save and press buttons); the recorded boot (`symbols/boot.json`,
+  30 s, no display) is unchanged: first flip, 686 of 686 imports, no call stops it.
 - Runtime: module loading at run time. `sceSysmoduleLoadModule` (libSceSysmodule, the only way the
   executable asks for a module) reports a module listed with action `stub` in `game/modules.csv`
   loaded without mapping it; `sceSysmoduleIsLoaded` and `sceSysmoduleUnloadModule` answer for it

@@ -8,6 +8,9 @@ usage: session_report.py [--base origin/main] [--verify RESULT.json ...] [--capt
 Compares symbols/functions.csv on this branch with the merge base: functions named (new rows),
 replaced, edge-verified and verified (status changes). --verify takes the JSON that `tools/verify.py run`
 prints (save it with `> result.json`), --captures the case directories used, counted only.
+A run with --record that quarantined failing cases (listed with a reason in symbols/quarantine.csv)
+shows them in a Quarantined column with their reasons; --check-body accepts them only when
+symbols/verification.csv records that run's counts, never a failure that is not quarantined.
 Findings and open questions come from commit messages on the branch: lines starting with
 "Finding:" or "Question:". Prints Markdown to paste into the pull request, with a JSON block
 that tools can read back. No local paths are written.
@@ -110,9 +113,30 @@ def verify_results(paths: list) -> list:
                         'mutants': [{k: m.get(k) for k in ('mutant', 'members', 'killed')}
                                     for m in d.get('mutants', [])]})
             continue
-        out.append({'function': d.get('function', os.path.basename(p)), 'cases': d.get('cases', 0),
-                    'passed': d.get('passed', 0), 'failed': d.get('failed', 0)})
+        entry = {'function': d.get('function', os.path.basename(p)), 'cases': d.get('cases', 0),
+                 'passed': d.get('passed', 0), 'failed': d.get('failed', 0)}
+        recorded = d.get('recorded')
+        if isinstance(recorded, dict) and str(recorded.get('quarantined', '0')) != '0':
+            # A run with --record split its failures: those listed in symbols/quarantine.csv
+            # count as quarantined (docs/VERIFY.md), the rest stay failed.
+            entry['failed'] = int(recorded['failed'])
+            entry['quarantined'] = int(recorded['quarantined'])
+            entry['record'] = {'cases': recorded.get('cases', ''), 'option': recorded.get('option', '')}
+        out.append(entry)
     return out
+
+
+def quarantine_reasons(entry: dict, read=None) -> list:
+    """The distinct reasons symbols/quarantine.csv gives for an entry's case set."""
+    record = entry.get('record') or {}
+    text = (read or read_worktree)('symbols/quarantine.csv') or ''
+    reasons = []
+    for row in csv.DictReader(io.StringIO(text)):
+        if (row.get('function'), row.get('cases'), row.get('option') or '') == \
+                (entry.get('function'), record.get('cases'), record.get('option') or '') \
+                and row.get('reason') and row['reason'] not in reasons:
+            reasons.append(row['reason'])
+    return reasons
 
 
 def capture_counts(dirs: list) -> list:
@@ -152,9 +176,17 @@ def render(report: dict) -> str:
                   f"{c['edge-verified']} | {c['verified']} |" for c in report['families']]
         lines.append('')
     if report['verify']:
-        lines += ['| verify.py | Cases | Passed | Failed |', '|---|---:|---:|---:|']
-        lines += [f"| `{v['function']}` | {v['cases']} | {v['passed']} | {v['failed']} |" for v in report['verify']]
+        lines += ['| verify.py | Cases | Passed | Failed | Quarantined |', '|---|---:|---:|---:|---:|']
+        lines += [f"| `{v['function']}` | {v['cases']} | {v['passed']} | {v['failed']} | {v.get('quarantined', 0)} |"
+                  for v in report['verify']]
         lines.append('')
+        for v in report['verify']:
+            if v.get('quarantined'):
+                record = v.get('record') or {}
+                lines.append(f"Quarantined in `{v['function']}` ({record.get('cases', '')} cases, listed in "
+                             f"`symbols/quarantine.csv`): " + '; '.join(v.get('reasons', [])))
+        if any(v.get('quarantined') for v in report['verify']):
+            lines.append('')
         for v in report['verify']:
             for m in v.get('mutants', []):
                 lines.append(f"Mutant `{m['mutant']}` on `{v['family']}`: failed on {m['killed']} of {m['members']} "
@@ -244,8 +276,41 @@ def family_evidence_errors(d: dict, required_families: list | None) -> list:
     return errs
 
 
+def quarantined_count(v: dict) -> int:
+    q = v.get('quarantined', 0)
+    return q if type(q) is int and q >= 0 else 0
+
+
+def quarantine_errors(v: dict, read) -> list:
+    """A verify entry's quarantined cases count only when the branch records them: its row in
+    symbols/verification.csv (function, case set, option) holds the same counts with no failure,
+    and symbols/quarantine.csv lists at least that many of the set's cases, each with a reason."""
+    name, q = v.get('function'), v.get('quarantined')
+    record = v.get('record')
+    if type(q) is not int or q < 0:
+        return [f'the quarantined count for {name} must be a non-negative integer']
+    if not isinstance(record, dict) or not isinstance(record.get('cases'), str):
+        return [f'{name} reports {q} quarantined case(s) without the case set they were recorded in '
+                f'(run tools/verify.py run --record and pass its summary to --verify)']
+    key = (name, record['cases'], record.get('option') or '')
+    rows = [r for r in csv.DictReader(io.StringIO(read('symbols/verification.csv') or ''))
+            if (r.get('function'), r.get('cases'), r.get('option') or '') == key]
+    expected = {'total': v.get('cases'), 'passed': v.get('passed'), 'failed': 0, 'quarantined': q}
+    if not rows or any(str(rows[0].get(k)) != str(n) for k, n in expected.items()):
+        return [f'{name} reports {q} quarantined case(s), but symbols/verification.csv has no matching '
+                f'{record["cases"]} row (total, passed, failed 0, quarantined)']
+    listed = [r for r in csv.DictReader(io.StringIO(read('symbols/quarantine.csv') or ''))
+              if (r.get('function'), r.get('cases'), r.get('option') or '') == key and (r.get('reason') or '').strip()]
+    if len(listed) < q:
+        return [f'{name} reports {q} quarantined case(s), but symbols/quarantine.csv lists {len(listed)} '
+                f'with a reason']
+    return []
+
+
 def check_body(text: str, required_replacements: list | None = None,
-               required_families: list | None = None) -> list:
+               required_families: list | None = None, read_record=None) -> list:
+    """read_record(path) gives a repository file's text at the branch head (the working tree
+    by default): quarantined cases are checked against symbols/verification.csv and quarantine.csv."""
     errs = []
     if START not in text or END not in text:
         return ['the pull request has no session report (run tools/session_report.py and paste its output)']
@@ -285,6 +350,8 @@ def check_body(text: str, required_replacements: list | None = None,
         failed = v.get('failed', 0)
         if isinstance(failed, int) and not isinstance(failed, bool) and failed:
             errs.append(f"verify.py reports {failed} failing case(s) for {v.get('function')}")
+        if v.get('quarantined', 0):
+            errs += quarantine_errors(v, read_record or read_worktree)
 
     replacement_names = set()
     for replacement in replacements:
@@ -300,7 +367,8 @@ def check_body(text: str, required_replacements: list | None = None,
             continue
         valid = any(
             type(v.get('cases')) is int and v['cases'] > 0
-            and type(v.get('passed')) is int and v['passed'] == v['cases']
+            and type(v.get('passed')) is int and v['passed'] > 0
+            and v['passed'] + quarantined_count(v) == v['cases']
             and type(v.get('failed')) is int and v['failed'] == 0
             for v in matching
         )
@@ -349,6 +417,9 @@ def main() -> int:
               'functions': function_changes(before, after), 'verify': verify_results(a.verify),
               'families': branch_family_changes(base, read_worktree),
               'captures': capture_counts(a.captures), 'findings': findings, 'questions': questions}
+    for v in report['verify']:
+        if v.get('quarantined'):
+            v['reasons'] = quarantine_reasons(v)
     sys.stdout.write(render(report))
     return 0
 

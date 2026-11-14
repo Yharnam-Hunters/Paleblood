@@ -60,7 +60,8 @@ ai_goal_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
 ai_group_reset_02224090,recorded,,1500,1500,0,0,e3c2894811c316e5,2026-11-14
 ai_group_reset_02224090,edge,,31,31,0,0,e3c2894811c316e5,2026-11-14
-ai_hearing_in_ear_range,edge,,449,449,0,0,0b6eb0582caefa8b,2026-11-14
+ai_hearing_in_ear_range,edge,,449,449,0,0,80eeedd42463c342,2026-11-14
+ai_hearing_test,edge,,561,561,0,0,80eeedd42463c342,2026-11-14
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,60,203,203,0,0,f6e94c85e455f408,2026-10-07
@@ -659,6 +660,7 @@ engine_segregated_regular_heap_free_0248a400,edge,,13,13,0,0,22f332c094a74c2f,20
 engine_segregated_regular_heap_initialize_02489340,edge,,12,12,0,0,47ac96af64ff580c,2026-11-13
 engine_semaphore_signal_02a3b0d0,edge,,19,19,0,0,c15ae6e931c8ddcd,2026-11-12
 engine_semaphore_wait_02a3ae00,edge,,20,20,0,0,c15ae6e931c8ddcd,2026-11-12
+engine_set_free_subtree_02b3bda0,edge,,35,35,0,0,1178b436d8eacbc7,2026-11-14
 engine_small_object_allocator_construct_02fa1e20,edge,,16,16,0,0,a07c3f11962f794f,2026-11-12
 engine_small_object_allocator_construct_locked_02fa22a0,edge,,19,19,0,0,a07c3f11962f794f,2026-11-12
 engine_small_object_allocator_delete_0248a9f0,edge,,5,5,0,0,949072f193642934,2026-11-12
@@ -1025,9 +1027,12 @@ loading_finished_queue_post_02a6b0e0,edge,,10,10,0,0,84ac5c8e52eaa87b,2026-11-14
 loading_fios_directory_delete,edge,,11,11,0,0,7ab84c80827c7021,2026-11-10
 loading_fios_open_file,edge,,15,15,0,0,7ab84c80827c7021,2026-11-10
 loading_fios_open_file_read,edge,,14,14,0,0,7ab84c80827c7021,2026-11-10
-loading_kernel_file_open,recorded,,2,2,0,0,366f5fb3b55177d3,2026-11-12
-loading_kernel_file_open,edge,,72,72,0,0,366f5fb3b55177d3,2026-11-12
-loading_kernel_file_read,edge,,19,19,0,0,366f5fb3b55177d3,2026-11-10
+loading_kernel_file_close,edge,,11,11,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_open,recorded,,2,2,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_open,edge,,72,72,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_read,edge,,19,19,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_seek,edge,,25,25,0,0,e006d78a8c26d2a3,2026-11-14
+loading_kernel_file_write,edge,,20,20,0,0,e006d78a8c26d2a3,2026-11-14
 loading_load_event_array_push_back_02a69b70,edge,,11,11,0,0,2a61e0ae85506c29,2026-11-14
 loading_load_event_array_reallocate_02a6bc50,edge,,11,11,0,0,2a61e0ae85506c29,2026-11-14
 loading_load_queue_cancel_event_02a6abc0,edge,,13,13,0,0,6b1e50cc8cb8a162,2026-11-14
@@ -1521,6 +1526,7 @@ render_set_esgs_ring_itemsize,edge,,142,142,0,0,529c4831c9cb3cb9,2026-11-14
 render_set_gds_oa,edge,,124,124,0,0,1f7b4a0a659b7c3b,2026-11-13
 render_set_gs_mode,edge,,371,371,0,0,8310151b447ce097,2026-11-14
 render_set_gs_onchip_control,edge,,335,335,0,0,b96dac2f5f4a6535,2026-11-14
+render_set_gs_ring_sizes,edge,,445,445,0,0,65c106200dbd8922,2026-11-14
 render_set_gs_shader,edge,,145,145,0,0,6780a88145eaed82,2026-11-14
 render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12
