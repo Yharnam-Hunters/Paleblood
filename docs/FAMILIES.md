@@ -97,6 +97,9 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `returns_nothing` | `c3` | empty functions: empty virtual methods and callbacks that do nothing |
 | `returns_zero` | `31 c0 c3` | functions that return false, null or 0 (all of rax) |
 | `returns_constant` | `b8 {u32} c3` | functions that return a fixed number, zero-extended to rax |
+| `matches_sixteen_byte_key` | 45 exact bytes | key matches: the size argument is 16 and the key equals the 16 bytes at +0x18 |
+| `counts_list_nodes` | 28 exact bytes | the length of the singly linked list at +0x30 (next pointer at +0x10) |
+| `reads_nth_list_node_dword` | 34 exact bytes | the dword at +0x18 of the nth node of the list at +0x30, or 0 |
 | `reads_qword_field` | `48 8b 47 {d8} c3` | getters of a 64-bit field (often a pointer) K bytes into the object |
 | `reads_dword_field` | `8b 47 {d8} c3` | getters of a 32-bit field, zero-extended |
 | `reads_word_field` | `0f b7 47 {d8} c3` | getters of a 16-bit field, zero-extended |

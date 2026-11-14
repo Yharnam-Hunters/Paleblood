@@ -53,6 +53,42 @@ uint64_t bb_mutant_reads_first_qword(const uint64_t *object)
     return *object;
 }
 
+/* Key matches that skip the size check, or compare the second halves even for a zero first half. */
+uint64_t bb_mutant_key_ignores_size(const uint64_t *object, const uint64_t *key, uint32_t size)
+{
+    (void)size;
+    return key[0] == object[3] && (key[0] == 0 || key[1] == object[4]);
+}
+
+uint64_t bb_mutant_key_compares_both_halves(const uint64_t *object, const uint64_t *key, uint32_t size)
+{
+    return size == 16 && key[0] == object[3] && key[1] == object[4];
+}
+
+/* List walks one node off (the list at +0x30, next at +0x10, value at +0x18). */
+uint64_t bb_mutant_counts_from_second_node(const uint8_t *object)
+{
+    uint32_t count = 0;
+    const uint8_t *node = *(const uint8_t *const *)(object + 0x30);
+    if (node != 0)
+        node = *(const uint8_t *const *)(node + 0x10);
+    for (; node != 0; node = *(const uint8_t *const *)(node + 0x10))
+        count++;
+    return count;
+}
+
+uint64_t bb_mutant_reads_next_list_node(const uint8_t *object, uint32_t index)
+{
+    const uint8_t *node = *(const uint8_t *const *)(object + 0x30);
+    for (; node != 0; node = *(const uint8_t *const *)(node + 0x10), index--) {
+        if (index == 0) {
+            const uint8_t *next = *(const uint8_t *const *)(node + 0x10);
+            return next != 0 ? *(const uint32_t *)(next + 0x18) : 0;
+        }
+    }
+    return 0;
+}
+
 /* Returns its second argument. */
 uint64_t bb_mutant_returns_second_argument(uint64_t first, uint64_t second)
 {
