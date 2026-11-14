@@ -254,6 +254,8 @@ address,size,name,system,status,notes
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
 0x016a52b0,1936,ai_sight_test,ai,edge-verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"
 0x016a5a50,43,ai_sight_query_reset_target,ai,edge-verified,"Sight query: target half reset (origin, no height or size, visibility 1, light, seeable)"
+0x016a85c0,1463,ai_perception_update,ai,edge-verified,"Perception update per think: target-list update, then target state and type from the list (kind 4/5 battle, main entry's state, kind 3/11 caution), facing check, force battle"
+0x016acfa0,384,ai_perception_current_handle,ai,edge-verified,"Perception: handle of the current target (kind-4 node, kind-5 node, main entry, kind-3 node), character or place"
 0x016ad400,287,ai_perception_target_visible,ai,edge-verified,"Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11"
 0x016b2760,512,ai_target_list_refresh_noticed,ai,edge-verified,"Target list: refresh the noticed character's entry (clock 0, visible, refreshed bit) or allocate and link a new 0xa0-byte entry; notice record update"
 0x016b30a0,368,ai_target_list_mark_main_matches,ai,verified,"Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer"
