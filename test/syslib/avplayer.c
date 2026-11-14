@@ -293,21 +293,27 @@ static void play_movie(void)
         CHECK(abs(first.data[10 * 128 + 10] - 16) <= 6);                 /* frame 0's grey */
         CHECK(abs(first.data[128 * 48 + 4 * 128 + 10] - 128) <= 6);      /* chroma after pitch * rows */
     }
+    /* the next picture is 40 ms later: not handed out before the clock reaches it (a loaded machine may
+       take that long to get here: then it comes, at 40 ms, and the clock read after is past it) */
     av_video_frame second = {0};
-    CHECK(video(player, &second) == 0); /* the next picture is 40 ms later: not yet */
+    const int early = video(player, &second);
+    CHECK(!early || (second.timestamp_ms == 1000 / MOVIE_FPS && now(player) >= second.timestamp_ms));
     av_audio_frame sound = {0};
     for (int tries = 0; tries < 200 && !audio(player, &sound); tries++) sleep_ms(5);
     CHECK(sound.data != NULL && sound.channels == 2 && sound.rate == TONE_RATE);
     CHECK(sound.size > 0 && sound.size <= 1024 * 2 * 2 && sound.size % 4 == 0);
 
+    /* paused, the clock stands still at every read and no picture comes */
     CHECK(pause(player) == 0 && events[event_count - 1] == 4);
     const uint64_t paused_at = now(player);
-    sleep_ms(60);
-    CHECK(now(player) == paused_at && video(player, &second) == 0);
+    for (int read = 0; read < 4; read++) {
+        sleep_ms(15);
+        CHECK(now(player) == paused_at && video(player, &second) == 0);
+    }
     CHECK(resume(player) == 0 && events[event_count - 1] == 3);
 
-    uint64_t last = 0;
-    int pictures = 1;
+    uint64_t last = early ? second.timestamp_ms : 0;
+    int pictures = early ? 2 : 1;
     for (int tries = 0; tries < 400 && active(player); tries++) {
         av_video_frame f = {0};
         if (video(player, &f)) {
