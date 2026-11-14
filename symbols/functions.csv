@@ -67,6 +67,7 @@ address,size,name,system,status,notes
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
 0x013e68f0,160,loading_path_table_find_013e68f0,loading,edge-verified,"FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0"
 0x013e9040,113,engine_fd4_handle_is_valid_013e9040,engine,edge-verified,"FD4 handle check: nonzero handle, index <= table's last index (inclusive), entry (0xe0 B) generation byte at +0x2c equals the handle's"
+0x013e9ee0,8,engine_fd4_handle_is_set_013e9ee0,engine,original,"FD4 handle is set: the 8-byte handle is nonzero as a whole; called out of line by the handle check 0x013e9040; too short to hook, matched byte-exact instead"
 0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
 0x0143c450,93,frame_timing_task_record_close_0143c450,frame_timing,edge-verified,"Closes a closing group record (state 4): flags cleared, state idle, no index (-1)"
 0x0143d7c0,62,frame_timing_task_batch_add_0143d7c0,frame_timing,edge-verified,Pushes a job onto the back of a batch's job deque with the game's push_back; a null job is not added
@@ -208,7 +209,7 @@ address,size,name,system,status,notes
 0x01633ac0,734,ai_debug_flush_01633ac0,ai,edge-verified,"Marks (debug flag 2) the objects of the entities the display object links to (+0x150, 0x60 apart): ids copied to a temporary std::list from the default allocator first"
 0x0163bb50,626,ai_debug_end_0163bb50,ai,edge-verified,Debug view end of frame: draws its marks (and the world marks) when asked; then the subject bounding box (vtable +0x60) through 0x0135dca0 with the bounds render state
 0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
-0x01657b20,90,ai_func_get_random_int,ai,edge-verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
+0x01657b20,90,ai_func_get_random_int,ai,verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
 0x01657b80,19,ai_func_set_timer,ai,edge-verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
 0x01657ba0,22,ai_func_set_number,ai,edge-verified,AI script binding SetNumber: think script number 0..63 (index checked unsigned)
 0x01658770,205,ai_func_is_inside_target_ex,ai,edge-verified,"IsInsideTargetEx: finds both characters, direction number -> heading (table) and target-line flag (5-8), then the inside test"
@@ -219,12 +220,12 @@ address,size,name,system,status,notes
 0x0165aff0,23,ai_func_get_timer,ai,edge-verified,"AI script binding GetTimer: think timer 0..15, 0.0 above"
 0x0165b010,28,ai_func_is_finish_timer,ai,edge-verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
 0x0165b030,26,ai_func_get_number,ai,edge-verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
-0x0165baf0,22,ai_func_is_battle_state,ai,edge-verified,AI script binding IsBattleState: perception target state == 3 (battle)
+0x0165baf0,22,ai_func_is_battle_state,ai,verified,AI script binding IsBattleState: perception target state == 3 (battle)
 0x0165bb10,27,ai_func_is_change_state,ai,verified,AI script binding IsChangeState: target state differs from last frame's
-0x0165bb30,22,ai_func_is_caution_state,ai,edge-verified,AI script binding IsCautionState: perception target state == 1 (caution)
-0x0165bb50,22,ai_func_is_find_state,ai,edge-verified,AI script binding IsFindState: perception target state == 2 (find)
+0x0165bb30,22,ai_func_is_caution_state,ai,verified,AI script binding IsCautionState: perception target state == 1 (caution)
+0x0165bb50,22,ai_func_is_find_state,ai,verified,AI script binding IsFindState: perception target state == 2 (find)
 0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
-0x0165bb90,18,ai_func_get_previous_target_state,ai,edge-verified,AI script binding GetPrevTargetState: the perception's target state last frame
+0x0165bb90,18,ai_func_get_previous_target_state,ai,verified,AI script binding GetPrevTargetState: the perception's target state last frame
 0x0165ca50,130,ai_func_is_visible_target,ai,edge-verified,"IsVisibleTarget: stores the player's set entry; selectors -2,-1,20-22,24,25 and points 100-123 are visible, else the current target's visible flag"
 0x0167f2a0,22,ai_goal_func_set_timer,ai,edge-verified,AI goal script binding SetTimer: goal timer 0..15 (index checked signed)
 0x0167f2d0,22,ai_goal_func_set_number,ai,edge-verified,AI goal script binding SetNumber: goal script number 0..63 (index checked unsigned)
