@@ -1467,6 +1467,52 @@ static void pipelines_past_the_limit(rt_executor *x)
     check_triangle(x, at(PIPES_TARGET));
 }
 
+/* Draws the triangle with the vertex shader at `code` (in place of the fixture's); the run's result. */
+static int draw_with_vertex_code(rt_executor *x, uint64_t buffer, uint64_t code, uint64_t target, char *error, size_t error_size)
+{
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(buffer, offset, vertex, error, error_size) == 0);
+    return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset + 0x10), error, error_size);
+}
+
+/* More shaders than the 1024 kept (walking a scene brings more): the vertex shader copied to 1100
+   places, each drawn once, all draw, the least recently used giving its entry. The first, freed by
+   then, draws again (translated again). A shader that then stops at run time (it reads VCC as a lane
+   mask after writing its halves as scalars) is named by its own address: it took a freed entry, and
+   that entry's stop word is written into its code. */
+static void shaders_past_the_limit(rt_executor *x)
+{
+    enum { MANY_SHADERS_BUFFER = 0xc0fd7000, SHADER_CODES = 0x3b00000, CODE_STRIDE = 0x100, SHADERS_DRAWN = 1100,
+           SHADERS_TARGET = 0x3b80000 };
+    char error[200] = "";
+    const size_t words = sizeof vertex_position_color / sizeof *vertex_position_color;
+    int drawn = 1;
+    for (unsigned k = 0; k < SHADERS_DRAWN && drawn; k++) {
+        const uint64_t code = at(SHADER_CODES + (uint64_t)k * CODE_STRIDE);
+        memcpy((void *)(uintptr_t)code, vertex_position_color, sizeof vertex_position_color);
+        const int ran = draw_with_vertex_code(x, MANY_SHADERS_BUFFER, code, at(SHADERS_TARGET), error, sizeof error);
+        if (ran) fprintf(stderr, "shader %u: %s\n", k, error);
+        drawn = ran == 0;
+    }
+    CHECK(drawn);
+    check_triangle(x, at(SHADERS_TARGET));
+    memset((void *)(uintptr_t)at(SHADERS_TARGET), 0, SIZE * SIZE * 4);
+    CHECK(draw_with_vertex_code(x, MANY_SHADERS_BUFFER, at(SHADER_CODES), at(SHADERS_TARGET), error, sizeof error) == 0);
+    check_triangle(x, at(SHADERS_TARGET));
+    const uint64_t stopping = at(SHADER_CODES + (uint64_t)SHADERS_DRAWN * CODE_STRIDE);
+    uint32_t *reads_vcc = (uint32_t *)(uintptr_t)stopping;
+    reads_vcc[0] = 0xbeeb0380; /* s_mov_b32 vcc_hi, 0 */
+    reads_vcc[1] = 0x00121280; /* v_cndmask_b32_e32 v9, 0, v9, vcc */
+    memcpy(reads_vcc + 2, vertex_position_color, words * sizeof *reads_vcc);
+    CHECK(draw_with_vertex_code(x, MANY_SHADERS_BUFFER, stopping, at(SHADERS_TARGET), error, sizeof error) == -1);
+    char named[64];
+    snprintf(named, sizeof named, "the vertex shader at %#llx", (unsigned long long)stopping);
+    if (!strstr(error, named)) fprintf(stderr, "shader past the limit stop: %s\n", error);
+    CHECK(strstr(error, named) != NULL);
+}
+
 /* The pipelines kept after render targets are freed (many_targets leaves all 512 kept): each round draws
    into a new target, which frees the oldest; that target's pipeline goes and the last pipeline made (the
    one of the target drawn into the round before) moves into its place. That target is drawn again then.
@@ -3400,6 +3446,7 @@ int main(void)
     many_targets(x);
     pipelines_after_freed_targets(x);
     pipelines_past_the_limit(x);
+    shaders_past_the_limit(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);

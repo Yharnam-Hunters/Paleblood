@@ -2,11 +2,15 @@ address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
 0x00464b90,215,loading_stdio_stream_open,loading,verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
 0x00466810,19,frame_timing_posix_sleep_ms,frame_timing,edge-verified,Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true
+0x00829a90,33,loading_allocator_free_headed_00829a90,loading,edge-verified,"Frees a block with a 16-byte header before its data: clears the header word, sized free of header and size+0x10 (32-bit); null ignored"
+0x00836840,70,loading_tagged_string_release_00836840,loading,edge-verified,Tagged string word: below 2 left alone; odd frees word-1 through the thread allocator (0x00829a90); then cleared
 0x0083d4d0,237,camera_transform_matrix_0083d4d0,camera,edge-verified,"4x4 transform from position, rotation quaternion and per-axis scale: quaternion rows times the diagonal scale, position last, affine w lanes"
 0x00848e80,354,camera_axis_angle_quaternion_00848e80,camera,edge-verified,"Quaternion (axis * sin(angle/2), cos(angle/2)) from the octant sine/cosine polynomial, clamped to 1 (NaN angle gives 1)"
 0x0084d5a0,158,loading_fios_directory_delete,loading,edge-verified,"FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator"
 0x00857cd0,176,loading_fios_open_file,loading,edge-verified,sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open
 0x0085cda0,174,loading_fios_open_file_read,loading,edge-verified,sceFiosFHOpenSync to read; on success a 0x18-byte file object (vtable 0x055c2190) open when the handle is not negative
+0x00ae3fc0,280,physics_controller_construct_00ae3fc0,physics,edge-verified,"Controller: base constructor, vtable, three empty hkArrays (+0x40, +0xc0, +0xd0), +0x68/+0x70 cleared, setup 0x00ae40e0; the 0x30-byte parameter block appended (reserved on the shape heap if needed)"
+0x00ae8700,414,physics_body_set_construct_00ae8700,physics,edge-verified,"Body set: base constructor 0x00f359c0 with all seven arguments, vtable, a reference to the source shape set (+0x78), the source 32-bit indices (+0x80) copied into a shape heap buffer"
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,83,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
 0x0111a620,129,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
@@ -97,6 +101,7 @@ address,size,name,system,status,notes
 0x014739b0,344,render_set_depth_render_target,render,verified,"Emit depth/stencil; view and HTILE registers; or clear DB_Z_INFO and DB_STENCIL_INFO for an absent descriptor. Preserve repeated validity tests and delayed reads when output overlaps descriptor state."
 0x01473fe0,90,render_set_vgt_primitive_type,render,verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
 0x014741b0,156,render_emit_draw_index_auto,render,verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
+0x014749c0,97,render_set_gds_oa,render,edge-verified,Writes a five-word SET_UCONFIG_REG packet with full DWORD GDS_OA_CNTL and cleared counter and address; byte-result callback admission; publishes the live cursor after all stores
 0x01474a30,86,render_set_dispatch_draw_index,render,edge-verified,Write the unmasked VGT_DISPATCH_DRAW_INDEX DWORD after three-word admission; publish from the captured cursor after the packet stores.
 0x01474f30,92,render_set_vertex_reuse,render,edge-verified,Write VGT_REUSE_OFF as the input byte XOR 1; reserve three DWORDs and publish from the captured cursor after ordered stores.
 0x01474f90,99,render_set_instance_step_rates,render,edge-verified,"Write two unmasked VGT_INSTANCE_STEP_RATE DWORDs after four-word admission, then advance the live cursor after the packet stores."
@@ -106,7 +111,11 @@ address,size,name,system,status,notes
 0x014753c0,86,render_emit_set_ps_shader_014753c0,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmSetPsShader at the cursor; cursor advanced only on success
 0x01475420,86,render_emit_update_ps_shader_01475420,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmUpdatePsShader at the cursor; cursor advanced only on success
 0x01475480,98,render_emit_set_vs_shader_01475480,render,edge-verified,Packet writer: reserves 29 words (space callback when short); sceGnmSetVsShader with the shader modifier; cursor advanced only on success
+0x014754f0,98,render_update_vs_shader,render,edge-verified,Reserves 29 words with byte-result callback admission; forwards opaque registers and full DWORD modifier to sceGnmUpdateVsShader; advances the live cursor by 116 bytes only on a zero DWORD result
+0x01475560,98,render_set_es_shader,render,edge-verified,Reserves 20 words with byte-result callback admission; forwards opaque registers and full DWORD modifier to sceGnmSetEsShader; advances the live cursor by 80 bytes only on a zero DWORD result
+0x014755d0,98,render_set_hs_shader,render,edge-verified,Reserve 30 DWORDs; read configuration DWORD after callback admission; forward opaque registers to sceGnmSetHsShader; zero low-DWORD result adds 120 to live cursor; AL admits without retry
 0x01475640,98,render_update_hs_shader,render,edge-verified,Reserve 30 DWORDs; read configuration DWORD after callback admission; forward opaque registers to sceGnmUpdateHsShader; zero low-DWORD result adds 120 to live cursor; AL admits without retry
+0x01475840,83,render_set_compute_shader,render,edge-verified,Reserves 25 words through byte-result capacity admission; forwards the opaque register block to sceGnmSetCsShader; advances the live cursor by 100 bytes only when the low DWORD result is zero
 0x014758a0,90,render_set_border_color_base,render,edge-verified,Write GPU address bits 8-39 to TA_BC_BASE_ADDR after three-word admission; discard low and upper address bits and publish from the captured cursor.
 0x01475900,89,render_set_primitive_id_enable,render,edge-verified,Write the complete input byte to VGT_PRIMITIVEID_EN after three-word admission; preserve noncanonical byte values and publish from the captured cursor.
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
@@ -565,6 +574,8 @@ address,size,name,system,status,notes
 0x024bcfe0,89,loading_result_copy_024bcfe0,loading,edge-verified,"Load result base copy constructor: vtable, request words cleared then copied, code and word"
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bd310,65,loading_resource_handle_assign_024bd310,loading,edge-verified,"Resource handle assignment: unless the infos match, drops the old info reference, takes the source info and adds a reference; returns the handle"
+0x024bd470,28,loading_resource_handle_construct_024bd470,loading,edge-verified,"Base resource handle constructor: stores its vtable and the info, takes a reference (0x02a3a300) when the info is not null"
+0x024bd4c0,25,loading_resource_handle_destroy_024bd4c0,loading,edge-verified,"Base resource handle destructor: stores its vtable, releases the info (0x024bd930) when not null"
 0x024bd930,249,loading_resource_info_release_024bd930,loading,edge-verified,DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls"
 0x024be250,343,loading_load_request_construct_024be250,loading,edge-verified,resource load request base constructor: clear words; keep the third argument at +0x20; name string on the request heap (heap check) from wcslen; tail via 0x024be8e0
@@ -581,6 +592,7 @@ address,size,name,system,status,notes
 0x024d8210,605,loading_file_task_prepare_024d8210,loading,edge-verified,FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks)
 0x024d8470,755,loading_file_task_begin_read_024d8470,loading,edge-verified,FileTransferTask read start: build the 0xb0-byte read request and queue it to the task reader under its lock; close status 3 for a held read object or info read flag bit 0
 0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,edge-verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
+0x024dd8a0,40,loading_transfer_task_cancel_024dd8a0,loading,edge-verified,Atomically sets bit 0 (and bit 1 with the flag) of the state at +0x160 unless bit 2 is set; returns true
 0x024dde50,200,loading_transfer_task_check_read_024dde50,loading,edge-verified,TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4
 0x024ddf20,190,loading_transfer_task_check_close_024ddf20,loading,edge-verified,TransferTask close step: free read object; closed and not cancelled -> request close; else finish once
 0x024de230,116,loading_memory_stream_read_024de230,loading,edge-verified,VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20
@@ -717,6 +729,7 @@ address,size,name,system,status,notes
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling; source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
 0x02b4d100,477,engine_byte_array_assign_02b4d100,engine,edge-verified,"Engine byte array copy assign: self no-op; slot 0x10 queries; empty source empties; memmove over the size or within capacity (rest constructed); else free, allocate exact (align 1), copy"
 0x02bc0e00,196,engine_wide_string_construct_02bc0e00,engine,edge-verified,"Wide string from null-terminated text: default allocator (created on first use), container heap check, empty inline string, counted assign 0x02a2a720 with wcslen (0 for empty)"
+0x02bc1ca0,218,physics_ids_reserve_02bc1ca0,physics,edge-verified,"Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept"
 0x02c6d580,149,frame_timing_thread_random,frame_timing,edge-verified,This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds
 0x02e61140,67,frame_timing_time_of_day_us,frame_timing,edge-verified,Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored
 0x02e61280,101,frame_timing_time_seed_words,frame_timing,edge-verified,"Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call"

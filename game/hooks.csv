@@ -1,11 +1,15 @@
 address,replacement,system,returns
 0x00464b90,bb_loading_stdio_stream_open,loading,void
 0x00466810,bb_frame_timing_posix_sleep_ms,frame_timing,i8
+0x00829a90,bb_loading_allocator_free_headed_00829a90,loading,void
+0x00836840,bb_loading_tagged_string_release_00836840,loading,void
 0x0083d4d0,bb_camera_transform_matrix_0083d4d0,camera,void
 0x00848e80,bb_camera_axis_angle_quaternion_00848e80,camera,void
 0x0084d5a0,bb_loading_fios_directory_delete,loading,void
 0x00857cd0,bb_loading_fios_open_file,loading,i64
 0x0085cda0,bb_loading_fios_open_file_read,loading,i64
+0x00ae3fc0,bb_physics_controller_construct_00ae3fc0,physics,void
+0x00ae8700,bb_physics_body_set_construct_00ae8700,physics,void
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
 0x0111a620,bb_kernel_file_open,kernel,i32
@@ -96,6 +100,7 @@ address,replacement,system,returns
 0x014739b0,bb_render_set_depth_render_target,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x014749c0,bb_render_set_gds_oa,render,void
 0x01474a30,bb_render_set_dispatch_draw_index,render,void
 0x01474f30,bb_render_set_vertex_reuse,render,void
 0x01474f90,bb_render_set_instance_step_rates,render,void
@@ -105,7 +110,11 @@ address,replacement,system,returns
 0x014753c0,bb_render_emit_set_ps_shader_014753c0,render,void
 0x01475420,bb_render_emit_update_ps_shader_01475420,render,void
 0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
+0x014754f0,bb_render_update_vs_shader,render,void
+0x01475560,bb_render_set_es_shader,render,void
+0x014755d0,bb_render_set_hs_shader,render,void
 0x01475640,bb_render_update_hs_shader,render,void
+0x01475840,bb_render_set_compute_shader,render,void
 0x014758a0,bb_render_set_border_color_base,render,void
 0x01475900,bb_render_set_primitive_id_enable,render,void
 0x01475da0,bb_render_emit_event_write,render,void
@@ -564,6 +573,8 @@ address,replacement,system,returns
 0x024bcfe0,bb_loading_result_copy_024bcfe0,loading,void
 0x024bd150,bb_frame_timing_job_take_result,frame_timing,i64
 0x024bd310,bb_loading_resource_handle_assign_024bd310,loading,i64
+0x024bd470,bb_loading_resource_handle_construct_024bd470,loading,void
+0x024bd4c0,bb_loading_resource_handle_destroy_024bd4c0,loading,void
 0x024bd930,bb_loading_resource_info_release_024bd930,loading,void
 0x024bdd40,bb_frame_timing_job_wait,frame_timing,void
 0x024be250,bb_loading_load_request_construct_024be250,loading,void
@@ -580,6 +591,7 @@ address,replacement,system,returns
 0x024d8210,bb_loading_file_task_prepare_024d8210,loading,i8
 0x024d8470,bb_loading_file_task_begin_read_024d8470,loading,void
 0x024dd540,bb_loading_transfer_task_initialize_024dd540,loading,i8
+0x024dd8a0,bb_loading_transfer_task_cancel_024dd8a0,loading,i8
 0x024dde50,bb_loading_transfer_task_check_read_024dde50,loading,i8
 0x024ddf20,bb_loading_transfer_task_check_close_024ddf20,loading,i8
 0x024de230,bb_loading_memory_stream_read_024de230,loading,i32
@@ -716,6 +728,7 @@ address,replacement,system,returns
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
 0x02b4d100,bb_engine_byte_array_assign_02b4d100,engine,i64
 0x02bc0e00,bb_engine_wide_string_construct_02bc0e00,engine,void
+0x02bc1ca0,bb_physics_ids_reserve_02bc1ca0,physics,void
 0x02c6d580,bb_frame_timing_thread_random,frame_timing,i64
 0x02e61140,bb_frame_timing_time_of_day_us,frame_timing,i64
 0x02e61280,bb_frame_timing_time_seed_words,frame_timing,i128
