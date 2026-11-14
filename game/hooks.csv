@@ -98,6 +98,7 @@ address,replacement,system,returns
 0x014739b0,bb_render_set_depth_render_target,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x014749c0,bb_render_set_gds_oa,render,void
 0x01474a30,bb_render_set_dispatch_draw_index,render,void
 0x01474f30,bb_render_set_vertex_reuse,render,void
 0x01474f90,bb_render_set_instance_step_rates,render,void
@@ -107,7 +108,11 @@ address,replacement,system,returns
 0x014753c0,bb_render_emit_set_ps_shader_014753c0,render,void
 0x01475420,bb_render_emit_update_ps_shader_01475420,render,void
 0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
+0x014754f0,bb_render_update_vs_shader,render,void
+0x01475560,bb_render_set_es_shader,render,void
+0x014755d0,bb_render_set_hs_shader,render,void
 0x01475640,bb_render_update_hs_shader,render,void
+0x01475840,bb_render_set_compute_shader,render,void
 0x014758a0,bb_render_set_border_color_base,render,void
 0x01475900,bb_render_set_primitive_id_enable,render,void
 0x01475da0,bb_render_emit_event_write,render,void
