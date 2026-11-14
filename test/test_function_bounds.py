@@ -86,7 +86,7 @@ def build(functions, constructors=(), init=None, fill=b'\xcc', strays=()) -> byt
     return bytes(out)
 
 
-A, B, C, D, E, G, I, F = (TEXT + 16 * i for i in range(8))
+A, B, C, D, E, G, I, F, J = (TEXT + 16 * i for i in range(9))
 PLAIN = [
     # unwind entry; calls C, takes the address of E
     (A, b'\x55' + call(A + 1, C) + lea_rax(A + 6, E) + b'\x5d\xc3', True),
@@ -97,10 +97,12 @@ PLAIN = [
     (G, b'\xc3', False),                                                # in the constructor list
     (I, b'\x31\xc0\xc3', False),                                        # named by the dynamic table
     (F, b'\xc3\x06\x06\x06\x06\x06\x06\x06', True),                     # unwind entry; bytes that do not decode
+    # unwind entry; starts with a direct jump as a thunk does, but the jump is not the whole function
+    (J, jump(J, J + 8) + b'\x90\x90\x90\x31\xc0\xc3', True),
 ]
 EXPECTED = {A: (15, 'unwind', 'function'), B: (5, 'unwind', 'thunk'), C: (10, 'call', 'function'),
             D: (6, 'pointer', 'static_init'), E: (6, 'lea', 'function'), G: (1, 'pointer', 'static_init'),
-            I: (3, 'header', 'function'), F: (8, 'unwind', 'function')}
+            I: (3, 'header', 'function'), F: (8, 'unwind', 'function'), J: (11, 'unwind', 'function')}
 
 
 def repo(address: int) -> int:
@@ -146,17 +148,26 @@ class Executable(Fixture):
 
     def test_every_function_with_its_length_source_and_kind(self):
         found = self.found()
-        self.assertEqual(found.entries, [(repo(A), 15), (repo(B), 5), (repo(F), 8)])
+        self.assertEqual(found.entries, [(repo(A), 15), (repo(B), 5), (repo(F), 8), (repo(J), 11)])
         self.assertEqual({a: (f[0], f[1], found.kinds[a]) for a, f in found.functions.items()},
                          {repo(a): v for a, v in EXPECTED.items()})
         self.assertEqual(found.functions[repo(F)][2], 'jump table inside')
         self.assertEqual(found.constructors, {repo(D), repo(G)})
         self.assertEqual(found.problems(), [])
 
+    def test_function_that_starts_with_a_jump_is_not_a_thunk(self):
+        """A thunk is one direct jump and nothing else. A longer function whose first instruction is a
+        direct jump (the executable has them) stays a function."""
+        found = self.found()
+        self.assertEqual((found.functions[repo(B)][0], found.kinds[repo(B)]), (5, 'thunk'))
+        self.assertEqual((found.functions[repo(J)][0], found.kinds[repo(J)]), (11, 'function'))
+        listing = self.tool('--elf', self.elf(PLAIN, constructors=(D, G), init=I)).stdout.splitlines()
+        self.assertIn(f'0x{repo(J):08x},11,function,function_{repo(J):08x}', listing)
+
     def test_every_byte_is_a_function_or_padding(self):
         found = self.found()
         code = sum(size for size, _, _ in EXPECTED.values())
-        self.assertEqual(found.padding, (F + 8 - A) - code)
+        self.assertEqual(found.padding, (J + 11 - A) - code)
         self.assertEqual((found.leftover, found.overlaps), ([], 0))
         zero_padded = fb.find(fb.Image(self.elf(PLAIN, constructors=(D, G), init=I, fill=b'\0')), set())
         self.assertEqual((zero_padded.padding, zero_padded.leftover), (found.padding, []))
@@ -191,7 +202,7 @@ class Executable(Fixture):
         self.assertEqual(self.tool('--check').returncode, 0)
         again = self.tool('--elf', elf, '--summary')
         self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertIn('same length                         8', again.stdout)
+        self.assertIn('same length                         9', again.stdout)
         listing = self.tool('--elf', elf).stdout.splitlines()
         self.assertEqual(listing[0], 'address,size,kind,name')
         self.assertIn(f'0x{repo(B):08x},5,thunk,thunk_{repo(B):08x}', listing)

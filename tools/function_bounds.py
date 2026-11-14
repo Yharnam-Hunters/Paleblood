@@ -454,7 +454,8 @@ def find(image: Image, listed: set[int]) -> Bounds:
 
     pending: dict[int, str] = {}
     for address in sorted(header_starts(image)):
-        if address not in func and in_entry(address) is None and BASE < address < code_end                 and image.offset(address) is not None:
+        if (address not in func and in_entry(address) is None and BASE < address < code_end
+                and image.offset(address) is not None):
             pending[address] = 'header'
     for address in sorted(listed):
         if address in func or address in pending:
