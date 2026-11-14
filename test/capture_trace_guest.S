@@ -249,6 +249,25 @@ usleep_thunk:
     mov %ecx, (%rax)
     mov %ecx, %eax
     ret
+/* 0x700: int32_t reread_counter(int32_t *a) { int32_t *c = stale(a); *c; stale(a); return *c; }
+   the counter is read, then changed by the second call behind a register the first call left
+   (not an argument, so not the import's write), as another thread might change it, and read
+   again: no case. */
+    .org 0x700
+    push %rbx
+    push %r12
+    sub $8, %rsp
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rdx, %r12
+    mov (%r12), %eax
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%r12), %eax
+    add $8, %rsp
+    pop %r12
+    pop %rbx
+    ret
     .org 0x1000
 global:
     .long 1000
