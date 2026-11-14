@@ -4192,9 +4192,15 @@ int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads
     return 0;
 }
 
+/* gcn_table_snapshot_plan runs on the submitting thread for every new compute shader, so it decides in
+   linear time, more strictly than descriptor_origin (which costs up to a second on the game's longer
+   programs): an s_load's pointer pair counts as the user data's when no instruction before it in the
+   program writes the pair and no branch from it or after it goes back to it or before it (a loop that
+   could carry a later write around). A program with a branch whose target is not known (a call, a
+   computed jump) has no entries. */
 int gcn_table_snapshot_plan(const uint32_t *code, size_t dwords, gcn_table_snapshot *plan, char *error, size_t error_size)
 {
-    enum { POINTER_DWORDS = 2 };
+    enum { POINTER_DWORDS = 2, PAIRS = 64, BACK_BRANCHES = 64, NOT_WRITTEN = -1 };
     *plan = (gcn_table_snapshot){0};
     const long program = gcn_program_dwords(code, dwords);
     if (program < 0) {
@@ -4202,22 +4208,39 @@ int gcn_table_snapshot_plan(const uint32_t *code, size_t dwords, gcn_table_snaps
         return -1;
     }
     const callee_code no_callee = {NULL, 0};
-    unsigned words = 0;
-    for (size_t at = 0; at < (size_t)program;) {
+    long first_write[PAIRS]; /* by the pair's first SGPR / 2: the first instruction writing it */
+    for (unsigned k = 0; k < PAIRS; k++) first_write[k] = NOT_WRITTEN;
+    struct {
+        long from, to;
+    } back[BACK_BRANCHES];
+    unsigned back_count = 0;
+    for (size_t at = 0; at < (size_t)program;) { /* the writes and the branches back */
         gcn_instruction ins;
         if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) {
             snprintf(error, error_size, "dword %zu: an instruction the decoder cannot name", at);
             return -1;
         }
+        long target;
+        if (branches(code + at, &ins, at, &target)) {
+            if (target < 0 || back_count == BACK_BRANCHES) return 0; /* an unknown target: no entries */
+            if ((size_t)target <= at) back[back_count].from = (long)at, back[back_count++].to = target;
+        }
+        for (unsigned k = 0; k < PAIRS; k++)
+            if (first_write[k] == NOT_WRITTEN && writes_sgprs(code + at, &ins, &no_callee, 2 * k, POINTER_DWORDS)) first_write[k] = (long)at;
+        at += ins.dwords;
+    }
+    unsigned words = 0;
+    for (size_t at = 0; at < (size_t)program && plan->use_count < GCN_TABLE_SNAPSHOT_USES;) {
+        gcn_instruction ins;
+        gcn_decode(code + at, (size_t)program - at, &ins);
         const uint32_t *w = code + at;
         const int immediate = (w[0] & SMRD_IMM) != 0, literal = !immediate && (w[0] & 0xff) == OPERAND_LITERAL;
-        gcn_resource_origin origin;
-        char reason[256];
-        if (ins.encoding == GCN_SMRD && !strncmp(ins.name, "s_load_dword", 12) && (immediate || literal) &&
-            plan->use_count < GCN_TABLE_SNAPSHOT_USES &&
-            !descriptor_origin(code, (size_t)program, &no_callee, at, ((w[0] >> 9) & 0x3f) * 2, POINTER_DWORDS, &origin, reason, sizeof reason) &&
-            !origin.from_memory) {
-            const gcn_table_entry wanted = {.pointer_sgpr = origin.sgpr, .offset = (literal ? w[1] : w[0] & 0xff) * BYTES_PER_DWORD,
+        const unsigned pair = (w[0] >> 9) & 0x3f;
+        int user_data = ins.encoding == GCN_SMRD && !strncmp(ins.name, "s_load_dword", 12) && (immediate || literal) && pair < PAIRS &&
+                        (first_write[pair] == NOT_WRITTEN || first_write[pair] >= (long)at);
+        for (unsigned b = 0; b < back_count && user_data; b++) user_data = !(back[b].to <= (long)at && back[b].from >= (long)at);
+        if (user_data) {
+            const gcn_table_entry wanted = {.pointer_sgpr = 2 * pair, .offset = (literal ? w[1] : w[0] & 0xff) * BYTES_PER_DWORD,
                                             .dwords = dwords_named(ins.name)};
             unsigned k = 0;
             while (k < plan->entry_count && (plan->entries[k].pointer_sgpr != wanted.pointer_sgpr || plan->entries[k].offset != wanted.offset ||

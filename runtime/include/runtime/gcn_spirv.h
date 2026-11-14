@@ -160,7 +160,8 @@ int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads
                      size_t error_size);
 
 /* Table snapshots: the small tables a compute program reads with s_load through a user-data pointer
-   pair it does not write, at an immediate or literal offset (as gcn_memory_reads finds them). The
+   pair, at an immediate or literal offset, where no instruction before the load writes the pair and no
+   branch goes back over the load (a stricter test than gcn_memory_reads', made in linear time). The
    game hands such shaders a pointer into a per-frame ring (a 16-byte table holding a buffer
    descriptor) and rewrites the ring's slot soon after it submits the buffer: the console's GPU has
    read it by then, as it starts on a buffer soon after its submission, but the renderer here may record

@@ -550,7 +550,8 @@ static void memory_reads(void)
 /* Table snapshots (gcn_table_snapshot_plan): table_descriptor_store's s_load of 4 dwords at 0 from the
    pointer in s[2:3] is one entry; s_load_dwordx4 at dword 4 from s[0:1] reads bytes 16-31; a load
    through a pointer the program writes first is none; entries take loads while their words fit
-   (15: three 4-dword loads, not a fourth) and a second load of the same words shares its entry. The
+   (15: three 4-dword loads, not a fourth) and a second load of the same words shares its entry; a
+   loop back over the load, or a jump to a computed address, makes none. The
    module the plan's loads translate to is valid, and a snapshot past the push constants is refused. */
 static void table_snapshots(void)
 {
@@ -583,6 +584,24 @@ static void table_snapshots(void)
     CHECK(gcn_table_snapshot_plan(PROGRAM(four_tables), &plan, error, sizeof error) == 0);
     CHECK(plan.entry_count == 3 && plan.entries[2].offset == 32 && plan.entries[2].first_word == 8 && plan.use_count == 4 &&
           plan.uses[3].at == 4 && plan.uses[3].entry == 0);
+    static const uint32_t over_its_pointer[] = { /* the LUT pass's load, into the SGPRs of its own pointer */
+        0xc0800300, /* s_load_dwordx4 s[0:3], s[2:3], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(over_its_pointer), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].pointer_sgpr == 2 && plan.use_count == 1);
+    static const uint32_t looped[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe820404, /* s_mov_b64 s[2:3], s[4:5] */
+        0xbf82fffd, /* s_branch -3 (back to the load) */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(looped), &plan, error, sizeof error) == 0 && plan.entry_count == 0);
+    static const uint32_t returning[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe802000, /* s_setpc_b64 s[0:1] */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(returning), &plan, error, sizeof error) == 0 && plan.entry_count == 0);
     CHECK(gcn_table_snapshot_plan(PROGRAM(table_descriptor_store), &plan, error, sizeof error) == 0);
     compute_tables = &plan;
     translates(PROGRAM(table_descriptor_store), "table_descriptor_store_snapshot");

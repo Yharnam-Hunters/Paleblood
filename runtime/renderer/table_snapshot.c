@@ -10,7 +10,7 @@
 
 _Static_assert(RT_TABLE_WORDS == GCN_TABLE_SNAPSHOT_WORDS + 1, "a dispatch's words hold the mask and the snapshot's words");
 
-enum { PLAN_SLOTS = 256, POINTER_HIGH_MASK = 0xffff };
+enum { PLAN_SLOTS = 2048, PLAN_PROBES = 32, POINTER_HIGH_MASK = 0xffff };
 
 /* What the calls set on one queue, as the executor keeps it (render_executor.c, swap_compute_state). */
 typedef struct {
@@ -19,7 +19,8 @@ typedef struct {
     uint32_t user[RT_USER_DATA_SLOTS], user_set;
 } queue_state;
 
-/* A shader's plan, by its code address (a slot each, the newest kept). */
+/* A shader's plan, by its code address: open addressing, each address probing PLAN_PROBES slots from its
+   hash, so a plan is made once per shader (the executor keeps at most 512 compute pipelines). */
 typedef struct {
     uint64_t code;
     int planned;                     /* 1: plan holds the program's; -1: the program does not decode */
@@ -44,7 +45,15 @@ static int inside(const rt_table_memory *memory, uint64_t address, uint64_t byte
 static const gcn_table_snapshot *plan_for(rt_table_snapshots *s, uint64_t code, const rt_table_memory *memory)
 {
     if (code % 4 || !inside(memory, code, 4)) return NULL;
-    plan_slot *slot = &s->plans[(code >> 8) % PLAN_SLOTS];
+    const unsigned home = (unsigned)((code >> 8) * 0x9e3779b1u) % PLAN_SLOTS;
+    plan_slot *slot = &s->plans[home];
+    for (unsigned i = 0; i < PLAN_PROBES; i++) {
+        plan_slot *probe = &s->plans[(home + i) % PLAN_SLOTS];
+        if (probe->code == code || !probe->planned) {
+            slot = probe;
+            break;
+        }
+    }
     if (slot->code != code || !slot->planned) {
         char reason[256];
         const size_t dwords = (size_t)((memory->base + memory->bytes - code) / 4);
