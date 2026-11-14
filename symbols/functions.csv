@@ -162,6 +162,7 @@ address,size,name,system,status,notes
 0x01475840,83,render_set_compute_shader,render,edge-verified,Reserves 25 words through byte-result capacity admission; forwards the opaque register block to sceGnmSetCsShader; advances the live cursor by 100 bytes only when the low DWORD result is zero
 0x014758a0,90,render_set_border_color_base,render,edge-verified,Write GPU address bits 8-39 to TA_BC_BASE_ADDR after three-word admission; discard low and upper address bits and publish from the captured cursor.
 0x01475900,89,render_set_primitive_id_enable,render,edge-verified,Write the complete input byte to VGT_PRIMITIVEID_EN after three-word admission; preserve noncanonical byte values and publish from the captured cursor.
+0x01475960,109,render_set_multi_vgt_param,render,edge-verified,Emit IA_MULTI_VGT_PARAM from a primitive group size byte and the low PARTIAL_VS_WAVE_ON input bit; reserve three DWORDs with AL callback admission and captured cursor publication
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
@@ -228,8 +229,8 @@ address,size,name,system,status,notes
 0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
 0x014a3410,250,render_copy_initial_level_014a3410,render,edge-verified,"Render: copies one level of initial data through the box copy, in 4x4 blocks for block-compressed or blocked levels; a null level is refused"
-0x016243a0,74,ai_character_negated_third_column,ai,edge-verified,"AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character"
-0x01624760,35,ai_character_id,ai,edge-verified,"AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character"
+0x016243a0,74,ai_character_negated_third_column,ai,verified,"AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character"
+0x01624760,35,ai_character_id,ai,verified,"AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character"
 0x01624e50,109,ai_character_flag_module_set,ai,verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
 0x0162d840,897,ai_target_speed_record_update,ai,verified,"Target speed record: 30-sample ring of the followed target's speed along the line to the character, weighted average"
 0x016334b0,804,ai_debug_set_position_016334b0,ai,edge-verified,"Debug display move: stays while a point-gated object is within 1e-4 of the reference; else target=object, point->previous, finds the point near the object (0x021c97d0) or in the world"
@@ -237,16 +238,16 @@ address,size,name,system,status,notes
 0x0163bb50,626,ai_debug_end_0163bb50,ai,edge-verified,Debug view end of frame: draws its marks (and the world marks) when asked; then the subject bounding box (vtable +0x60) through 0x0135dca0 with the bounds render state
 0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
 0x01657b20,90,ai_func_get_random_int,ai,verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
-0x01657b80,19,ai_func_set_timer,ai,edge-verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
-0x01657ba0,22,ai_func_set_number,ai,edge-verified,AI script binding SetNumber: think script number 0..63 (index checked unsigned)
+0x01657b80,19,ai_func_set_timer,ai,verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
+0x01657ba0,22,ai_func_set_number,ai,verified,AI script binding SetNumber: think script number 0..63 (index checked unsigned)
 0x01658770,205,ai_func_is_inside_target_ex,ai,edge-verified,"IsInsideTargetEx: finds both characters, direction number -> heading (table) and target-line flag (5-8), then the inside test"
 0x0165a1d0,32,ai_func_get_sp,ai,edge-verified,"AI script binding GetSp: the named character's SP through its vtable, 0 without one"
 0x0165a1f0,32,ai_func_get_mp,ai,edge-verified,"AI script binding GetMp: the named character's MP through its vtable, 0 without one"
 0x0165a210,32,ai_func_get_hp,ai,edge-verified,"AI script binding GetHp: the named character's HP through its vtable, 0 without one"
 0x0165a230,34,ai_func_get_hp_rate,ai,edge-verified,"AI script binding GetHpRate: the named character's HP fraction through its vtable, 0.0 without one"
-0x0165aff0,23,ai_func_get_timer,ai,edge-verified,"AI script binding GetTimer: think timer 0..15, 0.0 above"
-0x0165b010,28,ai_func_is_finish_timer,ai,edge-verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
-0x0165b030,26,ai_func_get_number,ai,edge-verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
+0x0165aff0,23,ai_func_get_timer,ai,verified,"AI script binding GetTimer: think timer 0..15, 0.0 above"
+0x0165b010,28,ai_func_is_finish_timer,ai,verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
+0x0165b030,26,ai_func_get_number,ai,verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
 0x0165baf0,22,ai_func_is_battle_state,ai,verified,AI script binding IsBattleState: perception target state == 3 (battle)
 0x0165bb10,27,ai_func_is_change_state,ai,verified,AI script binding IsChangeState: target state differs from last frame's
 0x0165bb30,22,ai_func_is_caution_state,ai,verified,AI script binding IsCautionState: perception target state == 1 (caution)
@@ -261,7 +262,7 @@ address,size,name,system,status,notes
 0x0167f860,20,ai_goal_func_is_finish_turn_timer,ai,edge-verified,AI goal script binding IsFinishTimerForTurnBeforeAtk: the turn-before-attack timer <= 0
 0x0167f880,26,ai_goal_func_get_number,ai,edge-verified,"AI goal script binding GetNumber: goal script number 0..63, 0.0 above"
 0x01693850,1175,ai_is_inside_direction,ai,verified,"Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series)"
-0x0169acf0,114,ai_character_has_effect_state,ai,edge-verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
+0x0169acf0,114,ai_character_has_effect_state,ai,verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,edge-verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
@@ -355,6 +356,8 @@ address,size,name,system,status,notes
 0x02265290,470,frame_timing_lookup_session_object_02265290,frame_timing,edge-verified,"Finds the entry for an id in FrpgNetMan's object's list (else allocates, builds and appends one), gives it to a new request and stores it with a reference; null when FrpgNetMan's bytes refuse"
 0x02265580,563,frame_timing_create_handle_from_levels_02265580,frame_timing,edge-verified,"When FrpgNetMan allows: makes a date-stamped handle (0x130 bytes), lists it at FrpgNetMan+0xca8, starts a new entry with it and the four flag levels, returns a reference; else null"
 0x02265960,116,frame_timing_pass_on_in_server_mode_02265960,frame_timing,edge-verified,"Gate handle pass-on in the server modes: when the handle is set, makes a request from FrpgNetMan's object at +0xca8 (0x02264640) and gives it the handle and kind (0x02269e30); false otherwise"
+0x02269d40,234,frame_timing_give_handle_to_local_request_02269d40,frame_timing,edge-verified,"Local pass-on request: empty handle false; else holds the handle's object (counted), kind at +0xdc, object's +0x11c/+0x120 = 1, slot 0x38, send 0xc; true"
+0x02269e30,222,frame_timing_give_handle_to_server_request_02269e30,frame_timing,edge-verified,"Server pass-on request: empty handle false; else holds the handle's object (counted), kind at +0xdc, object's +0x120 = 1, send 0x13; true"
 0x02311c80,283,param_find_row_equip_param_accessory,param,edge-verified,SoloParamRepository row lookup for EquipParamAccessory (type 2): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02311da0,284,param_row_name_equip_param_accessory,param,edge-verified,SoloParamRepository row name lookup for EquipParamAccessory (type 2): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x02312070,309,param_next_row_id_equip_param_accessory,param,edge-verified,SoloParamRepository id of the row after id in EquipParamAccessory (type 2) file order; negative id: first row; -1 when none
@@ -719,10 +722,11 @@ address,size,name,system,status,notes
 0x02713870,11646,render_update_model_wind,render,edge-verified,"Ages a model wind receiver's kept influences; lists the live ones and adds or refreshes one per attached wind source; applies selected frame-rate steps"
 0x027ec640,583,engine_scaleform_heap_bitset_mark_027ec640,engine,edge-verified,Scaleform page bitset: mark an allocated block (2-bit codes: 1; 2; 3+len-3; 3 3 + 6-bit len-6; 3 3 3 + 32-bit word); last unit 1
 0x027ec890,171,engine_scaleform_heap_bitset_units_027ec890,engine,edge-verified,Scaleform page bitset: read an allocated block's length from its first codes
-0x029ae440,418,ai_entity_point_029ae440,ai,edge-verified,"Face point of a nav-mesh-like source: mean of its edges start vertices through the transform at +0x70 (face/edge maps, added faces/edges/vertices), times refined rcpps of the count; writes 16 bytes"
+0x029ae440,418,ai_entity_point_029ae440,ai,verified,"Face point of a nav-mesh-like source: mean of its edges start vertices through the transform at +0x70 (face/edge maps, added faces/edges/vertices), times refined rcpps of the count; writes 16 bytes"
 0x02a279a0,429,engine_wide_string_assign_from_02a279a0,engine,edge-verified,"Wide string assign(source, position, count): out of range past the end; self-assign cuts the tail, wmemmove front; else grow if capacity < length, wmemcpy"
 0x02a27b70,311,engine_wide_string_grow_02a27b70,engine,edge-verified,"Wide string growth: capacity length|7 or old*1.5 (max 0x7ffffffffffffffe); allocate 2*cap+2 align 2, transaction on failure; keep chars, free old heap"
 0x02a2a310,477,engine_wide_string_assign_02a2a310,engine,edge-verified,"Wide string assign from counted text: text inside its own characters keeps that part (cut the tail, wmemmove the front); else too long throws, grow 0x02a2a500 if needed, wmemcpy"
+0x02a2a650,200,engine_wide_string_assign_repeated_02a2a650,engine,edge-verified,"Wide string assign of count copies of a character: too long throws; grows (0x02a27b70) when the capacity is smaller, else 0 only empties; fills (1: one store, else wmemset), ends"
 0x02a2a720,477,engine_wide_string_assign_counted_02a2a720,engine,edge-verified,"Wide string assign from counted text: text inside the string is the assign from part of itself (inlined); otherwise too long throws, grow if needed, copy"
 0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
 0x02a2d8e0,452,engine_narrow_string_assign_02a2d8e0,engine,edge-verified,"Narrow string assign from counted text: text inside its own characters keeps that part (cut the tail, memmove the front); else count ~0 throws, grow 0x02a2dac0 if needed, memcpy"

@@ -77,7 +77,7 @@ const rt_hook_entry game_hooks[] = {
     {0x00400200u, 0x40u, "bb_capture_trace_call_native", reinterpret_cast<rt_hook_fn>(call_native_replacement), "void"},
     {0x00400280u, 0x40u, "bb_capture_trace_count_down", reinterpret_cast<rt_hook_fn>(count_down_replacement), "i32"},
     {0x004002c0u, 0x20u, "bb_capture_trace_use_import", reinterpret_cast<rt_hook_fn>(use_import_replacement), "i32"},
-    {0x00400840u, 0x40u, "bb_capture_trace_leaf_caller", reinterpret_cast<rt_hook_fn>(leaf_caller_replacement), "i32"},
+    {0x00400880u, 0x40u, "bb_capture_trace_leaf_caller", reinterpret_cast<rt_hook_fn>(leaf_caller_replacement), "i32"},
 };
 extern const unsigned game_hook_count;
 const unsigned game_hook_count = sizeof game_hooks / sizeof game_hooks[0];
@@ -85,7 +85,7 @@ const unsigned game_hook_count = sizeof game_hooks / sizeof game_hooks[0];
 /* The family table plugin.c installs after the hooks: one member, as tools/gen_hooks.py writes it. */
 extern const rt_family_hook game_family_hooks[];
 const rt_family_hook game_family_hooks[] = {
-    {0x00400820u, 0x20u, "leaf_field", reinterpret_cast<rt_hook_fn>(leaf_field_replacement)},
+    {0x00400860u, 0x20u, "leaf_field", reinterpret_cast<rt_hook_fn>(leaf_field_replacement)},
 };
 extern const unsigned game_family_hook_count;
 const unsigned game_family_hook_count = sizeof game_family_hooks / sizeof game_family_hooks[0];
@@ -134,11 +134,11 @@ int run(const std::string &dir, bool self_test)
     /* The family member's code is overwritten by its hook; the traced caller still runs the
        member's original (a copy taken before the hook), and gives a case. */
     const int32_t fields[3] = {0, 0, 41};
-    auto leaf_caller = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x840);
+    auto leaf_caller = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x880);
     check(leaf_caller(fields) == 42 && leaf_caller_calls == 0 && leaf_field_calls == 0,
           "leaf_caller: traced, and its call to a family member follows the member's original");
     check(exists(dir + "/capture_trace_leaf_caller/hooks_0000.json"), "leaf_caller: a case through the family member");
-    auto leaf_field = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x820);
+    auto leaf_field = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x860);
     check(leaf_field(fields) == 41 && leaf_field_calls == 1, "leaf_field: an untraced call reaches the family replacement");
 
     Inner inner{0, 7};

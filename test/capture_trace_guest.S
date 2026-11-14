@@ -268,6 +268,25 @@ usleep_thunk:
     pop %r12
     pop %rbx
     ret
+/* 0x740: int32_t rewritten_counter(int32_t *a) { int32_t *c = stale(a); *c = 5; stale(a); return *c; }
+   the counter is written, then changed by the second call behind a register the first call left,
+   as another thread might change memory the code wrote, and read again: a replay would read the
+   5 it wrote, so no case. */
+    .org 0x740
+    push %rbx
+    push %r12
+    sub $8, %rsp
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rdx, %r12
+    movl $5, (%r12)
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%r12), %eax
+    add $8, %rsp
+    pop %r12
+    pop %rbx
+    ret
 /* 0x780: void *take(Pool *p, uint64_t n) { the next n bytes of [top, end), or 0 }  Pool: +0x10 top,
    +0x18 end. Its short ja lies in the first 14 bytes (a hook's jump), with its target just past
    them: relocation writes it in its 32-bit form. */
@@ -302,16 +321,24 @@ usleep_thunk:
     xor %ecx, %ecx
 1:  add $1, %eax
 2:  ret
-/* 0x820: int32_t leaf_field(const int32_t *p) { return p[2]; }, a family member with a 32-byte
+/* 0x840: int32_t bit_set(const int32_t *p) { return (*p & 4) != 0; } reading *p only through
+   `test m, r`, whose memory operand Capstone marks with no access: still an input. */
+    .org 0x840
+    xor %eax, %eax
+    mov $4, %ecx
+    test %ecx, (%rdi)
+    setne %al
+    ret
+/* 0x860: int32_t leaf_field(const int32_t *p) { return p[2]; }, a family member with a 32-byte
    extent. A traced caller must run this original, not the family's shared replacement. It sits
    below the hooked leaf_caller, so its redirect has to be sorted in among the hooks' redirects. */
-    .org 0x820
+    .org 0x860
 leaf_field:
     mov 8(%rdi), %eax
     ret
 
-/* 0x840: int32_t leaf_caller(const int32_t *p) { return leaf_field(p) + 1; } */
-    .org 0x840
+/* 0x880: int32_t leaf_caller(const int32_t *p) { return leaf_field(p) + 1; } */
+    .org 0x880
     call leaf_field
     add $1, %eax
     ret

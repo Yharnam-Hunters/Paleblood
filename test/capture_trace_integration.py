@@ -29,7 +29,7 @@ FUNCTIONS = {  # name: (address, replacement symbol)
     'capture_trace_copy': ('0x00400140', 'copy'),
     'capture_trace_use_import': ('0x004002c0', 'use_import'),
     'capture_trace_thread_counter': ('0x004006c0', 'thread_counter'),
-    'capture_trace_leaf_caller': ('0x00400840', 'leaf_caller'),
+    'capture_trace_leaf_caller': ('0x00400880', 'leaf_caller'),
 }
 
 REPLACEMENT = r'''#include <stdint.h>
