@@ -301,6 +301,7 @@ engine_wide_string_assign_02a2a310,recorded,,10,10,0,0,2a14e8f9aadabcba,2026-11-
 engine_wide_string_assign_02a2a310,edge,,29,29,0,0,2a14e8f9aadabcba,2026-11-13
 engine_wide_string_assign_counted_02a2a720,edge,,19,19,0,0,c2e61a00f86b4380,2026-11-13
 engine_wide_string_assign_from_02a279a0,edge,,21,21,0,0,c2e61a00f86b4380,2026-11-13
+engine_wide_string_assign_repeated_02a2a650,edge,,25,25,0,0,89337899ee69c7c0,2026-11-14
 engine_wide_string_construct_02bc0e00,recorded,,200,200,0,0,7a364f229445d8e0,2026-11-13
 engine_wide_string_construct_02bc0e00,edge,,17,17,0,0,7a364f229445d8e0,2026-11-13
 engine_wide_string_destroy,edge,,28,28,0,0,82e3fd837894b106,2026-11-03
@@ -1118,6 +1119,7 @@ render_set_guard_band_discard_adjust,edge,,13,13,0,0,d796d1a200c99651,2026-11-12
 render_set_hs_shader,edge,,245,245,0,0,0384de3e1c830f13,2026-11-13
 render_set_instance_step_rates,edge,,102,102,0,0,0579bf8a165662dc,2026-11-13
 render_set_ls_shader,edge,,199,199,0,0,8964f529294cbf35,2026-11-13
+render_set_multi_vgt_param,edge,,310,310,0,0,f8a97e02e45ca528,2026-11-14
 render_set_pa_cl_vte_cntl,recorded,,83,83,0,0,70ef1c91ed183e42,2026-11-12
 render_set_pa_cl_vte_cntl,edge,,45,45,0,0,70ef1c91ed183e42,2026-11-12
 render_set_pa_sc_mode_cntl_0,recorded,,98,98,0,0,9fcd7c9fe8cf9923,2026-11-13
