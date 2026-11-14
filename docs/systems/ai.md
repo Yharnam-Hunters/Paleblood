@@ -61,7 +61,7 @@ will be labeled as observations until their implementation is traced.
 | `0x016243a0` | 74 | `ai_character_negated_third_column` | edge-verified | AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character |
 | `0x01624760` | 35 | `ai_character_id` | edge-verified | AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character |
 | `0x01624e50` | 109 | `ai_character_flag_module_set` | verified | AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set |
-| `0x0162d840` | 897 | `ai_target_speed_record_update` | edge-verified | Target speed record: 30-sample ring of the followed target's speed along the line to the character, weighted average |
+| `0x0162d840` | 897 | `ai_target_speed_record_update` | verified | Target speed record: 30-sample ring of the followed target's speed along the line to the character, weighted average |
 | `0x016334b0` | 804 | `ai_debug_set_position_016334b0` | edge-verified | Debug display move: stays while a point-gated object is within 1e-4 of the reference; else target=object, point->previous, finds the point near the object (0x021c97d0) or in the world |
 | `0x01633ac0` | 734 | `ai_debug_flush_01633ac0` | edge-verified | Marks (debug flag 2) the objects of the entities the display object links to (+0x150, 0x60 apart): ids copied to a temporary std::list from the default allocator first |
 | `0x0163bb50` | 626 | `ai_debug_end_0163bb50` | edge-verified | Debug view end of frame: draws its marks (and the world marks) when asked; then the subject bounding box (vtable +0x60) through 0x0135dca0 with the bounds render state |
@@ -97,6 +97,8 @@ will be labeled as observations until their implementation is traced.
 | `0x0169fad0` | 155 | `ai_character_link_ids` | verified | The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1 |
 | `0x016a52b0` | 1936 | `ai_sight_test` | edge-verified | Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins |
 | `0x016a5a50` | 43 | `ai_sight_query_reset_target` | edge-verified | Sight query: target half reset (origin, no height or size, visibility 1, light, seeable) |
+| `0x016a85c0` | 1463 | `ai_perception_update` | edge-verified | Perception update per think: target-list update, then target state and type from the list (kind 4/5 battle, main entry's state, kind 3/11 caution), facing check, force battle |
+| `0x016acfa0` | 384 | `ai_perception_current_handle` | verified | Perception: handle of the current target (kind-4 node, kind-5 node, main entry, kind-3 node), character or place |
 | `0x016ad400` | 287 | `ai_perception_target_visible` | edge-verified | Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11 |
 | `0x016b2760` | 512 | `ai_target_list_refresh_noticed` | edge-verified | Target list: refresh the noticed character's entry (clock 0, visible, refreshed bit) or allocate and link a new 0xa0-byte entry; notice record update |
 | `0x016b30a0` | 368 | `ai_target_list_mark_main_matches` | verified | Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer |

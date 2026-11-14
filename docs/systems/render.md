@@ -527,6 +527,8 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x02ad5dd0` | 27 | `render_swap_chain_present_mode` | edge-verified | Validates low DWORD mode; retains object; loads full source pointer at +0x33d0; forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings. |
 | `0x02ad5e90` | 3005 | `render_setup_swap_chain` | edge-verified | Allocate and register swap-chain buffers; initialize cached resource data and tone curves; and retain partial publications on the corresponding failure paths. |
 | `0x02ad6e50` | 499 | `render_swap_chain_submit` | edge-verified | Owned-thread flip polling; source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings. |
+| `0x02c51f60` | 87 | `render_set_parameter_02c51f60` | edge-verified | Parameter set: finds the key among the sorted keys (lower bound) and stores the value beside it when found |
+| `0x02c51fc0` | 42 | `render_clear_parameter_set_02c51fc0` | edge-verified | Parameter set: frees its block of keys and values through its allocator (slot 0x70) and clears the pointer, when there is one |
 | `0x02fa6af0` | 2214 | `render_prepare_resource_descriptor` | edge-verified | Build the resource descriptor and requirements through ordered original helpers; preserve partial writes on errors and live parameter reads between calls. |
 
 ## Structs and globals
