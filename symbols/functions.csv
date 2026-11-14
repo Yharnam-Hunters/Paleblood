@@ -275,6 +275,7 @@ address,size,name,system,status,notes
 0x0169acf0,124,ai_character_has_effect_state,ai,verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,144,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
+0x0169cef0,611,ai_hearing_check_sound,ai,edge-verified,"Hearing: who made a sound (character or object by handle, or neither) and whether the listener's team hears the maker's; calls the hearing test with the maker's size"
 0x0169d160,2249,ai_hearing_test,ai,edge-verified,"Hearing: whether the enemy hears one sound (range less the sound-cut distance against the gap; otherwise the ear's reach by width and height angle) and remembers it"
 0x0169da30,763,ai_hearing_in_ear_range,ai,edge-verified,"Hearing: does a sphere around a sound point reach the ear (within the ear height angle: reach plus radius; beyond it: the sphere surface crosses the angle edge segment)"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
