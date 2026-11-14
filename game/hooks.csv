@@ -46,6 +46,7 @@ address,replacement,system,returns
 0x0111ada0,bb_kernel_semaphore_wait,kernel,i32
 0x0111adc0,bb_kernel_semaphore_signal,kernel,i32
 0x0111b060,bb_audio_fmod_output_driver_count,audio,i64
+0x0111b070,bb_audio_fmod_copy_output_label,audio,i64
 0x0111b0b0,bb_audio_fmod_output_defaults,audio,i64
 0x011ab3a0,bb_kernel_memory_pool_free_011ab3a0,kernel,void
 0x011c4510,bb_engine_store_word_product,engine,i64
