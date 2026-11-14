@@ -209,8 +209,8 @@ static void stencil_cases(rt_executor *x,uint8_t *pool)
     s=scene();s.format=0;s.stencil=1;s.control=1|7<<8;s.ops=3<<4;s.color=s.pixel=0;
     setup(x,pool,&s);if(!submit(x,NULL))expected(&s,1,0x17,W,H);finish(pool,&s);
 }
-/* These owned cases use linear 16x8 S8 rows, a selected slice and independent
-   literal offsets. The expected pool changes only at those stencil bytes and,
+/* These owned cases use selected linear S8 slices plus one owned P8/ADDR5 case
+   with independent literal offsets. The expected pool changes only at covered stencil bytes and,
    when the stencil test passes, the white BGRA colour rectangle. */
 enum { ASPECT_META = 0x400000, HTILE_FLAG = 1u << 29, EXPCLEAR_FLAG = 1u << 27,
        STENCIL_NO_METADATA = 1u << 29, STENCIL_ALWAYS = 1 | 7u << 8,
@@ -232,7 +232,7 @@ static const AspectCase aspect_cases[] = {
     {"s8-inactive-d32-both",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,1u<<4,0,1,1,0,NULL},
     {"s8-zwrite-without-enable",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS|4u,3u<<4,0x17,1,1,0,NULL},
     {"s8-never-fail-replace",3,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,1,3,0x17,0,1,0,NULL},
-    {"s8-inactive-d32-addr5-f",3,HTILE_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,3u<<4,0x17,1,1,15,NULL},
+    {"s8-inactive-d32-addr5-f",3,HTILE_FLAG,STENCIL_NO_METADATA,STENCIL_ALWAYS,3u<<4,0x17,1,1,0x001a0c4f,NULL},
     {"active-d16-htile",1,HTILE_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"HTILE"},
     {"active-d16-expclear",1,EXPCLEAR_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"expanded depth"},
     {"active-d16-both",1,HTILE_FLAG|EXPCLEAR_FLAG,STENCIL_NO_METADATA,DEPTH_AND_STENCIL_ALWAYS,3u<<4,0x2a,0,0,0,"HTILE"},
@@ -260,7 +260,12 @@ static int aspect_submit(rt_executor *x,uint8_t *pool,Scene *s,const char *id,co
 {
     memcpy(before,pool,POOL);memcpy(wanted,before,POOL);
     if(!reason){
-        for(unsigned y=0;y<H;++y)for(unsigned col=0;col<W;++col)
+        if(s->geometry==0x001a0c4fu){
+            /* Owned P8/S8 slice1 origin47104: two literal64-byte microtiles,
+               separated by256bytes. No production address mapper forms this oracle. */
+            memset(wanted+S_BASE+47104,(int)value,64);
+            memset(wanted+S_BASE+47104+256,(int)value,64);
+        }else for(unsigned y=0;y<H;++y)for(unsigned col=0;col<W;++col)
             wanted[S_BASE+s->slice*(W*H)+y*W+col]=(uint8_t)value;
         if(color)memset(wanted+COLOR_BASE,255,W*H*4);
     }
@@ -270,8 +275,13 @@ static int aspect_submit(rt_executor *x,uint8_t *pool,Scene *s,const char *id,co
     size_t changed=0,mismatches=0;
     for(size_t i=0;i<POOL;++i){changed+=pool[i]!=before[i];mismatches+=pool[i]!=wanted[i];}
     unsigned stencil_matches=0,color_matches=0;
+    if(s->geometry==0x001a0c4fu)for(unsigned i=0;i<64;++i){
+        stencil_matches+=pool[S_BASE+47104+i]==(reason?0x2a:value);
+        stencil_matches+=pool[S_BASE+47104+256+i]==(reason?0x2a:value);
+    }
     for(unsigned y=0;y<H;++y)for(unsigned col=0;col<W;++col){
-        stencil_matches+=pool[S_BASE+s->slice*(W*H)+y*W+col]==(reason?0x2a:value);
+        if(s->geometry!=0x001a0c4fu)
+            stencil_matches+=pool[S_BASE+s->slice*(W*H)+y*W+col]==(reason?0x2a:value);
         const uint8_t *pixel=pool+COLOR_BASE+(y*W+col)*4;
         const unsigned byte=reason||!color?0x55:255;
         color_matches+=pixel[0]==byte&&pixel[1]==byte&&pixel[2]==byte&&pixel[3]==byte;
@@ -289,6 +299,7 @@ static void aspect_metadata_cases(rt_executor *x,uint8_t *pool)
     for(unsigned i=0;i<sizeof aspect_cases/sizeof *aspect_cases;++i){
         const AspectCase *test=&aspect_cases[i];Scene s=scene();s.format=test->format;s.stencil=1;s.slice=1;
         s.geometry=test->geometry;s.control=test->control;s.ops=test->ops;
+        if(s.geometry==0x001a0c4fu){s.width=128;s.height=64;s.pixels=32768;}
         setup(x,pool,&s);
         memset(pool+ASPECT_META-32,0x67,4096+64);
         reg(0xa005,(uint32_t)((base+ASPECT_META)>>8));reg(0xa2af,0);
