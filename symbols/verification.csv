@@ -56,7 +56,7 @@ ai_sight_test,edge,,886,886,0,0,0fcc7b78b0c4aab7,2026-11-13
 ai_target_list_mark_main_matches,recorded,,47,47,0,0,f963cbb2620dee66,2026-11-13
 ai_target_list_mark_main_matches,edge,,19,19,0,0,f963cbb2620dee66,2026-11-13
 ai_target_list_refresh_noticed,edge,,103,103,0,0,0fcc7b78b0c4aab7,2026-11-13
-ai_target_speed_record_update,recorded,,84,84,0,0,962565c5970bd876,2026-11-13
+ai_target_speed_record_update,recorded,,426,426,0,0,962565c5970bd876,2026-11-13
 ai_target_speed_record_update,edge,,128,128,0,0,962565c5970bd876,2026-11-13
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04

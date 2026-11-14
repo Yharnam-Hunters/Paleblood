@@ -187,7 +187,7 @@ address,size,name,system,status,notes
 0x016243a0,74,ai_character_negated_third_column,ai,edge-verified,"AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character"
 0x01624760,35,ai_character_id,ai,edge-verified,"AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character"
 0x01624e50,109,ai_character_flag_module_set,ai,verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
-0x0162d840,897,ai_target_speed_record_update,ai,edge-verified,"Target speed record: 30-sample ring of the followed target's speed along the line to the character, weighted average"
+0x0162d840,897,ai_target_speed_record_update,ai,verified,"Target speed record: 30-sample ring of the followed target's speed along the line to the character, weighted average"
 0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
 0x01657b20,90,ai_func_get_random_int,ai,edge-verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
 0x01657b80,19,ai_func_set_timer,ai,edge-verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
