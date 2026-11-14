@@ -11,6 +11,9 @@
 // - engine_thread_construct_sized_0248b200 (0x0248b200): a given stack size (0 for the default).
 // - engine_thread_construct_with_affinity_0248afe0 (0x0248afe0): a given stack size and core mask.
 //
+// engine_thread_create_02a3b4d0 (0x02a3b4d0) is that wrapper: it asks for every core (a 32-bit
+// mask of all ones) and 0 in place of the dropped fifth argument.
+//
 // Each passes an argument through that the system call ignores, as the shipped game does. A
 // default allocator is made when missing (the name string's heap) and checked like any
 // container's heap. A null or empty name becomes "unnamed". A thread that was not created and a
@@ -82,6 +85,8 @@ RT_ORIGINAL(0x02a3b310, thread_create_with_affinity,
 RT_ORIGINAL(0x02a3b4d0, thread_create,
             uint64_t(SystemThread *, Thread *entry_argument, uint64_t unused_1, uint64_t stack_size,
                      uint32_t dropped, const char *name));
+constexpr uint64_t every_core = 0xffffffff;
+
 // The executable's call stub for strlen.
 RT_ORIGINAL(0x02fbe608, string_length, uint64_t(const char *));
 
@@ -181,4 +186,10 @@ extern "C" void bb_engine_thread_construct_sized_0248b200(Thread *thread, void *
     construct_members(thread, procedure, argument);
     const uint64_t handle = thread_create(&thread->system_thread, thread, 0, stack_size, dropped, name);
     finish(thread, handle, name, sized_lines);
+}
+
+extern "C" uint64_t bb_engine_thread_create_02a3b4d0(SystemThread *thread, Thread *entry_argument, uint64_t unused_1,
+                                                    uint64_t stack_size, uint32_t /*dropped*/, const char *name)
+{
+    return thread_create_with_affinity(thread, entry_argument, unused_1, stack_size, every_core, 0, name);
 }

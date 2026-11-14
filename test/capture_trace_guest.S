@@ -61,9 +61,9 @@ increment:
     movaps %xmm2, %xmm0
     ret
 
-/* 0x1c0: thread-local storage: no case. */
+/* 0x1c0: an fs access: the host's own thread block, which a case cannot give: no case. */
     .org 0x1c0
-    mov %gs:0, %rax
+    mov %fs:0, %rax
     ret
 
 /* 0x200: calls native code through a pointer: no case. */
@@ -237,6 +237,128 @@ zero_thunk:
     .org 0x6b0
 usleep_thunk:
     jmp *usleep_slot(%rip)
+/* 0x6c0: int32_t thread_counter(void) { int32_t *p = *(int32_t **)(tp + tls_offset); return ++*p; }
+   A thread-local variable reached as the game reaches one: the thread pointer from gs:[0] (the
+   loader's rewrite of fs:[0]) plus the variable's offset, read from a global. */
+    .org 0x6c0
+    mov %gs:0, %rax
+    add tls_offset(%rip), %rax
+    mov (%rax), %rax
+    mov (%rax), %ecx
+    add $1, %ecx
+    mov %ecx, (%rax)
+    mov %ecx, %eax
+    ret
+/* 0x700: int32_t reread_counter(int32_t *a) { int32_t *c = stale(a); *c; stale(a); return *c; }
+   the counter is read, then changed by the second call behind a register the first call left
+   (not an argument, so not the import's write), as another thread might change it, and read
+   again: no case. */
+    .org 0x700
+    push %rbx
+    push %r12
+    sub $8, %rsp
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rdx, %r12
+    mov (%r12), %eax
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%r12), %eax
+    add $8, %rsp
+    pop %r12
+    pop %rbx
+    ret
+/* 0x740: int32_t rewritten_counter(int32_t *a) { int32_t *c = stale(a); *c = 5; stale(a); return *c; }
+   the counter is written, then changed by the second call behind a register the first call left,
+   as another thread might change memory the code wrote, and read again: a replay would read the
+   5 it wrote, so no case. */
+    .org 0x740
+    push %rbx
+    push %r12
+    sub $8, %rsp
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rdx, %r12
+    movl $5, (%r12)
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%r12), %eax
+    add $8, %rsp
+    pop %r12
+    pop %rbx
+    ret
+/* 0x780: void *take(Pool *p, uint64_t n) { the next n bytes of [top, end), or 0 }  Pool: +0x10 top,
+   +0x18 end. Its short ja lies in the first 14 bytes (a hook's jump), with its target just past
+   them: relocation writes it in its 32-bit form. */
+    .org 0x780
+    mov 0x10(%rdi), %rcx
+    add %rcx, %rsi
+    xor %eax, %eax
+    cmp 0x18(%rdi), %rsi
+    ja 1f
+    mov %rsi, 0x10(%rdi)
+    mov %rcx, %rax
+1:  ret
+/* 0x7c0: a short branch back into the first 14 bytes: cannot be relocated. */
+    .org 0x7c0
+    xor %eax, %eax
+1:  inc %eax
+    cmp $3, %eax
+    jb 1b
+    xor %edx, %edx
+    xor %ecx, %ecx
+    xor %esi, %esi
+    ret
+/* 0x800: int32_t bump(int32_t x) { return x >= 0 ? x + 1 : -x; } with a short jns and a short jmp
+   in the first 14 bytes, the jns landing on the first byte after them. */
+    .org 0x800
+    mov %edi, %eax
+    test %eax, %eax
+    jns 1f
+    neg %eax
+    jmp 2f
+    xor %edx, %edx
+    xor %ecx, %ecx
+1:  add $1, %eax
+2:  ret
+/* 0x840: int32_t bit_set(const int32_t *p) { return (*p & 4) != 0; } reading *p only through
+   `test m, r`, whose memory operand Capstone marks with no access: still an input. */
+    .org 0x840
+    xor %eax, %eax
+    mov $4, %ecx
+    test %ecx, (%rdi)
+    setne %al
+    ret
+/* 0x860: int32_t leaf_field(const int32_t *p) { return p[2]; }, a family member with a 32-byte
+   extent. A traced caller must run this original, not the family's shared replacement. It sits
+   below the hooked leaf_caller, so its redirect has to be sorted in among the hooks' redirects. */
+    .org 0x860
+leaf_field:
+    mov 8(%rdi), %eax
+    ret
+
+/* 0x880: int32_t leaf_caller(const int32_t *p) { return leaf_field(p) + 1; } */
+    .org 0x880
+    call leaf_field
+    add $1, %eax
+    ret
+
+/* 0x8c0: int32_t store_reread(float *p, uint8_t *flag)
+   { *p += *p; int32_t v = (int32_t)*p; *flag = v != 0; return v + *flag; }
+   Stores through a VEX `vmovss m, xmm` and a `seta m` (after `test`, the same as setne), then
+   reads each stored value back. Capstone marks both destinations as reads; they are writes, so
+   the reads see the code's own values and give a case. */
+    .org 0x8c0
+    vmovss (%rdi), %xmm0
+    vaddss %xmm0, %xmm0, %xmm0
+    vmovss %xmm0, (%rdi)
+    vmovss (%rdi), %xmm1
+    vcvttss2si %xmm1, %eax
+    test %eax, %eax
+    seta (%rsi)
+    movzbl (%rsi), %ecx
+    add %ecx, %eax
+    ret
     .org 0x1000
 global:
     .long 1000
@@ -259,6 +381,9 @@ zero_slot:
     .quad 0
 usleep_slot:
     .quad 0
+/* 0x1838: thread_counter's variable, 4 KiB below the thread pointer (TLS variant II). */
+tls_offset:
+    .quad -0x1000
     .org 0x2000
     .globl capture_trace_guest_end
 capture_trace_guest_end:

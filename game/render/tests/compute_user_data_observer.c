@@ -7,7 +7,10 @@
    The geometry-shader register writers report the registers they write, with the values they compute.
    The addressed indexed draw (DRAW_INDEX_2) reports the packet's fields, its predicate from the command buffer's flags.
    The viewport scissor setter reports the pair of registers it writes, its window-offset bit from its stack argument.
-   The clip control setter reports PA_CL_CLIP_CNTL with the value masked as the setter masks it. */
+   The clip control setter reports PA_CL_CLIP_CNTL with the value masked as the setter masks it.
+   A packet that does not fit before the command buffer's limit is reported where it lands: the observer
+   asks the space callback for the writer's words (once), and reports at the chunk the callback moved
+   the buffer to; with exactly the words left, the callback is not asked; refused, nothing is reported. */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
 #include "runtime/render_observer_hooks.h"
@@ -104,6 +107,25 @@ void rt_observe_draw_indexed(uint64_t b, uint32_t o, uint32_t h, uint32_t m, uin
     addressed_draw.address = a, addressed_draw.count = c, addressed_draw.initiator = i;
 }
 
+/* The space callback: moves the buffer to next_chunk, or refuses. */
+enum { FIRST_CHUNK_WORDS = 16, FIRST_CHUNK_CURSOR = 12, EIGHT_WORDS_PACKET = 12, ONE_WORD_PACKET = 3, CALLBACK_ARGUMENT = 0x5150 };
+static uint32_t next_chunk[COMMAND_WORDS];
+static struct {
+    int calls, refuse;
+    uint32_t words;
+    uint64_t argument;
+} space;
+
+static uint8_t move_to_next_chunk(void *commands, uint32_t words, uint64_t argument)
+{
+    space.calls++, space.words = words, space.argument = argument;
+    if (space.refuse) return 0;
+    command_buffer *object = commands;
+    object->begin = object->cursor = (uint64_t)(uintptr_t)next_chunk;
+    object->limit = (uint64_t)(uintptr_t)(next_chunk + COMMAND_WORDS);
+    return 1;
+}
+
 extern const rt_observe_hook game_observe_hooks[];
 extern const unsigned game_observe_hook_count;
 
@@ -120,7 +142,8 @@ static rt_observer_fn observer(uint32_t address)
 int main(void)
 {
     static uint32_t commands[COMMAND_WORDS];
-    command_buffer object = {.begin = (uint64_t)(uintptr_t)commands, .cursor = (uint64_t)(uintptr_t)(commands + CURSOR_WORD)};
+    command_buffer object = {.begin = (uint64_t)(uintptr_t)commands, .limit = (uint64_t)(uintptr_t)(commands + COMMAND_WORDS),
+                             .cursor = (uint64_t)(uintptr_t)(commands + CURSOR_WORD)};
     const uint64_t object_address = (uint64_t)(uintptr_t)&object;
     const uint32_t four[FOUR_WORDS] = {1, 2, 3, 4}, eight[EIGHT_WORDS] = {11, 12, 13, 14, 15, 16, 17, 18};
     uint32_t counted_values[COUNTED_WORDS];
@@ -262,6 +285,37 @@ int main(void)
         const uint64_t clip_args[RT_OBSERVED_ARGUMENTS] = {object_address, CLIP_ARGUMENT};
         clip(clip_args);
         CHECK(registers.count == 1 && registers.address[0] == PA_CL_CLIP_CNTL && registers.value[0] == CLIP_WRITTEN);
+    }
+    /* a chunk with 4 words left: the eight-word writer (12 words) moves to the next chunk, reported at its start */
+    const rt_observer_fn eight_writer = observer(WRITE_EIGHT), one_writer = observer(WRITE_ONE);
+    CHECK(eight_writer != NULL && one_writer != NULL);
+    if (eight_writer && one_writer) {
+        static uint32_t first_chunk[FIRST_CHUNK_WORDS];
+        uint8_t (*callback)(void *, uint32_t, uint64_t) = move_to_next_chunk;
+        command_buffer chunked = {.begin = (uint64_t)(uintptr_t)first_chunk, .limit = (uint64_t)(uintptr_t)(first_chunk + FIRST_CHUNK_WORDS),
+                                  .cursor = (uint64_t)(uintptr_t)(first_chunk + FIRST_CHUNK_CURSOR), .callback_data = CALLBACK_ARGUMENT};
+        memcpy(&chunked.callback, &callback, sizeof callback);
+        const command_buffer fresh = chunked;
+        const uint64_t chunked_address = (uint64_t)(uintptr_t)&chunked;
+        const uint64_t eight_args[RT_OBSERVED_ARGUMENTS] = {chunked_address, SLOT, (uint64_t)(uintptr_t)eight};
+        memset(&last, 0, sizeof last), memset(&space, 0, sizeof space);
+        eight_writer(eight_args);
+        CHECK(space.calls == 1 && space.words == EIGHT_WORDS_PACKET && space.argument == CALLBACK_ARGUMENT);
+        CHECK(last.calls == 1 && last.buffer == (uint64_t)(uintptr_t)next_chunk && last.offset == 0 && last.count == EIGHT_WORDS);
+        /* exactly the three words the one-word writer asks for: it stays, the callback is not asked */
+        chunked = fresh;
+        chunked.cursor = chunked.limit - ONE_WORD_PACKET * sizeof(uint32_t);
+        const uint64_t one_args[RT_OBSERVED_ARGUMENTS] = {chunked_address, SLOT, one_value};
+        memset(&last, 0, sizeof last), memset(&space, 0, sizeof space);
+        one_writer(one_args);
+        CHECK(space.calls == 0 && last.calls == 1 && last.buffer == (uint64_t)(uintptr_t)first_chunk &&
+              last.offset == (FIRST_CHUNK_WORDS - ONE_WORD_PACKET) * sizeof(uint32_t));
+        /* refused: nothing reported */
+        chunked = fresh;
+        memset(&last, 0, sizeof last), memset(&space, 0, sizeof space);
+        space.refuse = 1;
+        eight_writer(eight_args);
+        CHECK(space.calls == 1 && last.calls == 0);
     }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     else printf("compute user data observer: ok\n");

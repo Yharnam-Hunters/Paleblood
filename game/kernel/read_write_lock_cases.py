@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the engine's read-write lock (game/kernel/read_write_lock.cpp), for tools/verify.py run.
 
-usage: read_write_lock_cases.py OUT_DIR VARIANT
-VARIANT: construct, delete, destruct, finalize, initialize, write, try_write, read,
-unlock_0247f540, unlock_0247f5c0, unlock_0247f710
+usage: read_write_lock_cases.py OUT_DIR construct|delete|destruct|finalize|initialize|write|
+    try_write|read|unlock_0247f540|unlock_0247f5c0|unlock_0247f710
 
 The lock object is a buffer: its vtable (a buffer whose third slot names a stub), the system
 lock's handle and the initialized flag, with garbage around them. Members that ask whether the

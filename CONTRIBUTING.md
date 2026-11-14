@@ -153,7 +153,7 @@ A function's status in `symbols/functions.csv` goes through three levels:
 | Status | Means |
 |---|---|
 | `replaced` | it is in the hook registry and builds |
-| `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original |
+| `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original, recorded as a current `edge` row (`verify.py run --record edge`) |
 | `verified` | it also passes on inputs recorded in the game (the capture library), and the independent review approved it |
 
 `edge-verified` is for functions whose code the game doesn't reach where you can record (a
@@ -164,6 +164,11 @@ and edge case passes. A failure leaves it where it was and is reported. The runt
 inputs itself: `tools/capture_loop.py` boots every scene it reaches with recording on, then runs
 `tools/promote.py` and lists the functions that pass and await their independent review
 ([docs/VERIFY.md](docs/VERIFY.md), "Recording in the game").
+
+`tools/validate_functions.py` refuses `edge-verified` (and `verified`) for a function without a
+current, passing `edge` row without an option in `symbols/verification.csv`: run its edge cases
+with `tools/verify.py run --record edge` in the pull request that sets the status, and again in
+any pull request that changes its source or a header it includes.
 
 ### Generated progress and merging main
 

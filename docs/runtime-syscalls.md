@@ -1028,6 +1028,40 @@ python3 tools/boot.py --no-record --display headless --input-script "45:down,47:
 A malformed event, an unknown control, a hold on the other clock, more than 256 events or a script
 file over 64 KiB is refused before the boot, naming the event.
 
+**Walks: closed-loop driving.** Timed stick presses drift from run to run (a slower frame, a door
+that opens later), so a route walked on a clock ends against a wall. A walk steers instead, from
+where the game says the character is:
+
+```
+20:walk -10 4.5 within 1.5 every 6*90    # towards (-10, 4.5) until within 1.5, at most 90 s
++1:cross                                 # 1 s after that walk finished: open the door there
++3:walk -12 0                            # 3 s later, the next leg
+```
+
+- `walk X Z [within R] [every N]` pushes the left stick at full deflection towards the ground
+  position (X, Z), re-aiming every N presented frames (default 6), until the character is within R
+  (default 1, the game's units). `*LIMIT` is the walk's time limit (default 60 s or 600 frames); a
+  walk that reaches it gives up and the script goes on.
+- Walks run in script order: a walk starts at its `WHEN`, or when the walk before it finished if
+  that is later. `+SECONDS` as `WHEN` counts from the end of the walk before the event, so presses
+  that belong to a place (a door, a lever) follow the walk that leads there.
+- The stick is camera-relative and the walk is not told the camera: each aim it compares the
+  stick's direction with the way the character actually moved since the last aim, and corrects
+  for the difference (headings are `atan2(dx, dz)`, the stick's angle clockwise from up). A walk
+  starts from what the walk before it learned. A
+  character that moved less than 0.2 in an aim is stuck: the walk sidesteps 60, 120, then 180
+  degrees off the target's direction, alternating sides, three aims each, until the character is 1
+  closer to the target than it has been.
+- The position comes from the game library: pbboot looks up `bbgame_player_position` (`int
+  (float position[3])`, 0 with X, Y, Z or nonzero when there is no character) after loading it,
+  and refuses a script with a walk when the library has none. This game's is
+  `game/input/player_position.cpp`. While it reports no character, the walk waits with the stick
+  at rest.
+
+pbboot logs each walk's start, every sidestep, its arrival or giving up, and the character's
+position every tenth aim (`pbboot: input script: walk 1: arrived at (-9.42, 4.10), 0.70 from the
+target, at 61.20 s, frame 812`), so a route's legs can be tuned from one run's log.
+
 Fields the executable does not read are left zero. **Not modelled:** motion. The accelerometer
 and gyroscope are not forwarded, because the units and axes the system reports them in are not
 established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular

@@ -3,9 +3,11 @@
 on synthetic repositories and capture libraries only: no game data, no boot."""
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +36,29 @@ class CaptureLoop(unittest.TestCase):
         write(self.root / 'game/kernel/thing_cases.py', '')
         write(self.root / 'game/render/named.cpp', 'void\nbb_render_named_file(int)\n{\n}\n')
         write(self.root / 'game/render/named_file_cases.py', '')
+
+    def test_lock_is_taken_and_given_up(self):
+        path = str(Path(self.temp.name) / 'gpu.lock')
+        held = capture_loop.hold_lock(path, 5)
+        self.assertIsNotNone(held)
+        # A second open file is a second holder: it waits its full time, then gives up.
+        started = time.monotonic()
+        self.assertIsNone(capture_loop.hold_lock(path, 1))
+        self.assertGreaterEqual(time.monotonic() - started, 0.9)
+        held.close()
+
+    def test_lock_wait_queues_behind_the_holder(self):
+        path = str(Path(self.temp.name) / 'gpu.lock')
+        holder = subprocess.Popen(['flock', path, 'sleep', '1'])
+        try:
+            time.sleep(0.3)
+            started = time.monotonic()
+            held = capture_loop.hold_lock(path, 30)
+            self.assertIsNotNone(held)
+            self.assertLess(time.monotonic() - started, 10)
+            held.close()
+        finally:
+            holder.wait()
 
     def test_scene_list_is_checked(self):
         path = Path(self.temp.name) / 'scenes.json'

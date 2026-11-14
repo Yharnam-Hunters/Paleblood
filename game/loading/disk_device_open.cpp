@@ -29,6 +29,7 @@
 #include "../engine/thread.h"
 #include "../engine/wide_string_assign.h"
 #include "disk_file_device.h"
+#include "runtime/game_guest_pointer.h"
 
 using namespace loading::disk_file_device;
 using frame_timing::job::JobLock;
@@ -40,13 +41,24 @@ namespace {
 // ended; the root resolution's own result (0 or 1) is or-ed in too and is not looked at.
 constexpr uint8_t resolved_alias = 0x2;
 
+// Native replacements use the same qualified guest TCB as rewritten guest instructions.
+// Linux still has the guest TCB at GS:0; the shared engine header stays unchanged.
+unsigned char *disk_thread_pointer()
+{
+#if defined(__APPLE__) && defined(__MACH__)
+    return rt_game_guest_thread_pointer();
+#else
+    return engine::thread_pointer();
+#endif
+}
+
 engine::Allocator *thread_temporary_allocator()
 {
     const int64_t offset = thread_heap_offset.get();
-    auto *heap = *reinterpret_cast<ThreadHeap **>(engine::thread_pointer() + offset);
+    auto *heap = *reinterpret_cast<ThreadHeap **>(disk_thread_pointer() + offset);
     if (!heap) {
         thread_heap_init();
-        heap = *reinterpret_cast<ThreadHeap **>(engine::thread_pointer() + offset);
+        heap = *reinterpret_cast<ThreadHeap **>(disk_thread_pointer() + offset);
     }
     return &heap->allocator;
 }

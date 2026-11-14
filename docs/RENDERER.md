@@ -33,6 +33,12 @@ Instead:
    - `--display-capture DIR` writes every presented frame as a PPM image, for tests and for
      looking at a run.
    - `tools/boot.py` passes both options on. The default, `none`, leaves boots as they were.
+     Its `--clip FILE` turns a range of presented frames into a silent full-resolution clip
+     (WebM or MP4, via ffmpeg) for local review ([ENEMY_OVERLAY.md](ENEMY_OVERLAY.md),
+     "Recording clips").
+   - A debug overlay that draws enemy hit shapes, detection cones, AI states and target lines over
+     the frame is designed in [ENEMY_OVERLAY.md](ENEMY_OVERLAY.md); it waits for the enemy AI
+     structures to be decompiled.
    - Today the frames are black: nothing draws into them yet. macOS gets a Metal window next
      (building on the offscreen Metal unit of #213).
 2. **Shader translator** (in progress).
@@ -194,6 +200,12 @@ Instead:
        VGPR is would depend on how the slice counts, so it still stops by name.
      - **`image_sample_l`** takes its level of detail after the coordinates and samples there
        (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
+     - **`image_sample_lz_o`** is `image_sample_lz` with a texel offset in the first address VGPR
+       (six-bit signed x in bits 5:0 and y in 13:8, before the coordinates: the Sea Islands ISA's
+       address order, as shadPS4 reads it; facts only). Vulkan takes a sample's `Offset` only as a
+       constant, so the coordinates move instead, by the offset over the image's size at level 0, which
+       picks the same texels at level 0. 2D images only; others stop by name. The clinic beast's
+       encounter uses it in pixel shader `0x20d3b9cb00`.
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
        bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at the level the
        coordinates' derivatives pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from
@@ -584,7 +596,7 @@ Instead:
        flip waited for all work and then read the target back, so the GPU sat idle while the CPU
        recorded the next frame. A submit returns only once the renderer's thread has taken a buffer
        at most four before it (`RENDER_LAG_LIMIT`), except while that thread performs a wait step,
-       which may wait for memory the submitting thread has yet to write. The console's GPU starts on a
+       which may wait for memory the submitting thread has yet to write; a held submit goes on as soon as the renderer's thread takes a buffer (before, it slept until that buffer had run, however long its steps took). The console's GPU starts on a
        buffer soon after it is submitted, and the game's per-frame GPU memory rings rely on that:
        without the bound the renderer fell tens of seconds behind during the clinic's load, the
        rings' allocations came back empty, and the game wrote draws whose vertex shader's fetch table
@@ -696,6 +708,29 @@ Instead:
           texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
           would move the same bytes through host memory. It is copied again after the target's next draws.
           At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
+          Once the target is written back, an image that took its texels since its last draw stays loaded
+          (its memory changed in no other way since the copy) instead of loading the same bytes again.
+        - **Depth straight to images:** an image of the depth's texel size (32 bits for Z_32_FLOAT, 16
+          for Z_16) over a depth target's depth drawn since its
+          write-back (the same address, tiling index and pitch, slice 0; 2D, one level and layer; no other
+          unwritten target over it) takes the depth on the GPU through the depth target's linear rows
+          (`image_from_depth`) instead of a write-back and a load, again after the depth's next draws. In
+          Iosefka's Clinic that was about two depth write-backs and loads a frame, some 35 MB each way
+          through host memory. bbhost and shadPS4 copy depth into an R32 image on the GPU too (facts only).
+          Both depth formats are written back to memory the same way, 2 or 4 bytes a texel; the clinic
+          beast's encounter reads a 512x512 Z_16 depth as a 16-bit unorm image, which
+          stopped by name while only 32-bit depth was handled.
+        - **Compute fills on the target:** the game clears render targets with a compute program that
+          stores one value from a constant buffer into every element of a buffer descriptor spanning the
+          target's memory (compute shader `0x20d1b00500`, about ten a frame in Iosefka's Clinic). Each
+          used to write the target's draws back, store the whole target into host memory, and load the
+          target and the images over it back. A program of that shape (`gcn_fill_shape`: scalar loads of
+          the value, indexed stores of it at lane + workgroup x n + offset) whose stores cover exactly a
+          render target's memory in its element size runs only its first workgroup; its elements are
+          copied into the target's linear rows, doubled until full, and into the image, and the target
+          counts as drawn: its memory gets the fill when it is written back. Its earlier draws are not
+          written back. bbhost (`detect_fill`) and shadPS4 (`IsComputeImageClear`) recognise the same
+          clears and clear the image instead (facts only).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -870,7 +905,11 @@ Instead:
         executor draws rect lists. **Observe hooks** (`runtime/observe_hooks.h`) report what has no replacement yet:
         the hook calls an observer with the call's arguments, then the original runs from its
         first instructions relocated next to the image, so every packet is still the original's.
-        A replacement, when one lands, takes the address and its observe hook is dropped. They
+        A replacement, when one lands, takes the address and its observe hook is dropped. An
+        observer reports a packet where it lands: when the writer's words do not fit before the
+        command buffer's limit, the observer asks the space callback for them first (the writer
+        then finds the room), so a packet that opens a new chunk is filed at that chunk's start,
+        not past the old chunk's end where no submission takes it. They
         cover `setRenderTarget` (`0x014738b0`) and the five user-data writers (`0x01476420`
         one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
         whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With
@@ -921,7 +960,10 @@ Instead:
         image over a target (a YEBIS pass in the clinic stores a 37x14 16_16_16_16 float image over another
         format's target) is instead tiled into the guest memory after its dispatch (`write_back_image`, the
         target's own draws written back first), and the target loads that memory at its next draw, as the
-        PS4's colour buffer reads whatever bytes a shader stored at its address. Pixel shaders' images
+        PS4's colour buffer reads whatever bytes a shader stored at its address. An image left to a target of
+        its own texel size is tiled into the memory later, when a target of another format takes that address
+        first (`target_for` sets the first target aside): the image keeps its dispatch's descriptor for that.
+        Pixel shaders' images
         are found the same way and bound as sampled images. A pixel shader's null image descriptor (all 8
         words 0) reads 0: Mesa's radeonsi writes 8 zero words for an unbound sampler view or image
         (`si_reset_sampler_view_slot`, `si_disable_shader_image`) and RADV zeroes the descriptor of a
@@ -1049,6 +1091,66 @@ target again at every submitted buffer.
    target or image loads again only when its span changed since its last load, instead of at
    every submitted buffer and after every dispatch.
 
+### Device-local twins: tried, slower (November 2026)
+
+Before the whole mirror, a smaller step was tried on a local branch: device-local copies ("twins")
+of only the 64 KB chunks the shaders read. Each translated guest load looked its chunk up in a
+device-local table and read the twin when there was one (else marked the chunk wanted); stores and
+atomics went to both copies; the CPU's writes (the write watch) and the executor's own writes
+(write-backs, fills) copied the twins again. Steps the renderer performs in the GPU's place (a
+constant engine dump, a WRITE_DATA, a DMA copy) reported the memory they wrote, and a twin the CPU
+wrote in 3 frames of 60 was dropped and held off for a while (LanternEngine's
+`memory_model_fps_sink.md` rule for its 64 KiB blocks, as facts). bbhost's twins, whose particle
+result suggested this, are found at each buffer binding, on the CPU (its `docs/rendering.md`), not
+by a lookup in every access.
+
+Measured in Iosefka's Clinic with `tools/ab_bench.py` (two rounds each, 60 s settle then 180 s from
+frame 800, the same save; main at 875e3995 against the twins branch on fc89c005 (the commits between add two small game-function replacements), both with the same local input
+driver): main 7.99 and 7.80 fps, twins 5.16 and 5.15 fps; the 2.74 fps difference is far beyond the
+noise floor (0.20 fps). Other programs kept CPUs busy during every window (medians of 3-4 CPUs,
+peaks of 6-12), over the tool's default limit; the difference is large enough to stand anyway. The twins' own copies were small
+(500-730 chunks, 30-45 MB, and 80-140 drops per 60 frames, with about 2,700 of the pool's 2,970
+slots in use), so the cost is most likely the per-access table lookup in every shader's loads and the doubled
+stores, not the uploads. An earlier version that collected all of the CPU's writes after every
+step was slower still. The branch is kept unmerged. A mirror for read-mostly memory needs a fixed
+offset (one device-local buffer for the whole span, step 1 above, or per-buffer device-local
+bindings), not a lookup per access.
+
+### Whole-span mirror: first prototype (November 2026)
+
+Step 1 was tried next as a local prototype (not merged). The executor made one device-local buffer
+for the span `0x2039400000`-`0x210c400000` (3,376 MB). It set the shaders' address offset to point
+into that buffer, so a guest address needs only one add and no lookup. Index buffers, indirect
+arguments, the target copies' reads and the fills used the buffer too, and the shaders' bounds
+were the span.
+
+- **CPU writes:** at each buffer, the executor collected the write watch over the whole span and
+  copied the written pages from the imported host memory into the mirror before the buffer's work.
+- **GPU writes:** at each submission, the batch's written ranges (the ones `batch_writes` already
+  keeps for the CPU's waits) were copied from the mirror back to host memory.
+
+The clinic's working set fit: the boot used about 3.4 GB of the RTX 3070's 8 GB before the mirror.
+
+One boot from the clinic save did not reach the clinic. A vertex shader (`0x205700f700`) read a
+buffer descriptor with data format 15. That is a stale descriptor: memory the CPU had written was
+not yet in the mirror when the draw ran. The likely writers are the steps the renderer performs in
+the GPU's place (constant engine dumps, WRITE_DATA, DMA copies), some deferred to the completion
+thread. They write guest memory between or after the collects. The twins branch had to report
+those writes explicitly (`rt_renderer_step_wrote`). The mirror needs the same, placed in the
+command stream where the step's writes land.
+
+The prototype also measured its costs, per 500 submissions:
+
+- The whole-span collect took 4.46 s on the renderer's thread, about 9 ms a submission.
+- 4,017 MB was copied in (the first 3,376 MB is the initial fill), and 810 MB was copied back.
+- No submission needed the whole span copied back.
+
+So before a mirror can be measured against main, two things are needed. First, every CPU write
+must be reported at its place in the stream: the write watch at each buffer, plus the
+renderer-performed steps. Second, the collect must cost a small fraction of a frame: a collect
+limited to the pages the GPU can read, or the watch's dirty bits read without scanning the whole
+span.
+
 ### Tests for each step
 
 - A CPU write after a GPU write: the next draw sees the CPU's bytes.
@@ -1088,3 +1190,18 @@ post-processing passes, go through it, and without it the clinic's tone map, gla
 depth of field never reached the renderer (the scene behind the HUD stayed one flat
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
+
+## Measuring frame rate
+
+Two runs of one build differ: in Iosefka's Clinic the same build measured from 4.81 to 7.15 fps
+over a run, with other work on the machine. A speed change counts only when it is larger than that.
+`tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR` runs two builds alternately, two rounds each
+by default (A1 B1 A2 B2), and measures each over the same window: a fixed settle, then a fixed
+measure window, counted from the moment the run presents its anchor frame (`--anchor-frame`, a
+frame reached at the same point of the same save). Each build's spread over its rounds is its noise
+floor, and a difference counts only when it is larger than both builds' spreads (the rule of
+bbhost's area check). While a run plays, the load average and the CPUs busy with other work than
+the run's own processes are sampled every second; a run whose window met more than
+`--max-other-cpus` of other work is left out, with the reason. The run command builds before it
+starts the game and holds the GPU lock while it plays, so builds and other GPU work stay outside
+the window. `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.

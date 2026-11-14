@@ -63,6 +63,30 @@ target_compile_options(test_depth_target_observer_absent PRIVATE -ffp-contract=o
 target_link_libraries(test_depth_target_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
 add_test(NAME depth_target_observer_absent COMMAND test_depth_target_observer_absent)
 
+# GS-mode replacement: real record, no host exports, and an enabled refusing host.
+add_executable(test_gs_mode_observer render/tests/gs_mode_observer.cpp render/set_gs_mode.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_link_libraries(test_gs_mode_observer PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_compile_options(test_gs_mode_observer PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_gs_mode_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME gs_mode_observer COMMAND test_gs_mode_observer)
+
+add_executable(test_gs_mode_observer_absent render/tests/gs_mode_observer.cpp render/set_gs_mode.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_gs_mode_observer_absent PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_definitions(test_gs_mode_observer_absent PRIVATE PB_GS_OBSERVER_ABSENT=1)
+target_compile_options(test_gs_mode_observer_absent PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_gs_mode_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
+add_test(NAME gs_mode_observer_absent COMMAND test_gs_mode_observer_absent)
+
+add_executable(test_gs_mode_observer_failure render/tests/gs_mode_observer_failure.cpp render/set_gs_mode.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_gs_mode_observer_failure PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_options(test_gs_mode_observer_failure PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_gs_mode_observer_failure PRIVATE ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_gs_mode_observer_failure PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME gs_mode_observer_failure COMMAND test_gs_mode_observer_failure)
+
 # The camera fixture generator and verifier contracts are checked beside their game-owned inputs.
 add_test(NAME camera_update_cases
          COMMAND ${Python3_EXECUTABLE}

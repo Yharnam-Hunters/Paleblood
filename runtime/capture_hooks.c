@@ -82,6 +82,7 @@ static size_t redirect_count;
 static unsigned char *code_block;     /* relocated entries, then thunks */
 static size_t code_size;
 static rt_code_range image_range, code_range;
+static rt_code_range family_range;    /* family members' original code, run inside traces */
 
 #define IMPORT_MARKER 0xfeed000000000000ull
 /* Data imports (the game's executable has some) must be bound too, or the scratch map fails; their
@@ -311,6 +312,45 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
     return (int)recorded;
 }
 
+int rt_capture_families_prepare(unsigned char *image, uint64_t image_size, const rt_family_hook *table, size_t count)
+{
+    if (!hook_count || !count || rt_capture_original_mode()) return 0;
+    const size_t size = (count * RT_RELOCATE_MAX + 0xfff) & ~(size_t)0xfff;
+    unsigned char *block = rt_map_near_image(image, image_size, size);
+    rt_trace_redirect *table_out = block ? realloc(redirects, (redirect_count + count) * sizeof *redirects) : NULL;
+    if (!table_out) {
+        if (block) munmap(block, size);
+        fprintf(stderr, "capture: no memory for family members' originals; a trace that reaches one stops there\n");
+        return 0;
+    }
+    redirects = table_out;
+    /* A member is a whole function: copying its extent (the member and its padding) keeps every
+       instruction up to its return, and the jump back after the copy is never reached. */
+    unsigned char *next = block;
+    size_t copied_members = 0, redirects_before = redirect_count;
+    for (size_t i = 0; i < count; i++) {
+        const rt_family_hook *h = &table[i];
+        if (h->address < RT_EBOOT_BASE || h->address - RT_EBOOT_BASE + (uint64_t)h->extent > image_size) continue;
+        unsigned char *original = image + (h->address - RT_EBOOT_BASE);
+        size_t copied, written;
+        if (rt_trace_relocate(original, h->extent, next, &copied, &written)) continue;
+        redirects[redirect_count++] = (rt_trace_redirect){original, next};
+        next += written;
+        copied_members++;
+    }
+    if (mprotect(block, size, PROT_READ | PROT_EXEC)) {
+        redirect_count = redirects_before;
+        munmap(block, size);
+        fprintf(stderr, "capture: cannot make the family members' originals executable; a trace that reaches one stops there\n");
+        return 0;
+    }
+    qsort(redirects, redirect_count, sizeof *redirects, compare_redirect);
+    rt_trace_set_redirects(redirects, redirect_count);
+    family_range = (rt_code_range){block, next};
+    fprintf(stderr, "capture: %zu of %zu family member(s) run their original code inside traces\n", copied_members, count);
+    return (int)copied_members;
+}
+
 /* The caller's stack arguments, as far as its stack is readable. */
 static void copy_stack(uint64_t caller_rsp, uint64_t *out)
 {
@@ -331,9 +371,9 @@ int rt_capture_dispatch(capture_hook *c, rt_capture_frame *f)
     memcpy(args.xmm, f->xmm, sizeof args.xmm);
     copy_stack(f->caller_rsp, args.stack);
     args.caller_rsp = f->caller_rsp;
-    const rt_code_range code[2] = {image_range, code_range};
+    const rt_code_range code[3] = {image_range, code_range, family_range};
     rt_trace_result result;
-    const int written = rt_capture_traced_call(&c->traced, number, &args, image_range, code, 2, &result);
+    const int written = rt_capture_traced_call(&c->traced, number, &args, image_range, code, 3, &result);
     if (written < 0) return 0;
     if (written) {
         atomic_store(&c->failed, 0);

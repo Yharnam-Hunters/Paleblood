@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <asm/prctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -61,7 +62,13 @@ void rt_trace_landing(void);
 typedef struct {
     uint64_t addr;
     uint8_t value, flags;
+    uint8_t now;                         /* a written byte's value after its last write (KNOWN) */
 } slot;
+
+/* Slot flags beyond rt_trace_log's RT_TRACE_READ and RT_TRACE_WRITTEN. */
+enum { KNOWN = 4 };
+
+enum { PENDING_LIMIT = 8 };              /* memory operands one instruction writes */
 
 typedef struct {
     csh cs;
@@ -82,8 +89,17 @@ typedef struct {
     unsigned stack_slots;
     uint64_t steps, step_limit;
     unsigned xmm_written;              /* bit n: xmm n written by the traced code */
+    /* Thread-local storage. Guest code reads its thread pointer at gs:[0] (the loader rewrites
+       the game's fs:[0] to gs) and reaches its variables at that pointer plus an offset. */
+    uint64_t thread_base;              /* the calling thread's GS base, or 0 when it has none */
+    uint64_t thread_pointer;           /* the value the code read at gs:[0], once it has */
+    uint64_t thread_lo, thread_hi;     /* [lo, hi): bytes reached through gs or the thread pointer */
     unsigned stale_args;               /* bit n: argument register n (rdi..r9) is what an import left */
+    /* The bytes the last instruction wrote: their values are read once it has run. */
+    uint64_t pending_addr[PENDING_LIMIT], pending_len[PENDING_LIMIT];
+    unsigned pending;
     const char *incomplete;
+    uint64_t stopped_at;               /* the instruction tracing stopped at */
     pid_t pid;
     /* The import running now (between its entry and the return pad). */
     int in_import;
@@ -121,8 +137,10 @@ int rt_trace_available(void) { return 1; }
 
 static void stop(trace_state *t, ucontext_t *uc, const char *why)
 {
-    if (!t->incomplete)
+    if (!t->incomplete) {
         t->incomplete = why;
+        t->stopped_at = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+    }
     uc->uc_mcontext.gregs[REG_EFL] &= ~(greg_t)TRAP_FLAG;
 }
 
@@ -192,8 +210,13 @@ static slot *find(trace_state *t, uint64_t addr)
             return &t->table[i];
 }
 
+enum { NOTE_CHANGED = -2 };
+
 /* Notes `n` bytes at `addr` as read (their first value is an input unless written first) or
-   written. Returns 0, or -1 when a limit is reached or a value cannot be read. */
+   written. Returns 0, -1 when a limit is reached or a value cannot be read, or NOTE_CHANGED when a
+   read sees an input byte with another value than its first read: something outside the traced
+   code (another thread) wrote it, and a case, which gives each input one value, cannot replay
+   the call. */
 static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input)
 {
     if (addr >= t->stack_lo && addr < t->stack_hi) {
@@ -232,11 +255,47 @@ static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input
                     *input = 1;
             } else if (write) {
                 s->flags |= RT_TRACE_WRITTEN;
+            } else if (!(s->flags & RT_TRACE_WRITTEN) && s->value != value[i]) {
+                return NOTE_CHANGED;
+            } else if ((s->flags & KNOWN) && s->now != value[i]) {
+                /* The traced code (or a scripted import) wrote it, and something else has changed
+                   it since: a replay would read what was written. */
+                return NOTE_CHANGED;
             }
         }
         done += chunk;
     }
     return 0;
+}
+
+/* Keeps the value now in memory of each noted byte among the n at `addr`, as what a later read
+   must see: the traced code's own write, or the scripted write of an import. */
+static void remember_written(trace_state *t, uint64_t addr, uint64_t n)
+{
+    uint8_t value[64];
+    for (uint64_t done = 0; done < n;) {
+        const uint64_t chunk = n - done < sizeof value ? n - done : sizeof value;
+        const int readable = !read_self(t, addr + done, value, chunk);
+        for (uint64_t i = 0; i < chunk; i++) {
+            slot *s = find(t, addr + done + i);
+            if (s->addr != addr + done + i) continue;   /* the private stack has no slots */
+            if (readable) {
+                s->now = value[i];
+                s->flags |= KNOWN;
+            } else {
+                s->flags &= (uint8_t)~KNOWN;
+            }
+        }
+        done += chunk;
+    }
+}
+
+/* Reads what the last instruction wrote, now that it has run. */
+static void settle_writes(trace_state *t)
+{
+    for (unsigned i = 0; i < t->pending; i++)
+        remember_written(t, t->pending_addr[i], t->pending_len[i]);
+    t->pending = 0;
 }
 
 static int xmm_index(x86_reg r)
@@ -286,6 +345,49 @@ static int string_op(const cs_insn *in)
         return 1;
     default:
         return 0;
+    }
+}
+
+/* How operand `i` (a memory operand) of `in` accesses memory. Capstone 5 marks the memory
+   destination of most vector and x87 stores (`vmovss m, xmm`, `movups m, xmm`, `fstp m`,
+   `setcc m`) as a read, and the destination of `rol m` or `cmpxchg m` as a read only: in the game
+   that is about 165,000 VEX stores. A store noted as a read gives its destination the value from
+   before the store as an input, and a later read of the stored value looks like another thread's
+   write, so the trace gave no case (the perception update's timer). Stores and read-modify-writes
+   whose destination is their first operand are therefore classified here; any other memory
+   operand Capstone gives no access at all (`test m, r`) is a read. */
+static uint8_t memory_access(const cs_insn *in, unsigned i)
+{
+    const cs_x86 *x = &in->detail->x86;
+    const uint8_t marked = x->operands[i].access & (CS_AC_READ | CS_AC_WRITE);
+    if (i != 0 || string_op(in) || (x->op_count > 1 && x->operands[1].type == X86_OP_MEM))
+        return marked ? marked : CS_AC_READ;
+    switch (in->id) {
+    case X86_INS_MOVAPS: case X86_INS_MOVUPS: case X86_INS_MOVAPD: case X86_INS_MOVUPD:
+    case X86_INS_MOVDQA: case X86_INS_MOVDQU: case X86_INS_MOVSS: case X86_INS_MOVSD:
+    case X86_INS_MOVQ: case X86_INS_MOVD: case X86_INS_MOVLPS: case X86_INS_MOVHPS:
+    case X86_INS_MOVLPD: case X86_INS_MOVHPD: case X86_INS_MOVNTPS: case X86_INS_MOVNTPD:
+    case X86_INS_MOVNTDQ: case X86_INS_MOVNTI: case X86_INS_MOVNTQ: case X86_INS_EXTRACTPS:
+    case X86_INS_PEXTRB: case X86_INS_PEXTRW: case X86_INS_PEXTRD: case X86_INS_PEXTRQ:
+    case X86_INS_STMXCSR:
+    case X86_INS_VMOVAPS: case X86_INS_VMOVUPS: case X86_INS_VMOVAPD: case X86_INS_VMOVUPD:
+    case X86_INS_VMOVDQA: case X86_INS_VMOVDQU: case X86_INS_VMOVSS: case X86_INS_VMOVSD:
+    case X86_INS_VMOVQ: case X86_INS_VMOVD: case X86_INS_VMOVLPS: case X86_INS_VMOVHPS:
+    case X86_INS_VMOVLPD: case X86_INS_VMOVHPD: case X86_INS_VMOVNTPS: case X86_INS_VMOVNTPD:
+    case X86_INS_VMOVNTDQ: case X86_INS_VEXTRACTPS: case X86_INS_VEXTRACTF128:
+    case X86_INS_VEXTRACTI128: case X86_INS_VPEXTRB: case X86_INS_VPEXTRW: case X86_INS_VPEXTRD:
+    case X86_INS_VPEXTRQ: case X86_INS_VSTMXCSR: case X86_INS_VCVTPS2PH:
+    case X86_INS_FST: case X86_INS_FSTP: case X86_INS_FIST: case X86_INS_FISTP: case X86_INS_FISTTP:
+    case X86_INS_FBSTP: case X86_INS_FNSTCW: case X86_INS_FNSTSW:
+    case X86_INS_SETA: case X86_INS_SETAE: case X86_INS_SETB: case X86_INS_SETBE: case X86_INS_SETE:
+    case X86_INS_SETG: case X86_INS_SETGE: case X86_INS_SETL: case X86_INS_SETLE: case X86_INS_SETNE:
+    case X86_INS_SETNO: case X86_INS_SETNP: case X86_INS_SETNS: case X86_INS_SETO: case X86_INS_SETP:
+    case X86_INS_SETS:
+        return CS_AC_WRITE;
+    case X86_INS_ROL: case X86_INS_ROR: case X86_INS_RCL: case X86_INS_RCR: case X86_INS_CMPXCHG:
+        return CS_AC_READ | CS_AC_WRITE;
+    default:
+        return marked ? marked : CS_AC_READ;
     }
 }
 
@@ -525,6 +627,7 @@ static void import_return(trace_state *t, ucontext_t *uc)
                 c->writes++;
                 /* Later reads of these bytes see what the import wrote, which the case scripts. */
                 note(t, at + off, end - off, 1, NULL);
+                remember_written(t, at + off, end - off);
                 reach = end;
             }
             off = done = run_end;
@@ -596,6 +699,20 @@ static int track_origin(trace_state *t, const ucontext_t *uc, const cs_insn *in,
             from = src >= 0 && op[1].size == 8 ? t->origin[src] : 0;
         } else if ((in->id == X86_INS_ADD || in->id == X86_INS_SUB) && op[1].type == X86_OP_IMM) {
             from = pointer_of(t, uc, op[0].reg, next);
+        } else if (in->id == X86_INS_MOV && op[1].type == X86_OP_MEM && op[1].mem.segment == X86_REG_GS &&
+                   op[1].mem.base == X86_REG_INVALID && op[1].mem.index == X86_REG_INVALID && op[1].size == 8 &&
+                   t->thread_base) {
+            /* The thread pointer itself: a TCB's first word points to the TCB. Its value is
+               the origin of what is computed from it (pointer_of). */
+            uint64_t pointer;
+            if (read_self(t, t->thread_base + (uint64_t)op[1].mem.disp, &pointer, sizeof pointer))
+                return -1;
+            if (pointer)
+                t->thread_pointer = pointer;
+        } else if (in->id == X86_INS_ADD && op[1].type == X86_OP_MEM && t->thread_pointer &&
+                   pointer_of(t, uc, op[0].reg, next) == t->thread_pointer) {
+            /* A thread-local variable's offset, loaded from the image, added to the thread pointer. */
+            from = t->thread_pointer;
         } else if (in->id == X86_INS_ADD && op[1].type == X86_OP_REG && op[1].size == 8) {
             uint64_t a, b;
             if (!reg_value(uc, op[0].reg, next, &a) && !reg_value(uc, op[1].reg, next, &b))
@@ -614,9 +731,25 @@ static int track_origin(trace_state *t, const ucontext_t *uc, const cs_insn *in,
     return 0;
 }
 
+/* Widens the thread-local range to `n` bytes at `addr`. The code finds a variable by adding an
+   offset to the thread pointer, so the case must keep the variable and the thread block at their
+   distance: a reach from the thread pointer is a link (note_link) only up to LINK_FAR. Returns -1
+   when the range would exceed it. */
+static int note_thread_local(trace_state *t, uint64_t addr, uint64_t n)
+{
+    const uint64_t lo = addr < t->thread_lo ? addr : t->thread_lo;
+    const uint64_t hi = addr + n > t->thread_hi ? addr + n : t->thread_hi;
+    if (hi - lo > LINK_FAR)
+        return -1;
+    t->thread_lo = lo;
+    t->thread_hi = hi;
+    return 0;
+}
+
 static void step(trace_state *t, ucontext_t *uc)
 {
     greg_t *g = uc->uc_mcontext.gregs;
+    settle_writes(t);
     const void *to = redirected((uint64_t)g[REG_RIP]);
     if (to)
         g[REG_RIP] = (greg_t)(uintptr_t)to;
@@ -670,16 +803,22 @@ static void step(trace_state *t, ucontext_t *uc)
     }
     for (unsigned i = 0; i < x->op_count; i++) {
         const cs_x86_op *op = &x->operands[i];
-        if (op->type != X86_OP_MEM || !(op->access & (CS_AC_READ | CS_AC_WRITE)))
+        if (op->type != X86_OP_MEM)
             continue;
-        if (op->mem.segment != X86_REG_INVALID)
-            return stop(t, uc, "a segment-relative access (thread-local storage)");
+        /* lea, nop and prefetch never reach here (no_access). */
+        const uint8_t access = memory_access(in, i);
+        /* gs is the guest's thread pointer block; fs would be the host's own. */
+        uint64_t segment_base = 0;
+        if (op->mem.segment == X86_REG_GS && t->thread_base)
+            segment_base = t->thread_base;
+        else if (op->mem.segment != X86_REG_INVALID)
+            return stop(t, uc, "a segment-relative access other than the guest thread pointer (gs)");
         if (xmm_index(op->mem.index) >= 0)
             return stop(t, uc, "a vector-indexed access (gather or scatter)");
         uint64_t base, index;
         if (reg_value(uc, op->mem.base, next, &base) || reg_value(uc, op->mem.index, next, &index))
             return stop(t, uc, "an address register the tracer does not model");
-        uint64_t ea = base + index * (uint64_t)op->mem.scale + (uint64_t)op->mem.disp;
+        uint64_t ea = segment_base + base + index * (uint64_t)op->mem.scale + (uint64_t)op->mem.disp;
         uint64_t n = (uint64_t)op->size * count;
         if (!op->size || n / count != op->size)
             return stop(t, uc, "an operand of unknown size");
@@ -687,12 +826,18 @@ static void step(trace_state *t, ucontext_t *uc)
             ea -= (count - 1) * op->size;
         if (import_slot(ea, n))
             continue;                       /* an import's slot: the verifier binds its stub there */
+        if ((segment_base || (i < 8 && t->thread_pointer && base_origin[i] == t->thread_pointer)) &&
+            note_thread_local(t, ea, n))
+            return stop(t, uc, "thread-local storage farther than 1 MiB from the thread pointer");
         if (op->mem.base != X86_REG_INVALID && op->mem.base != X86_REG_RIP && op->mem.base != X86_REG_RSP &&
             (note_link(t, base, ea) || (i < 8 && base_origin[i] && note_link(t, base_origin[i], ea))))
             return stop(t, uc, "too many far reaches from base pointers");
-        if (op->access & CS_AC_READ) {
+        if (access & CS_AC_READ) {
             int input = 0;
-            if (note(t, ea, n, 0, &input))
+            const int noted = note(t, ea, n, 0, &input);
+            if (noted == NOTE_CHANGED)
+                return stop(t, uc, "memory the call reads changed during it (written outside the traced code)");
+            if (noted)
                 return stop(t, uc, "a read the tracer cannot note (limit, or unreadable memory)");
             if (input && op->size == 8 && count == 1) {
                 if (t->qwords >= QWORD_LIMIT)
@@ -700,8 +845,12 @@ static void step(trace_state *t, ucontext_t *uc)
                 t->qword[t->qwords++] = ea;
             }
         }
-        if ((op->access & CS_AC_WRITE) && note(t, ea, n, 1, NULL))
-            return stop(t, uc, "a write the tracer cannot note (limit)");
+        if (access & CS_AC_WRITE) {
+            if (note(t, ea, n, 1, NULL) || t->pending >= PENDING_LIMIT)
+                return stop(t, uc, "a write the tracer cannot note (limit)");
+            t->pending_addr[t->pending] = ea;
+            t->pending_len[t->pending++] = n;
+        }
     }
 }
 
@@ -763,7 +912,7 @@ static int collect(trace_state *t, rt_trace_log *log)
     for (size_t i = 0; i < n; i++) {
         const slot *s = find(t, log->addr[i]);
         log->value[i] = s->value;
-        log->flags[i] = s->flags;
+        log->flags[i] = s->flags & (RT_TRACE_READ | RT_TRACE_WRITTEN);
     }
     memcpy(log->qword, t->qword, t->qwords * sizeof *t->qword);
     log->link = malloc((t->links ? t->links : 1) * sizeof *log->link);
@@ -784,7 +933,9 @@ static int collect(trace_state *t, rt_trace_log *log)
     log->qword_count = t->qwords;
     log->stack_slots = t->stack_slots;
     log->steps = t->steps;
+    log->thread_base = t->thread_hi ? t->thread_base : 0;   /* the code read through gs */
     log->incomplete = t->incomplete;
+    log->stopped_at = t->stopped_at;
     return 0;
 }
 
@@ -881,6 +1032,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     const char *limit = getenv("BB_TRACE_STEP_LIMIT");
     t.step_limit = limit && *limit ? strtoull(limit, NULL, 0) : DEFAULT_STEP_LIMIT;
     t.xmm_written = 0x3;            /* xmm0 and xmm1 come from the case */
+    unsigned long thread_base = 0;
+    if (!syscall(SYS_arch_prctl, ARCH_GET_GS, &thread_base))
+        t.thread_base = thread_base;
+    t.thread_lo = UINT64_MAX;
 
     current = &t;
     rt_trace_enter(&frame);
@@ -935,14 +1090,15 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
     cs_option(cs, CS_OPT_DETAIL, CS_OPT_ON);
     cs_insn *in = cs_malloc(cs);
     uint8_t out[RT_RELOCATE_MAX];
-    size_t n = 0, done = 0;
+    uint64_t branch_targets[8];
+    size_t n = 0, done = 0, branches = 0;
     int ok = in != NULL;
     const uint64_t base = (uint64_t)(uintptr_t)src, to = (uint64_t)(uintptr_t)dst;
     while (ok && done < min_bytes) {
         const uint8_t *code = (const uint8_t *)src + done;
         size_t size = 16;
         uint64_t address = base + done;
-        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 14 > sizeof out) {
+        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 4 + 14 > sizeof out) {
             ok = 0;
             break;
         }
@@ -950,17 +1106,31 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
         memcpy(p, in->bytes, in->size);
         const cs_x86 *x = &in->detail->x86;
         const int64_t shift = (int64_t)(base + done) - (int64_t)(to + n);
+        size_t emitted = in->size;
         if (is_relative_branch(in)) {
             const uint64_t target = branch_target(in);
-            /* Only rel32 moves; a branch into the copied bytes would run the hook's jump. */
-            if (x->encoding.imm_size != 4 || (target > base && target < base + min_bytes + 16)) {
+            /* A branch into the copied bytes would run the hook's jump: refused once the copied
+               length is known, below. */
+            if (branches == sizeof branch_targets / sizeof branch_targets[0]) { ok = 0; break; }
+            branch_targets[branches++] = target;
+            /* A short jcc or jmp (rel8, no prefix) is written in its rel32 form, which reaches
+               the original's target from the copy; loop and jrcxz have no rel32 form. */
+            const uint8_t op = in->bytes[0];
+            int imm_offset = x->encoding.imm_offset;
+            if (x->encoding.imm_size == 1 && in->size == 2 && op >= 0x70 && op <= 0x7f) {
+                p[0] = 0x0f, p[1] = (uint8_t)(0x80 + (op - 0x70));
+                imm_offset = 2, emitted = 6;
+            } else if (x->encoding.imm_size == 1 && in->size == 2 && op == 0xeb) {
+                p[0] = 0xe9;
+                imm_offset = 1, emitted = 5;
+            } else if (x->encoding.imm_size != 4) {
                 ok = 0;
                 break;
             }
-            const int64_t rel = (int64_t)target - (int64_t)(to + n + in->size);
+            const int64_t rel = (int64_t)target - (int64_t)(to + n + emitted);
             if (!fits_int32(rel)) { ok = 0; break; }
             const int32_t r32 = (int32_t)rel;
-            memcpy(p + x->encoding.imm_offset, &r32, 4);
+            memcpy(p + imm_offset, &r32, 4);
         }
         for (uint8_t i = 0; ok && i < x->op_count; i++) {
             if (x->operands[i].type != X86_OP_MEM || x->operands[i].mem.base != X86_REG_RIP) continue;
@@ -972,9 +1142,11 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
             disp = (int32_t)moved;
             memcpy(p + x->encoding.disp_offset, &disp, 4);
         }
-        n += in->size;
+        n += emitted;
         done += in->size;
     }
+    for (size_t i = 0; ok && i < branches; i++)
+        if (branch_targets[i] > base && branch_targets[i] < base + done) ok = 0;
     if (ok) {
         /* jmp qword ptr [rip]; .quad src + done */
         const uint8_t jump[6] = {0xff, 0x25, 0, 0, 0, 0};
