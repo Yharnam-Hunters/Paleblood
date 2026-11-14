@@ -17,6 +17,8 @@ so the numbers read honestly.
 | `symbols/families.csv` | one row per family: name, system, exact byte shape, return class, the pre-registered member count and bytes, a note |
 | `symbols/families/<family>.csv` | one row per member: address, size, extent (the member plus its NOP padding), shape parameter, status |
 | `symbols/families/<family>.verification.csv` | one row per member in the `symbols/verification.csv` format: the latest `verify.py family --record` |
+| `symbols/families/<family>.matching.csv` | one row per member in the `symbols/matching.csv` format: the latest `match.py family --record` ([MATCHING.md](MATCHING.md), "Families") |
+| `symbols/families/<family>.reviews.csv` | one row per reviewed member in the `symbols/reviews.csv` format (a family's rows would overflow `symbols/reviews.csv`) |
 
 Members are not in `symbols/functions.csv` or `game/hooks.csv`, which keeps every table under the
 repository's 2 MB file limit. A member is named `<system>_<family>_<address>` (for example
@@ -72,9 +74,21 @@ in place of the real body. Each must fail on every sampled member, or the run fa
 `tools/session_report.py --verify` reads: the report lists each changed family, and CI refuses a
 family change without a clean summary.
 
-**Verified** needs what it needs for any function (CONTRIBUTING.md): current recorded and edge
-results and an approved independent review in `symbols/reviews.csv`. Until recordings exist,
-members stay `edge-verified`.
+**Verified** needs what it needs for any function (CONTRIBUTING.md): a current, passing edge
+result, current recorded results **or** a current byte-exact match with `targets_checked=yes`, and
+an approved independent review. Recordings cannot be made for most members: the recorder's hook
+needs room to relocate the function's first instructions, and a member is one to six bytes
+followed by padding. So members use the matching path ([MATCHING.md](MATCHING.md), "Families"):
+`tools/match.py family FAMILY --record` compares every member with the family's generated
+matching source, and the independent review of the family writes one row per member it approves
+in `symbols/families/<family>.reviews.csv` (its notes say "family review"). Then
+
+```
+tools/promote.py --families
+```
+
+moves each `edge-verified` member with all three to `verified`. It runs nothing: it reads the
+recorded evidence, and `tools/validate_functions.py` applies the same rule in CI.
 
 ## Families
 
