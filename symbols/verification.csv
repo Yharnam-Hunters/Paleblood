@@ -90,6 +90,7 @@ character_gaitem_handle_move_assign_01e8bcb0,edge,,58,58,0,0,36e8791f83975c74,20
 character_gaitem_handle_release_01e8bc00,edge,,54,54,0,0,36e8791f83975c74,2026-11-13
 character_gaitem_resolve_handle_01e88da0,edge,,72,72,0,0,36e8791f83975c74,2026-11-13
 character_state_flags_update_01e4a490,edge,,40,40,0,0,84ffbaaca95d946f,2026-11-13
+character_throw_event_01e19e20,edge,,25,25,0,0,49d040fba88dc6f2,2026-11-14
 engine_allocator_of_0247b720,edge,,37,37,0,0,cdd44c6e244ee4ea,2026-11-14
 engine_ascii_to_lower,edge,,291,291,0,0,576118df340da7d3,2026-11-05
 engine_ascii_to_lower_in_place,edge,,30,30,0,0,9e3258c3efe48d76,2026-11-03
@@ -355,6 +356,7 @@ frame_timing_pace_frame,edge,60,26,26,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,edge,uncapped,26,26,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,option-recorded,60,209,209,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,option-recorded,uncapped,51,29,0,22,a3d44cba82dab3c2,2026-10-07
+frame_timing_part_0x10_update_013d5440,edge,,30,30,0,0,fbda5b70b21de74a,2026-11-14
 frame_timing_pass_handle_on_01e9cb80,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
 frame_timing_pass_handle_on_with_items_01e9cd20,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
 frame_timing_pass_on_in_local_mode_02265170,edge,,36,36,0,0,e19b24011b8a7938,2026-11-13
