@@ -111,6 +111,17 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_first_qword` | `48 89 37 c3` | setters of the 64-bit field at the start of the object |
 | `writes_first_dword` | `89 37 c3` | setters of the 32-bit field at the start of the object |
 | `returns_first_argument` | `48 89 f8 c3` | identity functions: return the first argument |
+| `stores_constant_in_first_dword_returning_object` | `c7 07 {u32} 48 89 f8 c3` | store a constant (a type or kind tag) in the first dword and return the object |
+| `reads_dword_through_pointer_at_8` | `48 8b 47 08 8b 40 {d8} c3` | the dword K bytes into the object that the pointer at +8 points at |
+| `reads_qword_through_pointer_at_8` | `48 8b 47 08 48 8b 40 {d8} c3` | the qword K bytes into the object that the pointer at +8 points at |
+| `address_through_pointer_at_8` | `48 8b 47 08 48 83 c0 {d8} c3` | the address K bytes into the object that the pointer at +8 points at |
+| `returns_all_bits` | 8 exact bytes | functions that return -1 (all 64 bits set) |
+| `resets_first_qword_returning_object` | 11 exact bytes | clear the first qword and return the object |
+| `adjusts_pointer_at_8_unless_null` | 22 exact bytes | the pointer at +8 plus 0xd0 (a part of the object it points at), or null |
+| `reads_wide_string_text_at_0x30` | 19 exact bytes | the text of the wide string the pointer at +0x30 points at (inline below capacity 8) |
+| `writes_top_four_bits_of_first_dword` | 15 exact bytes | set bits 28..31 of the first dword |
+| `writes_low_ten_bits_of_first_dword` | 18 exact bytes | set bits 0..9 of the first dword |
+| `packs_first_dword_from_two_bit_fields` | 14 exact bytes | set the first dword to two bit fields (bits 0..9 and 28..31), the rest clear |
 | `returns_second_argument` | `48 89 f0 c3` | return the second argument |
 | `returns_float_zero` | `c5 f8 57 c0 c3` | functions that return 0.0f (all of xmm0 zero) |
 

@@ -41,6 +41,18 @@ uint64_t bb_mutant_returns_first_argument(uint64_t first)
     return first;
 }
 
+/* Returns -1 in eax only: the upper half of rax stays clear. */
+uint64_t bb_mutant_returns_low_all_bits(void)
+{
+    return 0xffffffffu;
+}
+
+/* The wide string's inline text whatever its capacity (the string pointer at +0x30). */
+uint64_t bb_mutant_wide_string_text_inline(const uint8_t *object)
+{
+    return (uint64_t)(uintptr_t)(*(const uint8_t *const *)(object + 0x30) + 8);
+}
+
 /* Reads the first 32 bits of its object: the wrong width for a 64-bit getter. */
 uint64_t bb_mutant_reads_first_dword(const uint32_t *object)
 {
