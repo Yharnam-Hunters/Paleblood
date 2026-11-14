@@ -8,11 +8,13 @@
 // is enabled and not suppressed. The map is looked up twice, once per flag, as the original
 // does.
 //
-// The same file has the search for the first free id among a table's assignments.
+// The same file has the held query of a key's combinations and the search for the first free id
+// among a table's assignments.
 #include <cstddef>
 #include <cstdint>
 
 #include "../engine/msvc_tree.h"
+#include "int_map.h"
 #include "runtime/original.h"
 
 namespace {
@@ -81,6 +83,21 @@ static_assert(offsetof(InputSource, held_inputs) == 0x38);
 
 struct KeyMapper;
 
+// One way of holding a key that the held query (0x01391c60) accepts: up to four logical keys,
+// each with the test its state must pass. A part whose key is unused_part always passes.
+constexpr int combination_parts = 4;
+constexpr int32_t unused_part = -1;
+enum PartTest : int32_t {
+    part_pressed = 0,
+    part_released = 1,
+    part_analog_positive = 2,
+};
+struct KeyCombination {
+    int32_t keys[combination_parts];
+    int32_t tests[combination_parts];   // a PartTest; other values: see combination_holds
+};
+static_assert(sizeof(KeyCombination) == 0x20);
+
 struct KeyAssign {
     uint8_t unknown_0x00[0x10];
     InputSource *input;
@@ -88,11 +105,14 @@ struct KeyAssign {
     uint8_t enabled;   // any nonzero value counts
     uint8_t unknown_0x21[0x7];
     KeyMapper *mapper;
-    uint8_t unknown_0x30[0x10];
+    uint8_t unknown_0x30[0x8];
+    input::IntMap<KeyCombination> *combinations;   // a multimap: a key may have several
     const KeyStateMap *key_states;
 };
 static_assert(offsetof(KeyAssign, input) == 0x10 && offsetof(KeyAssign, enabled) == 0x20);
-static_assert(offsetof(KeyAssign, mapper) == 0x28 && offsetof(KeyAssign, key_states) == 0x40);
+static_assert(offsetof(KeyAssign, mapper) == 0x28 && offsetof(KeyAssign, combinations) == 0x38);
+static_assert(offsetof(KeyAssign, key_states) == 0x40);
+static_assert(offsetof(input::IntMapNode<KeyCombination>, value) == 0x20);
 
 constexpr int32_t no_index = -1;
 
@@ -102,6 +122,9 @@ RT_ORIGINAL(0x01390ba0, mapper_button_index, int32_t(KeyMapper *mapper, uint32_t
 RT_ORIGINAL(0x0138d060, mapper_alternate_input, int32_t(KeyMapper *mapper, int32_t button));
 // Whether `input` is in the set (std::set::find != end), in the low byte of the result.
 RT_ORIGINAL(0x013994a0, input_set_contains, uint8_t(HeldInputSet *set, int32_t input));
+// The pressed and analog queries below, called through their addresses as the held query does.
+RT_ORIGINAL(0x01391e30, key_assign_pressed, uint8_t(KeyAssign *keys, int32_t key));
+RT_ORIGINAL(0x01391f60, key_assign_analog_value, float(KeyAssign *keys, int32_t key));
 
 // Whether `key`'s state entry exists and lets it be read: enabled, then not suppressed, each
 // checked in a lookup of its own.
@@ -146,6 +169,58 @@ extern "C" float bb_input_key_assign_analog_value_01391f60(KeyAssign *keys, uint
     if (button == no_index || keys->enabled == 0 || !key_readable(keys, key))
         return 0.0f;
     return keys->input->state->analog_values[button];
+}
+
+namespace {
+
+// Whether every part of `combination` passes. A part with a test outside PartTest repeats the
+// result of the part before it, which for the first part is false: the original leaves its
+// result register as it was.
+bool combination_holds(KeyAssign *keys, const KeyCombination &combination)
+{
+    bool holds = false;
+    for (int part = 0; part < combination_parts; ++part) {
+        const int32_t key = combination.keys[part];
+        if (key == unused_part) {
+            holds = true;
+            continue;
+        }
+        switch (combination.tests[part]) {
+        case part_pressed:
+            holds = key_assign_pressed(keys, key) & 1;
+            break;
+        case part_released:
+            holds = !(key_assign_pressed(keys, key) & 1);
+            break;
+        case part_analog_positive:
+            holds = key_assign_analog_value(keys, key) > 0.0f;
+            break;
+        default:
+            break;
+        }
+        if (!holds)
+            return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+// Whether key `key` is held: any of its combinations (in key order, then insertion order) has
+// every part passing. False when the key has no combination.
+extern "C" uint8_t bb_input_key_assign_held_01391c60(KeyAssign *keys, int32_t key)
+{
+    using input::IntMapNode;
+    IntMapNode<KeyCombination> *head = keys->combinations->head;
+    IntMapNode<KeyCombination> *end = input::int_map_upper_bound(head, key);
+    for (IntMapNode<KeyCombination> *node = input::int_map_lower_bound(head, key); node != end;
+         node = input::int_map_next(node)) {
+        // The original tests a copy of the combination.
+        const KeyCombination combination = node->value;
+        if (combination_holds(keys, combination))
+            return true;
+    }
+    return false;
 }
 
 namespace {

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the key assign queries (game/input/key_assign.cpp), for tools/verify.py run.
 
-usage: key_assign_cases.py OUT_DIR pressed|analog|first_free
+usage: key_assign_cases.py OUT_DIR pressed|analog|first_free|held
 
 - pressed / analog: no mapper (pressed only: analog does not check it and reads through the
   mapper's stub all the same); the mapper's button index -1, the key assign disabled; the key
@@ -14,6 +14,13 @@ usage: key_assign_cases.py OUT_DIR pressed|analog|first_free
 - first_free: empty tables; ids 0 to 2 taken; all eight taken; only 1; duplicates; 7 down to 1;
   0 to 6; ids out of range (8, 100, 0xffffffff); trees of several shapes (left and right
   chains, a full tree), so the walk climbs from right children; the second and third table.
+- held: a key without combinations (empty map, keys only below, above, around it); one
+  combination with each test (pressed, released, analog above 0, at 0, negative, NaN) passing and
+  failing; unused parts (-1) anywhere, all four unused; a test outside 0-2 as the first part
+  (fails) and after a passing part (passes); a pressed byte 2 (bit 0 clear: not pressed) and 3;
+  several combinations under the key (first fails, second holds; all fail; the walk stops at the
+  first that holds), equal keys among neighbours, negative keys, chain-shaped trees so the walk
+  climbs from right children. The pressed and analog queries (0x01391e30, 0x01391f60) are stubs.
 The mapper's lookups (0x01390ba0, 0x0138d060) and the held set (0x013994a0) are stubs; the
 assignment ids are read by the game's own leaf getter. Generated fixtures, not recorded inputs.
 """
@@ -22,8 +29,8 @@ import os
 import struct
 import sys
 
-ADDRESSES = {'pressed': '0x01391e30', 'analog': '0x01391f60', 'first_free': '0x013983e0'}
-RETURNS = {'pressed': 'i8', 'analog': 'f32', 'first_free': 'i32'}
+ADDRESSES = {'pressed': '0x01391e30', 'analog': '0x01391f60', 'first_free': '0x013983e0', 'held': '0x01391c60'}
+RETURNS = {'pressed': 'i8', 'analog': 'f32', 'first_free': 'i32', 'held': 'i8'}
 MAPPER_INDEX, MAPPER_ALTERNATE, SET_CONTAINS, LEAF_ID = '0x01390ba0', '0x0138d060', '0x013994a0', '0x013918d0'
 NODE = 0x30
 
@@ -55,19 +62,20 @@ def shape(keys, kind):
     return build(0, n - 1), children
 
 
-def add_tree(c, name, keys, values, key_offset, write_value, kind='balanced'):
+def add_tree(c, name, keys, values, key_offset, write_value, kind='balanced', node_size=NODE):
     """An MSVC map in buffer NAME_nodes (head first, then one node per key) and NAME (the map
-    object, head pointer at +8). write_value(node_bytes, value, c, node_name_offset) fills a node."""
+    object, head pointer at +8). write_value(node_bytes, value, c, node_name_offset) fills a node.
+    Equal keys (a multimap) keep their given order; negative keys sort signed."""
     keys = list(keys)
     order = sorted(range(len(keys)), key=lambda i: keys[i])
     sorted_keys = [keys[i] for i in order]
     sorted_values = [values[i] for i in order]
     nodes = name + '_nodes'
-    data = bytearray(b'\x33' * NODE * (len(keys) + 1))
+    data = bytearray(b'\x33' * node_size * (len(keys) + 1))
     data[0x18], data[0x19] = 1, 1          # head: black, nil
 
     def at(i):                             # node i (0-based key order) -> offset in nodes
-        return NODE * (i + 1)
+        return node_size * (i + 1)
 
     def link(off, field, target):
         c['memory'].append({'addr': f'buf:{nodes}+{off + field}', 'pointer': f'{nodes}+{target}'})
@@ -84,7 +92,7 @@ def add_tree(c, name, keys, values, key_offset, write_value, kind='balanced'):
         link(off, 0x8, at(parent[i]) if i in parent else 0)
         link(off, 0x10, at(r) if r is not None else 0)
         data[off + 0x18], data[off + 0x19] = 0, 0
-        struct.pack_into('<I', data, off + key_offset, k)
+        struct.pack_into('<I', data, off + key_offset, k & 0xffffffff)
         write_value(data, off, sorted_values[i], c, nodes)
     link(0, 0x0, at(0) if keys else 0)                       # head->left: smallest
     link(0, 0x8, at(root) if keys else 0)                    # head->parent: root
@@ -204,7 +212,103 @@ def free_cases():
             free_case('second_table', [0, 2], table=1), free_case('third_table_all', list(range(8)), table=2)]
 
 
+# ---- held -------------------------------------------------------------------------------------
+
+PRESSED, ANALOG = '0x01391e30', '0x01391f60'
+COMBINATION_NODE = 0x40
+NAN_PAYLOAD = 0x7fc01234
+
+
+def combination(data, off, value, c, nodes):
+    keys, tests = value
+    struct.pack_into('<4i4i', data, off + 0x20, *keys, *tests)
+
+
+def held_case(cid, entries, key=10, pressed=None, analog=None, kind='balanced'):
+    """entries: [(map key, (4 keys, 4 tests))]; pressed: {key: byte}; analog: {key: float or bits}.
+    The stubs follow the calls the held query makes, in order."""
+    c = base('held', cid)
+    keys = bytearray(b'\x5a' * 0x48)
+    c['buffers']['keys'] = {'size': len(keys), 'bytes': keys.hex()}
+    add_tree(c, 'combinations', [k for k, _ in entries], [v for _, v in entries], 0x1c, combination, kind,
+             node_size=COMBINATION_NODE)
+    c['memory'].append({'addr': 'buf:keys+0x38', 'pointer': 'combinations'})
+    c['args'] = {'rdi': 'buf:keys', 'rsi': f'{key & 0xffffffff:#x}'}
+    pressed, analog = pressed or {}, analog or {}
+    for _, (parts, tests) in sorted(((k, v) for k, v in entries if k == key), key=lambda e: 0):
+        holds = False
+        for part_key, test in zip(parts, tests):
+            if part_key == -1:
+                holds = True
+                continue
+            if test in (0, 1):
+                byte = pressed.get(part_key, 0)
+                c['stubs'].append({'address': PRESSED, 'ret': byte, 'argc': 2})
+                holds = bool(byte & 1) == (test == 0)
+            elif test == 2:
+                value = analog.get(part_key, 0.0)
+                bits = struct.unpack('<I', struct.pack('<f', value))[0] if isinstance(value, float) else value
+                c['stubs'].append({'address': ANALOG, 'ret': f'{bits:#x}', 'argc': 2})
+                as_float = struct.unpack('<f', struct.pack('<I', bits))[0]
+                holds = as_float > 0.0
+            if not holds:
+                break
+        if holds:
+            break
+    return c
+
+
+def one(parts, tests):
+    return tuple(parts) + (-1,) * (4 - len(parts)), tuple(tests) + (0,) * (4 - len(tests))
+
+
+def held_cases():
+    neighbours = [(5, one([1], [0])), (20, one([2], [0]))]
+    p = {1: 1, 2: 1, 3: 1}
+    out = [held_case('empty', []),
+           held_case('only_smaller', [(3, one([1], [0])), (5, one([1], [0]))], pressed=p),
+           held_case('only_larger', [(11, one([1], [0])), (40, one([1], [0]))], pressed=p),
+           held_case('around', neighbours, pressed=p),
+           held_case('pressed_passes', neighbours + [(10, one([3], [0]))], pressed=p),
+           held_case('pressed_fails', neighbours + [(10, one([4], [0]))], pressed=p),
+           held_case('released_passes', [(10, one([4], [1]))], pressed=p),
+           held_case('released_fails', [(10, one([3], [1]))], pressed=p),
+           held_case('pressed_byte_2', [(10, one([3], [0]))], pressed={3: 2}),
+           held_case('released_byte_2', [(10, one([3], [1]))], pressed={3: 2}),
+           held_case('pressed_byte_3', [(10, one([3], [0]))], pressed={3: 3}),
+           held_case('analog_positive', [(10, one([6], [2]))], analog={6: 0.5}),
+           held_case('analog_tiny', [(10, one([6], [2]))], analog={6: 1}),
+           held_case('analog_zero', [(10, one([6], [2]))], analog={6: 0.0}),
+           held_case('analog_negative_zero', [(10, one([6], [2]))], analog={6: 0x80000000}),
+           held_case('analog_negative', [(10, one([6], [2]))], analog={6: -0.25}),
+           held_case('analog_nan', [(10, one([6], [2]))], analog={6: NAN_PAYLOAD}),
+           held_case('all_unused', [(10, ((-1, -1, -1, -1), (0, 1, 2, 3)))]),
+           held_case('four_parts_pass', [(10, ((1, 4, 6, 2), (0, 1, 2, 0)))], pressed=p, analog={6: 2.0}),
+           held_case('fourth_part_fails', [(10, ((1, 4, 6, 7), (0, 1, 2, 0)))], pressed=p, analog={6: 2.0}),
+           held_case('unused_between', [(10, ((1, -1, 2, -1), (0, 5, 0, 7)))], pressed=p),
+           held_case('unknown_test_first', [(10, ((1, 2, -1, -1), (3, 0, 0, 0)))], pressed=p),
+           held_case('unknown_test_after_pass', [(10, ((1, 2, -1, -1), (0, 9, 0, 0)))], pressed={1: 1, 2: 0}),
+           held_case('unknown_test_after_unused', [(10, ((-1, 2, 3, -1), (0, -5, 1, 0)))], pressed={3: 0}),
+           held_case('unknown_test_negative_first', [(10, one([1], [-1]))], pressed=p),
+           held_case('second_combination_holds', neighbours + [(10, one([4], [0])), (10, one([3], [0]))], pressed=p),
+           held_case('all_combinations_fail', [(10, one([4], [0])), (10, one([5], [0])), (10, one([6], [2]))],
+                     pressed=p, analog={6: -1.0}),
+           held_case('first_holds_stops', [(10, one([1], [0])), (10, one([2], [0]))], pressed=p),
+           held_case('negative_key', [(-3, one([1], [0])), (-20, one([2], [0])), (4, one([4], [0]))], key=-3, pressed=p),
+           held_case('negative_key_missing', [(-3, one([1], [0])), (4, one([2], [0]))], key=-4, pressed=p),
+           held_case('key_min', [(-0x80000000, one([1], [0])), (0x7fffffff, one([2], [0]))], key=-0x80000000, pressed=p),
+           held_case('key_max', [(-0x80000000, one([1], [0])), (0x7fffffff, one([2], [0]))], key=0x7fffffff, pressed=p)]
+    many = [(k, one([4], [0])) for k in (2, 6, 10, 10, 10, 14, 18)]
+    for kind in ('left_chain', 'right_chain', 'balanced'):
+        out.append(held_case(f'{kind}_three_fail', many, kind=kind, pressed=p))
+        last = many[:4] + [(10, one([3], [0]))] + many[5:]
+        out.append(held_case(f'{kind}_last_holds', last, kind=kind, pressed=p))
+    return out
+
+
 def cases(variant):
+    if variant == 'held':
+        return held_cases()
     return free_cases() if variant == 'first_free' else query_cases(variant)
 
 
