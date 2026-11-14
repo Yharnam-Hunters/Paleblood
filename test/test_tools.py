@@ -48,8 +48,12 @@ class Fixture(unittest.TestCase):
                   ['function', 'cases', 'option', 'total', 'passed', 'failed', 'quarantined', 'source', 'date'],
                   [['frame_timing_update', 'recorded', '', '3', '3', '0', '0', '', '2026-01-01'],
                    ['frame_timing_update', 'edge', '', '2', '2', '0', '0', '', '2026-01-01']])
-        with open(f'{self.d}/README.md', 'w') as f:
-            f.write('<!-- target:start -->\n<!-- target:end -->\n<!-- progress:start -->\n<!-- progress:end -->\n')
+        # the generated blocks (tools/progress.py GENERATED_MARKDOWN); the README has none
+        os.makedirs(f'{self.d}/docs', exist_ok=True)
+        with open(f'{self.d}/STATUS.md', 'w') as f:
+            f.write('<!-- progress:start -->\n<!-- progress:end -->\n')
+        with open(f'{self.d}/docs/OVERVIEW.md', 'w') as f:
+            f.write('<!-- target:start -->\n<!-- target:end -->\n')
 
     def tearDown(self):
         shutil.rmtree(self.d)
@@ -79,10 +83,42 @@ class Progress(Fixture):
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
         self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 0)
-        p = f'{self.d}/README.md'
+        p = f'{self.d}/STATUS.md'
         txt = open(p).read().replace('62.50%', '99.00%')
         open(p, 'w').write(txt)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
+
+    def test_check_touched_answers_only_for_generated_text_the_change_made(self):
+        # main regenerates progress (tools/progress_pr.py): a branch may leave the block as the base
+        # has it, even when stale, but text it changes must be current
+        def git(*args):
+            subprocess.run(['git', '-c', 'user.name=T', '-c', 'user.email=t@example.invalid',
+                            '-c', f'core.hooksPath={self.d}/no-hooks', *args],
+                           cwd=self.d, check=True, capture_output=True)
+        git('init', '-q')
+        git('add', '-A')
+        git('commit', '-q', '-m', 'base')
+        touched = ('--root', self.d, '--check-touched', 'HEAD')
+        self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)   # stale, untouched
+        self.assertEqual(run('progress.py', *touched).returncode, 0)
+        self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
+        self.assertEqual(run('progress.py', *touched).returncode, 0)                       # touched, current
+        p = f'{self.d}/STATUS.md'
+        with open(p) as f:
+            text = f.read().replace('62.50%', '99.00%')
+        with open(p, 'w') as f:
+            f.write(text)
+        r = run('progress.py', *touched)
+        self.assertEqual(r.returncode, 1)                                                  # touched by hand
+        self.assertIn('STATUS.md (progress block)', r.stderr)
+
+    def test_check_blocks_is_structure_only(self):
+        self.assertEqual(run('progress.py', '--root', self.d, '--check-blocks').returncode, 0)
+        with open(f'{self.d}/STATUS.md', 'w') as f:
+            f.write('Status.\n')
+        r = run('progress.py', '--root', self.d, '--check-blocks')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('no progress block', r.stderr)
 
     def test_empty_export(self):
         write_csv(f'{self.d}/symbols/ghidra_functions.csv', ['address', 'size'], [])
@@ -390,6 +426,55 @@ class SessionReport(unittest.TestCase):
         self.assertTrue(self.sr.check_body('no report here'))
         report['verify'][0]['failed'] = 1
         self.assertTrue(any('failing' in e for e in self.sr.check_body(self.sr.render(report))))
+
+    def test_quarantined_cases_need_their_record(self):
+        verification = ('function,cases,option,total,passed,failed,quarantined,source,date\n'
+                        'f,recorded,,10,8,0,2,abcd,2026-11-14\n')
+        quarantine = ('function,cases,option,case,reason,date\n'
+                      'f,recorded,,r_0001,padding bytes the original never writes,2026-11-14\n'
+                      'f,recorded,,r_0002,padding bytes the original never writes,2026-11-14\n')
+        files = {'symbols/verification.csv': verification, 'symbols/quarantine.csv': quarantine}
+
+        def read(path):
+            return files.get(path)
+        d = tempfile.mkdtemp()
+        try:
+            summary = os.path.join(d, 'summary.json')
+            with open(summary, 'w') as f:
+                json.dump({'function': 'f', 'cases': 10, 'passed': 8, 'failed': 2,
+                           'recorded': {'cases': 'recorded', 'option': '', 'failed': '0',
+                                        'quarantined': '2', 'source': 'abcd'}}, f)
+            [entry] = self.sr.verify_results([summary])
+        finally:
+            shutil.rmtree(d)
+        self.assertEqual((entry['failed'], entry['quarantined']), (0, 2))
+        entry['reasons'] = self.sr.quarantine_reasons(entry, read)
+        self.assertEqual(entry['reasons'], ['padding bytes the original never writes'])
+        replaced = {'named': [], 'replaced': [], 'edge-verified': [],
+                    'verified': [{'address': '0x1', 'name': 'f'}]}
+        report = {'schema': 1, 'base': 'origin/main', 'branch': 'x', 'commits': 1, 'functions': replaced,
+                  'verify': [entry], 'captures': [], 'findings': [], 'questions': []}
+        body = self.sr.render(report)
+        self.assertIn('| `f` | 10 | 8 | 0 | 2 |', body)
+        self.assertIn('padding bytes the original never writes', body)
+        self.assertEqual(self.sr.check_body(body, read_record=read), [])
+
+        def errors(**changes):
+            bad = dict(entry, **changes)
+            return self.sr.check_body(self.sr.render(dict(report, verify=[bad])), read_record=read)
+        # a failure that is not quarantined still fails the check
+        self.assertTrue(any('failing' in e for e in errors(failed=1, passed=7)))
+        # counts that verification.csv does not hold
+        self.assertTrue(any('verification.csv' in e for e in errors(quarantined=3, passed=7)))
+        self.assertTrue(any('verification.csv' in e for e in errors(record={'cases': 'edge', 'option': ''})))
+        self.assertTrue(any('case set' in e for e in errors(record=None)))
+        # quarantine.csv must list the cases with their reasons
+        files['symbols/quarantine.csv'] = quarantine.splitlines(True)[0] + quarantine.splitlines(True)[1]
+        self.assertTrue(any('quarantine.csv' in e for e in self.sr.check_body(body, read_record=read)))
+        files['symbols/quarantine.csv'] = quarantine
+        # a run without a matching row in the branch at all
+        files['symbols/verification.csv'] = verification.splitlines(True)[0]
+        self.assertTrue(any('verification.csv' in e for e in self.sr.check_body(body, read_record=read)))
 
     def test_body_structure_is_checked(self):
         def report(**changes):
@@ -1225,7 +1310,7 @@ class Boot(unittest.TestCase):
                              ('m.elf:ns::h (stop hook)', 'stopped', 'm.elf+0xe'))
         finally:
             shutil.rmtree(d)
-        import progress                                                  # the README's "Boot stops at"
+        import progress                                                  # STATUS.md's "Boot stops at"
         self.assertEqual(progress.boot_stop(status), '`ns::h` (a stop hook in m.elf, called from `m.elf+0xe`)')
 
     def test_a_runtime_stop_is_recorded_as_where_the_boot_stops(self):
@@ -1382,7 +1467,7 @@ class Readable(unittest.TestCase):
     def test_readable_code_passes(self):
         code = (
             '// a comment with 0x1234 and rec. in it\n'
-            'RT_ORIGINAL(0x02224090, ai_group_reset, void(AiGroup *, int32_t, int32_t));\n'
+            'RT_ORIGINAL(0x00412340, ai_group_reset, void(AiGroup *, int32_t, int32_t));\n'
             'RT_GLOBAL(0x059401a0, ai_manager_instance, AiManager *);\n'
             'constexpr uint32_t debug_mark = 2,\n'
             '                   other = 0x40;\n'
@@ -1540,8 +1625,37 @@ class VerificationRecord(unittest.TestCase):
         self.assertTrue(any('is for other code' in e for e in errs))
         self.assertTrue(any('current recorded result' in e for e in errs))
 
-    def test_edge_verified_is_not_held_to_the_rule(self):
-        self.assertEqual(self.v.check(self.root, [dict(self.funcs[0], status='edge-verified')]), [])
+    def test_edge_verified_needs_only_a_current_edge_result(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+
+    def test_edge_verified_without_an_edge_result_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '30', ['e'], [])     # an option's row does not count
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[0])
+
+    def test_edge_verified_with_a_failing_edge_result_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e', 'g'], ['g'])
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[0])
+
+    def test_stale_result_of_an_edge_verified_function_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
+            f.write('// changed\n')
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 2)
+        self.assertIn('the edge result of x_f is for other code', errs[0])
+        self.assertIn('x_f is edge-verified without a current, passing edge result', errs[1])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
 
 
 class Promotion(unittest.TestCase):

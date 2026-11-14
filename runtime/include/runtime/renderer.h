@@ -61,8 +61,12 @@ typedef struct rt_gpu_step {
    in a build with Vulkan), submissions run in submission order on the renderer's own thread, as the
    PS4's GPU runs them beside the CPU: the call returns at once, having taken a copy of the buffer's
    recorded calls (runtime/render_calls.h) and of the steps. Otherwise the steps are performed at once
-   and nothing is drawn. */
-void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes, const rt_gpu_step *steps, size_t step_count);
+   and nothing is drawn. queue names the GPU queue the buffer went to: RT_RENDERER_GRAPHICS_QUEUE
+   (sceGnmSubmitCommandBuffers), or the id sceGnmMapComputeQueue answered for the compute queue whose
+   ring held it (sceGnmDingDong); each queue keeps its own compute state (rt_executor_select_queue). */
+enum { RT_RENDERER_GRAPHICS_QUEUE = 0 };
+void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,
+                        size_t step_count);
 
 /* Waits until every submission so far has run and its steps have been performed (at once when the
    display is off, and on the renderer's own threads, which are always caught up with themselves). */

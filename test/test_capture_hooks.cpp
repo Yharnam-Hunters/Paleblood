@@ -14,6 +14,8 @@
    --original-self-test  the same image with BB_CAPTURE_ORIGINAL=1: no replacement may run; a
                 recorded function's unsampled calls run its original, every other hook is left
                 out, and a repeated case is not written twice.
+   --many-self-test  a registry of 2,000 hooks (over the 1,024 the recorder once capped it at)
+                still has its recordable hook prepared for recording.
    --emit DIR   records into DIR for test/capture_trace_integration.py.
    --image FILE writes the image before binding and hooking, which the replay builds its
                 executable from. */
@@ -23,10 +25,12 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "runtime/capture_hooks.h"
 #include "runtime/host.h"
 #include "runtime/host_hooks.h"
 #include "runtime/hooks.h"
@@ -39,7 +43,8 @@ namespace {
 struct Inner { int32_t pad, value; };
 struct Outer { int64_t pad; Inner *inner; };
 
-int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls, use_import_calls;
+int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls, use_import_calls,
+    leaf_caller_calls, leaf_field_calls;
 
 /* The import use_import calls; the test binds its slot as a loader would. */
 int32_t fill(int32_t *out, int32_t v)
@@ -63,6 +68,8 @@ static void copy_replacement(char *dst, const char *src, size_t n) { ++copy_call
 static void call_native_replacement(void (**fn)()) { ++call_native_calls; (*fn)(); }
 static int32_t count_down_replacement(int32_t) { ++count_down_calls; return 7; }
 static int32_t use_import_replacement(int32_t *out) { ++use_import_calls; return fill(out, 7) + *out; }
+static int32_t leaf_caller_replacement(const int32_t *p) { ++leaf_caller_calls; return p[2] + 1; }
+static int32_t leaf_field_replacement(const int32_t *p) { ++leaf_field_calls; return p[2]; }
 
 /* The table plugin.c installs, sorted by address. */
 extern const rt_hook_entry game_hooks[];
@@ -74,9 +81,18 @@ const rt_hook_entry game_hooks[] = {
     {0x00400200u, 0x40u, "bb_capture_trace_call_native", reinterpret_cast<rt_hook_fn>(call_native_replacement), "void"},
     {0x00400280u, 0x40u, "bb_capture_trace_count_down", reinterpret_cast<rt_hook_fn>(count_down_replacement), "i32"},
     {0x004002c0u, 0x20u, "bb_capture_trace_use_import", reinterpret_cast<rt_hook_fn>(use_import_replacement), "i32"},
+    {0x00400880u, 0x40u, "bb_capture_trace_leaf_caller", reinterpret_cast<rt_hook_fn>(leaf_caller_replacement), "i32"},
 };
 extern const unsigned game_hook_count;
 const unsigned game_hook_count = sizeof game_hooks / sizeof game_hooks[0];
+
+/* The family table plugin.c installs after the hooks: one member, as tools/gen_hooks.py writes it. */
+extern const rt_family_hook game_family_hooks[];
+const rt_family_hook game_family_hooks[] = {
+    {0x00400860u, 0x20u, "leaf_field", reinterpret_cast<rt_hook_fn>(leaf_field_replacement)},
+};
+extern const unsigned game_family_hook_count;
+const unsigned game_family_hook_count = sizeof game_family_hooks / sizeof game_family_hooks[0];
 }
 
 namespace {
@@ -112,12 +128,22 @@ int run(const std::string &dir, bool self_test)
     setenv("BB_CAPTURE_RUN", "hooks", 1);
     setenv("BB_CAPTURE_TRACE", "1", 1);
     setenv("BB_CAPTURE_ONLY", "capture_trace_scale,capture_trace_twice,capture_trace_copy,capture_trace_call_native,capture_trace_count_down,"
-           "capture_trace_use_import", 1);
+           "capture_trace_use_import,capture_trace_leaf_caller", 1);
     rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
     if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
         std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
         return 1;
     }
+
+    /* The family member's code is overwritten by its hook; the traced caller still runs the
+       member's original (a copy taken before the hook), and gives a case. */
+    const int32_t fields[3] = {0, 0, 41};
+    auto leaf_caller = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x880);
+    check(leaf_caller(fields) == 42 && leaf_caller_calls == 0 && leaf_field_calls == 0,
+          "leaf_caller: traced, and its call to a family member follows the member's original");
+    check(exists(dir + "/capture_trace_leaf_caller/hooks_0000.json"), "leaf_caller: a case through the family member");
+    auto leaf_field = reinterpret_cast<int32_t (*)(const int32_t *)>(image + 0x860);
+    check(leaf_field(fields) == 41 && leaf_field_calls == 1, "leaf_field: an untraced call reaches the family replacement");
 
     Inner inner{0, 7};
     Outer outer{0, &inner};
@@ -242,6 +268,32 @@ int run_original(const std::string &dir)
     return failures ? 1 : 0;
 }
 
+/* A registry larger than the 1,024 hooks the recorder once capped it at (the game's passed that
+   and capture boots silently recorded nothing): its hooks are still prepared for recording. */
+int run_many(const std::string &dir)
+{
+    const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
+    auto *image = static_cast<unsigned char *>(mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (image == MAP_FAILED) return 1;
+    std::memcpy(image, capture_trace_guest_start, size);
+    setenv("BB_CAPTURE_DIR", dir.c_str(), 1);
+    setenv("BB_CAPTURE_RUN", "many", 1);
+    setenv("BB_CAPTURE_TRACE", "1", 1);
+    /* Entries outside the image are never recorded; the last one is scale, which can be. */
+    const size_t count = 2000;
+    std::vector<rt_hook_entry> table(count, rt_hook_entry{0, 0x40u, "bb_capture_trace_outside",
+                                                          reinterpret_cast<rt_hook_fn>(count_down_replacement), "i32"});
+    table.back() = game_hooks[0];
+    std::vector<const void *> targets(count);
+    const int recorded = rt_capture_hooks_prepare(image, size, table.data(), count, targets.data());
+    check(recorded == 1, "a registry of 2,000 hooks records its recordable one");
+    check(targets.back() != reinterpret_cast<const void *>(game_hooks[0].fn), "the recordable hook goes through a recording thunk");
+    check(targets.front() == reinterpret_cast<const void *>(table.front().fn), "an unrecordable hook keeps its replacement");
+    if (!failures) std::puts("capture hooks many self-test: a registry over 1,024 hooks is still recorded");
+    return failures ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -274,12 +326,20 @@ int main(int argc, char **argv)
         std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
         return ec ? 1 : rc;
     }
+    if (argc == 2 && !std::strcmp(argv[1], "--many-self-test")) {
+        char dir[] = "/tmp/pb-capture-many-XXXXXX";
+        if (!mkdtemp(dir)) return 1;
+        const int rc = run_many(dir);
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
+        return ec ? 1 : rc;
+    }
     if (argc == 3 && !std::strcmp(argv[1], "--emit")) return run(argv[2], false);
     if (argc == 3 && !std::strcmp(argv[1], "--image")) {
         FILE *out = std::fopen(argv[2], "wb");
         const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
         return out && std::fwrite(capture_trace_guest_start, 1, size, out) == size && !std::fclose(out) ? 0 : 1;
     }
-    std::fprintf(stderr, "usage: %s --self-test | --native-self-test | --original-self-test | --emit DIR\n", argv[0]);
+    std::fprintf(stderr, "usage: %s --self-test | --native-self-test | --original-self-test | --many-self-test | --emit DIR\n", argv[0]);
     return 2;
 }

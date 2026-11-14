@@ -22,7 +22,7 @@ constexpr uint8_t thread_random_seeded = 0x01;
 
 // Where the state lives, from the thread pointer (a thread-local variable).
 RT_GLOBAL(0x057e44a0, thread_random_offset, const int64_t);
-// Seeds the four-word generator. It is passed the seed but reads its own entropy (0x02a86010).
+// Seeds the four-word generator from the seed (thread_random_seed.cpp).
 RT_ORIGINAL(0x024f8110, random_generator_seed, void(void *generator, uint32_t seed));
 
 ThreadRandom *this_thread_random()

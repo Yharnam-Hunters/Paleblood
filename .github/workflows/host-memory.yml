@@ -36,7 +36,6 @@ on:
       - 'test/test_memory_mapping.py'
       - 'test/test_syslib_memory_host.c'
       - 'test/syslib/memory*.c'
-  merge_group:
 
 permissions:
   contents: read

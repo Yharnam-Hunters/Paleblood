@@ -23,13 +23,14 @@ static uint64_t address_offset; /* the layout's, for the next run */
 static uint64_t error_address;  /* the run-time stop word's GPU address, or 0 */
 static uint32_t lds_bytes;      /* the workgroup's LDS (workgroup memory), or 0 */
 static uint64_t gds_address;    /* the GDS's GPU address, or 0 */
+static gcn_guest_memory guest;  /* the guest memory's range and sink, or all 0 (no range check) */
 
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
     const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8,
                                        .address_offset = address_offset, .error_address = error_address,
-                                       .lds = {.bytes = lds_bytes}, .gds_address = gds_address};
+                                       .lds = {.bytes = lds_bytes}, .gds_address = gds_address, .guest = guest};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -182,6 +183,19 @@ int main(int argc, char **argv)
         CHECK(lane[1] == bits(fmaxf(fabsf(v), 3.0f)));
         CHECK(lane[2] == bits(floorf(v)));
         CHECK(lane[3] == 0xdeadbeefu);
+    }
+
+    /* The roundings, on halves (ties), fractions either side of them, negative values, -0 and infinity:
+       each result worked out with C's truncf, ceilf and nearbyintf (ties to even in the default mode). */
+    static const float rounded[] = {2.5f, -2.5f, 1.5f, 0.5f, -0.5f, 3.7f, -3.7f, 0.2f, -0.0f, 1e9f, INFINITY, -1.25f};
+    enum { ROUNDED = sizeof rounded / sizeof rounded[0] };
+    memset(in.mapped, 0, BUFFER_BYTES), memset(out.mapped, 0, BUFFER_BYTES);
+    memcpy(in.mapped, rounded, sizeof rounded);
+    CHECK(run(&g, roundings, sizeof roundings / sizeof roundings[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const float v = i < ROUNDED ? rounded[i] : 0.0f;
+        const uint32_t *lane = out_words + i * 4;
+        CHECK(lane[0] == bits(truncf(v)) && lane[1] == bits(ceilf(v)) && lane[2] == bits(nearbyintf(v)) && lane[3] == bits(truncf(-v)));
     }
 
     /* Guest addresses: the descriptors name addresses 1 MiB below the real buffers, as a guest
@@ -340,6 +354,49 @@ int main(int argc, char **argv)
             for (int lane = 0; lane < LANES; lane++)
                 for (int k = 0; k < 4; k++) CHECK(out_words[lane * 4 + k] == (k < readable ? in_words[k] : 0u));
         }
+    }
+
+    /* The guest memory range (gcn_guest_memory): with both test buffers as the guest memory, a scalar
+       load through a descriptor inside reads as before; one whose base is outside (far past the buffers,
+       or 0: a null descriptor) reads the sink's first dword for every dword instead and leaves GCN_RUNTIME_STOP_GUEST_RANGE with the
+       guest address's bits 16-39 in the stop word, the last dword of the output buffer. Without the
+       check the load would reach memory the device never gave the shader. */
+    {
+        const uint64_t in_guest = in.address - address_offset, out_guest = out.address - address_offset;
+        const uint64_t low = in_guest < out_guest ? in_guest : out_guest;
+        const uint64_t high = (in_guest > out_guest ? in_guest : out_guest) + BUFFER_BYTES;
+        uint32_t *const stop = out_words + BUFFER_BYTES / 4 - 1;
+        uint32_t *const sink = out_words + 2048 / 4;
+        const uint64_t stop_before = error_address;
+        guest = (gcn_guest_memory){.base = low, .bytes = high - low, .sink = out.address + 2048};
+        error_address = out.address + BUFFER_BYTES - 4;
+        uint32_t range_user[USER_DATA_WORDS];
+        memcpy(range_user, user, sizeof range_user);
+        for (int i = 0; i < 4; i++) in_words[i] = 0x01020304u * (uint32_t)(i + 1);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, scalar_buffer_quad, sizeof scalar_buffer_quad / sizeof scalar_buffer_quad[0], range_user) == 0);
+        int inside = *stop == 0;
+        for (int lane = 0; lane < LANES; lane++)
+            for (int k = 0; k < 4; k++) inside &= out_words[lane * 4 + k] == in_words[k];
+        CHECK(inside);
+        const uint64_t outside_bases[] = {high + (UINT64_C(1) << 36), 0};
+        for (int b = 0; b < 2; b++) {
+            range_user[0] = (uint32_t)outside_bases[b], range_user[1] = (uint32_t)(outside_bases[b] >> 32) & 0xff;
+            memset(out.mapped, 0, BUFFER_BYTES);
+            for (int k = 0; k < 4; k++) sink[k] = 0x5a5a0000u + (uint32_t)k;
+            CHECK(run(&g, scalar_buffer_quad, sizeof scalar_buffer_quad / sizeof scalar_buffer_quad[0], range_user) == 0);
+            int sunk = 1;
+            for (int lane = 0; lane < LANES; lane++)
+                for (int k = 0; k < 4; k++) sunk &= out_words[lane * 4 + k] == 0x5a5a0000u;
+            if (!sunk) fprintf(stderr, "guest range: lane 0 read %08x %08x %08x %08x\n", out_words[0], out_words[1], out_words[2], out_words[3]);
+            CHECK(sunk);
+            const uint32_t expected = (uint32_t)GCN_RUNTIME_STOP_GUEST_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT |
+                                      (uint32_t)(outside_bases[b] >> 16 & 0xffffff);
+            if (*stop != expected) fprintf(stderr, "guest range stop: %#x, expected %#x\n", *stop, expected);
+            CHECK(*stop == expected);
+        }
+        guest = (gcn_guest_memory){0};
+        error_address = stop_before;
     }
 
     /* Branches and EXEC. */
@@ -654,6 +711,16 @@ int main(int argc, char **argv)
         CHECK(out_words[LANES + i] == (high << 16 | halves[i % HALF_CASES].negated));
     }
 
+    /* ds_swizzle_b32's quad mode: each lane of quad q (lanes 4q to 4q + 3) gets the square of lane 4q, 4q + 2
+       and 4q + 3. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, quad_swizzle, sizeof quad_swizzle / sizeof quad_swizzle[0], user) == 0);
+    for (uint32_t i = 0; i < LANES; i++) {
+        const uint32_t first = i & ~3u;
+        CHECK(out_words[i] == first * first && out_words[64 + i] == (first + 2) * (first + 2) &&
+              out_words[128 + i] == (first + 3) * (first + 3));
+    }
+
     /* The negated float compares, on ordered pairs, equal pairs, signed zeros, infinities and NaNs: each
        holds exactly where its condition (worked out with C's ordered compares, false for a NaN) does not. */
     static const float pairs[][2] = {{1, 2}, {2, 1}, {1, 1}, {NAN, 1}, {1, NAN}, {NAN, NAN}, {-0.0f, 0.0f}, {INFINITY, INFINITY},
@@ -716,6 +783,61 @@ int main(int argc, char **argv)
         }
     }
     CHECK(winners == 1);
+
+    /* SGPR spill slots: every lane gets the restored scalars' sum and its own mask bit back, through the
+       restored descriptor. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, spill_slots, sizeof spill_slots / sizeof spill_slots[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        if (out_words[i] != 0x11111119u || out_words[LANES + i] != (i < 8 ? 1u : 0u))
+            fprintf(stderr, "spill_slots lane %d: 0x%08x %u\n", i, out_words[i], out_words[LANES + i]);
+        CHECK(out_words[i] == 0x11111119u && out_words[LANES + i] == (i < 8 ? 1u : 0u));
+    }
+
+    /* valu_batch: each result worked out with plain C from the Sea Islands manual's definitions (floats:
+       fminf and fmaxf ignore a NaN, as the NMin and NMax the translation uses; the legacy forms take y when
+       either is a NaN). */
+    static const uint32_t valu_cases[][4] = {
+        {3, 5, 7, 4}, {0xfffffffe, 2, 0x80000000, 1}, {0x3f800000, 0x40000000, 0xbf800000, 31}, {0x7fc00000, 0x3f000000, 0x40400000, 32},
+        {0x40a00000, 0x7fc00000, 0x3e800000, 33}, {0x0f0f0f0f, 0x12345678, 0x9abcdef0, 63}, {0x80000001, 0x7fffffff, 0, 0},
+        {0xc0400000, 0xc0000000, 0xc0800000, 64 + 3}, {10, 10, 9, 40}, {0xffffffff, 0, 0xffffffff, 1}, {1, 0xff800000, 0x7f800000, 12},
+        {0x42c80000, 0x42c80000, 0x42c80000, 20},
+    };
+    enum { VALU_CASES = sizeof valu_cases / sizeof valu_cases[0], VALU_WORDS = 20 };
+    memset(in.mapped, 0, BUFFER_BYTES), memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < VALU_CASES; i++) memcpy(in_words + 4 * i, valu_cases[i], sizeof valu_cases[i]);
+    CHECK(run(&g, valu_batch, sizeof valu_batch / sizeof valu_batch[0], user) == 0);
+    for (int i = 0; i < VALU_CASES; i++) {
+        const uint32_t x = valu_cases[i][0], y = valu_cases[i][1], z = valu_cases[i][2], amount = valu_cases[i][3] & 63;
+        const int32_t sx = (int32_t)x, sy = (int32_t)y, sz = (int32_t)z;
+        float fx, fy, fz;
+        memcpy(&fx, &x, 4), memcpy(&fy, &y, 4), memcpy(&fz, &z, 4);
+        const int32_t smin = sx < sy ? (sx < sz ? sx : sz) : (sy < sz ? sy : sz), smax = sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz);
+        const uint32_t umin = x < y ? (x < z ? x : z) : (y < z ? y : z), umax = x > y ? (x > z ? x : z) : (y > z ? y : z);
+        const int32_t slo = sx < sy ? sx : sy, shi = sx < sy ? sy : sx;
+        const uint32_t ulo = x < y ? x : y, uhi = x < y ? y : x;
+        const int32_t smed = slo > (shi < sz ? shi : sz) ? slo : (shi < sz ? shi : sz);
+        const uint32_t umed = ulo > (uhi < z ? uhi : z) ? ulo : (uhi < z ? uhi : z);
+        const uint64_t pair = (uint64_t)y << 32 | x;
+        const uint64_t left = pair << amount, right = pair >> amount, arith = (uint64_t)((int64_t)pair >> amount), ones = UINT64_MAX << amount;
+        const float fmed = fmaxf(fminf(fx, fy), fminf(fmaxf(fx, fy), fz));
+        const float floats[5] = {fminf(fminf(fx, fy), fz), fmaxf(fmaxf(fx, fy), -fz), fmed,
+                                 isnan(fx) || isnan(fy) ? fy : fmaxf(fx, fy), isnan(fx) || isnan(fy) ? fy : fminf(fx, fy)};
+        uint32_t want[VALU_WORDS] = {(uint32_t)smin, (uint32_t)smax, (uint32_t)smed, umin, umax, umed, (x & y) | (~x & z),
+                                     (uint32_t)left, (uint32_t)(left >> 32), (uint32_t)right, (uint32_t)(right >> 32),
+                                     (uint32_t)arith, (uint32_t)(arith >> 32)};
+        memcpy(want + 13, floats, sizeof floats);
+        want[18] = (uint32_t)ones, want[19] = (uint32_t)(ones >> 32);
+        for (int k = 0; k < VALU_WORDS; k++) {
+            const uint32_t got = out_words[VALU_WORDS * i + k];
+            /* a NaN result may be any NaN */
+            const int both_nan = k >= 13 && k < 18 && (got & 0x7f800000) == 0x7f800000 && (got & 0x7fffff) &&
+                                 (want[k] & 0x7f800000) == 0x7f800000 && (want[k] & 0x7fffff);
+            if (got != want[k] && !both_nan) fprintf(stderr, "valu_batch case %d word %d: 0x%08x, expected 0x%08x\n", i, k, got, want[k]);
+            CHECK(got == want[k] || both_nan);
+        }
+    }
+    for (int k = VALU_CASES * VALU_WORDS; k < LANES * VALU_WORDS && k < BUFFER_BYTES / 4; k++) CHECK(out_words[k] == 0); /* lanes 12-63 store nothing */
 
     /* The GDS (a buffer standing for it: the accesses stay in its first bytes): every lane knows its place
        in the wave; the 48 appending lanes get the slots 1000 to 1047, once each, rising with the lane within

@@ -89,7 +89,7 @@ def promote_families(dry_run: bool) -> int:
             fam.write_table(fam.members_path(ROOT, family['family']), fam.MEMBER_HEADER, members)
         total += changed
     if total and not dry_run:
-        print(f'promote: {total} family members verified; run tools/progress.py --update-readme')
+        print(f'promote: {total} family members verified; main regenerates progress (tools/progress_pr.py)')
     return 0
 
 
@@ -179,7 +179,7 @@ def main() -> int:
         csv.writer(out, lineterminator='\n').writerows(rows)
         with open(path, 'w', newline='') as f:
             f.write(out.getvalue())
-        print(f'promote: {len(changed)} verified; run tools/progress.py --update-readme')
+        print(f'promote: {len(changed)} verified; main regenerates progress (tools/progress_pr.py)')
     if awaiting:
         print(f'promote: {len(awaiting)} awaiting an independent review: ' + ', '.join(awaiting))
     return 1 if failed else 0

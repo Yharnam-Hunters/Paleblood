@@ -19,11 +19,19 @@ usage: progress.py [--root DIR] [--out FILE] [--update-readme] [--check] [--stat
   (no flag)        print the progress JSON
   --out FILE       write the JSON to FILE
   --status-line    print the current-status sentence (plain text, for issues and descriptions)
-  --update-readme  rewrite the status, progress and target blocks of README.md, the status
-                   block of CONTRIBUTING.md (and the progress
-                   block of STATUS.md when it has one), and the status card
-                   (docs/assets/status-light.svg, docs/assets/status-dark.svg, by tools/status_card.py)
-  --check          exit 1 if those blocks or the card differ from the generated ones
+  --update-readme  rewrite the generated blocks (GENERATED_MARKDOWN): the progress block of
+                   STATUS.md, the status block of CONTRIBUTING.md and the target block of
+                   docs/OVERVIEW.md. The README has no generated text: its progress map and badges
+                   are not committed; .github/workflows/progress-map.yml builds them on every push
+                   to main (tools/progress_map.py) and publishes them on GitHub Pages
+  --check          exit 1 if those blocks differ from the generated ones (main:
+                   .github/workflows/progress.yml; the regeneration PR from tools/progress_pr.py)
+  --check-touched [REF ...]
+                   the same, but only for generated text this tree changed: text equal to its
+                   version in one of the REFs (default: origin/main and the merge base with it)
+                   passes. Pull requests, hooks and tests check this; progress itself is
+                   regenerated on main by tools/progress_pr.py, never in feature branches.
+  --check-blocks   structure only: the required blocks exist (REQUIRED_BLOCKS)
 """
 from __future__ import annotations
 
@@ -33,6 +41,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 
 import families as fam
@@ -298,9 +307,117 @@ def apply_blocks(text: str, bodies: dict[str, str]) -> str:
     for name, body in bodies.items():
         pat = block_re(name)
         if not pat.search(text):
-            raise SystemExit(f'progress: README.md has no {name} block')
+            raise SystemExit(f'progress: no {name} block')
         text = pat.sub(lambda m: m.group(1) + body + m.group(3), text)
     return text
+
+
+# The README is kept short for readers and has no generated text: the full numbers live in
+# STATUS.md, the target hashes in docs/OVERVIEW.md.
+GENERATED_MARKDOWN = (('STATUS.md', ('progress',)), ('CONTRIBUTING.md', ('status',)),
+                      ('docs/OVERVIEW.md', ('target',)))
+REQUIRED_BLOCKS = {'STATUS.md': ('progress',), 'docs/OVERVIEW.md': ('target',)}
+
+
+def block_body(text: str | None, name: str) -> str | None:
+    m = block_re(name).search(text) if text is not None else None
+    return m.group(2) if m else None
+
+
+def read_text(path: str) -> str | None:
+    if not os.path.isfile(path):
+        return None
+    with open(path) as f:
+        return f.read()
+
+
+def expected_outputs(root: str, data: dict) -> dict[str, dict[str, str] | str]:
+    """Every generated output: Markdown file -> {block: body} for the blocks it has (the files in
+    REQUIRED_BLOCKS must have theirs)."""
+    bodies = {'status': render_status(data), 'progress': render_progress(data), 'target': render_target(root)}
+    out: dict[str, dict[str, str] | str] = {}
+    for name, blocks in GENERATED_MARKDOWN:
+        cur = read_text(os.path.join(root, name))
+        if cur is None:
+            continue
+        for block in REQUIRED_BLOCKS.get(name, ()):
+            if block_body(cur, block) is None:
+                raise SystemExit(f'progress: {name} has no {block} block')
+        present = {b: bodies[b] for b in blocks if block_body(cur, b) is not None}
+        if present:
+            out[name] = present
+    return out
+
+
+def git_show(repo: str, ref: str, path: str) -> str | None:
+    r = subprocess.run(['git', '-C', repo, 'show', f'{ref}:{path}'], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def git_repo_for(root: str) -> str:
+    """The repository that holds ROOT, or the current directory's (the pre-commit hook checks a
+    checkout of the index outside the repository)."""
+    r = subprocess.run(['git', '-C', root, 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    return root if r.returncode == 0 else os.getcwd()
+
+
+def default_refs(repo: str) -> list[str]:
+    """origin/main and this branch's merge base with it; HEAD when there is no origin/main."""
+    def rev(*args: str) -> str | None:
+        r = subprocess.run(['git', '-C', repo, *args], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    main = rev('rev-parse', '-q', '--verify', 'refs/remotes/origin/main^{commit}')
+    if not main:
+        return ['HEAD']
+    base = rev('merge-base', 'HEAD', main)
+    return [main] + ([base] if base else [])
+
+
+def stale_outputs(root: str, data: dict, untouched_refs: list[str] | None = None) -> list[str]:
+    """Generated outputs that differ from what this tree generates. With UNTOUCHED_REFS, an output
+    that equals its version in one of those commits is not this change's and is not reported:
+    progress is regenerated on main (tools/progress_pr.py), so a branch only answers for the
+    generated text it changes itself."""
+    repo = git_repo_for(root) if untouched_refs else root
+    stale = []
+    for name, want in expected_outputs(root, data).items():
+        cur = read_text(os.path.join(root, name))
+        if isinstance(want, str):
+            parts = {None: (want, cur)}
+        else:
+            parts = {block: (body, block_body(cur, block)) for block, body in want.items()}
+        for block, (body, have) in parts.items():
+            if have == body:
+                continue
+            if untouched_refs:
+                bases = (git_show(repo, ref, name) for ref in untouched_refs)
+                if any((base if block is None else block_body(base, block)) == have
+                       for base in bases if base is not None):
+                    continue
+            stale.append(name if block is None else f'{name} ({block} block)')
+    return stale
+
+
+def write_outputs(root: str, data: dict) -> None:
+    for name, want in expected_outputs(root, data).items():
+        path = os.path.join(root, name)
+        cur = read_text(path)
+        new = want if isinstance(want, str) else apply_blocks(cur, want)
+        if new == cur:
+            continue
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        with open(path, 'w') as f:
+            f.write(new)
+        print(f'progress: {name} updated')
+
+
+def check_blocks(root: str) -> list[str]:
+    """Structure only: the required blocks exist."""
+    errs = []
+    for name, blocks in REQUIRED_BLOCKS.items():
+        cur = read_text(os.path.join(root, name))
+        errs += [f'{name} has no {b} block' for b in blocks if cur is not None and block_body(cur, b) is None]
+    return errs
 
 
 def main() -> int:
@@ -309,9 +426,16 @@ def main() -> int:
     ap.add_argument('--out')
     ap.add_argument('--update-readme', action='store_true')
     ap.add_argument('--check', action='store_true')
+    ap.add_argument('--check-touched', nargs='*', metavar='REF')
+    ap.add_argument('--check-blocks', action='store_true')
     ap.add_argument('--status-line', action='store_true')
     a = ap.parse_args()
 
+    if a.check_blocks:
+        errs = check_blocks(a.root)
+        for e in errs:
+            print(f'progress: {e}', file=sys.stderr)
+        return 1 if errs else 0
     data = compute(a.root)
     if a.status_line:
         print(status_sentence(data, False))
@@ -320,52 +444,27 @@ def main() -> int:
     if a.out:
         with open(a.out, 'w') as f:
             f.write(js)
-    if not (a.update_readme or a.check):
-        if not a.out:
-            sys.stdout.write(js)
+    if a.update_readme:
+        write_outputs(a.root, data)
         return 0
-
-    bodies = {'status': render_status(data), 'progress': render_progress(data), 'target': render_target(a.root)}
-    stale = []
-    for name, blocks in (('README.md', bodies), ('STATUS.md', {'progress': bodies['progress']}),
-                         ('CONTRIBUTING.md', {'status': bodies['status']})):
-        path = os.path.join(a.root, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path) as f:
-            cur = f.read()
-        blocks = {k: b for k, b in blocks.items() if (name == 'README.md' and k != 'status') or block_re(k).search(cur)}
-        if not blocks:
-            continue
-        new = apply_blocks(cur, blocks)
-        if new == cur:
-            continue
-        if a.update_readme:
-            with open(path, 'w') as f:
-                f.write(new)
-            print(f'progress: {name} updated')
-        else:
-            stale.append(name)
-    import status_card  # the card draws on this module, so it is imported only here
-    for name, svg in status_card.render_all(a.root).items():
-        path = os.path.join(a.root, name)
-        cur = None
-        if os.path.isfile(path):
-            with open(path) as f:
-                cur = f.read()
-        if cur == svg:
-            continue
-        if a.update_readme:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w') as f:
-                f.write(svg)
-            print(f'progress: {name} updated')
-        else:
-            stale.append(name)
-    if stale:
-        print(f"progress: generated block stale in {', '.join(stale)}; run tools/progress.py --update-readme",
-              file=sys.stderr)
-        return 1
+    if a.check_touched is not None:
+        refs = a.check_touched or default_refs(git_repo_for(a.root))
+        stale = stale_outputs(a.root, data, refs)
+        if stale:
+            print(f"progress: generated text changed by hand or left stale in {', '.join(stale)}: leave it "
+                  "as main has it (tools/remerge.py restores it; tools/progress_pr.py regenerates it on main) "
+                  "or run tools/progress.py --update-readme", file=sys.stderr)
+            return 1
+        return 0
+    if a.check:
+        stale = stale_outputs(a.root, data)
+        if stale:
+            print(f"progress: generated block stale in {', '.join(stale)}; run tools/progress_pr.py "
+                  "(or tools/progress.py --update-readme)", file=sys.stderr)
+            return 1
+        return 0
+    if not a.out:
+        sys.stdout.write(js)
     return 0
 
 

@@ -213,7 +213,8 @@ holds one row per run of consecutive functions with the same tag: `address`, `la
 `functions`, `bytes`, `library`, `file`, `evidence`, `confidence`. The library rules (one
 regular expression per library) are data, in `game/source_libraries.csv`. Libraries: `engine`
 (Dantelion2, the game's own SPRJ code, FD4, GS and EzMenu; the first directory of `file` says
-which), `havok`, `havokscript`, `fmod`, `yebis` and `sce-gnmx`.
+which), `havok`, `havokscript`, `fmod`, `yebis`, `sce-gnmx` and `scaleform` (Autodesk Scaleform 4,
+the user interface's Flash player, placed by extent: it has no assertion paths).
 
 How a function gets its tag:
 
@@ -230,6 +231,16 @@ How a function gets its tag:
 4. **Range**: functions between two direct tags of the same file get that file (`medium`);
    between two files of the same library, the library only (`low`). Everything else stays
    untagged.
+5. **Extent** (`medium`): a library built without assertion paths is placed by hand in
+   `game/library_extents.csv` (first and last function address, library, and the evidence: the
+   strings, signatures and data addresses that identify it, and the code bounding the span).
+   Functions inside an extent take its library, with no file, unless they have a direct tag.
+   Scaleform has three: its movie player and renderer (`0x00400170`..`0x00740310`, GFx/SWF
+   loader messages, `scaleform.gfx.*` class names, Render HAL markers), its page-table heap
+   (`0x023380f0`..`0x0233e8f0`: page header signature `0x5fc0`, page table `0x05994470`, page
+   manager `0x05940360`) and its ActionScript 3 classes and more of the renderer
+   (`0x02785580`..`0x028bf790`). The ends are the last functions with such evidence, so the
+   real spans may be a little wider.
 
 Limits: a tag is evidence of layout, not of behaviour. Function extents are Ghidra's. Object
 files without assertions are invisible, so a file range can swallow one that sits between two
@@ -247,14 +258,15 @@ direct rows and `symbols/ghidra_functions.csv` (a changed export needs a regener
 of the current table, in functions and bytes (generated):
 
 <!-- source-files:start -->
-| Library | Functions | Bytes | Direct | File range | Library range |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| engine | 84,215 | 20,867,225 | 682 | 3,297 | 80,236 |
-| havok | 21,098 | 8,391,800 | 325 | 596 | 20,177 |
-| fmod | 4,272 | 1,065,798 | 402 | 1,182 | 2,688 |
-| yebis | 2,183 | 823,127 | 74 | 805 | 1,304 |
-| havokscript | 1,278 | 469,776 | 188 | 405 | 685 |
-| sce-gnmx | 113 | 30,745 | 7 | 20 | 86 |
-| untagged | 44,598 | 10,838,933 | | | |
-| all | 157,757 | 42,487,404 | | | |
+| Library | Functions | Bytes | Direct | File range | Library range | Extent |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| engine | 84,129 | 20,843,315 | 682 | 3,297 | 80,150 | 0 |
+| havok | 21,098 | 8,391,800 | 325 | 596 | 20,177 | 0 |
+| scaleform | 20,188 | 4,470,137 | 0 | 0 | 0 | 20,188 |
+| fmod | 4,272 | 1,065,798 | 402 | 1,182 | 2,688 | 0 |
+| yebis | 2,183 | 823,127 | 74 | 805 | 1,304 | 0 |
+| havokscript | 1,278 | 469,776 | 188 | 405 | 685 | 0 |
+| sce-gnmx | 113 | 30,745 | 7 | 20 | 86 | 0 |
+| untagged | 24,496 | 6,392,706 | | | | |
+| all | 157,757 | 42,487,404 | | | | |
 <!-- source-files:end -->

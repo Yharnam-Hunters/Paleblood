@@ -27,7 +27,11 @@ FUNCTIONS = {  # name: (address, replacement symbol)
     'capture_trace_scale_float': ('0x00400080', 'scale_float'),
     'capture_trace_twice': ('0x004000c0', 'twice'),
     'capture_trace_copy': ('0x00400140', 'copy'),
+    'capture_trace_return_xmm2': ('0x00400180', 'return_xmm2'),
     'capture_trace_use_import': ('0x004002c0', 'use_import'),
+    'capture_trace_thread_counter': ('0x004006c0', 'thread_counter'),
+    'capture_trace_store_reread': ('0x004008c0', 'store_reread'),
+    'capture_trace_leaf_caller': ('0x00400880', 'leaf_caller'),
 }
 
 REPLACEMENT = r'''#include <stdint.h>
@@ -46,11 +50,23 @@ int32_t scale(int32_t *out, const Outer *s, int32_t factor)
 int64_t stack_args(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g7, int64_t g8)
 { (void)b; (void)c; (void)d; (void)e; (void)f; return g7 * 10 + g8 + a + BROKEN; }
 float scale_float(float x, const float *p) { return x * *p + (float)BROKEN; }
+float return_xmm2(float a, float b, float c) { (void)a; (void)b; return c + (float)BROKEN; }
 static int32_t increment(int32_t *p) { return ++*p; }
 int32_t twice(int32_t *p) { increment(p); return increment(p) + BROKEN; }
 void copy(char *dst, const char *src, size_t n) { memcpy(dst, src, n); if (BROKEN) dst[n - 1] ^= 1; }
 int32_t use_import(int32_t *out)
 { int32_t (*fill)(int32_t *, int32_t); memcpy(&fill, image + 0x1800, sizeof fill); return fill(out, 7) + *out + BROKEN; }
+int32_t leaf_caller(const int32_t *p) { return p[2] + 1 + BROKEN; }
+int32_t thread_counter(void)
+{
+    uintptr_t thread_pointer; int64_t offset;
+    __asm__ volatile("mov %%gs:0, %0" : "=r"(thread_pointer));
+    memcpy(&offset, image + 0x1838, sizeof offset);
+    int32_t *counter = *(int32_t **)(thread_pointer + offset);
+    return ++*counter + BROKEN;
+}
+int32_t store_reread(float *p, uint8_t *flag)
+{ *p += *p; int32_t v = (int32_t)*p; *flag = v != 0; return v + *flag + BROKEN; }
 '''
 
 

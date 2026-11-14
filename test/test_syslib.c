@@ -3114,6 +3114,17 @@ int main(void)
             memset(before, 0xee, sizeof before);
             CHECK(vo_status_fn(vo_handle, before) == 0 && !memcmp(before, zero, sizeof zero));
         }
+        /* The frame log (pbboot --frame-log): a line per presented frame, the port, the frame's number and
+           the monotonic time; a file that cannot be opened is refused. */
+        char frame_log[512];
+        snprintf(frame_log, sizeof frame_log, "%s/pb-frames-XXXXXX", tmp_dir ? tmp_dir : "/tmp");
+        const int log_fd = mkstemp(frame_log);
+        CHECK(log_fd >= 0);
+        if (log_fd >= 0) close(log_fd);
+        CHECK(rt_display_log_frames("/nonexistent-pb-dir/frames.log") == -1);
+        CHECK(rt_display_log_frames(frame_log) == 0);
+        struct timespec before_flip;
+        clock_gettime(CLOCK_MONOTONIC, &before_flip);
         CHECK(vo_flip_fn(vo_handle, 1, 2, 77) == 0);
         unsigned char ev[32]; int32_t n = 0; int64_t data;
         CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 77));
@@ -3171,6 +3182,23 @@ int main(void)
                 remove(frame_path);
             }
         }
+        /* the log has the first flip and the quick ones after it, numbered in order, at times that never
+           go back and come after the first flip was asked for */
+        CHECK(rt_display_log_frames(NULL) == 0);
+        FILE *log = fopen(frame_log, "r");
+        CHECK(log != NULL);
+        if (log) {
+            int port = 0, lines = 0, ordered = 1;
+            unsigned long long frame = 0, when = 0, last_when = 0;
+            const unsigned long long asked = (unsigned long long)before_flip.tv_sec * 1000000000ull + (unsigned long long)before_flip.tv_nsec;
+            while (fscanf(log, "%d %llu %llu", &port, &frame, &when) == 3) {
+                ordered &= port == vo_handle && frame == (unsigned long long)lines && when >= asked && when >= last_when;
+                last_when = when, lines++;
+            }
+            CHECK(lines == (capture && host_a ? 8 : 1) && ordered);
+            fclose(log);
+        }
+        remove(frame_log);
         rt_display_configure(RT_DISPLAY_HEADLESS, NULL); /* stop capturing: writing a frame would skew the timing */
         /* A vsync flip completes at the next 60 Hz tick: within one period. */
         struct timespec before, after;
