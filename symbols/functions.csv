@@ -90,6 +90,7 @@ address,size,name,system,status,notes
 0x01401720,34,menu_named_resource_handle_release_01401720,menu,edge-verified,"Scaleform glue: a resource handle with an owner is let go of by the owner (vtable slot 16), returning its answer; 0 without an owner"
 0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
 0x0143c450,93,frame_timing_task_record_close_0143c450,frame_timing,edge-verified,"Closes a closing group record (state 4): flags cleared, state idle, no index (-1)"
+0x0143d760,82,frame_timing_task_batch_take_next_0143d760,frame_timing,edge-verified,"Task batch take: empty gives null; else the front task (deque of 2-task blocks, map read through the proxy's container), size-1, front+1 or 0 when emptied"
 0x0143d7c0,62,frame_timing_task_batch_add_0143d7c0,frame_timing,edge-verified,Pushes a job onto the back of a batch's job deque with the game's push_back; a null job is not added
 0x0143de20,106,frame_timing_task_worker_start_0143de20,frame_timing,edge-verified,"Unless busy: marks the worker busy and starts every slot with a batch (mode 0 lanes via 0x01467500, others via 0x01467300)"
 0x0143deb0,92,frame_timing_task_worker_run_0143deb0,frame_timing,edge-verified,When busy: runs (0x01467530) every mode 0 lane whose slot has a batch
@@ -152,6 +153,7 @@ address,size,name,system,status,notes
 0x01475560,98,render_set_es_shader,render,edge-verified,Reserves 20 words with byte-result callback admission; forwards opaque registers and full DWORD modifier to sceGnmSetEsShader; advances the live cursor by 80 bytes only on a zero DWORD result
 0x014755d0,98,render_set_hs_shader,render,edge-verified,Reserve 30 DWORDs; read configuration DWORD after callback admission; forward opaque registers to sceGnmSetHsShader; zero low-DWORD result adds 120 to live cursor; AL admits without retry
 0x01475640,98,render_update_hs_shader,render,edge-verified,Reserve 30 DWORDs; read configuration DWORD after callback admission; forward opaque registers to sceGnmUpdateHsShader; zero low-DWORD result adds 120 to live cursor; AL admits without retry
+0x014756b0,152,render_set_gs_mode,render,edge-verified,Emit VGT_GS_MODE with cut bits; raw zero also resets VGT_STRMOUT_CONFIG; reserve six or three DWORDs with AL callback admission and captured cursor publication
 0x014757d0,98,render_set_ls_shader,render,edge-verified,Reserve 23 DWORDs; forward opaque registers and DWORD modifier to sceGnmSetLsShader; zero low-DWORD result adds 92 to live cursor; AL callback admission reloads without capacity retry
 0x01475840,83,render_set_compute_shader,render,edge-verified,Reserves 25 words through byte-result capacity admission; forwards the opaque register block to sceGnmSetCsShader; advances the live cursor by 100 bytes only when the low DWORD result is zero
 0x014758a0,90,render_set_border_color_base,render,edge-verified,Write GPU address bits 8-39 to TA_BC_BASE_ADDR after three-word admission; discard low and upper address bits and publish from the captured cursor.
@@ -266,6 +268,7 @@ address,size,name,system,status,notes
 0x016ad400,287,ai_perception_target_visible,ai,verified,"Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11"
 0x016b2760,512,ai_target_list_refresh_noticed,ai,verified,"Target list: refresh the noticed character's entry (clock 0, visible, refreshed bit) or allocate and link a new 0xa0-byte entry; notice record update"
 0x016b30a0,368,ai_target_list_mark_main_matches,ai,verified,"Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer"
+0x016da6a0,217,param_id_array_push_back_copy_016da6a0,param,edge-verified,"Id array (int32) push_back: grow 1.5x when full (0x016da780), re-find an id inside the array, store unless no buffer; the end moves on regardless"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x01708410,168,ai_pending_event_fire,ai,verified,"Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index"
 0x017cfcc0,177,event_flag_write,event,verified,finds an exact event-flag group in a tree and sets or clears one bit
@@ -276,6 +279,8 @@ address,size,name,system,status,notes
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries; advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
 0x0198bf70,161,engine_map_ins_request_update_0198bf70,engine,verified,"MapInsUpdateHelper: set update request bit 4, queue the instance id once (queued byte bit 0); a full queue is reported and pushed anyway"
 0x019a7090,115,engine_obj_ins_request_update_019a7090,engine,verified,"ObjInsUpdateHelper: step part +0x210, set request 0x20, queue the id once (flag 0x1000); full queue: reported, then the flags reloaded, | 0x1000, id pushed"
+0x019f8d70,217,param_protector_id_array_push_back_019f8d70,param,edge-verified,"Id array (int32) push_back: grow 1.5x when full (0x02bc1ca0), re-find an id inside the array, store unless no buffer; the end moves on regardless"
+0x01b0d5f0,217,param_weapon_id_array_push_back_01b0d5f0,param,edge-verified,"Id array (int32) push_back: grow 1.5x when full (0x016da780), re-find an id inside the array, store unless no buffer; the end moves on regardless"
 0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners"
 0x01c44210,212,engine_obj_ins_set_registration_01c44210,engine,edge-verified,"ObjInsUpdateHelper: move a registration to a new item in the owner's pointer array (swap-remove the old, append, grow 0x00819100 when full)"
 0x01c92e90,372,param_lock_cam_range,param,edge-verified,"SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924"
@@ -311,7 +316,7 @@ address,size,name,system,status,notes
 0x01ec3000,235,frame_timing_step_machine_count_step_01ec3000,frame_timing,edge-verified,Gate step machine: counts a step (+0x54); when the step after the current one (+0x50) is 27 or more (unsigned) formats a wide debug message on the default heap and passes it on
 0x01ec3ef0,795,frame_timing_leave_modes_around_owner_check_01ec3ef0,frame_timing,edge-verified,"state method on the Chalice Dungeon gate: leaves ritual/dungeon modes (request 7); the error mode (request 10); true when check 0x01ea5280 says yes in server dungeon mode"
 0x01ed0dd0,203,menu_gaitem_select_move_cursor_01ed0dd0,menu,verified,"GaitemSelectDialog cursor move: column +0x84 and list row clamped to the limits (0x01ed11f0, read twice); on change store, list set row, vtable +0x38"
-0x01ed7950,188,menu_gaitem_select_text_pair_copy_into_vector_01ed7950,menu,edge-verified,"GaitemSelectDialog text pair (two narrow strings, 0x70 B) copied into a fixed-vector slot; slot past the in-use count (+0x708) reported, still copied"
+0x01ed7950,188,menu_gaitem_select_text_pair_copy_into_vector_01ed7950,menu,verified,"GaitemSelectDialog text pair (two narrow strings, 0x70 B) copied into a fixed-vector slot; slot past the in-use count (+0x708) reported, still copied"
 0x01edc580,197,menu_gaitem_select_list_set_row_01edc580,menu,verified,"Item list set row (clamped; -1 when empty), vtable +8 scrollable, then scroll thumb placed and sized from the row and first shown row shares"
 0x01edf560,254,menu_gaitem_select_entry_copy_into_pool,menu,edge-verified,"GaitemSelectDialog list entry copy into a Dantelion fixed pool slot (0x88 B: int, word, wide string, word, wide string); reports a slot past the in-use count"
 0x01ee6080,114,menu_gaitem_select_direction_keys_20_01ee6080,menu,verified,"GaitemSelectDialog direction reader: first held of key assign keys 0x20-0x23 gives {x,y} = up/down/left, or right's state byte as x"
@@ -758,6 +763,7 @@ address,size,name,system,status,notes
 0x02a8c210,164,input_mouse_construct,input,edge-verified,"Mouse device constructor: base ctor with the third argument; vtable 0x056b7d00; clear 0x140..0x177; load sysmodule 0xa9; sceMouseInit; open via slot 32; handle 0 on any failure"
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,edge-verified,"Initializes or reinitializes mouse input for the initial user; closing a previous connection if necessary."
 0x02a9c790,84,input_pad_set_vibration,input,verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument; small from the second; true on success"
+0x02aa4080,63,frame_timing_lane_sync_signal_02aa4080,frame_timing,edge-verified,"Lane sync signal: a sync object whose slot 2 says it was not created is reported (fatal error, returns); then its event at +8 is signalled (0x02a3b050)"
 0x02aa4a30,128,loading_finished_entry_construct_02aa4a30,loading,edge-verified,finished entry constructor: result base + handle to the info the manager finds for the request words
 0x02aa4ab0,75,loading_finished_entry_copy_construct_02aa4ab0,loading,edge-verified,finished entry copy constructor: result base copy + handle assign
 0x02aa4b40,46,loading_finished_entry_destroy_02aa4b40,loading,edge-verified,finished entry destructor: drop the handle then the result base
@@ -813,6 +819,7 @@ address,size,name,system,status,notes
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling; source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
 0x02b4d100,477,engine_byte_array_assign_02b4d100,engine,edge-verified,"Engine byte array copy assign: self no-op; slot 0x10 queries; empty source empties; memmove over the size or within capacity (rest constructed); else free, allocate exact (align 1), copy"
 0x02bc0e00,196,engine_wide_string_construct_02bc0e00,engine,edge-verified,"Wide string from null-terminated text: default allocator (created on first use), container heap check, empty inline string, counted assign 0x02a2a720 with wcslen (0 for empty)"
+0x02bc1bb0,217,param_id_array_push_back_02bc1bb0,param,edge-verified,"Id array (int32) push_back: grow 1.5x when full (0x02bc1ca0), re-find an id inside the array, store unless no buffer; the end moves on regardless"
 0x02bc1ca0,218,physics_ids_reserve_02bc1ca0,physics,edge-verified,"Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept"
 0x02c51f60,87,render_set_parameter_02c51f60,render,edge-verified,Parameter set: finds the key among the sorted keys (lower bound) and stores the value beside it when found
 0x02c51fc0,42,render_clear_parameter_set_02c51fc0,render,edge-verified,"Parameter set: frees its block of keys and values through its allocator (slot 0x70) and clears the pointer, when there is one"
