@@ -303,11 +303,13 @@ static void play_movie(void)
     CHECK(sound.data != NULL && sound.channels == 2 && sound.rate == TONE_RATE);
     CHECK(sound.size > 0 && sound.size <= 1024 * 2 * 2 && sound.size % 4 == 0);
 
-    /* paused, the clock stands still at every read and no picture comes */
+    /* paused, the clock stands still at every read and no picture comes: ten reads 6 ms apart plus a
+       tenth of a millisecond more each time, so they fall at every phase within a millisecond (a clock
+       made of two truncated readings moves at some phases) */
     CHECK(pause(player) == 0 && events[event_count - 1] == 4);
     const uint64_t paused_at = now(player);
-    for (int read = 0; read < 4; read++) {
-        sleep_ms(15);
+    for (int read = 0; read < 10; read++) {
+        usleep((useconds_t)(6000 + 100 * read));
         CHECK(now(player) == paused_at && video(player, &second) == 0);
     }
     CHECK(resume(player) == 0 && events[event_count - 1] == 3);
