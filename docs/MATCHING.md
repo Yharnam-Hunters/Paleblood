@@ -110,6 +110,7 @@ the place the original's field at the same offset reaches, and requires them to 
 | our reference | means | the original's field |
 |---|---|---|
 | an undefined name in `symbols/functions.csv` | that function's address | a call or jump's target; a RIP-relative address |
+| an undefined name of a function family member (`leaf_reads_first_dword_013e9ea0`, [FAMILIES.md](FAMILIES.md)) | that member's address | the same |
 | an undefined name declared by a replacement with `RT_ORIGINAL` or `RT_GLOBAL` | that address | the same, or the GOT slot a `mov` reads (what the loader writes there), or the address a relaxed `lea` takes |
 | any other undefined name | an import: the PS4 name id (NID) of the name | a call through a PLT stub, or a GOT slot, that the loader fills with that NID |
 | our own read-only data (string, constant pool, switch or jump table) | its bytes | the bytes there, compared in full; a jump table's entries are resolved like the code's references |
@@ -117,8 +118,9 @@ the place the original's field at the same offset reaches, and requires them to 
 A name the repository gives one function and a different one elsewhere is refused as ambiguous.
 Writable data defined in the matching source is refused: equal starting values do not make two
 globals the same, so declare it `extern` with its `RT_GLOBAL` name. Matching sources never vouch
-for their own names: only `symbols/functions.csv` and the `RT_ORIGINAL` / `RT_GLOBAL`
-declarations outside `game/matching/` count. Each reference that cannot be shown equal is printed
+for their own names: only `symbols/functions.csv`, the family member tables
+(`symbols/families/<family>.csv`) and the `RT_ORIGINAL` / `RT_GLOBAL` declarations outside
+`game/matching/` count. Each reference that cannot be shown equal is printed
 (`target: ...`) and the function is not byte-exact. The fix is either a wrong callee in the source,
 or a missing name: use the name the repository already has for that address, or give it one in
 the replacement that uses it.
@@ -141,8 +143,9 @@ Exit codes: 0 byte-exact, 1 not byte-exact, 3 bad input.
   functions are declared `extern "C"` so their names are not mangled.
 - **Names:** the C function has the `symbols/functions.csv` name (`engine_string_length`, not
   `bb_engine_string_length`). Calls to other game functions and uses of game globals are plain
-  `extern` declarations with the repository's name for them (`symbols/functions.csv`, or the
-  replacement's `RT_ORIGINAL` / `RT_GLOBAL`), and system calls use the library's own name
+  `extern` declarations with the repository's name for them (`symbols/functions.csv`, a family
+  member's name such as `leaf_reads_byte_field_013e9eb0`, or the replacement's `RT_ORIGINAL` /
+  `RT_GLOBAL`), and system calls use the library's own name
   (`sceKernelUsleep`, `sceGnmDrawInitDefaultHardwareState200`), so the reference check can
   resolve them. Headers are clang's own (`stdint.h`, `stddef.h`, `stdbool.h`): the
   system's include directories are not searched.
