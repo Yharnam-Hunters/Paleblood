@@ -153,6 +153,8 @@ They are helpers of that replacement, not separate functions of the executable.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x00819040` | 190 | `engine_hk_array_reserve_00819040` | edge-verified | hkArray reserve: count*size bytes (32-bit) reallocated (slot 0x30) or allocated and copied; capacity = answered bytes / size; failure: no buffer, 1 |
+| `0x00819100` | 169 | `engine_hk_array_reserve_more_00819100` | edge-verified | hkArray reserve more: twice the size (1 when empty) times the element size, reallocated or allocated and copied, unchecked; capacity = bytes / size |
 | `0x0111a740` | 20 | `engine_write_stderr` | edge-verified | Forward the string and imported _Stderr object address to fputs; ignore its return and return zero; synthetic wire edge cases only |
 | `0x011c4510` | 15 | `engine_store_word_product` | verified | Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown |
 | `0x011c47f0` | 29 | `engine_string_length` | verified | Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored |
@@ -169,6 +171,7 @@ They are helpers of that replacement, not separate functions of the executable.
 | `0x0132c6c0` | 81 | `engine_resize_owner_storage` | edge-verified | Free old owner storage before clearing; reload allocator after callback and allocate requested low32 byte count aligned to 16; caller 0x02713870 |
 | `0x01398290` | 127 | `engine_fd4_handle_less_01398290` | edge-verified | FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed) |
 | `0x013e9040` | 113 | `engine_fd4_handle_is_valid_013e9040` | verified | FD4 handle check: nonzero handle, index <= table's last index (inclusive), entry (0xe0 B) generation byte at +0x2c equals the handle's |
+| `0x013e99b0` | 126 | `engine_fd4_handle_refresh_013e99b0` | edge-verified | FD4 handle refresh: when the reference's handle is valid, copies the table's version (+0x60) and the entry's value into the reference |
 | `0x013e9ee0` | 8 | `engine_fd4_handle_is_set_013e9ee0` | original | FD4 handle is set: the 8-byte handle is nonzero as a whole; called out of line by the handle check 0x013e9040; too short to hook, matched byte-exact instead |
 | `0x0198bf70` | 161 | `engine_map_ins_request_update_0198bf70` | verified | MapInsUpdateHelper: set update request bit 4, queue the instance id once (queued byte bit 0); a full queue is reported and pushed anyway |
 | `0x019a7090` | 115 | `engine_obj_ins_request_update_019a7090` | verified | ObjInsUpdateHelper: step part +0x210, set request 0x20, queue the id once (flag 0x1000); full queue: reported, then the flags reloaded, / 0x1000, id pushed |
