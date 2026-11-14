@@ -272,6 +272,7 @@ address,replacement,system,returns
 0x016da6a0,bb_param_id_array_push_back_copy_016da6a0,param,void
 0x016efd00,bb_event_emk_add,event,void
 0x01708410,bb_ai_pending_event_fire,ai,i8
+0x01727a30,bb_engine_list64_insert_01727a30,engine,void
 0x0179b2a0,bb_engine_list64_push_back_0179b2a0,engine,void
 0x017cfcc0,bb_event_flag_write,event,void
 0x017d5790,bb_engine_list64_push_back_017d5790,engine,void
@@ -307,6 +308,8 @@ address,replacement,system,returns
 0x01e4a490,bb_character_state_flags_update_01e4a490,character,void
 0x01e59250,bb_character_event_request_update_01e59250,character,void
 0x01e5c440,bb_character_counters_refill_01e5c440,character,void
+0x01e77890,bb_engine_list64_insert_01e77890,engine,void
+0x01e77980,bb_engine_list64_insert_01e77980,engine,void
 0x01e88da0,bb_character_gaitem_resolve_handle_01e88da0,character,i64
 0x01e8bae0,bb_character_gaitem_handle_copy_01e8bae0,character,void
 0x01e8bb70,bb_character_gaitem_handle_copy_01e8bb70,character,void
@@ -375,6 +378,7 @@ address,replacement,system,returns
 0x02265290,bb_frame_timing_lookup_session_object_02265290,frame_timing,i64
 0x02265580,bb_frame_timing_create_handle_from_levels_02265580,frame_timing,i64
 0x02265960,bb_frame_timing_pass_on_in_server_mode_02265960,frame_timing,i8
+0x022cdba0,bb_engine_list64_insert_022cdba0,engine,void
 0x02311c80,bb_param_find_row_equip_param_accessory,param,void
 0x02311da0,bb_param_row_name_equip_param_accessory,param,i64
 0x02312070,bb_param_next_row_id_equip_param_accessory,param,i32
@@ -532,6 +536,7 @@ address,replacement,system,returns
 0x02373850,bb_render_object_update_02373850,render,i8
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
 0x02379d60,bb_render_list_prepare_02379d60,render,void
+0x02379f00,bb_engine_list64_insert_02379f00,engine,void
 0x0237e640,bb_loading_file_copy_construct_0237e640,loading,void
 0x0237e6d0,bb_loading_file_copy_delete_0237e6d0,loading,void
 0x0237e780,bb_loading_file_copy_destroy_0237e780,loading,void
@@ -775,6 +780,7 @@ address,replacement,system,returns
 0x02a6ad50,bb_loading_load_queue_start_file_task_no_buffer_02a6ad50,loading,void
 0x02a6af30,bb_loading_load_queue_remove_02a6af30,loading,void
 0x02a6b0e0,bb_loading_finished_queue_post_02a6b0e0,loading,i8
+0x02a6b1a0,bb_engine_list_push_back_constructed_02a6b1a0,engine,void
 0x02a6b340,bb_loading_transfer_task_list_push_back_02a6b340,loading,void
 0x02a6b520,bb_loading_file_load_slots_construct_02a6b520,loading,void
 0x02a6bc50,bb_loading_load_event_array_reallocate_02a6bc50,loading,void
@@ -845,6 +851,9 @@ address,replacement,system,returns
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad5e90,bb_render_setup_swap_chain,render,i64
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
+0x02b2dae0,bb_engine_list_push_back_constructed_02b2dae0,engine,void
+0x02b2f840,bb_engine_list_push_back_constructed_02b2f840,engine,void
+0x02b306f0,bb_engine_list_push_back_constructed_02b306f0,engine,void
 0x02b4d100,bb_engine_byte_array_assign_02b4d100,engine,i64
 0x02bc0e00,bb_engine_wide_string_construct_02bc0e00,engine,void
 0x02bc1bb0,bb_param_id_array_push_back_02bc1bb0,param,void
@@ -856,6 +865,7 @@ address,replacement,system,returns
 0x02d03450,bb_menu_system_text_dialog_open_02d03450,menu,i8
 0x02d03490,bb_menu_system_text_dialog_take_text_02d03490,menu,i8
 0x02d03500,bb_menu_system_text_dialog_set_up_02d03500,menu,i8
+0x02da1630,bb_engine_list_push_back_constructed_02da1630,engine,void
 0x02db58d0,bb_engine_list64_push_back_02db58d0,engine,void
 0x02dc9180,bb_engine_list64_push_back_02dc9180,engine,void
 0x02dd3540,bb_engine_list64_push_back_02dd3540,engine,void
