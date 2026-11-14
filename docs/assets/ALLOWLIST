@@ -3,6 +3,4 @@
 # attribution (CONTRIBUTING.md, Rules). No extracted game images or assets.
 # tools/check_no_game_data.py refuses any image or video file that is not listed here.
 # One per line: path  # the command that made it
-docs/assets/status-light.svg  # tools/progress.py --update-readme (tools/status_card.py): the README status card, drawn from symbols/
-docs/assets/status-dark.svg  # tools/progress.py --update-readme (tools/status_card.py): the README status card, dark theme
-docs/assets/character-preview.png  # pbboot (tools/boot.py --game-lib --display-capture): the hunter in the character creation (contract) preview drawn by Paleblood's renderer in a local run, 1920x1080 as rendered; added by the maintainer 2026-11-11
+docs/assets/iosefkas-clinic.png  # pbboot (tools/boot.py --game-lib --display-capture): Iosefka's Clinic with correct lighting drawn by Paleblood's renderer in a local run (main with #807), 1920x1080 as rendered; added by the maintainer 2026-11-13

@@ -34,7 +34,6 @@ on:
       - 'test/host_time/**'
       - 'test/test_host_time*.c'
       - 'test/test_host_time_cpp.cpp'
-  merge_group:
 
 permissions:
   contents: read

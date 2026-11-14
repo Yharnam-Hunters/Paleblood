@@ -80,7 +80,7 @@ replace recorded gameplay cases. No fixture was rerun for this article.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x016efd00` | 368 | `event_emk_add` | verified | SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches) |
-| `0x017cfcc0` | 177 | `event_flag_write` | edge-verified | finds an exact event-flag group in a tree and sets or clears one bit |
+| `0x017cfcc0` | 177 | `event_flag_write` | verified | finds an exact event-flag group in a tree and sets or clears one bit |
 
 ## Structs and globals
 
