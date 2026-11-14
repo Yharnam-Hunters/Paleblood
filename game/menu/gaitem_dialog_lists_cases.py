@@ -7,7 +7,9 @@ usage: gaitem_dialog_lists_cases.py OUT_DIR text_pair|label
 
 - text_pair: slots 0, 1 and the last in use; a slot at and past the in-use count and an empty
   vector (reported, still copied); a null slot (reported or not, nothing copied); the vector at
-  addresses 1, 3 and 7 past an 8-byte boundary (slots from the rounded-up address); texts inline
+  addresses 1, 3 and 7 past an 8-byte boundary (slots from the rounded-up address), and a slot
+  between the end of the slots in use counted from the vector's own address and from the
+  rounded one (not reported); texts inline
   and on the heap, owns bytes 0, 1 and 0xff, different allocators.
 - label: counts 0 and 1 (fits); 2 (full: reported, and the third slot's word lands on the count
   itself); 5 (reported, far past); all ones (passes the check, copied one slot before the
@@ -62,7 +64,7 @@ def add_heaps(buffers, memory, name, heaps):
 
 
 def text_pair_case(cid, slot_index, count, shift=0, null_slot=False, texts=('north', 'gate'), owns=(1, 0),
-                   heap=(False, False)):
+                   heap=(False, False), slot_offset=None):
     vector = bytearray(b'\x99' * (PAIR_COUNT + 8 + 16))
     vector[shift + PAIR_COUNT:shift + PAIR_COUNT + 8] = u64(count)
     source = bytearray()
@@ -77,11 +79,14 @@ def text_pair_case(cid, slot_index, count, shift=0, null_slot=False, texts=('nor
     memory = []
     add_heaps(buffers, memory, 'source', heaps)
     aligned = (shift + 7) & ~7
-    slot = 0 if null_slot else f'buf:vector+{aligned + PAIR_SIZE * slot_index}'
+    if slot_offset is None:
+        slot_offset = aligned + PAIR_SIZE * slot_index
+    slot = 0 if null_slot else f'buf:vector+{slot_offset}'
     stubs = []
     # A null slot is below every slot's end, so it is reported only when the vector's end is 0,
-    # which no buffer is; a real slot is reported at or past the in-use count.
-    if not null_slot and slot_index >= count:
+    # which no buffer is; a real slot is reported at or past the end of the slots in use, which
+    # start at the vector's address rounded up to 8.
+    if not null_slot and slot_offset >= aligned + PAIR_SIZE * count:
         stubs.append({'address': FATAL_ERROR, 'ret': 0, 'argc': 3})
     if not null_slot:
         stubs += [stub(NARROW_ASSIGN), stub(NARROW_ASSIGN)]
@@ -96,6 +101,7 @@ def text_pair_cases():
             text_pair_case('null_slot', 0, 3, null_slot=True), text_pair_case('null_slot_empty', 0, 0, null_slot=True),
             text_pair_case('misaligned_1', 1, 3, shift=1), text_pair_case('misaligned_3_past', 2, 2, shift=3),
             text_pair_case('misaligned_7', 0, 1, shift=7),
+            text_pair_case('misaligned_3_before_rounded_end', 0, 2, shift=3, slot_offset=0xe5),
             text_pair_case('heap_texts', 0, 1, texts=('a long northern gate name', 'and its long caption'),
                            heap=(True, True)),
             text_pair_case('first_heap_second_inline', 1, 2, texts=('sixteen chars!!!', 'x'), heap=(True, False)),

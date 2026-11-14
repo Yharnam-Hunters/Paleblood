@@ -14,6 +14,10 @@
 // singleton (made first when missing) through its second vtable slot, with order 1. The instance
 // is read again for the result before the mutex is unlocked.
 //
+// loading_disk_file_device_release_at_quit_024712e0 (0x024712e0) is what the singleton registers
+// to run at quit: unless the "destroyed" byte is already set (any value), the instance is destroyed
+// (0x0246caa0, even when it is null), the instance pointer cleared and the byte set to 1.
+//
 // loading_disk_file_device_locate_0246e3d0 (0x0246e3d0) tells which device finds a path, as the
 // device's own location code (0 for the first reader, 2 when no device knows the path). Its second
 // argument is the path's text (transfer_task.h declares it as a wide string: the callers pass the
@@ -108,6 +112,7 @@ RT_GLOBAL(0x05aa1ab9, device_storage, uint8_t);      // aligned up to 8 before u
 RT_GLOBAL(0x05aa1bc0, device_storage_guard, StaticGuard);
 RT_ORIGINAL(0x0246bff0, disk_file_device_construct, void(DiskFileDevice *));
 RT_ORIGINAL(0x024712e0, disk_file_device_release_at_quit, void());
+RT_ORIGINAL(0x0246caa0, disk_file_device_destroy, void(DiskFileDevice *));
 RT_GLOBAL(0x05aa54f8, quit_query_instance, QuitQuery *);
 RT_ORIGINAL(0x024e2550, quit_query_create, QuitQuery *());
 
@@ -285,4 +290,13 @@ extern "C" LoadRequest *bb_loading_load_request_assign_024be630(LoadRequest *req
     request->value_0x138 = source->value_0x138;
     request->word_0x140 = source->word_0x140;
     return request;
+}
+
+extern "C" void bb_loading_disk_file_device_release_at_quit_024712e0()
+{
+    if (device_state.get() != 0)
+        return;
+    disk_file_device_destroy(device_instance.get());
+    device_instance.get() = nullptr;
+    device_state.get() = device_destroyed;
 }

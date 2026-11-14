@@ -10,9 +10,11 @@
    relocated entries, whose own bytes are never inputs). Each instruction is decoded (Capstone) before it runs: the first value of
    every byte the code reads before writing it is an input, and every byte it writes is noted, so
    the case can give it somewhere to write. The function's own stack frame is left out; reads of
-   its stack arguments are counted. The call always runs to the end and its result is returned:
+   its stack arguments are counted. gs is the guest thread pointer block (the calling thread's GS
+   base): a variable reached from the thread pointer read there is noted as a far reach from it,
+   so the case keeps the variable and the block in one buffer. The call always runs to the end and its result is returned:
    when something cannot be traced (an instruction or operand the tracer does not model, native
-   code that is not a listed import, a size limit), tracing stops, the call finishes untraced, and the log says
+   code that is not a listed import, a size limit, an fs access, thread-local storage over 1 MiB from the thread pointer), tracing stops, the call finishes untraced, and the log says
    why, so no case is written from it. Only available when built with Capstone. */
 
 #include <stddef.h>
@@ -75,7 +77,12 @@ typedef struct {
     rt_trace_write *writes;
     uint8_t *write_bytes;
     uint64_t steps;            /* instructions traced */
+    /* The calling thread's GS base (the guest thread pointer block) when the code read through
+       gs, as the loader's rewrite of fs:[0] has it do; else 0. Its thread-local variables are far
+       reaches (`link`) from the thread pointer it read there. */
+    uint64_t thread_base;
     const char *incomplete;    /* NULL when the whole call was traced; else why it was not */
+    uint64_t stopped_at;       /* where it stopped: the instruction it could not trace, or native code */
 } rt_trace_log;
 
 /* 1 when the runtime was built with the tracer (Capstone found). */
@@ -112,11 +119,12 @@ void rt_trace_set_imports(const rt_trace_import *table, size_t count);
 enum { RT_RELOCATE_MAX = 64 };   /* bytes of relocated entry code, including the jump back */
 
 /* Copies whole instructions from `src` covering at least `min_bytes` to `dst` (writable, and
-   within 2 GB of `src`), rewriting RIP-relative operands and 32-bit relative calls and jumps to
-   keep their targets, then appends an absolute jump back to the first byte not copied. Writes
-   the number of source bytes copied to *copied and the bytes written to *written. Returns -1,
-   copying nothing, when an instruction cannot be moved (a short branch, a branch into the copied
-   bytes, an operand out of reach) or decoding fails. */
+   within 2 GB of `src`), rewriting RIP-relative operands and relative calls and jumps to keep
+   their targets (a short jcc or jmp becomes its 32-bit form), then appends an absolute jump back
+   to the first byte not copied. Writes the number of source bytes copied to *copied and the bytes
+   written to *written. Returns -1, copying nothing, when an instruction cannot be moved (loop or
+   jrcxz, a branch into the copied bytes, an operand out of reach, more than RT_RELOCATE_MAX bytes)
+   or decoding fails. */
 int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copied, size_t *written);
 
 /* 1 when a direct branch inside the function [fn, fn + size) targets (fn, fn + n): the first n

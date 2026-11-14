@@ -5,11 +5,8 @@
 // loading_transfer_task_list_push_back_02a6b340 (0x02a6b340) appends a transfer task to one of
 // the file load queue's transfer task lists (0x02a6a9e0 and 0x02a6ad50 call it), and
 // loading_request_pointer_array_push_back_02a6c690 (0x02a6c690) appends a request to the stream
-// load queue's array of requests to give back (0x02a6d8e0): two instances of one template. A full
-// array first grows to one and a half times its count (engine/container.h) through its own
-// reallocation (0x02a6b420, 0x02a6f3d0). A pointer inside the array itself is read again at the
-// same index of the new buffer. With no buffer after the growth (a failed allocation that was
-// only reported), nothing is stored, but the end still moves on by one pointer, as in the game.
+// load queue's array of requests to give back (0x02a6d8e0): two instances of the engine arrays'
+// push_back (engine/array_push_back.h), each on its own reallocation (0x02a6b420, 0x02a6f3d0).
 //
 // loading_resource_manager_find_info_024c1630 (0x024c1630) walks the manager's slots from the
 // last to the first and gives the info of the first one whose three words match the request's
@@ -19,6 +16,7 @@
 // character of either name), up to the slot name's end.
 #include <cstdint>
 
+#include "../engine/array_push_back.h"
 #include "resource_queue.h"
 
 using namespace loading::resource_queue;
@@ -31,21 +29,6 @@ RT_ORIGINAL(0x02a6f3d0, request_pointer_array_reallocate, void(RequestPointerArr
 
 // The C library's lower-case table (an import): one 16-bit entry per byte value.
 RT_ORIGINAL(0x02fbec48, c_lower_case_table, const int16_t *());
-
-template <typename T, typename Reallocate>
-void push_back(engine::Array<T *> *array, T *const *item, Reallocate grow)
-{
-    const bool inside_array = array->contains(item);
-    if (array->end == array->capacity_end) {
-        const uint64_t index = inside_array ? item - array->begin : 0;
-        grow(array, engine::array_grown_capacity<T *>(array->count()));
-        if (inside_array)
-            item = array->begin + index;
-    }
-    if (array->end)
-        *array->end = *item;
-    array->end += 1;
-}
 
 ResourceSlotArray *aligned_slots(ResourceManager *manager)
 {
@@ -94,13 +77,13 @@ bool slot_matches(const ResourceSlot &slot, const RequestWords &request)
 
 extern "C" void bb_loading_transfer_task_list_push_back_02a6b340(TransferTaskList *list, TransferTask *const *task)
 {
-    push_back(list, task, transfer_task_list_reallocate);
+    engine::array_push_back(list, task, transfer_task_list_reallocate);
 }
 
 extern "C" void bb_loading_request_pointer_array_push_back_02a6c690(RequestPointerArray *array,
                                                                      void *const *request)
 {
-    push_back(array, request, request_pointer_array_reallocate);
+    engine::array_push_back(array, request, request_pointer_array_reallocate);
 }
 
 extern "C" ResourceInfo *bb_loading_resource_manager_find_info_024c1630(ResourceManager *manager,

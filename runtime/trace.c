@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <asm/prctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -82,8 +83,14 @@ typedef struct {
     unsigned stack_slots;
     uint64_t steps, step_limit;
     unsigned xmm_written;              /* bit n: xmm n written by the traced code */
+    /* Thread-local storage. Guest code reads its thread pointer at gs:[0] (the loader rewrites
+       the game's fs:[0] to gs) and reaches its variables at that pointer plus an offset. */
+    uint64_t thread_base;              /* the calling thread's GS base, or 0 when it has none */
+    uint64_t thread_pointer;           /* the value the code read at gs:[0], once it has */
+    uint64_t thread_lo, thread_hi;     /* [lo, hi): bytes reached through gs or the thread pointer */
     unsigned stale_args;               /* bit n: argument register n (rdi..r9) is what an import left */
     const char *incomplete;
+    uint64_t stopped_at;               /* the instruction tracing stopped at */
     pid_t pid;
     /* The import running now (between its entry and the return pad). */
     int in_import;
@@ -121,8 +128,10 @@ int rt_trace_available(void) { return 1; }
 
 static void stop(trace_state *t, ucontext_t *uc, const char *why)
 {
-    if (!t->incomplete)
+    if (!t->incomplete) {
         t->incomplete = why;
+        t->stopped_at = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+    }
     uc->uc_mcontext.gregs[REG_EFL] &= ~(greg_t)TRAP_FLAG;
 }
 
@@ -192,8 +201,13 @@ static slot *find(trace_state *t, uint64_t addr)
             return &t->table[i];
 }
 
+enum { NOTE_CHANGED = -2 };
+
 /* Notes `n` bytes at `addr` as read (their first value is an input unless written first) or
-   written. Returns 0, or -1 when a limit is reached or a value cannot be read. */
+   written. Returns 0, -1 when a limit is reached or a value cannot be read, or NOTE_CHANGED when a
+   read sees an input byte with another value than its first read: something outside the traced
+   code (another thread) wrote it, and a case, which gives each input one value, cannot replay
+   the call. */
 static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input)
 {
     if (addr >= t->stack_lo && addr < t->stack_hi) {
@@ -232,6 +246,8 @@ static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input
                     *input = 1;
             } else if (write) {
                 s->flags |= RT_TRACE_WRITTEN;
+            } else if (!(s->flags & RT_TRACE_WRITTEN) && s->value != value[i]) {
+                return NOTE_CHANGED;
             }
         }
         done += chunk;
@@ -596,6 +612,20 @@ static int track_origin(trace_state *t, const ucontext_t *uc, const cs_insn *in,
             from = src >= 0 && op[1].size == 8 ? t->origin[src] : 0;
         } else if ((in->id == X86_INS_ADD || in->id == X86_INS_SUB) && op[1].type == X86_OP_IMM) {
             from = pointer_of(t, uc, op[0].reg, next);
+        } else if (in->id == X86_INS_MOV && op[1].type == X86_OP_MEM && op[1].mem.segment == X86_REG_GS &&
+                   op[1].mem.base == X86_REG_INVALID && op[1].mem.index == X86_REG_INVALID && op[1].size == 8 &&
+                   t->thread_base) {
+            /* The thread pointer itself: a TCB's first word points to the TCB. Its value is
+               the origin of what is computed from it (pointer_of). */
+            uint64_t pointer;
+            if (read_self(t, t->thread_base + (uint64_t)op[1].mem.disp, &pointer, sizeof pointer))
+                return -1;
+            if (pointer)
+                t->thread_pointer = pointer;
+        } else if (in->id == X86_INS_ADD && op[1].type == X86_OP_MEM && t->thread_pointer &&
+                   pointer_of(t, uc, op[0].reg, next) == t->thread_pointer) {
+            /* A thread-local variable's offset, loaded from the image, added to the thread pointer. */
+            from = t->thread_pointer;
         } else if (in->id == X86_INS_ADD && op[1].type == X86_OP_REG && op[1].size == 8) {
             uint64_t a, b;
             if (!reg_value(uc, op[0].reg, next, &a) && !reg_value(uc, op[1].reg, next, &b))
@@ -611,6 +641,21 @@ static int track_origin(trace_state *t, const ucontext_t *uc, const cs_insn *in,
         if (w >= 0) t->origin[w] = 0;
     }
     if (dst >= 0 && dst != 7) t->origin[dst] = from;  /* rsp's own reach rules stay */
+    return 0;
+}
+
+/* Widens the thread-local range to `n` bytes at `addr`. The code finds a variable by adding an
+   offset to the thread pointer, so the case must keep the variable and the thread block at their
+   distance: a reach from the thread pointer is a link (note_link) only up to LINK_FAR. Returns -1
+   when the range would exceed it. */
+static int note_thread_local(trace_state *t, uint64_t addr, uint64_t n)
+{
+    const uint64_t lo = addr < t->thread_lo ? addr : t->thread_lo;
+    const uint64_t hi = addr + n > t->thread_hi ? addr + n : t->thread_hi;
+    if (hi - lo > LINK_FAR)
+        return -1;
+    t->thread_lo = lo;
+    t->thread_hi = hi;
     return 0;
 }
 
@@ -672,14 +717,18 @@ static void step(trace_state *t, ucontext_t *uc)
         const cs_x86_op *op = &x->operands[i];
         if (op->type != X86_OP_MEM || !(op->access & (CS_AC_READ | CS_AC_WRITE)))
             continue;
-        if (op->mem.segment != X86_REG_INVALID)
-            return stop(t, uc, "a segment-relative access (thread-local storage)");
+        /* gs is the guest's thread pointer block; fs would be the host's own. */
+        uint64_t segment_base = 0;
+        if (op->mem.segment == X86_REG_GS && t->thread_base)
+            segment_base = t->thread_base;
+        else if (op->mem.segment != X86_REG_INVALID)
+            return stop(t, uc, "a segment-relative access other than the guest thread pointer (gs)");
         if (xmm_index(op->mem.index) >= 0)
             return stop(t, uc, "a vector-indexed access (gather or scatter)");
         uint64_t base, index;
         if (reg_value(uc, op->mem.base, next, &base) || reg_value(uc, op->mem.index, next, &index))
             return stop(t, uc, "an address register the tracer does not model");
-        uint64_t ea = base + index * (uint64_t)op->mem.scale + (uint64_t)op->mem.disp;
+        uint64_t ea = segment_base + base + index * (uint64_t)op->mem.scale + (uint64_t)op->mem.disp;
         uint64_t n = (uint64_t)op->size * count;
         if (!op->size || n / count != op->size)
             return stop(t, uc, "an operand of unknown size");
@@ -687,12 +736,18 @@ static void step(trace_state *t, ucontext_t *uc)
             ea -= (count - 1) * op->size;
         if (import_slot(ea, n))
             continue;                       /* an import's slot: the verifier binds its stub there */
+        if ((segment_base || (i < 8 && t->thread_pointer && base_origin[i] == t->thread_pointer)) &&
+            note_thread_local(t, ea, n))
+            return stop(t, uc, "thread-local storage farther than 1 MiB from the thread pointer");
         if (op->mem.base != X86_REG_INVALID && op->mem.base != X86_REG_RIP && op->mem.base != X86_REG_RSP &&
             (note_link(t, base, ea) || (i < 8 && base_origin[i] && note_link(t, base_origin[i], ea))))
             return stop(t, uc, "too many far reaches from base pointers");
         if (op->access & CS_AC_READ) {
             int input = 0;
-            if (note(t, ea, n, 0, &input))
+            const int noted = note(t, ea, n, 0, &input);
+            if (noted == NOTE_CHANGED)
+                return stop(t, uc, "an input changed during the call (written outside the traced code)");
+            if (noted)
                 return stop(t, uc, "a read the tracer cannot note (limit, or unreadable memory)");
             if (input && op->size == 8 && count == 1) {
                 if (t->qwords >= QWORD_LIMIT)
@@ -784,7 +839,9 @@ static int collect(trace_state *t, rt_trace_log *log)
     log->qword_count = t->qwords;
     log->stack_slots = t->stack_slots;
     log->steps = t->steps;
+    log->thread_base = t->thread_hi ? t->thread_base : 0;   /* the code read through gs */
     log->incomplete = t->incomplete;
+    log->stopped_at = t->stopped_at;
     return 0;
 }
 
@@ -881,6 +938,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     const char *limit = getenv("BB_TRACE_STEP_LIMIT");
     t.step_limit = limit && *limit ? strtoull(limit, NULL, 0) : DEFAULT_STEP_LIMIT;
     t.xmm_written = 0x3;            /* xmm0 and xmm1 come from the case */
+    unsigned long thread_base = 0;
+    if (!syscall(SYS_arch_prctl, ARCH_GET_GS, &thread_base))
+        t.thread_base = thread_base;
+    t.thread_lo = UINT64_MAX;
 
     current = &t;
     rt_trace_enter(&frame);
@@ -935,14 +996,15 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
     cs_option(cs, CS_OPT_DETAIL, CS_OPT_ON);
     cs_insn *in = cs_malloc(cs);
     uint8_t out[RT_RELOCATE_MAX];
-    size_t n = 0, done = 0;
+    uint64_t branch_targets[8];
+    size_t n = 0, done = 0, branches = 0;
     int ok = in != NULL;
     const uint64_t base = (uint64_t)(uintptr_t)src, to = (uint64_t)(uintptr_t)dst;
     while (ok && done < min_bytes) {
         const uint8_t *code = (const uint8_t *)src + done;
         size_t size = 16;
         uint64_t address = base + done;
-        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 14 > sizeof out) {
+        if (!cs_disasm_iter(cs, &code, &size, &address, in) || n + in->size + 4 + 14 > sizeof out) {
             ok = 0;
             break;
         }
@@ -950,17 +1012,31 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
         memcpy(p, in->bytes, in->size);
         const cs_x86 *x = &in->detail->x86;
         const int64_t shift = (int64_t)(base + done) - (int64_t)(to + n);
+        size_t emitted = in->size;
         if (is_relative_branch(in)) {
             const uint64_t target = branch_target(in);
-            /* Only rel32 moves; a branch into the copied bytes would run the hook's jump. */
-            if (x->encoding.imm_size != 4 || (target > base && target < base + min_bytes + 16)) {
+            /* A branch into the copied bytes would run the hook's jump: refused once the copied
+               length is known, below. */
+            if (branches == sizeof branch_targets / sizeof branch_targets[0]) { ok = 0; break; }
+            branch_targets[branches++] = target;
+            /* A short jcc or jmp (rel8, no prefix) is written in its rel32 form, which reaches
+               the original's target from the copy; loop and jrcxz have no rel32 form. */
+            const uint8_t op = in->bytes[0];
+            int imm_offset = x->encoding.imm_offset;
+            if (x->encoding.imm_size == 1 && in->size == 2 && op >= 0x70 && op <= 0x7f) {
+                p[0] = 0x0f, p[1] = (uint8_t)(0x80 + (op - 0x70));
+                imm_offset = 2, emitted = 6;
+            } else if (x->encoding.imm_size == 1 && in->size == 2 && op == 0xeb) {
+                p[0] = 0xe9;
+                imm_offset = 1, emitted = 5;
+            } else if (x->encoding.imm_size != 4) {
                 ok = 0;
                 break;
             }
-            const int64_t rel = (int64_t)target - (int64_t)(to + n + in->size);
+            const int64_t rel = (int64_t)target - (int64_t)(to + n + emitted);
             if (!fits_int32(rel)) { ok = 0; break; }
             const int32_t r32 = (int32_t)rel;
-            memcpy(p + x->encoding.imm_offset, &r32, 4);
+            memcpy(p + imm_offset, &r32, 4);
         }
         for (uint8_t i = 0; ok && i < x->op_count; i++) {
             if (x->operands[i].type != X86_OP_MEM || x->operands[i].mem.base != X86_REG_RIP) continue;
@@ -972,9 +1048,11 @@ int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copi
             disp = (int32_t)moved;
             memcpy(p + x->encoding.disp_offset, &disp, 4);
         }
-        n += in->size;
+        n += emitted;
         done += in->size;
     }
+    for (size_t i = 0; ok && i < branches; i++)
+        if (branch_targets[i] > base && branch_targets[i] < base + done) ok = 0;
     if (ok) {
         /* jmp qword ptr [rip]; .quad src + done */
         const uint8_t jump[6] = {0xff, 0x25, 0, 0, 0, 0};

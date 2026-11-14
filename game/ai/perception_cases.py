@@ -270,6 +270,12 @@ def inside_direction_cases():
         yield inside_case(f'packing_{n}', ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
                           ((2.0, 0.0, -1.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)), 1.5707964, flag, 90.0, 10.0, extra)
         n += 1
+    # Characters at the same place with a distance limit of 0: the length is exactly 0, so only a
+    # `distance >= length` test (not `>`) lets the cone test run.
+    for angle in (360.0, 90.0, 720.0):
+        yield inside_case(f'same_place_{n}', ((1.0, 2.0, 3.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+                          ((1.0, 2.0, 3.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)), 0.0, 0, angle, 0.0)
+        n += 1
     for who in ('self', 'target', 'both'):
         k = Case(INSIDE_DIRECTION, f'missing_{who}', 'i8')
         character(k, 'self', (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0), 0x21)

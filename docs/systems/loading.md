@@ -119,7 +119,9 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x0084d5a0` | 158 | `loading_fios_directory_delete` | edge-verified | FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator |
 | `0x00857cd0` | 176 | `loading_fios_open_file` | edge-verified | sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open |
 | `0x0085cda0` | 174 | `loading_fios_open_file_read` | edge-verified | sceFiosFHOpenSync to read; on success a 0x18-byte file object (vtable 0x055c2190) open when the handle is not negative |
-| `0x013e68f0` | 160 | `loading_path_table_find_013e68f0` | edge-verified | FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0 |
+| `0x013e68f0` | 160 | `loading_path_table_find_013e68f0` | verified | FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0 |
+| `0x013e6ff0` | 91 | `loading_resource_base_construct_013e6ff0` | edge-verified | Resource base: builds the object base with the heap reference, then its vtable, an empty file handle, its state bytes and the heap reference's word |
+| `0x013e7090` | 56 | `loading_resource_base_destroy_013e7090` | edge-verified | Resource base: writes its vtable back, lets go of the handle's file, destroys the handle and then the object base |
 | `0x0237e640` | 129 | `loading_file_copy_construct_0237e640` | edge-verified | constructor: resource base with the resource heap and no copy (class a; vtable 0x057acc60) |
 | `0x0237e6d0` | 162 | `loading_file_copy_delete_0237e6d0` | edge-verified | deleting destructor (class a) |
 | `0x0237e780` | 154 | `loading_file_copy_destroy_0237e780` | edge-verified | destructor: free the file copy through DLNew release then the resource base (class a) |
@@ -141,10 +143,12 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x0246e810` | 390 | `loading_disk_device_open_on_device_0246e810` | edge-verified | Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy |
 | `0x0246e9a0` | 714 | `loading_disk_device_open_on_unnamed_devices_0246e9a0` | edge-verified | Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock |
 | `0x02470d50` | 517 | `loading_mount_table_push_back_02470d50` | edge-verified | mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer |
+| `0x024712e0` | 46 | `loading_disk_file_device_release_at_quit_024712e0` | edge-verified | Disk file device release at quit: unless the destroyed byte is set, destroys the instance (0x0246caa0), clears the instance pointer and sets the byte to 1 |
 | `0x024716d0` | 539 | `loading_mount_table_reallocate_024716d0` | edge-verified | mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report |
 | `0x02479710` | 156 | `loading_owned_object_release_02479710` | edge-verified | Releases the two parts a transfer task owns at +0x90 (+0x10 then +0x08): slot +0xb0, then destroy and free through its allocator; clears the slot |
 | `0x024bcfa0` | 49 | `loading_result_construct_024bcfa0` | edge-verified | Load result base constructor: vtable, four request words, code and word |
 | `0x024bcfe0` | 89 | `loading_result_copy_024bcfe0` | edge-verified | Load result base copy constructor: vtable, request words cleared then copied, code and word |
+| `0x024bd080` | 50 | `loading_result_assign_024bd080` | edge-verified | Result base's copy assignment: the four request words one by one, the code and the word; the vtable and the handle stay. Returns the entry |
 | `0x024bd310` | 65 | `loading_resource_handle_assign_024bd310` | edge-verified | Resource handle assignment: unless the infos match, drops the old info reference, takes the source info and adds a reference; returns the handle |
 | `0x024bd470` | 28 | `loading_resource_handle_construct_024bd470` | edge-verified | Base resource handle constructor: stores its vtable and the info, takes a reference (0x02a3a300) when the info is not null |
 | `0x024bd4c0` | 25 | `loading_resource_handle_destroy_024bd4c0` | edge-verified | Base resource handle destructor: stores its vtable, releases the info (0x024bd930) when not null |
@@ -172,6 +176,7 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x02a2aca0` | 180 | `loading_path_token_next_02a2aca0` | verified | wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it |
 | `0x02a3a1b0` | 40 | `loading_resource_info_reference_count_02a3a1b0` | edge-verified | Dantelion2 DLResourceInfo reference count: read under the info's own engine mutex (lock forever, result ignored) |
 | `0x02a3a2a0` | 45 | `loading_resource_info_drop_reference_02a3a2a0` | edge-verified | Dantelion2 DLResourceInfo drop reference: decrement under the info's own engine mutex; a count at zero stays zero |
+| `0x02a3a300` | 36 | `loading_resource_info_add_reference_02a3a300` | edge-verified | Resource info: adds one to the reference count under the info's own mutex (waiting forever) |
 | `0x02a692d0` | 19 | `loading_load_queue_report_loaded_02a692d0` | edge-verified | load event queue: report a request through vtable slot 0 with code 1 |
 | `0x02a698e0` | 654 | `loading_load_queue_request_02a698e0` | edge-verified | DLResourceLoadEventQueue request (kind 0): validity; manager info or report -0xf8; info remembers the queue; under the lock append an event with a request copy; handle to the info |
 | `0x02a69b70` | 340 | `loading_load_event_array_push_back_02a69b70` | edge-verified | resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable |

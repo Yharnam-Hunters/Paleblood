@@ -28,6 +28,7 @@ FUNCTIONS = {  # name: (address, replacement symbol)
     'capture_trace_twice': ('0x004000c0', 'twice'),
     'capture_trace_copy': ('0x00400140', 'copy'),
     'capture_trace_use_import': ('0x004002c0', 'use_import'),
+    'capture_trace_thread_counter': ('0x004006c0', 'thread_counter'),
 }
 
 REPLACEMENT = r'''#include <stdint.h>
@@ -51,6 +52,14 @@ int32_t twice(int32_t *p) { increment(p); return increment(p) + BROKEN; }
 void copy(char *dst, const char *src, size_t n) { memcpy(dst, src, n); if (BROKEN) dst[n - 1] ^= 1; }
 int32_t use_import(int32_t *out)
 { int32_t (*fill)(int32_t *, int32_t); memcpy(&fill, image + 0x1800, sizeof fill); return fill(out, 7) + *out + BROKEN; }
+int32_t thread_counter(void)
+{
+    uintptr_t thread_pointer; int64_t offset;
+    __asm__ volatile("mov %%gs:0, %0" : "=r"(thread_pointer));
+    memcpy(&offset, image + 0x1838, sizeof offset);
+    int32_t *counter = *(int32_t **)(thread_pointer + offset);
+    return ++*counter + BROKEN;
+}
 '''
 
 
