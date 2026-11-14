@@ -24,7 +24,6 @@ on:
       - 'runtime/include/runtime/**'
       - 'test/host_file_stat/**'
       - 'test/test_host_file_stat.c'
-  merge_group:
 
 permissions:
   contents: read
