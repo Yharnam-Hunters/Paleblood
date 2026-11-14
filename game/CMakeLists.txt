@@ -87,6 +87,30 @@ target_link_libraries(test_gs_mode_observer_failure PRIVATE ${CMAKE_DL_LIBS} pth
 set_target_properties(test_gs_mode_observer_failure PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME gs_mode_observer_failure COMMAND test_gs_mode_observer_failure)
 
+# ESGS item size: real register recorder, absent host, and explicit refusal.
+add_executable(test_esgs_ring_itemsize_observer render/tests/esgs_ring_itemsize_observer.cpp render/set_esgs_ring_itemsize.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_link_libraries(test_esgs_ring_itemsize_observer PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_compile_options(test_esgs_ring_itemsize_observer PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_esgs_ring_itemsize_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME esgs_ring_itemsize_observer COMMAND test_esgs_ring_itemsize_observer)
+
+add_executable(test_esgs_ring_itemsize_observer_absent render/tests/esgs_ring_itemsize_observer.cpp render/set_esgs_ring_itemsize.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_esgs_ring_itemsize_observer_absent PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_definitions(test_esgs_ring_itemsize_observer_absent PRIVATE PB_ESGS_OBSERVER_ABSENT=1)
+target_compile_options(test_esgs_ring_itemsize_observer_absent PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_esgs_ring_itemsize_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
+add_test(NAME esgs_ring_itemsize_observer_absent COMMAND test_esgs_ring_itemsize_observer_absent)
+
+add_executable(test_esgs_ring_itemsize_observer_failure render/tests/esgs_ring_itemsize_observer_failure.cpp render/set_esgs_ring_itemsize.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_esgs_ring_itemsize_observer_failure PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_options(test_esgs_ring_itemsize_observer_failure PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_esgs_ring_itemsize_observer_failure PRIVATE ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_esgs_ring_itemsize_observer_failure PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME esgs_ring_itemsize_observer_failure COMMAND test_esgs_ring_itemsize_observer_failure)
+
 # The camera fixture generator and verifier contracts are checked beside their game-owned inputs.
 add_test(NAME camera_update_cases
          COMMAND ${Python3_EXECUTABLE}

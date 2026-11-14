@@ -14,6 +14,8 @@
    --original-self-test  the same image with BB_CAPTURE_ORIGINAL=1: no replacement may run; a
                 recorded function's unsampled calls run its original, every other hook is left
                 out, and a repeated case is not written twice.
+   --many-self-test  a registry of 2,000 hooks (over the 1,024 the recorder once capped it at)
+                still has its recordable hook prepared for recording.
    --emit DIR   records into DIR for test/capture_trace_integration.py.
    --image FILE writes the image before binding and hooking, which the replay builds its
                 executable from. */
@@ -23,10 +25,12 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "runtime/capture_hooks.h"
 #include "runtime/host.h"
 #include "runtime/host_hooks.h"
 #include "runtime/hooks.h"
@@ -264,6 +268,32 @@ int run_original(const std::string &dir)
     return failures ? 1 : 0;
 }
 
+/* A registry larger than the 1,024 hooks the recorder once capped it at (the game's passed that
+   and capture boots silently recorded nothing): its hooks are still prepared for recording. */
+int run_many(const std::string &dir)
+{
+    const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
+    auto *image = static_cast<unsigned char *>(mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (image == MAP_FAILED) return 1;
+    std::memcpy(image, capture_trace_guest_start, size);
+    setenv("BB_CAPTURE_DIR", dir.c_str(), 1);
+    setenv("BB_CAPTURE_RUN", "many", 1);
+    setenv("BB_CAPTURE_TRACE", "1", 1);
+    /* Entries outside the image are never recorded; the last one is scale, which can be. */
+    const size_t count = 2000;
+    std::vector<rt_hook_entry> table(count, rt_hook_entry{0, 0x40u, "bb_capture_trace_outside",
+                                                          reinterpret_cast<rt_hook_fn>(count_down_replacement), "i32"});
+    table.back() = game_hooks[0];
+    std::vector<const void *> targets(count);
+    const int recorded = rt_capture_hooks_prepare(image, size, table.data(), count, targets.data());
+    check(recorded == 1, "a registry of 2,000 hooks records its recordable one");
+    check(targets.back() != reinterpret_cast<const void *>(game_hooks[0].fn), "the recordable hook goes through a recording thunk");
+    check(targets.front() == reinterpret_cast<const void *>(table.front().fn), "an unrecordable hook keeps its replacement");
+    if (!failures) std::puts("capture hooks many self-test: a registry over 1,024 hooks is still recorded");
+    return failures ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -296,12 +326,20 @@ int main(int argc, char **argv)
         std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
         return ec ? 1 : rc;
     }
+    if (argc == 2 && !std::strcmp(argv[1], "--many-self-test")) {
+        char dir[] = "/tmp/pb-capture-many-XXXXXX";
+        if (!mkdtemp(dir)) return 1;
+        const int rc = run_many(dir);
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
+        return ec ? 1 : rc;
+    }
     if (argc == 3 && !std::strcmp(argv[1], "--emit")) return run(argv[2], false);
     if (argc == 3 && !std::strcmp(argv[1], "--image")) {
         FILE *out = std::fopen(argv[2], "wb");
         const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
         return out && std::fwrite(capture_trace_guest_start, 1, size, out) == size && !std::fclose(out) ? 0 : 1;
     }
-    std::fprintf(stderr, "usage: %s --self-test | --native-self-test | --original-self-test | --emit DIR\n", argv[0]);
+    std::fprintf(stderr, "usage: %s --self-test | --native-self-test | --original-self-test | --many-self-test | --emit DIR\n", argv[0]);
     return 2;
 }
