@@ -157,7 +157,13 @@ def boot_image(stacked_imports=False):
     code[0xbc0:0xbc3] = bytes.fromhex('b0a5c3')
     code[0xbd0:0xbdb] = bytes.fromhex('48034424084803442410c3')
     code[0xbe0:0xbe3] = bytes.fromhex('9c58c3')                    # pushfq; pop rax; ret
+    # Returns rsi - rdi: the distance between two buffers, as a heap computes a block's size.
+    code[0xbf0:0xbf7] = bytes.fromhex('4889f0 4829f8 c3')
     code[0xc60:0xc68] = bytes.fromhex('8d047509000000 c3')         # lea eax, [rsi*2+9], no base
+    # Float arguments past the second: xmm0, xmm1 = xmm2, xmm3; xmm4, xmm5; xmm6, xmm7.
+    code[0xc68:0xc6f] = bytes.fromhex('0f28c2 0f28cb c3')
+    code[0xc70:0xc77] = bytes.fromhex('0f28c4 0f28cd c3')
+    code[0xc78:0xc7f] = bytes.fromhex('0f28c6 0f28cf c3')
     # Tail calls preserve the fixture's six GP registers, overflow slots and XMM0 exactly.
     # A second import is enabled only for the new cases; existing images keep their layout.
     code[0xc80:0xc86] = bytes.fromhex('ff25') + struct.pack('<i', 0x1000 - 0xc86)
@@ -614,6 +620,23 @@ class Harness(unittest.TestCase):
                   if event['region'] == 'buf:memory']
         self.assertEqual([(event['access'], event['width']) for event in events], [('read', 8)])
 
+    def test_float_arguments_past_the_second_are_loaded(self):
+        values = {f'xmm{n}': bytes(range(16 * n, 16 * n + 16)).hex() for n in range(2, 8)}
+        for address, first, second in (('0x00400c68', 'xmm2', 'xmm3'), ('0x00400c70', 'xmm4', 'xmm5'),
+                                       ('0x00400c78', 'xmm6', 'xmm7')):
+            with self.subTest(address=address):
+                case = {'schema': 1, 'address': address, 'id': 'xmm-args', 'returns': 'vec',
+                        'args': dict(values), 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                Path(self.case).write_text(json.dumps(case))
+                result = self.side_case(self.case, address=address)
+                self.assertEqual(result['ret'], {'xmm0': values[first], 'xmm1': values[second]}, result)
+        case['args'] = {'xmm8': '00'}
+        Path(self.case).write_text(json.dumps(case))
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot, '--case', self.case,
+               '--address', '0x00400c78']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertIn('xmm8', r.stdout + r.stderr)
+
     def test_control_flow_coverage_reports_fixture_branch_paths(self):
         fixtures = [
             {'schema': 1, 'address': '0x00400c00', 'id': 'branch-zero', 'returns': 'i32',
@@ -766,6 +789,18 @@ class Harness(unittest.TestCase):
                             for event in r['access_trace']))
         self.assertIn('not instrumented', r['access_trace_scope'])
 
+    def test_import_write_at_a_fixed_place(self):
+        # A recorded import's change seen through a register that need not be an argument is
+        # scripted at its place: it lands there whatever the registers hold in the replay.
+        script = dict(CASE['imports'][0])
+        script['writes'] = script['writes'] + [{'addr': 'buf:aux+0x8', 'bytes': 'aabbccdd'}]
+        case = dict(CASE, buffers={'out': {'size': 8}, 'aux': {'size': 16}}, imports=[script])
+        Path(self.case).write_text(json.dumps(case))
+        r = self.side()
+        self.assertIn({'addr': 'buf:aux+0x8', 'bytes': 'aabbccdd'}, r['writes'])
+        self.assertIn({'addr': 'buf:out+0x0', 'bytes': '3413'}, r['writes'])
+        self.assertNotIn('errors', r)
+
     def test_byte_precise_redzone_reports_guest_buffer_overrun(self):
         case = {'schema': 1, 'address': '0x00400940', 'id': 'redzone', 'returns': 'void',
                 'args': {'rdi': 'buf:out'}, 'buffers': {'out': {'size': 8}},
@@ -776,6 +811,51 @@ class Harness(unittest.TestCase):
         result = self.side_case(path, address='0x00400940')
         self.assertEqual(result['redzone_writes'], [{'buffer': 'out', 'first_offset': 8, 'changed_bytes': 1}])
         self.assertTrue(any('redzone modified' in error for error in result['errors']))
+
+    def distance_case(self, buffers):
+        case = {'schema': 1, 'address': '0x00400bf0', 'id': 'distance', 'returns': 'i64',
+                'args': {'rdi': 'buf:a+0x0', 'rsi': 'buf:b+0x0'}, 'buffers': buffers,
+                'memory': [], 'imports': [], 'stubs': []}
+        path = os.path.join(self.d, 'distance.json')
+        with open(path, 'w') as stream:
+            json.dump(case, stream)
+        return self.side_case(path, address='0x00400bf0')
+
+    def test_buffers_keep_their_recorded_distance_at_their_origin(self):
+        # Two heap blocks 64 MiB apart in the run: replayed at their origins, the code sees the
+        # same distance (a heap's block size), however the sandbox would have packed them.
+        far = 0x2100000010 + (64 << 20)
+        result = self.distance_case({'a': {'size': 32, 'origin': '0x2100000010', 'bytes': '01'},
+                                     'b': {'size': 16, 'origin': hex(far)}})
+        self.assertNotIn('errors', result)
+        self.assertEqual(int(result['ret']['rax'], 0), 64 << 20)
+        # Without origins, or with one outside the guest window, they go to the sandbox.
+        packed = self.distance_case({'a': {'size': 32}, 'b': {'size': 16, 'origin': '0x10000'}})
+        self.assertNotEqual(int(packed['ret']['rax'], 0), 64 << 20)
+
+    def test_buffer_at_its_origin_keeps_its_redzone(self):
+        case = {'schema': 1, 'address': '0x00400940', 'id': 'redzone', 'returns': 'void',
+                'args': {'rdi': 'buf:out'}, 'buffers': {'out': {'size': 8, 'origin': '0x2200000000'}},
+                'memory': [], 'imports': [], 'stubs': []}
+        path = os.path.join(self.d, 'redzone-origin.json')
+        with open(path, 'w') as stream:
+            json.dump(case, stream)
+        result = self.side_case(path, address='0x00400940')
+        self.assertEqual(result['redzone_writes'], [{'buffer': 'out', 'first_offset': 8, 'changed_bytes': 1}])
+
+    def test_overlapping_origins_are_refused(self):
+        case = {'schema': 1, 'address': '0x00400bf0', 'id': 'overlap', 'returns': 'i64',
+                'args': {'rdi': 'buf:a+0x0', 'rsi': 'buf:b+0x0'},
+                'buffers': {'a': {'size': 32, 'origin': '0x2300000000'}, 'b': {'size': 16, 'origin': '0x2300000010'}},
+                'memory': [], 'imports': [], 'stubs': []}
+        path = os.path.join(self.d, 'overlap.json')
+        with open(path, 'w') as stream:
+            json.dump(case, stream)
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot, '--case', path,
+               '--address', '0x00400bf0']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('overlap at their origins', r.stdout + r.stderr)
 
     def compare(self, broken):
         res = lambda r: {'schema': 1, 'address': '0x00400000', 'cases': [r]}

@@ -63,7 +63,7 @@ endif()
 set(PB_MEDIA_SOURCES ${PB_MEDIA_SOURCES} PARENT_SCOPE)
 set(PB_FFMPEG_FOUND ${PB_FFMPEG_FOUND} PARENT_SCOPE)
 include(${PROJECT_SOURCE_DIR}/cmake/HostTime.cmake)
-add_executable(pbboot boot.c loader.c memory.c nid.c process.c host_hooks.c input/input.c input/input_script.c ${PB_SYSLIB} ${PB_DISPLAY_SOURCES} ${PB_MEDIA_SOURCES})
+add_executable(pbboot boot.c loader.c memory.c write_watch.c nid.c process.c host_hooks.c input/input.c input/input_script.c ${PB_SYSLIB} ${PB_DISPLAY_SOURCES} ${PB_MEDIA_SOURCES})
 if(PB_FFMPEG_FOUND)
     target_link_libraries(pbboot PRIVATE PkgConfig::PB_FFMPEG)
 endif()
@@ -79,7 +79,8 @@ target_include_directories(pbboot PRIVATE include)
 if(NOT APPLE)
     foreach(symbol rt_fatal rt_render_record_color_target rt_render_record_viewport rt_render_record_draw_auto
                    rt_render_record_vertex_shader rt_render_record_pixel_shader rt_render_record_user_data
-                   rt_render_record_register rt_render_record_instances rt_render_record_dispatch rt_render_record_index_base
+                   rt_render_record_register rt_render_record_instances rt_render_record_dispatch rt_render_record_indirect_base
+                   rt_render_record_dispatch_indirect rt_render_record_draw_indirect rt_render_record_index_base
                    rt_render_record_index_size rt_render_record_index_type rt_render_record_draw_index_offset
                    rt_render_record_draw_index_offset_packet rt_render_record_draw_indexed)
         target_link_options(pbboot PRIVATE "LINKER:--export-dynamic-symbol=${symbol}")

@@ -8,6 +8,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/HostMemoryTests.cmake'
       - 'runtime/memory.c'
+      - 'runtime/write_watch.c'
       - 'runtime/syslib/kernel_memory.c'
       - 'runtime/syslib/kernel.c'
       - 'runtime/syslib/table.c'
@@ -24,6 +25,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/HostMemoryTests.cmake'
       - 'runtime/memory.c'
+      - 'runtime/write_watch.c'
       - 'runtime/syslib/kernel_memory.c'
       - 'runtime/syslib/kernel.c'
       - 'runtime/syslib/table.c'
@@ -34,7 +36,6 @@ on:
       - 'test/test_memory_mapping.py'
       - 'test/test_syslib_memory_host.c'
       - 'test/syslib/memory*.c'
-  merge_group:
 
 permissions:
   contents: read
