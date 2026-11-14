@@ -1,8 +1,8 @@
 address,size,extent,value,status
-0x01484880,14,16,,replaced
-0x014848f0,14,16,,replaced
-0x01484930,14,16,,replaced
-0x01484970,14,16,,replaced
-0x014849b0,14,16,,replaced
-0x01484c10,14,16,,replaced
-0x01484e60,14,16,,replaced
+0x01484880,14,16,,edge-verified
+0x014848f0,14,16,,edge-verified
+0x01484930,14,16,,edge-verified
+0x01484970,14,16,,edge-verified
+0x014849b0,14,16,,edge-verified
+0x01484c10,14,16,,edge-verified
+0x01484e60,14,16,,edge-verified
