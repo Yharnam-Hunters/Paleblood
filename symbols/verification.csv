@@ -328,12 +328,14 @@ frame_timing_holygrail_wait_for_ritual_mode,edge,,59,59,0,0,cd53367af0bda73a,202
 frame_timing_holygrail_wait_for_ritual_mode,edge,60,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_item_list_update_01456c80,recorded,,53,53,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_item_list_update_01456c80,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
+frame_timing_item_update_013d4810,edge,,19,19,0,0,31e0652c22bae32f,2026-11-14
 frame_timing_job_take_result,recorded,,2,2,0,0,28e2fcb9414a9bc0,2026-11-12
 frame_timing_job_take_result,edge,,28,28,0,0,28e2fcb9414a9bc0,2026-11-12
 frame_timing_job_wait,edge,,16,16,0,0,28e2fcb9414a9bc0,2026-11-10
 frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,,37,37,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,60,37,37,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_listener_list_notify_013daac0,edge,,10,10,0,0,ef8ef3f096df299e,2026-11-13
+frame_timing_listener_list_prepare_013dab20,edge,,20,20,0,0,31e0652c22bae32f,2026-11-14
 frame_timing_lookup_session_object_02265290,edge,,33,33,0,0,e19b24011b8a7938,2026-11-13
 frame_timing_pace_frame,recorded,,585,585,0,0,a3d44cba82dab3c2,2026-10-09
 frame_timing_pace_frame,recorded,30,585,585,0,0,a3d44cba82dab3c2,2026-10-07
@@ -363,8 +365,9 @@ frame_timing_request_7_02012a60,edge,60,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_sleep_ms,edge,,10,10,0,0,b1ae2eead3597009,2026-10-26
 frame_timing_step_machine_count_step_01ec3000,recorded,,35,35,0,0,9e3c83e666421c7d,2026-11-13
 frame_timing_step_machine_count_step_01ec3000,edge,,42,42,0,0,9e3c83e666421c7d,2026-11-13
-frame_timing_stopwatch_start,edge,,13,13,0,0,3b3f75b688e0d259,2026-11-10
-frame_timing_stopwatch_stop,edge,,16,16,0,0,3b3f75b688e0d259,2026-11-10
+frame_timing_stopwatch_frame_end_014486d0,edge,,48,48,0,0,50bd76559ff3cec6,2026-11-14
+frame_timing_stopwatch_start,edge,,13,13,0,0,50bd76559ff3cec6,2026-11-14
+frame_timing_stopwatch_stop,edge,,16,16,0,0,50bd76559ff3cec6,2026-11-14
 frame_timing_task_013d3520,recorded,,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,recorded,uncapped,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,edge,,11,11,0,0,c52608f510993456,2026-10-07

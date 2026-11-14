@@ -62,7 +62,9 @@ address,size,name,system,status,notes
 0x01389e10,59,frame_timing_task_entry_at_01389e10,frame_timing,edge-verified,Registered task entry at an index; null for a negative index or one past the end (unsigned count)
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
 0x013d3520,87,frame_timing_task_013d3520,frame_timing,verified,per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it
+0x013d4810,86,frame_timing_item_update_013d4810,frame_timing,edge-verified,"Brings the item's group up to date, then switches the item on or off when its requested enabled byte differs; an enabled item is switched on again"
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
+0x013dab20,187,frame_timing_listener_list_prepare_013dab20,frame_timing,edge-verified,"Hands the list's owner (when set) to every listener, then the resource the named resource registry holds under the list's name"
 0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
 0x0143c450,93,frame_timing_task_record_close_0143c450,frame_timing,edge-verified,"Closes a closing group record (state 4): flags cleared, state idle, no index (-1)"
 0x0143d7c0,62,frame_timing_task_batch_add_0143d7c0,frame_timing,edge-verified,Pushes a job onto the back of a batch's job deque with the game's push_back; a null job is not added
@@ -78,6 +80,7 @@ address,size,name,system,status,notes
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60"
 0x01448580,149,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c"
 0x01448620,168,frame_timing_stopwatch_stop,frame_timing,edge-verified,Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start
+0x014486d0,111,frame_timing_stopwatch_frame_end_014486d0,frame_timing,edge-verified,Every 30 frames turns the total seconds and start count into per-frame averages; every frame folds the frame starts and seconds into their peaks
 0x01456c80,39,frame_timing_item_list_update_01456c80,frame_timing,edge-verified,Calls 0x013d4810 on each item pointer between +0x8 and +0x10 (the ends read once)
 0x01456eb0,28,frame_timing_profile_start_01456eb0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, starts stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448580)"
 0x01456ed0,28,frame_timing_profile_stop_01456ed0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, stops stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448620)"
