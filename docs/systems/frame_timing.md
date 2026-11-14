@@ -262,8 +262,10 @@ fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential ste
 | `0x0111a760` | 131 | `frame_timing_get_monotonic_us` | edge-verified | Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
 | `0x0111a880` | 19 | `frame_timing_sleep_ms` | edge-verified | Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result |
+| `0x01381580` | 139 | `frame_timing_task_manager_add_01381580` | edge-verified | Task add: with both wait objects set: state 2 and hand to 0x013e7170; else group in bits 2-4 of +0x79, queue (manager+0xd8)[group] add, optional order after |
 | `0x01388c60` | 16 | `frame_timing_task_run_all_01388c60` | verified | task manager: run the tasks of every group (0x01388c70 with -1) |
 | `0x01388c70` | 171 | `frame_timing_task_run_01388c70` | verified | task manager run: prepare the frame; dispatch through +0x40 (virtual +0x30) with +0x38 set; finish |
+| `0x013894f0` | 108 | `frame_timing_task_debug_menu_add_013894f0` | edge-verified | Adds the "Task" debug menu node once (+0x58) and its settings node with the +0x39 switch; the final call (task manager +0x30, node) goes to an empty leaf |
 | `0x01389df0` | 19 | `frame_timing_task_entry_count_01389df0` | edge-verified | Number of the dispatcher's registered task entries (vector of 0x88-byte entries), cut to 32 bits |
 | `0x01389e10` | 59 | `frame_timing_task_entry_at_01389e10` | edge-verified | Registered task entry at an index; null for a negative index or one past the end (unsigned count) |
 | `0x0138a370` | 330 | `frame_timing_task_dispatch_0138a370` | verified | task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step |
