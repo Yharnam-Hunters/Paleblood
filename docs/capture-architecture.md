@@ -33,8 +33,7 @@ and where it stopped (`BB_CAPTURE_VERBOSE=1` prints both: a PS4 address, or nati
 symbol, such as a replacement without a redirect), and no case is written. Fail-closed reasons today: an instruction the tracer does not model
 (`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), an `fs` access (the host's own thread block;
 guest code reads its thread pointer through `gs`, below), thread-local storage more than 1 MiB from
-the thread pointer, a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
-it (cases give only `xmm0` and `xmm1`), a stack argument past the 70th, code outside the traced
+the thread pointer, a vector-indexed access (gather, scatter), a stack argument past the 70th, code outside the traced
 ranges (an import or other native code), unreadable memory, an input byte that a later read sees
 with another value although neither the traced code nor a scripted import write changed it
 (another thread wrote it; a case gives each input one value, so the replay would take another
@@ -81,8 +80,10 @@ limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
 - Imports' arguments are not compared (`argc` 0), except the first 32-bit number of
   `sceKernelUsleep` and `sceKernelClockGettime` (`argu32`): a replacement that sleeps for another
   time or reads another clock fails.
-- Arguments (`rdi`..`r9`, `xmm0`, `xmm1`) and the stack arguments read are written the same way:
-  `buf:NAME+off`, `guest:0xADDRESS`, or a number.
+- Arguments (`rdi`..`r9`) and the stack arguments read are written the same way:
+  `buf:NAME+off`, `guest:0xADDRESS`, or a number. `xmm0` and `xmm1` are always written (hex
+  bytes); `xmm2`..`xmm7` only when the code reads one before writing it (a third float argument,
+  say).
 - `returns` comes from the hook table: the return class is data (`game/hooks.csv`), not inferred.
 - The `capture` provenance names the function and the run; files are written by `rt_capture_write`
   (owner-only, never overwriting), under the same sampling as before (`runtime/capture.h`).
@@ -100,7 +101,8 @@ load replaced), a sleep whose length is compared, a word read only through `test
 It checks
 the results and the inputs, a thread-local variable reached through `gs` and the thread pointer
 (one buffer with the thread block, `gs` at it; no `gs` for a call on a guest thread that does not
-read it), and that an `xmm2` read, an `fs` access, a call into native code, an input changed
+read it), an `xmm2` argument (given by the case, while `xmm3`, written before it is read, is not),
+and that an `fs` access, a call into native code, an input changed
 between two reads, memory the code wrote changed before it read it again and the instruction limit
 give no case while the call still completes.
 `test/capture_trace_integration.py` then replays every recorded case with `tools/verify.py`: each
