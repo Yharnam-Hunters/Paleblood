@@ -3227,7 +3227,8 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
-   s_cbranch_execz around both). 0, or -1 with the reason. */
+   s_cbranch_execz around both). A use that no write reaches on any path (written_on_a_path_to: the
+   writes sit in blocks that branch past it) reads the user data's descriptor. 0, or -1 with the reason. */
 static int descriptor_origin(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width,
                              gcn_resource_origin *origin, char *error, size_t error_size);
 
@@ -3242,6 +3243,39 @@ static long last_sgpr_writer(const uint32_t *code, size_t program, const callee_
         p += ins.dwords;
     }
     return writer;
+}
+
+/* A load's pointer pair s[pointer : pointer + 1] restored from SGPR spill slots before the load at dword
+   `at`: each SGPR last written by a v_readlane_b32 of a constant lane whose slot one v_writelane_b32 in the
+   whole program fills, before it, from that same SGPR. The pair then holds at the load what it held when
+   spilled, whatever was written to it in between (a clinic-beast pixel shader spills its user-data
+   pointer, reuses those SGPRs for a descriptor, and restores the pointer for its next load). The later of
+   the two writelanes, or -1 when the pair is not so restored. */
+static long pointer_spilled_at(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned pointer)
+{
+    long spilled = -1;
+    for (unsigned d = 0; d < 2; d++) {
+        const long reader = last_sgpr_writer(code, program, callee, at, pointer + d);
+        gcn_instruction ins;
+        if (reader < 0 || gcn_decode(code + reader, program - (size_t)reader, &ins) || ins.encoding != GCN_VOP2 ||
+            strcmp(ins.name, "v_readlane_b32"))
+            return -1;
+        const uint32_t *r = code + reader;
+        const unsigned lane = spill_lane_of(r), vgpr_field = r[0] & 0x1ff;
+        long writer = -1;
+        int writes = 0;
+        for (size_t p = 0; p < program && lane >= LANE_SELECT_CONSTANT;) {
+            gcn_instruction w;
+            if (gcn_decode(code + p, program - p, &w) || !w.name) break;
+            if (w.encoding == GCN_VOP2 && !strcmp(w.name, "v_writelane_b32") && spill_lane_of(code + p) == lane &&
+                OPERAND_VGPR + ((code[p] >> 17) & 0xff) == vgpr_field)
+                writes++, writer = (long)p;
+            p += w.dwords;
+        }
+        if (writes != 1 || writer > reader || (code[writer] & 0x1ff) != pointer + d) return -1;
+        if (writer > spilled) spilled = writer;
+    }
+    return spilled;
 }
 
 /* A descriptor restored from SGPR spill slots (spill_lane): each of its SGPRs last written, before the use
@@ -3300,6 +3334,49 @@ static int restored_origin(const uint32_t *code, size_t program, const callee_co
     return 1;
 }
 
+/* Whether an instruction that writes any of s[first : first + width - 1] can run before the instruction at
+   dword `at` on some path through the program: a search back from `at` along fall-throughs and branches,
+   stopping at each writer. 1 when one can; 0 when only the program's start reaches `at` without one, so
+   the user data's descriptor holds there (a write in a block that ends in an s_branch past the use, as a
+   clinic-beast pixel shader's is, never reaches it); -1 when a branch's target is not known. */
+static int written_on_a_path_to(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width)
+{
+    long *target = malloc(program * sizeof *target), *previous = malloc(program * sizeof *previous);
+    size_t *pending = malloc(program * sizeof *pending);
+    unsigned char *seen = calloc(program, 1), *falls = calloc(program, 1), *starts = calloc(program, 1);
+    int result = target && previous && pending && seen && falls && starts ? 0 : -1;
+    long last = -1;
+    for (size_t p = 0; p < program && result == 0;) { /* each instruction's branch target and whether it runs on into the next */
+        gcn_instruction ins;
+        if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
+        starts[p] = 1, previous[p] = last, last = (long)p;
+        target[p] = -1;
+        const int ends = !strcmp(ins.name, "s_endpgm");
+        long to = -1;
+        if (!ends && leaves_straight_line(code + p, &ins, p, callee, &to)) {
+            if (to < 0 || (size_t)to >= program) result = -1;
+            target[p] = to;
+        }
+        falls[p] = !ends && strcmp(ins.name, "s_branch") != 0;
+        p += ins.dwords;
+    }
+    size_t count = 0;
+    if (result == 0 && at < program && starts[at]) pending[count++] = at, seen[at] = 1;
+    while (result == 0 && count) {
+        const size_t i = pending[--count];
+        /* the instructions that may run just before i: the one before it, if it runs on, and the branches to it */
+        for (size_t j = 0; j < program && result == 0; j++) {
+            if (!starts[j] || seen[j] || !((falls[j] && previous[i] == (long)j) || target[j] == (long)i)) continue;
+            gcn_instruction ins;
+            gcn_decode(code + j, program - j, &ins);
+            if (writes_sgprs(code + j, &ins, callee, first, width)) result = 1;
+            else seen[j] = 1, pending[count++] = j;
+        }
+    }
+    free(target), free(previous), free(pending), free(seen), free(falls), free(starts);
+    return result;
+}
+
 static int descriptor_origin(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width,
                              gcn_resource_origin *origin, char *error, size_t error_size)
 {
@@ -3316,7 +3393,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
         }
         p += ins.dwords;
     }
-    if (!written) return 0;
+    if (!written || written_on_a_path_to(code, program, callee, at, first, width) == 0) return 0;
     int loops_to_load = 0; /* a branch back to the load or before it */
     size_t last_loop_back = 0; /* the last such branch */
     long loop_end = -1;    /* the last branch from after the load back to between it and the use */
@@ -3374,12 +3451,16 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
     const size_t checked_end = loops_to_load && last_loop_back > (size_t)writer ? last_loop_back : (size_t)writer;
-    for (size_t p = 0; p < checked_end;) {
+    /* writes to a pointer spilled and restored before the load (pointer_spilled_at) are undone after the spill */
+    const long spilled = loops_to_load ? -1 : pointer_spilled_at(code, program, callee, (size_t)writer, pointer);
+    /* nor do writes to it that reach the load on no path: it holds the user data's pointer there */
+    const int pointer_unwritten = !loops_to_load && written_on_a_path_to(code, program, callee, (size_t)writer, pointer, 2) == 0;
+    for (size_t p = 0; p < checked_end && !pointer_unwritten;) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
-        const int the_load = p == (size_t)writer && !loops_to_load;
-        if (writes_sgprs(code + p, &before, callee, pointer, 2) && !the_load) {
+        const int the_load = p == (size_t)writer && !loops_to_load, undone = spilled >= 0 && (long)p > spilled;
+        if (writes_sgprs(code + p, &before, callee, pointer, 2) && !the_load && !undone) {
             snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded through s[%u:%u], which the program writes (%s at dword %zu): "
                      "not done yet", first, first + width - 1, pointer, pointer + 1, before.name, p);
             return -1;
