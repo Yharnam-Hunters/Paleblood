@@ -204,10 +204,12 @@ void cases_for(rt_executor *x,PBStageQueue *queue,uint8_t *pool)
     seed(pool,81);calls.clear();setup(calls,0,Route::Auto);draw_call(calls,Route::Auto);setup(calls,1,Route::Auto);stages(calls,0xb0);draw_call(calls,Route::Auto);
     Bytes partial(pool,pool+Pool);expected_draw(partial,0);perform(x,queue,pool,"order/A-completes-B-refused",calls,partial,0xb0,"VGT_SHADER_STAGES_EN 0x000000b0",false);
     calls.clear();setup(calls,2,Route::Auto);stages(calls,0);draw_call(calls,Route::Auto);successful(x,queue,pool,"order/C-restores-after-B",calls,2);
-    /* The new state cannot erase the independent instance requirement, including after restore. */
-    seed(pool,82);calls.clear();setup(calls,0,Route::Auto);instances(calls,2);stages(calls,0x45);draw_call(calls,Route::Auto);reject(x,queue,pool,"instances/stage-first",calls,0x45);
-    calls.clear();stages(calls,0);draw_call(calls,Route::Auto);perform(x,queue,pool,"instances/stage-zero-still-two",calls,Bytes(pool,pool+Pool),0,"2 instances",true);
-    calls.clear();instances(calls,1);draw_call(calls,Route::Auto);successful(x,queue,pool,"instances/restore-one",calls,0);
+    /* Restoring the stage profile does not admit unsupported rectangle instancing. */
+    seed(pool,82);calls.clear();setup(calls,0,Route::Auto);reg(calls,0xc242,17);instances(calls,2);stages(calls,0x45);draw_call(calls,Route::Auto);reject(x,queue,pool,"instances/stage-first",calls,0x45);
+    calls.clear();stages(calls,0);draw_call(calls,Route::Auto);perform(x,queue,pool,"instances/stage-zero-still-two",calls,Bytes(pool,pool+Pool),0,"rectangle-list instancing",true);
+    calls.clear();instances(calls,1);reg(calls,0xc242,4);draw_call(calls,Route::Auto);successful(x,queue,pool,"instances/restore-one",calls,0);
+    seed(pool,83);calls.clear();setup(calls,0,Route::Auto);instances(calls,2);draw_call(calls,Route::Auto);
+    successful(x,queue,pool,"instances/two-triangles",calls,0);
     for(unsigned mode=0;mode<2;++mode) {
         seed(pool,90+mode);calls.clear();setup(calls,0,Route::Auto);stages(calls,0x100);if(mode)reg(calls,0xa08e,0);draw_call(calls,Route::Auto,mode?3:0);
         reject(x,queue,pool,mode?"inactive/masked-stage-refused":"inactive/zero-count-stage-refused",calls,0x100);
@@ -238,7 +240,7 @@ int main(void)
         seed(pool,0);positions(pool,Route::Auto);Calls cold_calls;setup(cold_calls,0,Route::Auto);stages(cold_calls,0x45);draw_call(cold_calls,Route::Auto);
         reject(cold,cold_queue,pool,"refuse/cold-auto-00000045",cold_calls,0x45);rt_executor_close(cold);
         PBStageQueue *queue=[PBStageQueue alloc];queue->native_queue=x->queue;queue->command_buffers=0;x->queue=(id<MTLCommandQueue>)queue;
-        cases_for(x,queue,pool);STAGE_CHECK(cases==116);
+        cases_for(x,queue,pool);STAGE_CHECK(cases==117);
         std::printf("stage_summary cases=%u checks=%u failures=%u command_buffers=%u\n",cases,checks,failures,queue->command_buffers);
         rt_executor_close(x);munmap(pool,Pool);return failures?1:0;
     }

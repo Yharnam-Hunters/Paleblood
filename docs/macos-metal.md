@@ -248,7 +248,7 @@ masked away or declared harmless. The separate compute dispatch path is unchange
 The opt-in `metal_shader_stages` fixture uses owned vertex/pixel programs with literal colour,
 D32 and per-vertex buffer-store expectations. It observes the real executor's retained state and
 caches, forwarding command-buffer creation to the native queue. Nonzero-word refusal, ordered
-restoration, reset, indexed routes and independent instance restrictions remain observable even
+restoration, reset, indexed routes, ordinary instancing and the rectangle-instance restriction remain observable even
 with warm caches. These are host-profile tests, not execution of unsupported hardware stages.
 The register/field identity comes from AMD's public [GFX7.2 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
 and [stage selectors](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_enum.h).
