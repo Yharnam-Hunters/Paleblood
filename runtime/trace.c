@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <asm/prctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -82,6 +83,11 @@ typedef struct {
     unsigned stack_slots;
     uint64_t steps, step_limit;
     unsigned xmm_written;              /* bit n: xmm n written by the traced code */
+    /* Thread-local storage. Guest code reads its thread pointer at gs:[0] (the loader rewrites
+       the game's fs:[0] to gs) and reaches its variables at that pointer plus an offset. */
+    uint64_t thread_base;              /* the calling thread's GS base, or 0 when it has none */
+    uint64_t thread_pointer;           /* the value the code read at gs:[0], once it has */
+    uint64_t thread_lo, thread_hi;     /* [lo, hi): bytes reached through gs or the thread pointer */
     unsigned stale_args;               /* bit n: argument register n (rdi..r9) is what an import left */
     const char *incomplete;
     pid_t pid;
@@ -596,6 +602,20 @@ static int track_origin(trace_state *t, const ucontext_t *uc, const cs_insn *in,
             from = src >= 0 && op[1].size == 8 ? t->origin[src] : 0;
         } else if ((in->id == X86_INS_ADD || in->id == X86_INS_SUB) && op[1].type == X86_OP_IMM) {
             from = pointer_of(t, uc, op[0].reg, next);
+        } else if (in->id == X86_INS_MOV && op[1].type == X86_OP_MEM && op[1].mem.segment == X86_REG_GS &&
+                   op[1].mem.base == X86_REG_INVALID && op[1].mem.index == X86_REG_INVALID && op[1].size == 8 &&
+                   t->thread_base) {
+            /* The thread pointer itself: a TCB's first word points to the TCB. Its value is
+               the origin of what is computed from it (pointer_of). */
+            uint64_t pointer;
+            if (read_self(t, t->thread_base + (uint64_t)op[1].mem.disp, &pointer, sizeof pointer))
+                return -1;
+            if (pointer)
+                t->thread_pointer = pointer;
+        } else if (in->id == X86_INS_ADD && op[1].type == X86_OP_MEM && t->thread_pointer &&
+                   pointer_of(t, uc, op[0].reg, next) == t->thread_pointer) {
+            /* A thread-local variable's offset, loaded from the image, added to the thread pointer. */
+            from = t->thread_pointer;
         } else if (in->id == X86_INS_ADD && op[1].type == X86_OP_REG && op[1].size == 8) {
             uint64_t a, b;
             if (!reg_value(uc, op[0].reg, next, &a) && !reg_value(uc, op[1].reg, next, &b))
@@ -611,6 +631,21 @@ static int track_origin(trace_state *t, const ucontext_t *uc, const cs_insn *in,
         if (w >= 0) t->origin[w] = 0;
     }
     if (dst >= 0 && dst != 7) t->origin[dst] = from;  /* rsp's own reach rules stay */
+    return 0;
+}
+
+/* Widens the thread-local range to `n` bytes at `addr`. The code finds a variable by adding an
+   offset to the thread pointer, so the case must keep the variable and the thread block at their
+   distance: a reach from the thread pointer is a link (note_link) only up to LINK_FAR. Returns -1
+   when the range would exceed it. */
+static int note_thread_local(trace_state *t, uint64_t addr, uint64_t n)
+{
+    const uint64_t lo = addr < t->thread_lo ? addr : t->thread_lo;
+    const uint64_t hi = addr + n > t->thread_hi ? addr + n : t->thread_hi;
+    if (hi - lo > LINK_FAR)
+        return -1;
+    t->thread_lo = lo;
+    t->thread_hi = hi;
     return 0;
 }
 
@@ -672,14 +707,18 @@ static void step(trace_state *t, ucontext_t *uc)
         const cs_x86_op *op = &x->operands[i];
         if (op->type != X86_OP_MEM || !(op->access & (CS_AC_READ | CS_AC_WRITE)))
             continue;
-        if (op->mem.segment != X86_REG_INVALID)
-            return stop(t, uc, "a segment-relative access (thread-local storage)");
+        /* gs is the guest's thread pointer block; fs would be the host's own. */
+        uint64_t segment_base = 0;
+        if (op->mem.segment == X86_REG_GS && t->thread_base)
+            segment_base = t->thread_base;
+        else if (op->mem.segment != X86_REG_INVALID)
+            return stop(t, uc, "a segment-relative access other than the guest thread pointer (gs)");
         if (xmm_index(op->mem.index) >= 0)
             return stop(t, uc, "a vector-indexed access (gather or scatter)");
         uint64_t base, index;
         if (reg_value(uc, op->mem.base, next, &base) || reg_value(uc, op->mem.index, next, &index))
             return stop(t, uc, "an address register the tracer does not model");
-        uint64_t ea = base + index * (uint64_t)op->mem.scale + (uint64_t)op->mem.disp;
+        uint64_t ea = segment_base + base + index * (uint64_t)op->mem.scale + (uint64_t)op->mem.disp;
         uint64_t n = (uint64_t)op->size * count;
         if (!op->size || n / count != op->size)
             return stop(t, uc, "an operand of unknown size");
@@ -687,6 +726,9 @@ static void step(trace_state *t, ucontext_t *uc)
             ea -= (count - 1) * op->size;
         if (import_slot(ea, n))
             continue;                       /* an import's slot: the verifier binds its stub there */
+        if ((segment_base || (i < 8 && t->thread_pointer && base_origin[i] == t->thread_pointer)) &&
+            note_thread_local(t, ea, n))
+            return stop(t, uc, "thread-local storage farther than 1 MiB from the thread pointer");
         if (op->mem.base != X86_REG_INVALID && op->mem.base != X86_REG_RIP && op->mem.base != X86_REG_RSP &&
             (note_link(t, base, ea) || (i < 8 && base_origin[i] && note_link(t, base_origin[i], ea))))
             return stop(t, uc, "too many far reaches from base pointers");
@@ -784,6 +826,7 @@ static int collect(trace_state *t, rt_trace_log *log)
     log->qword_count = t->qwords;
     log->stack_slots = t->stack_slots;
     log->steps = t->steps;
+    log->thread_base = t->thread_hi ? t->thread_base : 0;   /* the code read through gs */
     log->incomplete = t->incomplete;
     return 0;
 }
@@ -881,6 +924,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     const char *limit = getenv("BB_TRACE_STEP_LIMIT");
     t.step_limit = limit && *limit ? strtoull(limit, NULL, 0) : DEFAULT_STEP_LIMIT;
     t.xmm_written = 0x3;            /* xmm0 and xmm1 come from the case */
+    unsigned long thread_base = 0;
+    if (!syscall(SYS_arch_prctl, ARCH_GET_GS, &thread_base))
+        t.thread_base = thread_base;
+    t.thread_lo = UINT64_MAX;
 
     current = &t;
     rt_trace_enter(&frame);
