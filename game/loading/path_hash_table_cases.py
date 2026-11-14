@@ -4,14 +4,14 @@
 
 usage: path_hash_table_cases.py OUT_DIR
 
-The engine's path comparison (0x02db46f0) is a scripted stub, compared with both key pointers and
-answering in turn, so each case fixes which entry of the chain matches (first, middle, last,
-none) and an empty bucket. Keys: a stale hash (junk in the stored hash, recomputed and stored)
-over texts with every letter boundary ('@', 'A', 'Z', '[', '`', 'a', 'z', '{'), backslashes,
-slashes, characters above ASCII (not folded), 0xffff and a long text that wraps the 32-bit hash;
-a null text (hash 0); an empty text; a hash that is not stale (used as stored, the text
-ignored); a stale byte other than 1. Bucket counts 1, 3, 7, 64, 0x1000 and 0xffffffff; the
-buckets around the chosen one hold a decoy entry, so a wrong bucket calls the stub with
+The engine's path comparison (0x02db46f0) is a scripted stub, compared with the key and the
+entry's path name and answering in turn, so each case fixes which entry of the chain matches
+(first, middle, last, none) and an empty bucket. Keys: a stale hash (junk in the stored hash,
+recomputed and stored) over texts with every letter boundary ('@', 'A', 'Z', '[', '`', 'a', 'z',
+'{'), backslashes, slashes, characters above ASCII (not folded), 0xffff and a long text that wraps
+the 32-bit hash; a null text (hash 0); an empty text; a hash that is not stale (used as stored,
+the text ignored); a stale byte other than 1. Bucket counts 1, 3, 7, 64, 0x1000 and 0xffffffff;
+the buckets around the chosen one hold a decoy entry, so a wrong bucket calls the stub with
 another entry. Generated fixtures, not inputs recorded in a game run.
 """
 import json
@@ -21,7 +21,7 @@ import sys
 
 ADDRESS = '0x013e68f0'
 SAME_PATH = '0x02db46f0'
-ENTRY_SIZE, NEXT, KEY = 0x60, 0x58, 0x8
+ENTRY_SIZE, NEXT = 0x60, 0x58
 
 
 def fold(c):
