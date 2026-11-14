@@ -11,6 +11,7 @@ ai_character_link_ids,recorded,,69,69,0,0,f963cbb2620dee66,2026-11-13
 ai_character_link_ids,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
 ai_character_negated_third_column,recorded,,1503,1503,0,0,f963cbb2620dee66,2026-11-14
 ai_character_negated_third_column,edge,,6,6,0,0,f963cbb2620dee66,2026-11-13
+ai_character_ready_check,recorded,,213,213,0,0,f963cbb2620dee66,2026-11-14
 ai_character_ready_check,edge,,61,61,0,0,f963cbb2620dee66,2026-11-13
 ai_debug_draw_axes_0135d810,edge,,8,8,0,0,e267bbf5ff2ac570,2026-11-13
 ai_debug_end_0163bb50,edge,,32,32,0,0,e3c2894811c316e5,2026-11-14
