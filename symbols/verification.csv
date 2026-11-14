@@ -753,6 +753,12 @@ physics_instance_construct_01c0c2b0,edge,,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,30,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,60,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,uncapped,21,21,0,0,ca3412adb293c909,2026-10-07
+physics_root_update_00ae6180,edge,,8,8,0,0,a5c10a7e49b89454,2026-11-14
+physics_shape_construct_00ac46a0,edge,,7,7,0,0,a5c10a7e49b89454,2026-11-14
+physics_shape_summary_00ac5e00,edge,,12,12,0,0,a5c10a7e49b89454,2026-11-14
+physics_tracker_construct_00ae6d00,edge,,10,10,0,0,a5c10a7e49b89454,2026-11-14
+physics_tracker_setup_defaults_00ae6dc0,edge,,3,3,0,0,a5c10a7e49b89454,2026-11-14
+physics_transform_from_frame_0083d6d0,edge,,10,10,0,0,a5c10a7e49b89454,2026-11-14
 render_acquire_shader_upload_block_02aa9d50,recorded,,55,55,0,0,dff531236f354620,2026-11-13
 render_acquire_shader_upload_block_02aa9d50,edge,,7,7,0,0,dff531236f354620,2026-11-13
 render_allocate_shader_upload,recorded,,239,239,0,0,48df8d1e68143c6f,2026-11-12
