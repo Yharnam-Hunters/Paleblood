@@ -1,8 +1,11 @@
 function,cases,option,total,passed,failed,quarantined,source,date
+ai_character_flag_module_set,recorded,,46,46,0,0,f963cbb2620dee66,2026-11-13
 ai_character_flag_module_set,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
+ai_character_gather_effect_states,recorded,,40,40,0,0,f963cbb2620dee66,2026-11-13
 ai_character_gather_effect_states,edge,,31,31,0,0,f963cbb2620dee66,2026-11-13
 ai_character_has_effect_state,edge,,71,71,0,0,f963cbb2620dee66,2026-11-13
 ai_character_id,edge,,7,7,0,0,f963cbb2620dee66,2026-11-13
+ai_character_link_ids,recorded,,69,69,0,0,f963cbb2620dee66,2026-11-13
 ai_character_link_ids,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
 ai_character_negated_third_column,edge,,6,6,0,0,f963cbb2620dee66,2026-11-13
 ai_character_ready_check,edge,,61,61,0,0,f963cbb2620dee66,2026-11-13
@@ -22,6 +25,7 @@ ai_func_get_sp,edge,,40,40,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_get_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_battle_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_caution_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
+ai_func_is_change_state,recorded,,31,31,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_change_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_find_state,edge,,29,29,0,0,6e8620fd37a797bc,2026-11-13
 ai_func_is_finish_timer,edge,,76,76,0,0,6e8620fd37a797bc,2026-11-13
@@ -44,6 +48,7 @@ ai_hk_frame_update_0222bc10,edge,30,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,60,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_is_inside_direction,edge,,442,442,0,0,c6caf9cb1a9ffc34,2026-11-13
+ai_pending_event_fire,recorded,,33,33,0,0,f963cbb2620dee66,2026-11-13
 ai_pending_event_fire,edge,,21,21,0,0,f963cbb2620dee66,2026-11-13
 ai_perception_target_visible,edge,,109,109,0,0,c6caf9cb1a9ffc34,2026-11-13
 ai_target_list_mark_main_matches,edge,,12,12,0,0,f963cbb2620dee66,2026-11-13
@@ -246,6 +251,7 @@ event_flag_write,edge,,15,15,0,0,1a46ef419f934205,2026-11-12
 frame_timing_append_slot_item_01e9d960,edge,,32,32,0,0,99aebc085c437b75,2026-11-13
 frame_timing_config_get_int_024eba00,recorded,,48,48,0,0,ddcaf2bc1351e4b0,2026-11-13
 frame_timing_config_get_int_024eba00,edge,,21,21,0,0,ddcaf2bc1351e4b0,2026-11-13
+frame_timing_create_handle_from_levels_02265580,edge,,40,40,0,0,a3a0cba6b12c8685,2026-11-14
 frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_1000,edge,,22,22,0,0,cd53367af0bda73a,2026-10-31
@@ -256,6 +262,7 @@ frame_timing_dungeon_gate_step_init_for_channel_load,edge,,8,8,0,0,cd53367af0bda
 frame_timing_dungeon_gate_step_init_for_channel_load,edge,60,8,8,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_step_mode_switch,edge,,15,15,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_step_mode_switch,edge,60,15,15,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_fill_creation_part1_0231fbc0,edge,,223,223,0,0,a3a0cba6b12c8685,2026-11-14
 frame_timing_flipper_init,recorded,,13,13,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_flipper_init,recorded,30,13,13,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_flipper_init,recorded,60,13,13,0,0,29a2f7c09f92f53d,2026-10-07
@@ -330,6 +337,7 @@ frame_timing_pace_frame,option-recorded,uncapped,51,29,0,22,a3d44cba82dab3c2,202
 frame_timing_pass_handle_on_01e9cb80,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
 frame_timing_pass_handle_on_with_items_01e9cd20,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
 frame_timing_pass_on_in_local_mode_02265170,edge,,36,36,0,0,e19b24011b8a7938,2026-11-13
+frame_timing_pass_on_in_server_mode_02265960,edge,,21,21,0,0,20d642ef8efa172d,2026-11-13
 frame_timing_posix_sleep_ms,edge,,11,11,0,0,316683d176b2d7b8,2026-11-10
 frame_timing_profile_frame_end_01456ef0,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_profile_start_01456eb0,edge,,12,12,0,0,ef8ef3f096df299e,2026-11-13
