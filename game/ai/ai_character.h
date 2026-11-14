@@ -167,7 +167,9 @@ struct Transform {
 // The engine's character (ChrIns) as the AI reads it.
 struct Character {
     const CharacterVtable *vtable;
-    uint8_t unknown_0x008[0x50];
+    uint8_t unknown_0x008[0x10];
+    void *set_entry;          // the character's entry in its character set
+    uint8_t unknown_0x020[0x38];
     CharacterAiBlock *ai_block;
     uint8_t unknown_0x060[0x30];
     Transform transform;      // the AI reads the third column (z of the first three rows)
@@ -176,6 +178,7 @@ struct Character {
     uint8_t unknown_0x1d0[0x1e0];
     CharacterModules *modules;
 };
+static_assert(offsetof(Character, set_entry) == 0x18);
 static_assert(offsetof(Character, ai_block) == 0x58 && offsetof(Character, transform) == 0x90);
 static_assert(offsetof(Character, effects) == 0x1c8 && offsetof(Character, modules) == 0x3b0);
 
@@ -252,10 +255,12 @@ enum class TargetKind : int32_t {
 
 struct TargetHandle;
 struct TargetHandleVtable {
-    void *unknown_slots[0xa8 / 8];
+    void *unknown_slots_0x00[0x80 / 8];
+    engine::Vec4 (*position)(TargetHandle *);   // where the target is now
+    void *unknown_slots_0x88[(0xa8 - 0x88) / 8];
     int32_t (*id)(TargetHandle *);   // -1: no character
 };
-static_assert(offsetof(TargetHandleVtable, id) == 0xa8);
+static_assert(offsetof(TargetHandleVtable, position) == 0x80 && offsetof(TargetHandleVtable, id) == 0xa8);
 struct TargetHandle {
     const TargetHandleVtable *vtable;
 };
@@ -273,17 +278,21 @@ struct TargetNode {
     uint8_t unknown_0x2c[0x4];
     float priority;           // the entry with the highest priority (above -1) is the main target
     float recheck_timer;      // set to recheck_seconds when the entry starts matching the main one
-    uint8_t unknown_0x38[0x9];
+    uint8_t unknown_0x38[0x8];
+    uint8_t visible;          // the character can see this target now (IsVisibleTarget's answer)
     uint8_t matches_main;     // this entry stands for the same thing as the main target
     uint8_t unknown_0x42[0x6];
-    TargetHandle handle;
-    uint8_t unknown_0x50[0x20];
+    TargetHandle handle;      // a character target's handle
+    uint8_t unknown_0x50[0x10];
+    TargetHandle place_handle;   // a place target's handle (in the nodes the speed record follows)
+    uint8_t unknown_0x68[0x8];
     engine::Vec4 place;
     uint8_t place_valid;
 };
 static_assert(offsetof(TargetNode, node_kind) == 0x2 && offsetof(TargetNode, next) == 0x8);
 static_assert(offsetof(TargetNode, kind) == 0x28 && offsetof(TargetNode, priority) == 0x30);
 static_assert(offsetof(TargetNode, recheck_timer) == 0x34 && offsetof(TargetNode, matches_main) == 0x41);
+static_assert(offsetof(TargetNode, visible) == 0x40 && offsetof(TargetNode, place_handle) == 0x60);
 static_assert(offsetof(TargetNode, handle) == 0x48 && offsetof(TargetNode, place) == 0x70);
 static_assert(offsetof(TargetNode, place_valid) == 0x80);
 constexpr uint8_t node_kind_mask = 0x7f;
