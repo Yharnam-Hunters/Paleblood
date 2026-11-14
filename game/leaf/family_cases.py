@@ -48,6 +48,47 @@ def untouched_state_cases(address: str, returns: str) -> list[dict]:
     return [pointers, integers]
 
 
+COUNT_OFFSET = 0x8                 # where atomically_increments_dword_at_8 keeps its count
+COUNTS = (0x0, 0x7fffffff, 0xfffffffe, 0xffffffff)   # around the sign bit and the wrap
+
+
+def count_cases(address: str, value: int | None) -> list[dict]:
+    """An atomic increment of the 32-bit count at COUNT_OFFSET that returns the old count: the
+    object is distinct bytes with the count set to each of COUNTS (0xffffffff wraps to 0 and must
+    not carry into the next byte), rax enters seeded and must come back as the old count, and the
+    other arguments point into a probe buffer and are compared."""
+    out = []
+    for n, count in enumerate(COUNTS):
+        pattern = bytearray.fromhex(probe_bytes(13 + 40 * n))
+        pattern[COUNT_OFFSET:COUNT_OFFSET + 4] = count.to_bytes(4, 'little')
+        case = base_case(address, f'count_{count:x}', 'i64')
+        case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': pattern.hex()},
+                           'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(14 + 40 * n)}}
+        case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
+        case['args']['rdi'] = 'buf:object'
+        case['args']['rax'] = hex(RAX_SEED)
+        case['observe_registers'] = list(ARGUMENT_REGISTERS)
+        out.append(case)
+    return out
+
+
+TAGGED_FILL = 0xc3     # a field of these bytes has its low bit set
+UNTAGGED_FILL = 0x3c   # and of these, clear
+
+
+def tagged_pointer_cases(address: str, value: int | None) -> list[dict]:
+    """A getter of the field at offset VALUE with bit 0 cleared: the objects of field_cases, with
+    the eight bytes at the field all TAGGED_FILL in the first and all UNTAGGED_FILL in the second,
+    so a getter that keeps the low bit fails the first and one that clears more fails both."""
+    out = field_cases(address, value)
+    for case, fill in zip(out, (TAGGED_FILL, UNTAGGED_FILL)):
+        pattern = bytearray.fromhex(case['buffers']['object']['bytes'])
+        start = int(case['args']['rdi'].split('+')[1], 16) + (value or 0)
+        pattern[start:start + 8] = bytes([fill]) * 8
+        case['buffers']['object']['bytes'] = pattern.hex()
+    return out
+
+
 def returns_nothing(address: str, value: int | None) -> list[dict]:
     # `ret` keeps rax too, so the full register is compared (i64), not only the void contract.
     return untouched_state_cases(address, 'i64') + [base_case(address, 'void_contract', 'void')]
@@ -135,6 +176,11 @@ CASES = {
     'writes_first_qword': setter_cases,
     'writes_first_dword': setter_cases,
     'returns_first_argument': returns_a_value,
+    'atomically_increments_dword_at_8': count_cases,
+    'reads_pointer_without_low_bit': tagged_pointer_cases,
+    'clears_first_two_qwords': setter_cases,
+    'clears_first_four_qwords': setter_cases,
+    'clears_two_qwords_and_a_dword': setter_cases,
     'returns_second_argument': returns_a_value,
     'returns_float_zero': returns_float_zero,
 }
@@ -168,6 +214,17 @@ MUTANTS = {
                            'bb_mutant_writes_first_qword_clears_eax'],
     'writes_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_qword', 'bb_mutant_returns_zero'],
     'returns_first_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_second_argument'],
+    # Small records: the count's new value or a 64-bit increment; clears that miss or pass the
+    # record's end.
+    'atomically_increments_dword_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                         'bb_mutant_increment_returns_new_count',
+                                         'bb_mutant_increments_qword_at_8'],
+    'reads_pointer_without_low_bit': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'clears_first_two_qwords': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_clears_first_8_bytes',
+                                'bb_mutant_clears_first_24_bytes'],
+    'clears_first_four_qwords': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_clears_first_24_bytes'],
+    'clears_two_qwords_and_a_dword': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                      'bb_mutant_clears_first_16_bytes', 'bb_mutant_clears_first_24_bytes'],
     'returns_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_first_argument'],
     'returns_float_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one',
                            'bb_mutant_zeroes_low_float_only', 'bb_mutant_zeroes_xmm0_and_xmm1'],
