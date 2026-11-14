@@ -3,7 +3,7 @@
 """Edge cases for what a transfer task's initialization calls
 (game/loading/transfer_task_callees.cpp), for tools/verify.py run.
 
-usage: transfer_task_callees_cases.py OUT_DIR instance|locate|assign
+usage: transfer_task_callees_cases.py OUT_DIR instance|locate|assign|release
 
 instance (0x0246be70): the singleton's statics are laid out in the image: the instance pointer,
 the "destroyed" byte, the storage's static guard, and the light mutex beside them (its storage,
@@ -30,14 +30,19 @@ assign (0x024be630): a target and a source request (0x148 bytes of two patterns,
 wide strings each with its own allocator, a fake object whose vtable slot 0x10 is a scripted stub),
 or one buffer for an assignment to itself. The string assign (0x02a279a0) and the array assign
 (0x02b4d100) are scripted stubs.
+
+release (0x024712e0): the instance pointer (a device buffer or null) and the "destroyed" byte (0,
+1, 2, 0x80, 0xff) with the storage's bytes after it; the device's destroy (0x0246caa0) is a
+scripted stub with a spare call.
 """
 import json
 import os
 import struct
 import sys
 
-ADDRESSES = {'instance': '0x0246be70', 'locate': '0x0246e3d0', 'assign': '0x024be630'}
-RETURNS = {'instance': 'i64', 'locate': 'i32', 'assign': 'i64'}
+ADDRESSES = {'instance': '0x0246be70', 'locate': '0x0246e3d0', 'assign': '0x024be630', 'release': '0x024712e0'}
+RETURNS = {'instance': 'i64', 'locate': 'i32', 'assign': 'i64', 'release': 'void'}
+DEVICE_DESTROY = '0x0246caa0'
 
 # instance
 INSTANCE, DEVICE_STATE, DEVICE_STORAGE, STORAGE_GUARD = '0x05aa1ab0', '0x05aa1ab8', '0x05aa1ac0', '0x05aa1bc0'
@@ -392,7 +397,26 @@ def assign_cases():
     ]
 
 
-GENERATORS = {'instance': instance_cases, 'locate': locate_cases, 'assign': assign_cases}
+# release (0x024712e0)
+
+def release_case(cid, state=0, instance=True):
+    c = Case('release', cid)
+    c.raw['device'] = bytearray([0x5a]) * DEVICE_SIZE
+    c.memory += [{'addr': INSTANCE, 'pointer': 'device+0'} if instance else {'addr': INSTANCE, 'bytes': u64(0)},
+                 {'addr': DEVICE_STATE, 'bytes': f'{state:02x}' + 'c3' * 7}]
+    if state == 0:
+        c.stubs.append({'address': DEVICE_DESTROY, 'argc': 1})
+    c.stubs.append({'address': DEVICE_DESTROY, 'argc': 1})
+    return c.json()
+
+
+def release_cases():
+    return [release_case('release'), release_case('release_null_instance', instance=False),
+            release_case('already_released', state=1), release_case('state_two', state=2),
+            release_case('state_high_bit', state=0x80), release_case('state_all_ones', state=0xff, instance=False)]
+
+
+GENERATORS = {'instance': instance_cases, 'locate': locate_cases, 'assign': assign_cases, 'release': release_cases}
 
 
 def main():

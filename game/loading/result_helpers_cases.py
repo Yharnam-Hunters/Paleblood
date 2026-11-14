@@ -10,6 +10,9 @@ usage: result_helpers_cases.py OUT_DIR MODE
   (its words end up cleared) and a source that starts 8 bytes into the entry.
 - entry_assign (0x02aa4b90): the result base's assignment (0x024bd080) runs as it is or is a
   stub; the handle's assignment (0x024bd310) is a stub; an entry assigned to itself.
+- result_assign (0x024bd080): an entry and a source with different patterns and codes (zero,
+  negative, the extremes); an entry assigned to itself, a source 8 and 0x10 bytes into the entry
+  and an entry 8 bytes into the source (each word read after the one before it is written).
 - handle_assign (0x024bd310): handles with the same info, null on either side or both, and two
   different infos; the info's release (0x024bd930) and its add reference (0x02a3a300) are stubs.
   In one case the source handle sits inside the old info and the release changes it, so the
@@ -25,7 +28,7 @@ import struct
 import sys
 
 ADDRESSES = {'construct': '0x024bcfa0', 'copy': '0x024bcfe0', 'entry_assign': '0x02aa4b90',
-             'handle_assign': '0x024bd310', 'owned_release': '0x02479710'}
+             'handle_assign': '0x024bd310', 'owned_release': '0x02479710', 'result_assign': '0x024bd080'}
 RESULT_ASSIGN, HANDLE_ASSIGN = '0x024bd080', '0x024bd310'
 INFO_RELEASE, INFO_ADD_REFERENCE, ALLOCATOR_OF = '0x024bd930', '0x02a3a300', '0x0247b720'
 DESTROY, BEFORE_DESTROY, FREE = '0x00500200', '0x00500240', '0x00500280'
@@ -76,6 +79,18 @@ def copy(cid, source_seed=0x5a, code=-0xf8, word=0x3030, onto='source'):
     c.raw.update({'entry': pattern(0xa5, ENTRY_SIZE + 0x10), 'source': source})
     c.args.update({'rdi': 'buf:entry', 'rsi': {'source': 'buf:source', 'self': 'buf:entry',
                                                'inside': 'buf:entry+8'}[onto]})
+    return c
+
+
+def result_assign(cid, code=-0xf8, word=0x3030, onto='source'):
+    c = Case('result_assign', cid, returns='i64')
+    source = pattern(0x5a, ENTRY_SIZE)
+    source[0x28:0x2c] = struct.pack('<i', code)
+    source[0x30:0x38] = struct.pack('<Q', word & MASK)
+    c.raw.update({'entry': pattern(0xa5, ENTRY_SIZE + 0x10), 'source': source + pattern(0x3c, 0x10)})
+    c.args.update({'rdi': 'buf:source+8' if onto == 'source_before' else 'buf:entry',
+                   'rsi': {'source': 'buf:source', 'self': 'buf:entry', 'inside_8': 'buf:entry+8',
+                           'inside_16': 'buf:entry+16', 'source_before': 'buf:source'}[onto]})
     return c
 
 
@@ -188,6 +203,12 @@ def cases(mode):
     if mode == 'entry_assign':
         return [entry_assign('stubbed'), entry_assign('base_runs', stub_base=False),
                 entry_assign('onto_itself', stub_base=False, onto='self')]
+    if mode == 'result_assign':
+        return [result_assign('basic'), result_assign('code_zero', code=0, word=0),
+                result_assign('code_max_word_max', code=0x7fffffff, word=MASK),
+                result_assign('code_min', code=-0x80000000), result_assign('onto_itself', onto='self'),
+                result_assign('source_8_inside', onto='inside_8'), result_assign('source_16_inside', onto='inside_16'),
+                result_assign('entry_8_inside_source', onto='source_before')]
     if mode == 'handle_assign':
         return [handle_assign('same_info', 'a', 'a'), handle_assign('both_null'), handle_assign('null_to_info', None, 'a'),
                 handle_assign('info_to_null', 'a', None), handle_assign('info_to_other', 'a', 'b'),
