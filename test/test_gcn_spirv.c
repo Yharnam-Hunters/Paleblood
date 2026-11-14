@@ -12,6 +12,8 @@
 #include "runtime/tile_copy.h"
 
 #include "gcn_programs.h"
+#include "pixel_constant_wqm_programs.h"
+#include "runtime/spirv.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +30,7 @@ static int failures;
 
 #define PROGRAM(code) code, sizeof code / sizeof code[0]
 
-static const gcn_compute_layout layout = {.local_size = {64, 1, 1}, .user_sgprs = 8, .workgroup_id_x_sgpr = -1};
+static const gcn_compute_layout layout = {.local_size = {64, 1, 1}, .user_sgprs = 8};
 
 /* Runs spirv-val on the module: 1 valid, 0 invalid, -1 when spirv-val is not installed. */
 static int validate(const uint32_t *spirv, size_t words, const char *name)
@@ -91,6 +93,8 @@ enum { CLIP_DISTANCES_0_1 = 0x400003, MISC_VECTOR_FIRST = 0x600003, CULL_DISTANC
 static const gcn_pixel_layout pixel_layout = {.user_sgprs = 8, .push_constant_offset = 64};
 
 static uint32_t output_control; /* the vertex layout's, for the next translation */
+static gcn_lds compute_lds;     /* the compute layout's, for the next translation */
+static uint64_t compute_gds;    /* the compute layout's GDS address, for the next translation */
 
 static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
 {
@@ -98,7 +102,10 @@ static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **sp
     vertex.output_control = output_control;
     if (s == VERTEX) return gcn_translate_vertex(code, dwords, &vertex, spirv, words, error, error_size);
     if (s == PIXEL) return gcn_translate_pixel(code, dwords, &pixel_layout, spirv, words, error, error_size);
-    return gcn_translate_compute(code, dwords, &layout, spirv, words, error, error_size);
+    gcn_compute_layout compute = layout;
+    compute.lds = compute_lds;
+    compute.gds_address = compute_gds;
+    return gcn_translate_compute(code, dwords, &compute, spirv, words, error, error_size);
 }
 
 /* The program translates, as the stage given, to a module spirv-val and SPIRV-Cross accept. */
@@ -148,7 +155,7 @@ static void image_programs(void)
     CHECK(gcn_image_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].access == GCN_IMAGE_READ &&
           !found[1].origin.from_memory && found[1].origin.sgpr == 8 && found[1].access == GCN_IMAGE_WRITE);
-    const gcn_image_binding images[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0}, {{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0}};
+    const gcn_image_binding images[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0, 0}, {{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0, 0}};
     gcn_compute_layout with_images = layout;
     with_images.user_sgprs = 16, with_images.images = images, with_images.image_count = 2;
     uint32_t *spirv = NULL;
@@ -196,6 +203,25 @@ static void image_programs(void)
     static uint32_t branch_first[64];
     branch_first[0] = 0xbf840000;                                                      /* s_cbranch_scc0 to the next instruction */
     memcpy(branch_first + 1, pixel_two_images, sizeof pixel_two_images);
+    /* a descriptor restored from spill slots comes from where the spilled SGPRs' did; a slot written twice is not followed */
+    CHECK(gcn_image_resources(PROGRAM(spilled_descriptor), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 12 && found[0].origin.pointer_sgpr == 8 &&
+          found[0].origin.offset == 16);
+    {
+        enum { WRITES = 2 + 8, SPILLED = sizeof spilled_descriptor / sizeof spilled_descriptor[0] };
+        uint32_t twice[SPILLED + 1];
+        memcpy(twice, spilled_descriptor, WRITES * sizeof twice[0]);
+        twice[WRITES] = spilled_descriptor[WRITES - 1]; /* v1's lane 9 written again from s7 */
+        memcpy(twice + WRITES + 1, spilled_descriptor + WRITES, (SPILLED - WRITES) * sizeof twice[0]);
+        CHECK(gcn_image_resources(PROGRAM(twice), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+              strstr(error, "not each written once"));
+        /* an ordinary use of v1 between its spills and restores stops by name */
+        uint32_t used[SPILLED + 1];
+        memcpy(used, spilled_descriptor, WRITES * sizeof used[0]);
+        used[WRITES] = 0x7e020280; /* v_mov_b32 v1, 0 */
+        memcpy(used + WRITES + 1, spilled_descriptor + WRITES, (SPILLED - WRITES) * sizeof used[0]);
+        refused_as(COMPUTE, PROGRAM(used), "v1 holds SGPR spill slots");
+    }
     CHECK(gcn_image_resources(PROGRAM(loaded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].origin.pointer_sgpr == 8 &&
           found[0].origin.offset == 16);
@@ -223,7 +249,7 @@ static void image_programs(void)
        in those SGPRs before the load, or an earlier load into them, the load before the use still
        counts. A branch over the load that lands before the use, a loop back to the use from after a
        write to those SGPRs, or a write to the pointer before the load or (with a branch back to the
-       load) anywhere: refused by name. A write to the pointer after the use, with no branch back,
+       load) before that branch: refused by name. A write to the pointer after the use, with no branch back,
        does not matter. */
     static const uint32_t guarded[] = {0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_execz to s_endpgm */
     static const uint32_t skipped_load[] = {0xbf840001, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_scc0 to the use */
@@ -243,6 +269,38 @@ static void image_programs(void)
     static const uint32_t skipped_into_loop[] = {0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf800000, 0xbf84fffc, 0xbf810000};
     static const uint32_t pointer_later[] = {0xbf880004, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf810000}; /* s_mov_b32 s8, 0 after */
     static const uint32_t pointer_looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf84fffb, 0xbf810000}; /* then back to the load */
+    /* a write to the pointer after the last branch back to the load (a clinic compute shader at 0x20d52e8e00
+       reloads s[0:3] over its pointer once its loops are done): from memory */
+    static const uint32_t pointer_after_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf84fffc, 0xbe880380, 0xbf810000};
+    /* a loop back to the load whose pass writes the descriptor's SGPRs after the use (the same shader reuses
+       s[72:79] after its image load, and its loop loads them again before the next one): from memory */
+    static const uint32_t reloaded_in_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffb, 0xbf810000};
+    /* a load in a block that ends with an s_branch past the use, which only the branch from before the load
+       reaches (the clinic beast's pixel shader at 0x20d5372100 has this shape): the load never runs before
+       the use, which reads the user data's descriptor */
+    static const uint32_t load_branched_past[] = {0xbf840002, 0xc0c00904, 0xbf820002, 0xf0000f00, 0x00000401, 0xbf810000};
+    /* the same with the block writing the pointer instead (s_mov_b32 s8, 0) and the load after the branch's
+       target, through s[8:9]: the pointer reaching the load is the user data's (the same shader's next
+       descriptor) */
+    static const uint32_t pointer_branched_past[] = {0xbf840002, 0xbe880380, 0xbf820003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};
+    const int pointer_past = gcn_image_resources(PROGRAM(pointer_branched_past), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (pointer_past) fprintf(stderr, "pointer_branched_past: %s\n", error);
+    CHECK(pointer_past == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    const int branched_past = gcn_image_resources(PROGRAM(load_branched_past), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (branched_past) fprintf(stderr, "load_branched_past: %s\n", error);
+    CHECK(branched_past == 0 && count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
+    /* a pointer pair spilled to lanes 0 and 1 of v3, overwritten, and restored before the load (the clinic
+       beast's pixel shader at 0x20d444dd00 does this with its user-data pointer): from memory through the
+       user data's pointer; restored from lanes another SGPR filled, refused */
+    static const uint32_t pointer_restored[] = {0x04070008, 0x04070209, 0xbe880380, 0x02110103, 0x02130303,
+                                                0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};
+    static const uint32_t pointer_restored_other[] = {0x04070009, 0x04070209, 0xbe880380, 0x02110103, 0x02130303,
+                                                      0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};
+    const int restored_pointer = gcn_image_resources(PROGRAM(pointer_restored), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (restored_pointer) fprintf(stderr, "pointer_restored: %s\n", error);
+    CHECK(restored_pointer == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(pointer_restored_other), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "loaded through s[8:9], which the program writes"));
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(skipped_load), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
@@ -269,8 +327,14 @@ static void image_programs(void)
           found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(pointer_looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "loaded through s[8:9], which the program writes"));
+    const int after_loops = gcn_image_resources(PROGRAM(pointer_after_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (after_loops) fprintf(stderr, "pointer_after_loop: %s\n", error);
+    CHECK(after_loops == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    const int reloaded = gcn_image_resources(PROGRAM(reloaded_in_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (reloaded) fprintf(stderr, "reloaded_in_loop: %s\n", error);
+    CHECK(reloaded == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     /* the two-image program translates with both bound, and stops naming the loaded one without it */
-    const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}};
+    const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}};
     gcn_pixel_layout both_images = pixel_layout;
     both_images.user_sgprs = 12, both_images.images = two, both_images.image_count = 2, both_images.error_address = 0x1000;
     const int two_translated = gcn_translate_pixel(PROGRAM(pixel_two_images), &both_images, &spirv, &words, error, sizeof error);
@@ -291,8 +355,8 @@ static void image_programs(void)
     gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
     CHECK(gcn_sampler_resources(PROGRAM(pixel_lookup), samplers, GCN_MAX_SAMPLERS, &count, error, sizeof error) == 0);
     CHECK(count == 1 && !samplers[0].from_memory && samplers[0].sgpr == 12);
-    const gcn_image_binding lookup_images[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0},
-                                               {{1, 0, 2, 0}, GCN_IMAGE_1D, 1, GCN_IMAGE_FLOAT, 1, 1, 0, 0}};
+    const gcn_image_binding lookup_images[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0},
+                                               {{1, 0, 2, 0}, GCN_IMAGE_1D, 1, GCN_IMAGE_FLOAT, 1, 1, 0, 0, 0, 0}};
     gcn_pixel_layout lookup = pixel_layout;
     lookup.user_sgprs = 16, lookup.images = lookup_images, lookup.image_count = 2, lookup.samplers = samplers, lookup.sampler_count = 1;
     lookup.error_address = 0x1000;
@@ -308,31 +372,44 @@ static void image_programs(void)
     lookup.sampler_count = 0;
     CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "sampler in s[12:15] is not bound"));
-    const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0}};
+    const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0, 0, 0}};
     lookup.images = flat, lookup.sampler_count = 1;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
-
-    /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
-       with a stop word); a storage binding refuses image_load_mip. */
-    const gcn_image_binding texture[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}};
-    gcn_pixel_layout pixel = pixel_layout;
-    pixel.images = texture, pixel.image_count = 1, pixel.error_address = 0x1000;
-    const int fetched = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
-    if (fetched) fprintf(stderr, "pixel_image_texel: %s\n", error);
-    CHECK(fetched == 0);
+    /* DA 1 on a 1D image that is not an array: the image's type decides and the slice VGPR is not read;
+       with a LOD VGPR after the coordinates (image_sample_l), where that VGPR is depends on how the
+       slice counts, so it still stops by name. */
+    const int flat_sampled = gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error);
+    if (flat_sampled) fprintf(stderr, "pixel_lookup (1D): %s\n", error);
+    CHECK(flat_sampled == 0);
     if (spirv) {
-        CHECK(validate(spirv, words, "pixel_image_texel") != 0);
-        CHECK(to_metal(spirv, words, "pixel_image_texel") != 0);
+        CHECK(validate(spirv, words, "pixel_lookup_1d") != 0);
+        CHECK(to_metal(spirv, words, "pixel_lookup_1d") != 0);
         free(spirv);
         spirv = NULL;
     }
-    pixel.error_address = 0;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
-          strstr(error, "run-time stop word"));
-    const gcn_image_binding storage[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0}};
-    pixel.images = storage, pixel.error_address = 0x1000;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
-          strstr(error, "image_load_mip"));
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup_level), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
+
+    /* A pixel shader's image_load_mip from a sampled image and from a storage image (one level): a
+       texel outside the image (or a level past the last) reads the replacement texel, so both translate
+       and validate with or without a run-time stop word, also with a DST_SEL of constants (x, 1, z, 1). */
+    enum { SEL_X_ONE_Z_ONE = 4 | 1 << 3 | 6 << 6 | 1 << 9 };
+    const gcn_image_binding bindings_loaded[][1] = {{{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, SEL_X_ONE_Z_ONE, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_UINT, 2, 0, 0, SEL_X_ONE_Z_ONE, 0, 0}}};
+    gcn_pixel_layout pixel = pixel_layout;
+    for (size_t k = 0; k < sizeof bindings_loaded / sizeof *bindings_loaded; k++)
+        for (int stop_word = 0; stop_word < 2; stop_word++) {
+            pixel.images = bindings_loaded[k], pixel.image_count = 1, pixel.error_address = stop_word ? 0x1000 : 0;
+            const int fetched = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
+            if (fetched) fprintf(stderr, "pixel_image_texel binding %zu stop word %d: %s\n", k, stop_word, error);
+            CHECK(fetched == 0);
+            if (spirv) {
+                CHECK(validate(spirv, words, "pixel_image_texel") != 0);
+                if (bindings_loaded[k][0].sampled) CHECK(to_metal(spirv, words, "pixel_image_texel") != 0);
+                free(spirv);
+                spirv = NULL;
+            }
+        }
 }
 
 /* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the
@@ -384,7 +461,7 @@ static void calls(void)
     CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_into_image_sgprs, sizeof fetch_into_image_sgprs / 4, found,
                                      GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "s_swappc_b64"));
-    const gcn_image_binding texture[] = {{{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}};
+    const gcn_image_binding texture[] = {{{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}};
     layout.callee = fetch_position_only, layout.callee_dwords = sizeof fetch_position_only / 4;
     layout.images = texture, layout.image_count = 1, layout.first_binding = 3;
     const int loaded = gcn_translate_vertex(PROGRAM(vertex_fetch_then_image), &layout, &spirv, &words, error, sizeof error);
@@ -438,6 +515,65 @@ static void store_resources(void)
     CHECK(count == 0 && unknown);
     CHECK(gcn_buffer_store_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 0 && !unknown);
+}
+
+/* What programs read (gcn_memory_reads): scale_add its user-data buffer s[0:3]; an s_load_dwordx4 at
+   dword 4 from the pointer in s[0:1] reads 16 bytes at 16, an s_buffer_load reads its descriptor
+   s[4:7]; a flat load may read anywhere (unknown). */
+static void memory_reads(void)
+{
+    gcn_memory_read found[GCN_MAX_IMAGES];
+    unsigned count = 99;
+    int unknown = 1;
+    char error[300] = "";
+    CHECK(gcn_memory_reads(PROGRAM(scale_add), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && !found[0].pointer && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
+    static const uint32_t scalar[] = {
+        0xc0880104, /* s_load_dwordx4 s[16:19], s[0:1], 0x4 */
+        0xc20a0502, /* s_buffer_load_dword s20, s[4:7], 0x2 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(scalar), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 2 && !unknown);
+    CHECK(found[0].pointer && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(!found[1].pointer && found[1].origin.sgpr == 4);
+    static const uint32_t flat[] = {0xdc300000, 0x01000002, /* flat_load_dword v1, v[2:3] */ 0xbf810000};
+    CHECK(gcn_memory_reads(PROGRAM(flat), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(unknown);
+    CHECK(gcn_memory_reads(PROGRAM(table_copy), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 2 && !unknown && found[0].origin.sgpr == 0 && found[1].origin.sgpr == 4);
+}
+
+/* Table-driven copies (gcn_table_copy_shape): the table in s[0:3] (read as dwords or through its
+   format), the source s[4:7], the destination s[8:11], the workgroup index s12. A store with an offset,
+   or another program, is not one. */
+static void table_copies(void)
+{
+    gcn_table_copy shape = {0};
+    CHECK(gcn_table_copy_shape(PROGRAM(table_copy), &shape) == 1);
+    CHECK(shape.table_sgpr == 0 && shape.source_sgpr == 4 && shape.destination_sgpr == 8 && shape.workgroup_sgpr == 12 && !shape.table_format);
+    CHECK(gcn_table_copy_shape(PROGRAM(table_copy_format), &shape) == 1 && shape.table_format);
+    CHECK(gcn_table_copy_shape(PROGRAM(table_copy_store_offset), &shape) == 0);
+    CHECK(gcn_table_copy_shape(PROGRAM(scale_add), &shape) == 0);
+    CHECK(gcn_table_copy_shape(PROGRAM(indexed_scale_add), &shape) == 0);
+}
+
+/* Constant fills (gcn_fill_shape, gcn_programs.h): the descriptor s[0:3], the workgroup index s12, each
+   store's element offset, and the widest workgroup the global id's split holds for. A table copy or a
+   program storing the lane id is not one. */
+static void fills(void)
+{
+    gcn_fill shape = {0};
+    CHECK(gcn_fill_shape(PROGRAM(fill_one_store), &shape) == 1);
+    CHECK(shape.destination_sgpr == 0 && shape.workgroup_sgpr == 12 && shape.group_elements == 64 && shape.store_count == 1 && shape.offsets[0] == 0 &&
+          shape.most_lanes == UINT32_MAX);
+    CHECK(gcn_fill_shape(PROGRAM(fill_two_stores), &shape) == 1);
+    CHECK(shape.group_elements == 128 && shape.store_count == 2 && shape.offsets[0] == 0 && shape.offsets[1] == 64 && shape.most_lanes == UINT32_MAX);
+    CHECK(gcn_fill_shape(PROGRAM(fill_from_global_id), &shape) == 1);
+    CHECK(shape.group_elements == 128 && shape.store_count == 2 && shape.offsets[0] == 0 && shape.offsets[1] == 64 && shape.most_lanes == 64);
+    CHECK(gcn_fill_shape(PROGRAM(fill_of_lanes), &shape) == 0);
+    CHECK(gcn_fill_shape(PROGRAM(table_copy), &shape) == 0);
+    CHECK(gcn_fill_shape(PROGRAM(scale_add), &shape) == 0);
 }
 
 /* A buffer_store_dwordx4 translates to a valid module that holds a store of the whole 4-dword vector
@@ -561,11 +697,209 @@ static void depth_exports(void)
     }
 }
 
+/* A tessellation module: made, and accepted by spirv-val (the Metal executor stops at tessellation
+   by name, so these are not converted). */
+static void tessellation_module(int result, uint32_t *spirv, size_t words, const char *error, const char *name)
+{
+    if (result) fprintf(stderr, "  %s: %s\n", name, error);
+    CHECK(result == 0 && spirv && words > 5);
+    if (!spirv) return;
+    const int valid = validate(spirv, words, name);
+    if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
+    else CHECK(valid == 1);
+    free(spirv);
+}
+
+/* The LDS in a compute shader (workgroup memory) and the tessellation stages (LDS in a buffer): modules
+   spirv-val accepts; a ds_* instruction with no LDS stops by name, as do s_barrier outside a compute
+   shader and a workgroup of more than 1024 lanes. */
+static void tessellation(void)
+{
+    compute_lds = (gcn_lds){.bytes = 272};
+    translates(PROGRAM(lds_exchange), "lds_exchange");
+    translates(PROGRAM(roundings), "roundings");
+    translates(PROGRAM(negated_compares), "negated_compares");
+    compute_lds = (gcn_lds){0};
+    refused_as(COMPUTE, PROGRAM(lds_exchange), "with no LDS");
+    static const uint32_t barrier_in_vertex[] = {0xbf8a0000, 0xbf810000}; /* s_barrier; s_endpgm */
+    refused_as(VERTEX, PROGRAM(barrier_in_vertex), "s_barrier outside a compute shader");
+
+    gcn_tessellation_layout l = {.user_sgprs = 8, .patches = 15, .input_points = 1, .output_points = 1,
+                                 .lds = {.bytes = 3584, .address = 0x100000000ull}, .lds_workgroups = 64, .factor_stride = 24,
+                                 .factor_ring = 0xfe00000000ull, .factor_ring_bytes = 0x20000, .factor_buffer = 0x200000000ull,
+                                 .domain = GCN_TESS_QUADS, .partitioning = GCN_TESS_INTEGER, .topology = GCN_TESS_TRIANGLES_CW};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    int r = gcn_translate_local(PROGRAM(tess_local), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_local");
+    r = gcn_translate_hull(PROGRAM(tess_hull), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_hull");
+    l.off_chip = 1;
+    r = gcn_translate_hull(PROGRAM(tess_hull), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_hull_off_chip");
+    l.off_chip = 0;
+    static const uint32_t topologies[][3] = {{GCN_TESS_QUADS, GCN_TESS_INTEGER, GCN_TESS_TRIANGLES_CW},
+                                             {GCN_TESS_TRIANGLES, GCN_TESS_FRACTIONAL_ODD, GCN_TESS_TRIANGLES_CCW},
+                                             {GCN_TESS_TRIANGLES, GCN_TESS_FRACTIONAL_EVEN, GCN_TESS_POINTS},
+                                             {GCN_TESS_ISOLINES, GCN_TESS_POW2, GCN_TESS_LINES}};
+    for (unsigned i = 0; i < 4; i++) {
+        l.domain = topologies[i][0], l.partitioning = topologies[i][1], l.topology = topologies[i][2];
+        l.push_constant_offset = 0;
+        r = gcn_translate_domain(PROGRAM(tess_domain), &l, &spirv, &words, error, sizeof error);
+        tessellation_module(r, spirv, words, error, "tess_domain");
+        const gcn_tessellation_control c = {.domain = l.domain, .partitioning = l.partitioning, .min_level = 1.0f, .max_level = 64.0f,
+                                            .factor_buffer = 0x200000000ull, .factor_stride = 24};
+        r = gcn_tessellation_control_shader(&c, &spirv, &words, error, sizeof error);
+        tessellation_module(r, spirv, words, error, "tess_control");
+    }
+    r = gcn_tessellation_vertex_shader(&spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_vertex");
+
+    l.domain = GCN_TESS_QUADS, l.topology = GCN_TESS_LINES; /* lines are isolines' alone */
+    CHECK(gcn_translate_domain(PROGRAM(tess_domain), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "VGT_TF_PARAM"));
+    l.topology = GCN_TESS_TRIANGLES_CW, l.patches = 64, l.input_points = 32;
+    CHECK(gcn_translate_local(PROGRAM(tess_local), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "workgroup"));
+    const gcn_tessellation_control few = {.domain = GCN_TESS_QUADS, .min_level = 1.0f, .max_level = 64.0f, .factor_buffer = 1, .factor_stride = 16};
+    CHECK(gcn_tessellation_control_shader(&few, &spirv, &words, error, sizeof error) == -1 && strstr(error, "fewer"));
+}
+
+
+/* The geometry-shader stages (runtime/gcn_spirv.h): the export and geometry passes and the copy shader make
+   modules spirv-val accepts, for each input primitive; an emit to stream 1, a ring load in the export
+   shader, a message outside a geometry shader and rings too small for one wave stop by name. */
+static void geometry_shaders(void)
+{
+    gcn_geometry_layout l = {.user_sgprs = 4, .input_primitive = GCN_GS_INPUT_POINTS, .esgs_itemsize = 2, .gsvs_itemsize = 32,
+                             .max_vertices = 8, .esgs_ring = 0x100000000ull, .esgs_ring_bytes = 1 << 20, .gsvs_ring = 0x200000000ull,
+                             .gsvs_ring_bytes = 1 << 20, .strip_buffer = 0x300000000ull, .strip_buffer_bytes = 1 << 20,
+                             .error_address = 0x400000000ull};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    int r = gcn_translate_export(PROGRAM(gs_export), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "gs_export");
+    for (uint32_t input = GCN_GS_INPUT_POINTS; input <= GCN_GS_INPUT_TRIANGLE_STRIP; input++) {
+        l.input_primitive = input;
+        r = gcn_translate_geometry(PROGRAM(gs_geometry), &l, &spirv, &words, error, sizeof error);
+        tessellation_module(r, spirv, words, error, "gs_geometry");
+    }
+    const gcn_vertex_layout copy = {.user_sgprs = 4, .gsvs_ring = 0x200000000ull, .gsvs_ring_bytes = 1 << 20};
+    r = gcn_translate_vertex(PROGRAM(gs_copy), &copy, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "gs_copy");
+
+    static const uint32_t stream_one[] = {0xbf900122, 0xbf810000}; /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 1); s_endpgm */
+    CHECK(gcn_translate_geometry(PROGRAM(stream_one), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "stream 1"));
+    CHECK(gcn_translate_export(PROGRAM(gs_geometry), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "load of the ESGS ring"));
+    static const uint32_t emit_only[] = {0xbf900022, 0xbf810000};
+    refused_as(VERTEX, PROGRAM(emit_only), "outside a geometry shader");
+    l.esgs_ring_bytes = 256;
+    CHECK(gcn_translate_export(PROGRAM(gs_export), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "rings"));
+}
+
+/* Survey mode (gcn_spirv_set_survey): a program with two instructions the translator does not take, in a
+   compute shader, names both, each after its dword, and still fails; out of survey mode only the first. */
+static void survey_mode(void)
+{
+    static const uint32_t two_gaps[] = {
+        0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x: pixel shaders only */
+        0xbf900001, /* s_sendmsg 1: outside a geometry shader */
+        0xbf810000, /* s_endpgm */
+    };
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[1024] = "";
+    gcn_spirv_set_survey(1);
+    CHECK(translate(COMPUTE, PROGRAM(two_gaps), &spirv, &words, error, sizeof error) == -1);
+    gcn_spirv_set_survey(0);
+    CHECK(spirv == NULL);
+    CHECK(!strncmp(error, "@0 v_interp_p1_f32", strlen("@0 v_interp_p1_f32")));
+    CHECK(strstr(error, "\n@1 s_sendmsg") != NULL);
+    CHECK(error[strlen(error) - 1] == '\n');
+    error[0] = 0;
+    CHECK(translate(COMPUTE, PROGRAM(two_gaps), &spirv, &words, error, sizeof error) == -1);
+    CHECK(strstr(error, "v_interp_p1_f32") != NULL && !strstr(error, "s_sendmsg") && error[0] != '@');
+}
+
+/* Constant pixel WQM needs neither quad peers nor a native wave width. A nonconstant mask
+   still emits all three swaps, including after a guest branch or an internal selection. */
+static void constant_wqm_module(stage s, const uint32_t *code, size_t dwords,
+                                unsigned expected_swaps, const char *name)
+{
+    const gcn_pixel_layout pixel = {.user_sgprs = PIXEL_CONSTANT_WQM_USER_SGPRS};
+    const gcn_vertex_layout vertex = {.user_sgprs = 0};
+    const gcn_compute_layout compute = {.local_size = {64, 1, 1}, .user_sgprs = 0};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    const int result = s == PIXEL ? gcn_translate_pixel(code, dwords, &pixel, &spirv, &words, error, sizeof error) :
+                       s == VERTEX ? gcn_translate_vertex(code, dwords, &vertex, &spirv, &words, error, sizeof error) :
+                                     gcn_translate_compute(code, dwords, &compute, &spirv, &words, error, sizeof error);
+    if (result) fprintf(stderr, "  WQM %s: %s\n", name, error);
+    CHECK(result == 0 && spirv && words > 5);
+    if (!spirv) return;
+    unsigned swaps = 0;
+    size_t at = 5;
+    while (at < words) {
+        const size_t count = spirv[at] >> 16;
+        CHECK(count > 0 && count <= words - at);
+        if (!count || count > words - at) break;
+        swaps += (spirv[at] & 0xffffu) == SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP;
+        at += count;
+    }
+    CHECK(at == words);
+    if (swaps != expected_swaps) fprintf(stderr, "  WQM %s: %u quad swaps, expected %u\n", name, swaps, expected_swaps);
+    CHECK(swaps == expected_swaps);
+    const int valid = validate(spirv, words, name);
+    if (valid < 0) fprintf(stderr, "  WQM %s: spirv-val not installed; validation skipped\n", name);
+    else CHECK(valid == 1);
+    free(spirv);
+}
+
+static void constant_pixel_wqm(void)
+{
+    for (size_t i = 0; i < PIXEL_CONSTANT_WQM_POSITIVE_COUNT; i++) {
+        const pb_pixel_constant_wqm_program *p = &pixel_constant_wqm_positive[i];
+        constant_wqm_module(PIXEL, p->code, p->dwords, p->expected_quad_swaps, p->name);
+    }
+    for (size_t i = 0; i < PIXEL_CONSTANT_WQM_NEGATIVE_COUNT; i++) {
+        const pb_pixel_constant_wqm_program *p = &pixel_constant_wqm_negative[i];
+        constant_wqm_module(PIXEL, p->code, p->dwords, p->expected_quad_swaps, p->name);
+    }
+    /* The optimization is pixel-only: literal masks retain the old three swaps in each
+       compute/vertex module. These small programs deliberately have no pixel export. */
+    constant_wqm_module(COMPUTE, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "compute_wqm_literal_full");
+    constant_wqm_module(COMPUTE, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "compute_wqm_literal_empty");
+    constant_wqm_module(VERTEX, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "vertex_wqm_literal_full");
+    constant_wqm_module(VERTEX, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "vertex_wqm_literal_empty");
+
+    /* A backedge observes the changed EXEC on its second iteration. The decoder requires
+       the unreachable end marker; this loop is translated only, never submitted to a GPU. */
+    static const uint32_t self_loop[] = {0xbefe0a7eu, 0xbefe0480u, 0xbf82fffdu, 0xbf810000u};
+    constant_wqm_module(PIXEL, PROGRAM(self_loop), 3, "pixel_wqm_self_loop");
+
+    /* Survey output is deliberately unoptimized, including literals. Restore the global
+       mode before the rest of this executable, and separately check normal folding returns. */
+    gcn_spirv_set_survey(1);
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "pixel_wqm_survey_full");
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "pixel_wqm_survey_empty");
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_initial_exec_simple), 3, "pixel_wqm_survey_initial");
+    gcn_spirv_set_survey(0);
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 0, "pixel_wqm_after_survey");
+}
+
 int main(void)
 {
+    constant_pixel_wqm();
+    survey_mode();
+    tessellation();
+    geometry_shaders();
     rect_list_stages();
     tile_copy_shaders();
     store_resources();
+    memory_reads();
+    table_copies();
+    fills();
     vector_stores();
     image_programs();
     calls();
@@ -581,13 +915,37 @@ int main(void)
     translates(PROGRAM(masked_store), "masked_store");
     translates(PROGRAM(typed_buffers), "typed_buffers");
     translates(PROGRAM(pack_halves), "pack_halves");
+    translates(PROGRAM(unpack_halves), "unpack_halves");
+    translates(PROGRAM(buffer_atomics), "buffer_atomics");
+    /* ds_append and ds_consume need the GDS on the GPU; v_mbcnt with EXEC's halves a compute shader */
+    compute_gds = 0x500000000ull;
+    translates(PROGRAM(gds_append_consume), "gds_append_consume");
+    compute_gds = 0;
+    refused_as(COMPUTE, PROGRAM(gds_append_consume), "no GDS");
+    static const uint32_t rank[] = {0xd2480001, 0x0001007f, 0x4602027e, 0xbf810000}; /* v_mbcnt_hi v1, exec_hi, 0; v_mbcnt_lo v1, exec_lo, v1 */
+    translates(PROGRAM(rank), "rank_compute");
+    refused_as(VERTEX, PROGRAM(rank), "outside a compute shader");
+    refused_as(PIXEL, PROGRAM(rank), "outside a compute shader");
+    static const uint32_t sgpr_mask[] = {0xd2480001, 0x00010004, 0xbf810000}; /* v_mbcnt_hi v1, s4, 0 */
+    refused_as(COMPUTE, PROGRAM(sgpr_mask), "a mask other than");
     translates(PROGRAM(integer_batch), "integer_batch");
+    translates(PROGRAM(spill_slots), "spill_slots");
+    translates(PROGRAM(valu_batch), "valu_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(whole_quad), "whole_quad");
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
+    /* ds_swizzle_b32's quad mode with one source lane: compute and pixel shaders; other patterns, the
+       bit-mask mode and vertex shaders stop by name */
+    translates(PROGRAM(quad_swizzle), "quad_swizzle");
+    translates_as(PIXEL, PROGRAM(pixel_quad_swizzle), "pixel_quad_swizzle");
+    static const uint32_t mixed_quad[] = {0xd8d480e4, 0x03000002, 0xbf810000}; /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,0,1,2,3) */
+    static const uint32_t bit_mask[] = {0xd8d4041f, 0x03000002, 0xbf810000};   /* ds_swizzle_b32 v3, v2 offset:0x41f */
+    refused_as(COMPUTE, PROGRAM(mixed_quad), "offset 0x80e4");
+    refused_as(COMPUTE, PROGRAM(bit_mask), "offset 0x41f");
+    refused_as(VERTEX, PROGRAM(quad_swizzle), "in a vertex shader");
     translates_as(PIXEL, PROGRAM(pixel_discard_left), "pixel_discard_left");
     translates_as(PIXEL, PROGRAM(pixel_user_color), "pixel_user_color");
 
@@ -620,6 +978,16 @@ int main(void)
     char error[256] = "";
     CHECK(gcn_translate_compute(PROGRAM(unsupported), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "v_interp_p1_f32") != NULL);
+    /* v_interp_mov_f32 from P0: a Flat input; from P10 or P20, or of an input also read interpolated, refused by name */
+    translates_as(PIXEL, PROGRAM(pixel_flat_color), "pixel_flat_color");
+    {
+        uint32_t from_p10[sizeof pixel_flat_color / sizeof pixel_flat_color[0]], mixed[sizeof pixel_flat_color / sizeof pixel_flat_color[0]];
+        memcpy(from_p10, pixel_flat_color, sizeof from_p10), memcpy(mixed, pixel_flat_color, sizeof mixed);
+        from_p10[1] = 0xc80a0000;                        /* v_interp_mov_f32 v2, p10, attr0.x */
+        mixed[1] = 0xc8080000, mixed[2] = 0xc8090001;     /* attr0.x interpolated into v2 (p1, p2), y still flat */
+        refused_as(PIXEL, PROGRAM(from_p10), "from P10");
+        refused_as(PIXEL, PROGRAM(mixed), "read both flat");
+    }
 
     CHECK(gcn_translate_compute(PROGRAM(typed_unorm), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "dfmt 10 nfmt 0") != NULL);

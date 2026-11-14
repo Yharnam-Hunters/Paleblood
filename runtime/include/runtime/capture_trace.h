@@ -24,10 +24,15 @@ typedef struct {
     const void *entry;        /* where the original's code starts running */
 } rt_traced_function;
 
+/* The image's read-only segments: bytes read there are not written into cases (the verifier maps
+   the same executable). Set once, before any call is traced. */
+void rt_capture_set_constant(const rt_code_range *ranges, size_t count);
+
 /* Traces one call and writes case `number` when the whole call was traced. `image` is the
    executable's mapping (guest code and globals); `code` lists every range to trace (the image,
-   and any relocated entry code). Returns 1 when a case was written, 0 when the call ran but gave
-   no case, -1 when it could not run (the caller then calls the replacement). */
+   and any relocated entry code). Returns 1 when a case was written (or dropped as a repeat of one
+   the library holds), 0 when the call ran but gave no case, -1 when it could not run (the caller
+   then calls the replacement). */
 int rt_capture_traced_call(const rt_traced_function *f, int number, const rt_trace_args *args,
                            rt_code_range image, const rt_code_range *code, size_t ranges,
                            rt_trace_result *result);

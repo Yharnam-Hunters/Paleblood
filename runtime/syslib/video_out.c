@@ -176,6 +176,16 @@ static void check_flip(const char *fn, int32_t handle, int32_t buffer, int32_t m
     pthread_mutex_unlock(&ports_lock);
 }
 
+uint64_t rt_video_out_buffer_address(const char *caller, int32_t handle, int32_t buffer)
+{
+    pthread_mutex_lock(&ports_lock);
+    const video_port *const p = port_of(caller, handle);
+    if (buffer < 0 || buffer >= p->buffer_count) rt_fatal(caller, "a buffer index outside the registered set");
+    const uint64_t address = (uint64_t)(uintptr_t)p->buffers[buffer];
+    pthread_mutex_unlock(&ports_lock);
+    return address;
+}
+
 /* What the renderer drew into the buffer, copied into the display's frame for it, as it is when
    the flip is asked for. */
 static void capture_frame(int32_t handle, int32_t buffer)
