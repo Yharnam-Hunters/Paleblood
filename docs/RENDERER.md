@@ -1103,6 +1103,41 @@ step was slower still. The branch is kept unmerged. A mirror for read-mostly mem
 offset (one device-local buffer for the whole span, step 1 above, or per-buffer device-local
 bindings), not a lookup per access.
 
+### Whole-span mirror: first prototype (November 2026)
+
+Step 1 was tried next as a local prototype (not merged). The executor made one device-local buffer
+for the span `0x2039400000`-`0x210c400000` (3,376 MB). It set the shaders' address offset to point
+into that buffer, so a guest address needs only one add and no lookup. Index buffers, indirect
+arguments, the target copies' reads and the fills used the buffer too, and the shaders' bounds
+were the span.
+
+- **CPU writes:** at each buffer, the executor collected the write watch over the whole span and
+  copied the written pages from the imported host memory into the mirror before the buffer's work.
+- **GPU writes:** at each submission, the batch's written ranges (the ones `batch_writes` already
+  keeps for the CPU's waits) were copied from the mirror back to host memory.
+
+The clinic's working set fit: the boot used about 3.4 GB of the RTX 3070's 8 GB before the mirror.
+
+One boot from the clinic save did not reach the clinic. A vertex shader (`0x205700f700`) read a
+buffer descriptor with data format 15. That is a stale descriptor: memory the CPU had written was
+not yet in the mirror when the draw ran. The likely writers are the steps the renderer performs in
+the GPU's place (constant engine dumps, WRITE_DATA, DMA copies), some deferred to the completion
+thread. They write guest memory between or after the collects. The twins branch had to report
+those writes explicitly (`rt_renderer_step_wrote`). The mirror needs the same, placed in the
+command stream where the step's writes land.
+
+The prototype also measured its costs, per 500 submissions:
+
+- The whole-span collect took 4.46 s on the renderer's thread, about 9 ms a submission.
+- 4,017 MB was copied in (the first 3,376 MB is the initial fill), and 810 MB was copied back.
+- No submission needed the whole span copied back.
+
+So before a mirror can be measured against main, two things are needed. First, every CPU write
+must be reported at its place in the stream: the write watch at each buffer, plus the
+renderer-performed steps. Second, the collect must cost a small fraction of a frame: a collect
+limited to the pages the GPU can read, or the watch's dirty bits read without scanning the whole
+span.
+
 ### Tests for each step
 
 - A CPU write after a GPU write: the next draw sees the CPU's bytes.

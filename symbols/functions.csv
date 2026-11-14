@@ -63,6 +63,7 @@ address,size,name,system,status,notes
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
 0x01398290,127,engine_fd4_handle_less_01398290,engine,edge-verified,"FD4 handle ordering: both references valid in the first's table and the same table; versions differ: refresh both (0x013e99b0); then first value < second (signed)"
 0x013d3520,87,frame_timing_task_013d3520,frame_timing,verified,per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it
+0x013d5440,346,frame_timing_part_0x10_update_013d5440,frame_timing,edge-verified,"Per-frame task part +0x10: for seconds > 0 steps the source, flags an idle generator, then fills an output buffer (switch on) or steps into a freed scratch buffer"
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
 0x013e68f0,160,loading_path_table_find_013e68f0,loading,edge-verified,"FD4 hashed table find by path key: hash (x*0x89, ASCII letters folded, backslash as slash) cached in the key, bucket chain at +0x58, compare 0x02db46f0"
 0x013e9040,113,engine_fd4_handle_is_valid_013e9040,engine,edge-verified,"FD4 handle check: nonzero handle, index <= table's last index (inclusive), entry (0xe0 B) generation byte at +0x2c equals the handle's"
@@ -194,6 +195,7 @@ address,size,name,system,status,notes
 0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order; reread the source between helper calls; then convert its tile mode."
 0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
+0x014a3410,250,render_copy_initial_level_014a3410,render,edge-verified,"Render: copies one level of initial data through the box copy, in 4x4 blocks for block-compressed or blocked levels; a null level is refused"
 0x016243a0,74,ai_character_negated_third_column,ai,edge-verified,"AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character"
 0x01624760,35,ai_character_id,ai,edge-verified,"AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character"
 0x01624e50,109,ai_character_flag_module_set,ai,verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
@@ -248,6 +250,7 @@ address,size,name,system,status,notes
 0x01c92e90,372,param_lock_cam_range,param,edge-verified,"SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924"
 0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event; points stat regeneration (stamina-like; -50..max); time-step descriptor; the 30/60 FPS patches fix its frame time"
 0x01cd92b0,218,character_ai_display_update_01cd92b0,character,edge-verified,"Chr +0x1f8 module: if its ready check (0x01cd9390) passes, gives ai_debug_set_position the two positions of the state module; if it still passes, points its two objects at its markers"
+0x01e19e20,308,character_throw_event_01e19e20,character,edge-verified,"Looks a behavior event up by name and appends {id, 0, 0} to the character graph event ring (grown x2 or to 8 when full); skipped when not ready, unknown or no graph"
 0x01e4a490,375,character_state_flags_update_01e4a490,character,edge-verified,"Chr modules +0x68: folds whether the character is shown into two sticky bytes, copies a param float, sets +0x326 from flags or vtable +0x478, counts the frame, sets the link flag"
 0x01e59250,477,character_event_request_update_01e59250,character,edge-verified,"Chr modules +0x58: fires the pending numbered event (formatted wide string on the thread heap) unless suppressed, clears it, and clears chr +0x20 field +4 for one record id"
 0x01e5c440,282,character_counters_refill_01e5c440,character,edge-verified,"Stepped module: five counters gain a global per-second rate * frame time each (fractions carried, truncation), clamped to 0..their maximum"
@@ -460,7 +463,9 @@ address,size,name,system,status,notes
 0x02360d80,168,menu_tex_repository_require_02360d80,menu,edge-verified,ScaleformTexRepository: a missing key gets a texture from the owner source (+0x940; vtable slot 0x130)
 0x02363c00,128,menu_work_holder_destroy_02363c00,menu,edge-verified,work holder destructor (vtable 0x05756bd0): base vtable; one user less (last sets the signal at +0x10); one reference less
 0x02363d20,128,menu_work_holder_destroy_02363d20,menu,edge-verified,work holder destructor (vtable 0x05756c00): the same code as 0x02363c00
+0x02373850,590,render_object_update_02373850,render,edge-verified,"Render: refreshes an object's visible flag (owner query or view masks), then idle/running/finishing life cycle with finish and notify requests; false once done"
 0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects; updates RendMan-side child; steps another child by 1/30 s (Uncap: measured frame time)"
+0x02379d60,391,render_list_prepare_02379d60,render,edge-verified,"Render: engine list splice of another list's range; relinks on one heap (size limit), else inserts each value and erases the range from the other list"
 0x0237e640,129,loading_file_copy_construct_0237e640,loading,edge-verified,constructor: resource base with the resource heap and no copy (class a; vtable 0x057acc60)
 0x0237e6d0,162,loading_file_copy_delete_0237e6d0,loading,edge-verified,deleting destructor (class a)
 0x0237e780,154,loading_file_copy_destroy_0237e780,loading,edge-verified,destructor: free the file copy through DLNew release then the resource base (class a)
