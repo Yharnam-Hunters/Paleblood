@@ -360,6 +360,14 @@ int self_test()
     r = trace(0x200, arguments(reinterpret_cast<uint64_t>(&native)), log);
     check(log.incomplete != nullptr && native_calls == 1, "native call: incomplete, and the call still ran");
     rt_trace_log_free(&log);
+    /* An input read again with another value (here changed by an import behind a register an
+       earlier import left, as another thread changes memory): a case gives it one value. */
+    alignas(8) int32_t reread_out[2] = {0, 0};
+    const int32_t stale_before = trace_stale_counter;
+    r = trace(0x700, arguments(reinterpret_cast<uint64_t>(reread_out)), log);
+    check(log.incomplete != nullptr && static_cast<int32_t>(r.rax) == stale_before + 2,
+          "an input changed during the call: incomplete, and the call still ran");
+    rt_trace_log_free(&log);
     setenv("BB_TRACE_STEP_LIMIT", "100", 1);
     trace(0x240, arguments(), log);
     check(log.incomplete != nullptr, "instruction limit: incomplete");
