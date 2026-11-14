@@ -194,7 +194,8 @@ void rt_input_host_pump(void);
 
    Steering knows nothing of the camera: the stick is camera-relative, so the walk learns how the
    stick's directions turn into the character's from how far and which way it moved since the
-   last aim, and keeps learning as the camera turns. Headings are measured as atan2(dx, dz) on the
+   last aim, and keeps learning as the camera turns (a walk starts from what the walk before it
+   learned). Headings are measured as atan2(dx, dz) on the
    source's X and Z, with the stick's angle clockwise from up; a source whose axes run the other
    way round swaps them. A character that moved less than RT_WALK_MOVED (in the source's units)
    in an aim is stuck: the walk sidesteps, turning 60, then 120, then 180 degrees from the

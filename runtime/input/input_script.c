@@ -413,6 +413,8 @@ static void play_walk(const rt_input_script *script, int e, rt_input_script_prog
         if (isnan(previous)) return; /* the walk before it is still going */
         if (event->chained ? seconds < previous + event->start : now < event->start) return;
         walk->started_at = now;
+        /* The camera has not moved between two walks: start from what the walk before learned. */
+        if (event->after_walk >= 0) walk->camera_turn = progress->walks[event->after_walk].camera_turn;
         say(report, "walk %d: towards (%.2f, %.2f) at %.2f s, frame %llu", e + 1, event->target_x, event->target_z,
             seconds, (unsigned long long)frames);
         aim(event, e + 1, walk, seconds, frames, source, report);

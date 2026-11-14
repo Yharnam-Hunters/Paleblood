@@ -1047,7 +1047,8 @@ where the game says the character is:
   that belong to a place (a door, a lever) follow the walk that leads there.
 - The stick is camera-relative and the walk is not told the camera: each aim it compares the
   stick's direction with the way the character actually moved since the last aim, and corrects
-  for the difference (headings are `atan2(dx, dz)`, the stick's angle clockwise from up). A
+  for the difference (headings are `atan2(dx, dz)`, the stick's angle clockwise from up). A walk
+  starts from what the walk before it learned. A
   character that moved less than 0.2 in an aim is stuck: the walk sidesteps 60, 120, then 180
   degrees off the target's direction, alternating sides, three aims each, until the character is 1
   closer to the target than it has been.

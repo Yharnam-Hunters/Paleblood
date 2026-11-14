@@ -191,6 +191,30 @@ SYSLIB_TEST(input_walk_gives_up_and_the_route_goes_on)
     CHECK(progress.walks[2].finished_at >= 17.0 && progress.walks[2].finished_at < 17.1);
 }
 
+SYSLIB_TEST(input_walk_keeps_the_camera_between_walks)
+{
+    /* The second walk starts from the camera turn the first one learned, so its first aim already
+       points the right way: its first move closes the distance. */
+    CHECK(rt_input_script_parse("0:walk 0 6 within 0.5, +0:walk -6 6 within 0.5", &script, error, sizeof error) == 0);
+    here = open_ground(-120.0f);
+    rt_input_script_progress_reset(&progress);
+    rt_pad_sample s;
+    long f = 0;
+    for (; f < 600 && isnan(progress.walks[1].started_at); f++) {
+        rt_input_script_play(&script, &progress, (double)f / FRAMES_PER_SECOND, (uint64_t)f, synthetic_position, NULL, &s);
+        move(&s);
+    }
+    CHECK(!isnan(progress.walks[1].started_at));
+    CHECK(fabsf(progress.walks[1].camera_turn - progress.walks[0].camera_turn) < 1e-6f);
+    CHECK(fabsf(progress.walks[1].camera_turn + 120.0f) < 5.0f);
+    const float before = hypotf(here.x + 6.0f, here.z - 6.0f);
+    for (long end = f + RT_WALK_DEFAULT_AIM_FRAMES; f < end; f++) {
+        rt_input_script_play(&script, &progress, (double)f / FRAMES_PER_SECOND, (uint64_t)f, synthetic_position, NULL, &s);
+        move(&s);
+    }
+    CHECK(hypotf(here.x + 6.0f, here.z - 6.0f) < before - 0.5f);
+}
+
 SYSLIB_TEST(input_walk_waits_without_a_position)
 {
     /* No position (a loading screen): the stick stays at rest until the limit. */
