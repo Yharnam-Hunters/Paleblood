@@ -155,6 +155,7 @@ address,replacement,system,returns
 0x014755d0,bb_render_set_hs_shader,render,void
 0x01475640,bb_render_update_hs_shader,render,void
 0x014756b0,bb_render_set_gs_mode,render,void
+0x01475750,bb_render_set_gs_onchip_control,render,void
 0x014757d0,bb_render_set_ls_shader,render,void
 0x01475840,bb_render_set_compute_shader,render,void
 0x014758a0,bb_render_set_border_color_base,render,void
