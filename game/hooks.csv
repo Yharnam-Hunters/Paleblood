@@ -221,7 +221,10 @@ address,replacement,system,returns
 0x0169ad80,bb_ai_character_gather_effect_states,ai,void
 0x0169af00,bb_ai_character_ready_check,ai,i8
 0x0169fad0,bb_ai_character_link_ids,ai,i64
+0x016a52b0,bb_ai_sight_test,ai,i8
+0x016a5a50,bb_ai_sight_query_reset_target,ai,void
 0x016ad400,bb_ai_perception_target_visible,ai,i8
+0x016b2760,bb_ai_target_list_refresh_noticed,ai,i8
 0x016b30a0,bb_ai_target_list_mark_main_matches,ai,void
 0x016efd00,bb_event_emk_add,event,void
 0x01708410,bb_ai_pending_event_fire,ai,i8
