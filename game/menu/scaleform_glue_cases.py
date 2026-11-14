@@ -3,14 +3,16 @@
 """Edge cases for game/menu/scaleform_glue.cpp, for tools/verify.py run.
 
 usage: scaleform_glue_cases.py OUT_DIR 0x023411d0|0x02341330|0x023548d0|0x02354d90|0x02360d80|
-    0x02363c00|0x02363d20|0x02387050|0x02387650|0x0238a210
+    0x02363c00|0x02363d20|0x02387050|0x02387650|0x0238a210|0x013a2a00|0x013a33c0|0x01401720|0x0233ef00
 
 Every case lays out invented objects in buffers (filled with a pattern, so a field read by
 mistake shows), invented singletons and fake vtables whose slots name scripted stubs. The
 originals the functions call (the memory copy, DLNew's heap lookup, the fatal error report, the
 condition signal's set, the Scaleform and loader calls) are scripted stubs too. DLNew's release
 reads a thread pointer (`tls`, the pointer itself at gs:[0]) and the per-thread state at the
-offset its global holds. No game data is used.
+offset its global holds. The registry, handle and queue cases also give every callee a spare
+scripted call, so a call that should not happen is recorded rather than run unseen. No game data
+is used.
 """
 import json
 import os
@@ -25,8 +27,11 @@ TEX_FIND, TEX_ADD = '0x0232fc50', '0x0232ff90'
 SIGNAL_SET = '0x0247e780'
 LOADER_FINISH, BUILD = '0x0238a2c0', '0x02bd5620'
 REGISTRY, REGISTRY_FIND, REGISTRY_RELEASE, HANDLE_RELEASE = '0x058b3570', '0x013a2a00', '0x013a33c0', '0x01401720'
+TABLE_FIND, TABLE_RELEASE = '0x013abad0', '0x013abd30'
+PENDING_JOB, SCALEFORM_LOCK, PLAYER_QUEUE = '0x059941f8', '0x02336d40', '0x0235b140'
 # Fake vtable targets (any address: the case stubs them).
 ALLOCATE, FREE, DESTROY, MAKE_TEXTURE = '0x00500100', '0x00500200', '0x00500300', '0x00500400'
+OWNER_RELEASE, JOB_WAIT = '0x00500500', '0x00500600'
 
 THREAD = 0x100           # the thread pointer's offset in `tls`
 STATE_OFFSET = -0x60     # DLNew's per-thread state's offset from the thread pointer
@@ -273,7 +278,112 @@ def named_case(cid, held=True, handle=True, registry=True, entry=True, name_heap
     return fixture('0x0238a210', cid, {'rdi': 'buf:resource'}, buffers, memory, stubs)
 
 
+def spares(stubs, callees):
+    """One more scripted call per callee, so an unexpected call is recorded."""
+    return stubs + [{'address': a, 'argc': n, 'ret': 0} for a, n in callees]
+
+
+def registry(buffers, memory, active, table, fill):
+    buffers['registry'] = {'size': 0x20, 'bytes': f'{fill:02x}' * 0x20}
+    buffers['table'] = {'size': 0x10}
+    memory.append({'addr': 'buf:registry+0', 'bytes': u32(active)})
+    word(memory, 'buf:registry+0x18', 'table' if table else 0)
+
+
+def find_case(cid, active=1, table=True, found=True, fill=0xa5):
+    buffers = {'name': {'size': 0x10, 'bytes': 'abc\0'.encode('utf-16-le').hex()}, 'entry': {'size': 0x10}}
+    memory = []
+    registry(buffers, memory, active, table, fill)
+    stubs = []
+    if active and table:
+        stubs.append({'address': TABLE_FIND, 'argc': 2, 'ret': 'buf:entry' if found else 0})
+    stubs = spares(stubs, [(TABLE_FIND, 2)])
+    return fixture('0x013a2a00', cid, {'rdi': 'buf:registry', 'rsi': 'buf:name'}, buffers, memory, stubs,
+                   returns='i64')
+
+
+def registry_release_case(cid, active=1, table=True, entry=True, first=1, second=1, fill=0xa5):
+    buffers, memory = {'entry': {'size': 0x10}}, []
+    registry(buffers, memory, active, table, fill)
+    stubs = []
+    if active and table and entry:
+        stubs.append({'address': TABLE_RELEASE, 'argc': 4, 'argu32': [2, 3]})
+    stubs = spares(stubs, [(TABLE_RELEASE, 4)])
+    args = {'rdi': 'buf:registry', 'rsi': 'buf:entry' if entry else '0x0', 'rdx': hex(first & 0xffffffff),
+            'rcx': hex(second & 0xffffffff)}
+    return fixture('0x013a33c0', cid, args, buffers, memory, stubs)
+
+
+def handle_case(cid, owner=True, answer=0x1234567890abcdef, fill=0xa5):
+    buffers = {'handle': {'size': 0x18, 'bytes': f'{fill:02x}' * 0x18}, 'owner': {'size': 0x10},
+               'owner_vtable': {'size': 0x88}}
+    memory = []
+    word(memory, 'buf:handle+0x8', 'owner' if owner else 0)
+    word(memory, 'buf:owner+0', 'owner_vtable')
+    memory.append({'addr': 'buf:owner_vtable+0x80', 'guest': OWNER_RELEASE})
+    stubs = [{'address': OWNER_RELEASE, 'argc': 2, 'ret': answer}] if owner else []
+    stubs = spares(stubs, [(OWNER_RELEASE, 2)])
+    return fixture('0x01401720', cid, {'rdi': 'buf:handle'}, buffers, memory, stubs, returns='i64')
+
+
+def queue_case(cid, skip=0, player=True, job=True, references=2, flags=(0, 1), fill=0x5a):
+    """flags: requested_before and requested as the queue finds them."""
+    buffers = {'sprj': {'size': 0x30, 'bytes': f'{fill:02x}' * 0x30}, 'player': {'size': 0x10},
+               'job': {'size': 0x20, 'bytes': 'c6' * 0x20}, 'job_vtable': {'size': 8},
+               'waiter_vtable': {'size': 0x20}}
+    memory = [{'addr': 'buf:sprj+0x20', 'bytes': f'{flags[0]:02x}{flags[1]:02x}{skip:02x}'}]
+    word(memory, 'buf:sprj+0x8', 'player' if player else 0)
+    word(memory, PENDING_JOB, 'job' if job else 0)
+    word(memory, 'buf:job+0', 'job_vtable')
+    memory.append({'addr': 'buf:job+0x8', 'bytes': u32(references)})
+    word(memory, 'buf:job+0x10', 'waiter_vtable')
+    memory.append({'addr': 'buf:job_vtable+0', 'guest': DESTROY})
+    memory.append({'addr': 'buf:waiter_vtable+0x18', 'guest': JOB_WAIT})
+    stubs = []
+    if not skip and player:
+        stubs.append({'address': SCALEFORM_LOCK, 'argc': 0, 'ret': 'buf:player'})
+        if job:
+            stubs.append({'address': JOB_WAIT, 'argc': 2, 'argu32': [1]})
+            if references == 1:
+                stubs.append({'address': DESTROY, 'argc': 1})
+            elif references <= 0 or references >= 0x80000000:
+                stubs.append({'address': FATAL_ERROR, 'argc': 3})
+        stubs.append({'address': PLAYER_QUEUE, 'argc': 2})
+    stubs = spares(stubs, [(SCALEFORM_LOCK, 0), (JOB_WAIT, 2), (DESTROY, 1), (FATAL_ERROR, 3), (PLAYER_QUEUE, 2)])
+    args = {'rdi': 'buf:sprj', 'rsi': '0xfeedface12345678'}
+    return fixture('0x0233ef00', cid, args, buffers, memory, stubs)
+
+
 def cases_for(address):
+    if address == '0x013a2a00':
+        return [find_case('found'), find_case('not_found', found=False), find_case('inactive', active=0),
+                find_case('no_table', table=False), find_case('inactive_no_table', active=0, table=False),
+                find_case('active_negative', active=-1), find_case('active_high_byte', active=0x100),
+                find_case('zero_filled', fill=0), find_case('all_bits', fill=0xff)]
+    if address == '0x013a33c0':
+        return [registry_release_case('released'), registry_release_case('no_entry', entry=False),
+                registry_release_case('inactive', active=0), registry_release_case('no_table', table=False),
+                registry_release_case('active_high_byte', active=0x100),
+                registry_release_case('other_arguments', first=0, second=7),
+                registry_release_case('negative_arguments', first=-1, second=-0x80000000),
+                registry_release_case('inactive_no_entry', active=0, entry=False),
+                registry_release_case('zero_filled', fill=0), registry_release_case('all_bits', fill=0xff)]
+    if address == '0x01401720':
+        return [handle_case('owner'), handle_case('owner_answers_zero', answer=0),
+                handle_case('owner_answers_one', answer=1), handle_case('no_owner', owner=False),
+                handle_case('zero_filled', fill=0), handle_case('all_bits', fill=0xff)]
+    if address == '0x0233ef00':
+        return [queue_case('player_job_kept'), queue_case('player_job_last_reference', references=1),
+                queue_case('player_job_no_references', references=0),
+                queue_case('player_job_negative_references', references=0xfffffffb),
+                queue_case('player_no_job', job=False), queue_case('no_player', player=False),
+                queue_case('no_player_no_job', player=False, job=False),
+                queue_case('skipped', skip=1), queue_case('skipped_no_player', skip=1, player=False),
+                queue_case('skip_any_byte', skip=0x80), queue_case('flags_set', flags=(1, 1)),
+                queue_case('flags_moved_down', flags=(0, 1)), queue_case('flags_cleared', flags=(1, 0)),
+                queue_case('flags_other_bytes', flags=(0x5a, 0x80)),
+                queue_case('skipped_flags', skip=1, flags=(0, 1)),
+                queue_case('zero_filled', fill=0), queue_case('all_bits', fill=0xff)]
     if address == '0x023411d0':
         return [free_case('owner_heap'), free_case('thread_heap', thread_heap=True),
                 free_case('null_buffer', buffer=False), free_case('null_buffer_thread_heap_kept', buffer=False,
@@ -355,7 +465,7 @@ def cases_for(address):
 
 
 ADDRESSES = ('0x023411d0', '0x02341330', '0x023548d0', '0x02354d90', '0x02360d80', '0x02363c00', '0x02363d20',
-             '0x02387050', '0x02387650', '0x0238a210')
+             '0x02387050', '0x02387650', '0x0238a210', '0x013a2a00', '0x013a33c0', '0x01401720', '0x0233ef00')
 
 
 def main():
