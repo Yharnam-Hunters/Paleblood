@@ -20,6 +20,7 @@
 #include "runtime/capture_trace.h"
 
 #include <algorithm>
+#include <dlfcn.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -364,8 +365,16 @@ extern "C" int rt_capture_traced_call(const rt_traced_function *f, int number, c
         if (rt_capture_keep(f->function, json.c_str())) rt_capture_write(f->function, number, json.c_str());
         written = 1;
     } else if (std::getenv("BB_CAPTURE_VERBOSE")) {
-        std::fprintf(stderr, "capture: %s: no case: %s\n", f->function,
-                     log.incomplete ? log.incomplete : "the trace cannot be written as a case");
+        /* Where the trace stopped, as a PS4 address when it is in the image. */
+        const uintptr_t at = log.stopped_at, lo = reinterpret_cast<uintptr_t>(image.lo);
+        const bool in_image = at >= lo && at < reinterpret_cast<uintptr_t>(image.hi);
+        /* Native code is named by its symbol when it has one (a replacement: bb_...). */
+        Dl_info native{};
+        const bool named = !in_image && at && dladdr(reinterpret_cast<void *>(at), &native) && native.dli_sname;
+        std::fprintf(stderr, "capture: %s: no case: %s (at %s0x%llx%s%s)\n", f->function,
+                     log.incomplete ? log.incomplete : "the trace cannot be written as a case", in_image ? "" : "host ",
+                     static_cast<unsigned long long>(in_image ? at - lo + RT_EBOOT_BASE : at), named ? ", " : "",
+                     named ? native.dli_sname : "");
     }
     rt_trace_log_free(&log);
     return written;

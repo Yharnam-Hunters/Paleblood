@@ -1,6 +1,9 @@
 address,replacement,system,returns
 0x00464b90,bb_loading_stdio_stream_open,loading,void
 0x00466810,bb_frame_timing_posix_sleep_ms,frame_timing,i8
+0x00819040,bb_engine_hk_array_reserve_00819040,engine,i32
+0x00819100,bb_engine_hk_array_reserve_more_00819100,engine,void
+0x00829a40,bb_loading_allocator_allocate_headed_00829a40,loading,i64
 0x00829a90,bb_loading_allocator_free_headed_00829a90,loading,void
 0x00829b00,bb_camera_quaternion_rotation_rows_00829b00,camera,void
 0x00836840,bb_loading_tagged_string_release_00836840,loading,void
@@ -19,6 +22,9 @@ address,replacement,system,returns
 0x00ae6d00,bb_physics_tracker_construct_00ae6d00,physics,void
 0x00ae6dc0,bb_physics_tracker_setup_defaults_00ae6dc0,physics,void
 0x00ae8700,bb_physics_body_set_construct_00ae8700,physics,void
+0x00b68770,bb_frame_timing_generator_buffer_size_00b68770,frame_timing,i32
+0x00b69450,bb_frame_timing_generator_fill_00b69450,frame_timing,void
+0x00b6a030,bb_frame_timing_generator_refresh_00b6a030,frame_timing,void
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
 0x0111a620,bb_kernel_file_open,kernel,i32
@@ -81,9 +87,11 @@ address,replacement,system,returns
 0x013e6ff0,bb_loading_resource_base_construct_013e6ff0,loading,void
 0x013e7090,bb_loading_resource_base_destroy_013e7090,loading,void
 0x013e9040,bb_engine_fd4_handle_is_valid_013e9040,engine,i8
+0x013e99b0,bb_engine_fd4_handle_refresh_013e99b0,engine,void
 0x01401720,bb_menu_named_resource_handle_release_01401720,menu,i64
 0x0143c360,bb_frame_timing_task_record_open_0143c360,frame_timing,void
 0x0143c450,bb_frame_timing_task_record_close_0143c450,frame_timing,void
+0x0143d760,bb_frame_timing_task_batch_take_next_0143d760,frame_timing,i64
 0x0143d7c0,bb_frame_timing_task_batch_add_0143d7c0,frame_timing,void
 0x0143de20,bb_frame_timing_task_worker_start_0143de20,frame_timing,void
 0x0143deb0,bb_frame_timing_task_worker_run_0143deb0,frame_timing,void
@@ -146,6 +154,7 @@ address,replacement,system,returns
 0x01475560,bb_render_set_es_shader,render,void
 0x014755d0,bb_render_set_hs_shader,render,void
 0x01475640,bb_render_update_hs_shader,render,void
+0x014756b0,bb_render_set_gs_mode,render,void
 0x014757d0,bb_render_set_ls_shader,render,void
 0x01475840,bb_render_set_compute_shader,render,void
 0x014758a0,bb_render_set_border_color_base,render,void
@@ -260,6 +269,7 @@ address,replacement,system,returns
 0x016ad400,bb_ai_perception_target_visible,ai,i8
 0x016b2760,bb_ai_target_list_refresh_noticed,ai,i8
 0x016b30a0,bb_ai_target_list_mark_main_matches,ai,void
+0x016da6a0,bb_param_id_array_push_back_copy_016da6a0,param,void
 0x016efd00,bb_event_emk_add,event,void
 0x01708410,bb_ai_pending_event_fire,ai,i8
 0x017cfcc0,bb_event_flag_write,event,void
@@ -270,6 +280,8 @@ address,replacement,system,returns
 0x01972900,bb_input_pad_step_01972900,input,void
 0x0198bf70,bb_engine_map_ins_request_update_0198bf70,engine,void
 0x019a7090,bb_engine_obj_ins_request_update_019a7090,engine,void
+0x019f8d70,bb_param_protector_id_array_push_back_019f8d70,param,void
+0x01b0d5f0,bb_param_weapon_id_array_push_back_01b0d5f0,param,void
 0x01c0c2b0,bb_physics_instance_construct_01c0c2b0,physics,void
 0x01c44210,bb_engine_obj_ins_set_registration_01c44210,engine,void
 0x01c92e90,bb_param_lock_cam_range,param,f32
@@ -752,6 +764,7 @@ address,replacement,system,returns
 0x02a8c210,bb_input_mouse_construct,input,void
 0x02a8c420,bb_input_initialize_mouse_for_initial_user,input,i8
 0x02a9c790,bb_input_pad_set_vibration,input,i8
+0x02aa4080,bb_frame_timing_lane_sync_signal_02aa4080,frame_timing,void
 0x02aa4a30,bb_loading_finished_entry_construct_02aa4a30,loading,void
 0x02aa4ab0,bb_loading_finished_entry_copy_construct_02aa4ab0,loading,void
 0x02aa4b40,bb_loading_finished_entry_destroy_02aa4b40,loading,void
@@ -807,6 +820,7 @@ address,replacement,system,returns
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
 0x02b4d100,bb_engine_byte_array_assign_02b4d100,engine,i64
 0x02bc0e00,bb_engine_wide_string_construct_02bc0e00,engine,void
+0x02bc1bb0,bb_param_id_array_push_back_02bc1bb0,param,void
 0x02bc1ca0,bb_physics_ids_reserve_02bc1ca0,physics,void
 0x02c51f60,bb_render_set_parameter_02c51f60,render,void
 0x02c51fc0,bb_render_clear_parameter_set_02c51fc0,render,void

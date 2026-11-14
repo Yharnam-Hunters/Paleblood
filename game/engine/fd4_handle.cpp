@@ -5,6 +5,10 @@
 // made; it stays valid while the entry still has that generation, so a reused entry does not
 // answer for an old handle. A reference keeps its table, the handle and a copy of a value of the
 // entry with the table's version at the time, refreshed when the versions differ.
+//
+// engine_fd4_handle_refresh_013e99b0 does that refresh: when the reference's handle is valid in
+// the table, it reads the table's version and the entry's value, then stores both in the
+// reference (an invalid handle leaves the reference as it is).
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -28,8 +32,11 @@ struct Table {
     uint32_t last_index;  // the highest index in use
     uint8_t unknown_0x14[0x4];
     TableEntry *entries;
+    uint8_t unknown_0x20[0x40];
+    int32_t version;      // what references compare to know their copied value is current
 };
 static_assert(offsetof(Table, last_index) == 0x10 && offsetof(Table, entries) == 0x18);
+static_assert(offsetof(Table, version) == 0x60);
 
 // Zero as a whole is no handle.
 struct Handle {
@@ -100,4 +107,15 @@ extern "C" bool bb_engine_fd4_handle_less_01398290(OrderedItem *first, OrderedIt
         refresh(b.table, &b);
     }
     return a.value < b.value;
+}
+
+extern "C" void bb_engine_fd4_handle_refresh_013e99b0(Table *table, Reference *reference)
+{
+    if (!handle_is_valid(table, reference))
+        return;
+    // Both are read before either is stored, as the game does.
+    const int32_t version = table->version;
+    const int64_t value = table->entries[reference->handle.index].value;
+    reference->version = version;
+    reference->value = value;
 }
