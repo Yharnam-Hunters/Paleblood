@@ -133,6 +133,30 @@ struct Fixture {
     int32_t filled = 0x55555555;
 };
 
+/* A guest thread block for thread_counter (0x6c0), as the runtime builds one (TLS variant II):
+   the thread pointer's first word points to itself, and the variable, 4 KiB below it, holds a
+   pointer to the counter. Not copyable: it points into itself. */
+struct ThreadBlock {
+    alignas(16) uint64_t words[0x1000 / 8 + 1] = {};
+    explicit ThreadBlock(int32_t *counter)
+    {
+        words[0] = reinterpret_cast<uintptr_t>(counter);
+        words[0x1000 / 8] = reinterpret_cast<uintptr_t>(pointer());
+    }
+    ThreadBlock(const ThreadBlock &) = delete;
+    ThreadBlock &operator=(const ThreadBlock &) = delete;
+    uint64_t *pointer() { return &words[0x1000 / 8]; }
+};
+
+/* Runs `call` with the calling thread's GS base at `block`, as a guest thread's is. */
+template <typename Call> auto with_thread_block(ThreadBlock &block, Call call)
+{
+    syscall(SYS_arch_prctl, ARCH_SET_GS, reinterpret_cast<unsigned long>(block.pointer()));
+    auto result = call();
+    syscall(SYS_arch_prctl, ARCH_SET_GS, 0ul);
+    return result;
+}
+
 int self_test()
 {
     Fixture f;
@@ -301,13 +325,35 @@ int self_test()
     trace(0x180, arguments(), log);
     check(log.incomplete != nullptr, "xmm2 read: incomplete");
     rt_trace_log_free(&log);
-    /* The call reads gs:[0], as guest code reads its thread pointer: give it one, as the
-       runtime does, so the untraced rest of the call can run. */
-    static uint64_t thread_block[2] = {0x1234, 0};
-    syscall(SYS_arch_prctl, ARCH_SET_GS, reinterpret_cast<unsigned long>(thread_block));
-    r = trace(0x1c0, arguments(), log);
-    syscall(SYS_arch_prctl, ARCH_SET_GS, 0ul);
-    check(log.incomplete != nullptr && r.rax == 0x1234, "thread-local access: incomplete, and the call still ran");
+    /* fs is the host's own thread block, which a case cannot give: no case. */
+    trace(0x1c0, arguments(), log);
+    check(log.incomplete != nullptr && std::strstr(log.incomplete, "segment-relative"), "fs access: incomplete");
+    rt_trace_log_free(&log);
+    /* A thread-local variable through gs and the thread pointer: traced, and the case keeps the
+       variable and the thread block in one buffer (4 KiB apart, beyond MERGE_GAP), with gs at it. */
+    static ThreadBlock block(&f.counter);
+    const int32_t counter_before = f.counter;
+    r = with_thread_block(block, [&] { return trace(0x6c0, arguments(), log); });
+    const rt_traced_function thread_counter = {"capture_trace_thread_counter", 0x4006c0, "i32", at(0x6c0)};
+    const std::string thread_case =
+        rt::traced_case(log, arguments(), thread_counter, 0, "selftest", {image, image + image_size});
+    check(!log.incomplete && static_cast<int32_t>(r.rax) == counter_before + 1 && f.counter == counter_before + 1 &&
+              log.thread_base == reinterpret_cast<uintptr_t>(block.pointer()) && log.link_count == 1 &&
+              log.link[0][0] == log.thread_base && log.link[0][1] == reinterpret_cast<uintptr_t>(block.words),
+          "thread-local variable: traced, as a far reach from the thread pointer");
+    check(thread_case.find("\"gs\": \"buf:b") != std::string::npos &&
+              thread_case.find("+0x1000\", \"buffers\"") != std::string::npos &&
+              thread_case.find("\"size\": 4112") != std::string::npos,
+          "case: the thread-local variable and the thread block in one buffer, gs at the block");
+    rt_trace_log_free(&log);
+    /* On a guest thread, a call that never reads through gs has no `gs` in its case. */
+    rt_trace_args counter_args = arguments(reinterpret_cast<uint64_t>(&f.counter));
+    with_thread_block(block, [&] { return trace(0x0c0, counter_args, log); });
+    const rt_traced_function twice_on_thread = {"capture_trace_twice", 0x4000c0, "i32", at(0x0c0)};
+    check(!log.incomplete && log.thread_base == 0 &&
+              rt::traced_case(log, counter_args, twice_on_thread, 0, "selftest", {image, image + image_size})
+                      .find("\"gs\"") == std::string::npos,
+          "case: no gs when the call does not read through it");
     rt_trace_log_free(&log);
     static int native_calls;
     void (*native)() = [] { ++native_calls; };
@@ -440,6 +486,18 @@ int emit(const char *dir)
             std::fprintf(stderr, "capture trace: no case for %s\n", c.function.function);
             return 1;
         }
+    }
+    /* thread_counter reaches a thread-local variable: the call runs on a guest thread block. */
+    static ThreadBlock block(&f.counter);
+    const rt_traced_function thread_counter = {"capture_trace_thread_counter", 0x4006c0, "i32", at(0x6c0)};
+    const rt_trace_args none = arguments();
+    const int number = rt_capture_begin(thread_counter.function);
+    rt_trace_result result;
+    if (number < 0 || with_thread_block(block, [&] {
+            return rt_capture_traced_call(&thread_counter, number, &none, whole, &whole, 1, &result);
+        }) != 1) {
+        std::fprintf(stderr, "capture trace: no case for %s\n", thread_counter.function);
+        return 1;
     }
     return 0;
 }
