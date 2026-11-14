@@ -39,16 +39,16 @@ address,size,name,system,status,notes
 0x0111a8a0,26,kernel_thread_self,kernel,verified,Copy the complete opaque current-thread handle to the output and return zero
 0x0111a8c0,290,audio_fmod_thread_affinity_lookup,audio,edge-verified,FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched
 0x0111abb0,207,kernel_mutex_create,kernel,verified,Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup
-0x0111ac80,78,kernel_mutex_destroy,kernel,edge-verified,Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result
-0x0111acd0,30,kernel_mutex_lock,kernel,edge-verified,Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21
-0x0111acf0,30,kernel_mutex_unlock,kernel,edge-verified,Accept a null mutex without a call; forward its full pointer to unlock; preserve API writes and translate nonzero low32 results to 0x21
+0x0111ac80,78,kernel_mutex_destroy,kernel,verified,Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result
+0x0111acd0,30,kernel_mutex_lock,kernel,verified,Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21
+0x0111acf0,30,kernel_mutex_unlock,kernel,verified,Accept a null mutex without a call; forward its full pointer to unlock; preserve API writes and translate nonzero low32 results to 0x21
 0x0111ad10,103,kernel_semaphore_create,kernel,verified,Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21
 0x0111ad80,23,kernel_semaphore_destroy,kernel,edge-verified,Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21
 0x0111ada0,30,kernel_semaphore_wait,kernel,verified,Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21
 0x0111adc0,28,kernel_semaphore_signal,kernel,verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
-0x011ab3a0,260,kernel_memory_pool_free_011ab3a0,kernel,edge-verified,"Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool"
+0x011ab3a0,260,kernel_memory_pool_free_011ab3a0,kernel,verified,"Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool"
 0x011c4510,15,engine_store_word_product,engine,verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
 0x011c47f0,29,engine_string_length,engine,verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
 0x011c4810,34,audio_fmod_string_copy,audio,verified,NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered
@@ -461,13 +461,13 @@ address,size,name,system,status,notes
 0x023121b0,341,param_previous_row_id_equip_param_accessory,param,edge-verified,SoloParamRepository id of the row before id in EquipParamAccessory (type 2) file order; negative id: last row; -1 when none
 0x02312370,402,param_list_listed_ids_equip_param_accessory,param,edge-verified,SoloParamRepository as list_row_ids_equip_param_accessory but skips rows whose int16 at +0x26 is negative
 0x02312520,390,param_list_row_ids_equip_param_accessory,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamAccessory (type 2) row id in file order; returns the count
-0x023128a0,284,param_find_row_action_button,param,edge-verified,SoloParamRepository row lookup for ActionButtonParam (type 39): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02312b60,283,param_find_row_ai_sound,param,edge-verified,SoloParamRepository row lookup for AiSoundParam (type 48): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023128a0,284,param_find_row_action_button,param,verified,SoloParamRepository row lookup for ActionButtonParam (type 39): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02312b60,283,param_find_row_ai_sound,param,verified,SoloParamRepository row lookup for AiSoundParam (type 48): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02312fd0,310,param_find_row_atk_param,param,edge-verified,SoloParamRepository AtkParam row lookup (user 0: AtkParam_Npc type 7; 1: AtkParam_Pc type 8; args out/user/id); stores the user beside the result
 0x023133c0,310,param_find_row_behavior_param,param,edge-verified,SoloParamRepository BehaviorParam row lookup (user 0: BehaviorParam type 12; 1: BehaviorParam_PC type 13; args out/id/user; a negative user gives no row)
-0x02314860,283,param_find_row_bullet,param,edge-verified,SoloParamRepository row lookup for Bullet (type 11): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02314b60,283,param_find_row_calc_correct_graph,param,edge-verified,SoloParamRepository row lookup for CalcCorrectGraph (type 32): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02314e20,283,param_find_row_chara_init,param,edge-verified,SoloParamRepository row lookup for CharaInitParam (type 21): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02314860,283,param_find_row_bullet,param,verified,SoloParamRepository row lookup for Bullet (type 11): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02314b60,283,param_find_row_calc_correct_graph,param,verified,SoloParamRepository row lookup for CalcCorrectGraph (type 32): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02314e20,283,param_find_row_chara_init,param,verified,SoloParamRepository row lookup for CharaInitParam (type 21): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02314f40,278,param_row_at_chara_init,param,edge-verified,SoloParamRepository row-at accessor for CharaInitParam (type 21): id and data of row number n (id -1; null past the count or when not loaded)
 0x02315060,96,param_row_count_chara_init,param,edge-verified,SoloParamRepository row count of CharaInitParam (type 21); 0 when not loaded
 0x023150d0,284,param_row_name_chara_init,param,edge-verified,SoloParamRepository row name lookup for CharaInitParam (type 21): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
@@ -489,7 +489,7 @@ address,size,name,system,status,notes
 0x02318df0,242,param_face_gen_set_left_eye_red,param,edge-verified,Sets FaceGenParam eyeLColor_R of a row
 0x02318ef0,242,param_face_gen_set_left_eye_green,param,edge-verified,Sets FaceGenParam eyeLColor_G of a row
 0x02318ff0,242,param_face_gen_set_left_eye_blue,param,edge-verified,Sets FaceGenParam eyeLColor_B of a row
-0x023192d0,283,param_find_row_face,param,edge-verified,SoloParamRepository row lookup for FaceParam (type 24): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023192d0,283,param_find_row_face,param,verified,SoloParamRepository row lookup for FaceParam (type 24): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023193f0,103,param_face_is_current,param,edge-verified,Whether FaceParam is loaded and of data version 4
 0x0231a340,305,param_face_set_decal,param,edge-verified,Copies the 4 decal placement bytes into a FaceParam row
 0x0231a480,320,param_face_set_body_scale,param,edge-verified,Sets FaceParam body scale[index] (head/breast/abdomen/arm/leg)
@@ -501,15 +501,15 @@ address,size,name,system,status,notes
 0x0231aaf0,261,param_face_set_texture,param,edge-verified,Sets FaceParam faceTexData[index] (index <= 35)
 0x0231ac00,280,param_face_set_asymmetry,param,edge-verified,Sets FaceParam faceGeoAsymData[index] (index <= 25) when the table is version 4
 0x0231ad20,53,param_check_repository_for_id,param,edge-verified,SoloParamRepository an accessor reduced to its singleton check: reports a missing repository for id >= 0
-0x0231af40,283,param_find_row_face_range,param,edge-verified,SoloParamRepository row lookup for FaceRangeParam (type 25): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231af40,283,param_find_row_face_range,param,verified,SoloParamRepository row lookup for FaceRangeParam (type 25): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231b4c0,414,param_find_row_game_area,param,edge-verified,SoloParamRepository GameAreaParam (type 30) row lookup; ids 2900100-2900799 all read row 2900100
 0x0231be50,443,param_find_row_game_map,param,edge-verified,GameMapParam row of a packed map id mAA_BB_CC_DD (row id AABBCCDD); falls back to row 0; id -1 for no map
-0x0231c1e0,283,param_find_row_gem_category,param,edge-verified,SoloParamRepository row lookup for GemCategoryParam (type 44): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231c1e0,283,param_find_row_gem_category,param,verified,SoloParamRepository row lookup for GemCategoryParam (type 44): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231c380,366,param_list_gem_category_by_selector_0c,param,edge-verified,SoloParamRepository appends the GemCategoryParam (type 44) row lookup of every row whose int32 at +0x0c matches
 0x0231c510,366,param_list_gem_category_by_selector_08,param,edge-verified,SoloParamRepository appends the GemCategoryParam (type 44) row lookup of every row whose int32 at +0x08 matches
-0x0231ca40,283,param_find_row_gem_drop_doping,param,edge-verified,SoloParamRepository row lookup for GemDropDopingParam (type 45): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x0231cd30,283,param_find_row_gem_drop_modify,param,edge-verified,SoloParamRepository row lookup for GemDropModifyParam (type 46): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x0231d0f0,283,param_find_row_gem_effect,param,edge-verified,SoloParamRepository row lookup for GemeffectParam (type 43): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231ca40,283,param_find_row_gem_drop_doping,param,verified,SoloParamRepository row lookup for GemDropDopingParam (type 45): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231cd30,283,param_find_row_gem_drop_modify,param,verified,SoloParamRepository row lookup for GemDropModifyParam (type 46): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231d0f0,283,param_find_row_gem_effect,param,verified,SoloParamRepository row lookup for GemeffectParam (type 43): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231d210,284,param_row_name_gem_effect,param,edge-verified,SoloParamRepository row name lookup for GemeffectParam (type 43): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x0231d330,329,param_gem_effect_for_level,param,edge-verified,SoloParamRepository GemeffectParam (type 43): id of the row of a group whose level range holds the level with the highest rank up to the level; -1 when none
 0x0231d630,283,param_find_row_gem_gen,param,edge-verified,SoloParamRepository row lookup for GemGenParam (type 42): binary search of the loader index by id; writes id and row data pointer (null if none)
@@ -519,7 +519,7 @@ address,size,name,system,status,notes
 0x0231dbe0,184,param_gem_gen_row_id,param,edge-verified,SoloParamRepository GemGenParam (type 42): id of row number n (unchecked against the count); -1 for a negative n or no table
 0x0231de40,283,param_find_row_gem_gen_2,param,edge-verified,SoloParamRepository row lookup for GemGenParam (type 42): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231df60,284,param_row_name_gem_gen_2,param,edge-verified,SoloParamRepository row name lookup for GemGenParam (type 42): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
-0x0231e3d0,283,param_find_row_equip_param_goods,param,edge-verified,SoloParamRepository row lookup for EquipParamGoods (type 3): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231e3d0,283,param_find_row_equip_param_goods,param,verified,SoloParamRepository row lookup for EquipParamGoods (type 3): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231e4f0,278,param_row_at_equip_param_goods,param,edge-verified,SoloParamRepository row-at accessor for EquipParamGoods (type 3): id and data of row number n (id -1; null past the count or when not loaded)
 0x0231e610,96,param_row_count_equip_param_goods,param,edge-verified,SoloParamRepository row count of EquipParamGoods (type 3); 0 when not loaded
 0x0231e680,284,param_row_name_equip_param_goods,param,edge-verified,SoloParamRepository row name lookup for EquipParamGoods (type 3): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
@@ -527,7 +527,7 @@ address,size,name,system,status,notes
 0x0231ecf0,341,param_previous_row_id_equip_param_goods,param,edge-verified,SoloParamRepository id of the row before id in EquipParamGoods (type 3) file order; negative id: last row; -1 when none
 0x0231eec0,518,param_check_set_equip_param_goods,param,edge-verified,EquipParamGoods set check: cache (70 ids/sets of +0x32 built once) marks the looked-up id in a bit set; returns its set when all other members are marked else -1
 0x0231f0e0,390,param_list_row_ids_equip_param_goods,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamGoods (type 3) row id in file order; returns the count
-0x0231f460,283,param_find_row_hit_mtrl,param,edge-verified,SoloParamRepository row lookup for HitMtrlParam (type 35): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231f460,283,param_find_row_hit_mtrl,param,verified,SoloParamRepository row lookup for HitMtrlParam (type 35): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231f720,283,param_find_row_holygrail_ex,param,edge-verified,SoloParamRepository row lookup for HolygrailExParam (type 52): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231f840,284,param_row_name_holygrail_ex,param,edge-verified,SoloParamRepository row name lookup for HolygrailExParam (type 52): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x0231fbc0,371,frame_timing_fill_creation_part1_0231fbc0,frame_timing,edge-verified,"Packs a decimal number (the record word at +0x18, or one built from its +2 value and +5 count when negative) as four two-digit bytes; all ones without a record"
@@ -544,11 +544,11 @@ address,size,name,system,status,notes
 0x023217c0,341,param_previous_row_id_magic,param,edge-verified,SoloParamRepository id of the row before id in Magic (type 14) file order; negative id: last row; -1 when none
 0x02321ac0,283,param_find_row_menu_color_table,param,edge-verified,SoloParamRepository row lookup for MenuColorTableParam (type 18): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02321be0,278,param_row_at_menu_color_table,param,edge-verified,SoloParamRepository row-at accessor for MenuColorTableParam (type 18): id and data of row number n (id -1; null past the count or when not loaded)
-0x02321ea0,283,param_find_row_move,param,edge-verified,SoloParamRepository row lookup for MoveParam (type 20): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02321ea0,283,param_find_row_move,param,verified,SoloParamRepository row lookup for MoveParam (type 20): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02322260,283,param_find_row_equip_mtrl_set,param,edge-verified,SoloParamRepository row lookup for EquipMtrlSetParam (type 22): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023226c0,343,param_find_row_npc,param,edge-verified,SoloParamRepository row lookup for NpcParam (type 6): also returns header word 0x06 and the data version; reports versions 2 and older (fatal_error) and searches anyway
-0x02322b40,283,param_find_row_npc_think,param,edge-verified,SoloParamRepository row lookup for NpcThinkParam (type 9): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02323290,283,param_find_row_object,param,edge-verified,SoloParamRepository row lookup for ObjectParam (type 10): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02322b40,283,param_find_row_npc_think,param,verified,SoloParamRepository row lookup for NpcThinkParam (type 9): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02323290,283,param_find_row_object,param,verified,SoloParamRepository row lookup for ObjectParam (type 10): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023235b0,231,param_clamp_protector_gen_indexes,param,edge-verified,SoloParamRepository ProtectorGenParam (type 41) after loading: marks entry indexes above 63 as none (0x80000000) in place
 0x02323840,394,param_find_row_equip_param_protector,param,edge-verified,EquipParamProtector lookup: row of the id rounded down to 100; then ReinforceParamProtector row for id%100 + reinforce type (s16 at +0xc8)
 0x023239d0,284,param_row_name_equip_param_protector,param,edge-verified,SoloParamRepository row name lookup for EquipParamProtector (type 1): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
@@ -560,20 +560,20 @@ address,size,name,system,status,notes
 0x02325620,477,param_list_versions_equip_param_protector,param,edge-verified,SoloParamRepository every EquipParamProtector id plus one id per leading non-negative reinforcement entry at +0x40 (up to 15); returns the count
 0x02325820,390,param_list_row_ids_equip_param_protector,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamProtector (type 1) row id in file order; returns the count
 0x023259c0,518,param_check_set_equip_param_protector,param,edge-verified,EquipParamProtector set check: cache of 50 (set +0xd8) built once; marks the lookup base id; set read at the row +0xca; set when all other members marked else -1
-0x02326200,283,param_find_row_reinforce_param_protector,param,edge-verified,SoloParamRepository row lookup for ReinforceParamProtector (type 5): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02326200,283,param_find_row_reinforce_param_protector,param,verified,SoloParamRepository row lookup for ReinforceParamProtector (type 5): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023264c0,283,param_find_row_ragdoll,param,edge-verified,SoloParamRepository row lookup for RagdollParam (type 26): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02326780,311,param_find_row_resident_fx,param,edge-verified,SoloParamRepository ResidentFxParam (type 47) row lookup that also returns the index row number and the table
-0x02326b40,284,param_find_row_return_point,param,edge-verified,SoloParamRepository row lookup for ReturnPointParam (type 50): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02326b40,284,param_find_row_return_point,param,verified,SoloParamRepository row lookup for ReturnPointParam (type 50): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02326c60,238,param_return_point_warp_chair,param,edge-verified,ReturnPointParam scan: warp chair number of the first row with an entity id; or -1
 0x02326d60,241,param_return_point_entity,param,edge-verified,ReturnPointParam scan: entity id of the first row with a warp chair number; or -1
 0x02326e60,271,param_return_points_of_map,param,edge-verified,ReturnPointParam scan: pushes the entity id of every row of an area/block with a warp chair onto an id array
 0x02327120,283,param_find_row_ritual_required_mat,param,edge-verified,SoloParamRepository row lookup for RitualRequiredMatParam (type 55): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02327450,283,param_find_row_shop_lineup,param,edge-verified,SoloParamRepository row lookup for ShopLineupParam (type 27): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02327880,283,param_find_row_skeleton,param,edge-verified,SoloParamRepository row lookup for SkeletonParam (type 31): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02328aa0,283,param_find_row_sp_effect,param,edge-verified,SoloParamRepository row lookup for SpEffectParam (type 15): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02328f90,283,param_find_row_obj_act,param,edge-verified,SoloParamRepository row lookup for ObjActParam (type 34): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02327880,283,param_find_row_skeleton,param,verified,SoloParamRepository row lookup for SkeletonParam (type 31): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02328aa0,283,param_find_row_sp_effect,param,verified,SoloParamRepository row lookup for SpEffectParam (type 15): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02328f90,283,param_find_row_obj_act,param,verified,SoloParamRepository row lookup for ObjActParam (type 34): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02329250,283,param_find_row_talk,param,edge-verified,SoloParamRepository row lookup for TalkParam (type 17): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02329510,283,param_find_row_weapon_gen,param,edge-verified,SoloParamRepository row lookup for WeaponGenParam (type 40): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02329510,283,param_find_row_weapon_gen,param,verified,SoloParamRepository row lookup for WeaponGenParam (type 40): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02329630,284,param_row_name_weapon_gen,param,edge-verified,SoloParamRepository row name lookup for WeaponGenParam (type 40): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x02329810,231,param_clamp_weapon_gen_indexes,param,edge-verified,SoloParamRepository WeaponGenParam (type 40) after loading: marks entry indexes above 63 as none (0x80000000) in place
 0x02329aa0,378,param_find_row_equip_param_weapon,param,edge-verified,EquipParamWeapon lookup: row of the id rounded down to 100; then ReinforceParamWeapon row for id%100 + reinforce type (s16 at +0xd6)
@@ -584,7 +584,7 @@ address,size,name,system,status,notes
 0x0232bce0,599,param_check_set_equip_param_weapon,param,edge-verified,EquipParamWeapon set check: cache of 50 ids that are multiples of 100000 (set +0xd8) built once; base id rounded to 100000; set when all other members marked else -1
 0x0232bf50,411,param_list_row_ids_equip_param_weapon,param,edge-verified,"SoloParamRepository every EquipParamWeapon (type 0) row id; with the flag, rows whose int at +0x4 is -1 are skipped"
 0x0232c110,481,param_list_versions_equip_param_weapon,param,edge-verified,SoloParamRepository EquipParamWeapon rows whose byte +0xe2 equals value: id plus one per leading non-negative entry at +0x60 (up to 15)
-0x0232c930,283,param_find_row_reinforce_param_weapon,param,edge-verified,SoloParamRepository row lookup for ReinforceParamWeapon (type 4): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0232c930,283,param_find_row_reinforce_param_weapon,param,verified,SoloParamRepository row lookup for ReinforceParamWeapon (type 4): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023392d0,1121,engine_scaleform_heap_reallocate_023392d0,engine,edge-verified,Scaleform MemoryHeapPT realloc: small-page block resized in place under 0x800 (else moved) / large block found in the page manager's radix tree; heap lock then page-manager lock
 0x0233a7f0,803,engine_scaleform_heap_bin_allocate_0233a7f0,engine,edge-verified,Scaleform small-block allocation: bins' best fit; page from the block or its page header; rest binned; bitset marked
 0x0233ab20,680,engine_scaleform_heap_bin_free_0233ab20,engine,verified,Scaleform small-block free: length from the bitset; a free neighbour unit tail-jumps to the merge; else to the head of its bin
@@ -686,31 +686,31 @@ address,size,name,system,status,notes
 0x0247ea40,61,engine_condition_signal_poll_0247ea40,engine,edge-verified,"DLConditionSignal poll: reports an uncreated object; 0 when signalled, else -2"
 0x0247ea80,40,engine_condition_signal_check_0247ea80,engine,edge-verified,DLConditionSignal check: reports an uncreated object; 0
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
-0x0247ecb0,15,kernel_light_mutex_construct,kernel,edge-verified,DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was
+0x0247ecb0,15,kernel_light_mutex_construct,kernel,verified,DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was
 0x0247ecc0,118,kernel_light_mutex_delete,kernel,edge-verified,DLLightMutex deleting destructor: destroys an initialized mutex (errors reported) without clearing the flag then frees the object
-0x0247ed40,115,kernel_light_mutex_destruct,kernel,edge-verified,DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported
-0x0247edc0,124,kernel_light_mutex_finalize,kernel,edge-verified,DLLightMutex finalize: asks the vtable; EBUSY returns -2 and keeps the flag; otherwise the flag clears after any error reports
-0x0247ee40,49,kernel_light_mutex_initialize,kernel,edge-verified,DLLightMutex initialize: asks the vtable; the PthreadMutex initialize (0x02483fe0); a nonzero result is returned and the flag stays clear
-0x0247ee90,226,kernel_light_mutex_lock,kernel,edge-verified,DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used
-0x0247ef80,230,kernel_light_mutex_try_lock,kernel,edge-verified,DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used
-0x0247f070,124,kernel_light_mutex_unlock,kernel,edge-verified,DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used
-0x0247f180,15,kernel_read_write_lock_construct,kernel,edge-verified,DLReadWriteLock constructor: its vtable and a cleared initialized flag; the system lock handle is left as it was
+0x0247ed40,115,kernel_light_mutex_destruct,kernel,verified,DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported
+0x0247edc0,124,kernel_light_mutex_finalize,kernel,verified,DLLightMutex finalize: asks the vtable; EBUSY returns -2 and keeps the flag; otherwise the flag clears after any error reports
+0x0247ee40,49,kernel_light_mutex_initialize,kernel,verified,DLLightMutex initialize: asks the vtable; the PthreadMutex initialize (0x02483fe0); a nonzero result is returned and the flag stays clear
+0x0247ee90,226,kernel_light_mutex_lock,kernel,verified,DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used
+0x0247ef80,230,kernel_light_mutex_try_lock,kernel,verified,DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used
+0x0247f070,124,kernel_light_mutex_unlock,kernel,verified,DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used
+0x0247f180,15,kernel_read_write_lock_construct,kernel,verified,DLReadWriteLock constructor: its vtable and a cleared initialized flag; the system lock handle is left as it was
 0x0247f190,81,kernel_read_write_lock_delete,kernel,edge-verified,DLReadWriteLock deleting destructor: destroys an initialized lock (EINVAL reported) without clearing the flag then frees the object
-0x0247f1f0,85,kernel_read_write_lock_destruct,kernel,edge-verified,DLReadWriteLock destructor: destroys an initialized lock; EBUSY keeps the flag set; EINVAL reported; otherwise the flag clears
-0x0247f250,94,kernel_read_write_lock_finalize,kernel,edge-verified,DLReadWriteLock finalize: asks the vtable; EBUSY returns -2 and keeps the flag; EINVAL reported; otherwise the flag clears
-0x0247f2b0,244,kernel_read_write_lock_initialize,kernel,edge-verified,DLReadWriteLock initialize: ENOMEM/EAGAIN return -1; any other result sets the flag after the EPERM/EBUSY/EINVAL/EFAULT report chain
-0x0247f3d0,198,kernel_read_write_lock_write,kernel,edge-verified,DLReadWriteLock write lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EDEADLK reports fall through to the unknown error
+0x0247f1f0,85,kernel_read_write_lock_destruct,kernel,verified,DLReadWriteLock destructor: destroys an initialized lock; EBUSY keeps the flag set; EINVAL reported; otherwise the flag clears
+0x0247f250,94,kernel_read_write_lock_finalize,kernel,verified,DLReadWriteLock finalize: asks the vtable; EBUSY returns -2 and keeps the flag; EINVAL reported; otherwise the flag clears
+0x0247f2b0,244,kernel_read_write_lock_initialize,kernel,verified,DLReadWriteLock initialize: ENOMEM/EAGAIN return -1; any other result sets the flag after the EPERM/EBUSY/EINVAL/EFAULT report chain
+0x0247f3d0,198,kernel_read_write_lock_write,kernel,verified,DLReadWriteLock write lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EDEADLK reports fall through to the unknown error
 0x0247f4a0,146,kernel_read_write_lock_try_write,kernel,edge-verified,DLReadWriteLock try write lock: EBUSY returns -2; EINVAL then EDEADLK reported; anything else returns 0
-0x0247f540,115,kernel_read_write_lock_unlock_0247f540,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
-0x0247f5c0,115,kernel_read_write_lock_unlock_0247f5c0,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
-0x0247f640,206,kernel_read_write_lock_read,kernel,edge-verified,DLReadWriteLock read lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EAGAIN/EDEADLK reports fall through
-0x0247f710,115,kernel_read_write_lock_unlock_0247f710,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
+0x0247f540,115,kernel_read_write_lock_unlock_0247f540,kernel,verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
+0x0247f5c0,115,kernel_read_write_lock_unlock_0247f5c0,kernel,verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
+0x0247f640,206,kernel_read_write_lock_read,kernel,verified,DLReadWriteLock read lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EAGAIN/EDEADLK reports fall through
+0x0247f710,115,kernel_read_write_lock_unlock_0247f710,kernel,verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
-0x02483fe0,196,kernel_pthread_mutex_initialize,kernel,edge-verified,Dantelion2 PthreadMutex init: recursive attribute then init; ENOMEM/EAGAIN return -1; EINVAL and unknown errors reported with the source line
+0x02483fe0,196,kernel_pthread_mutex_initialize,kernel,verified,Dantelion2 PthreadMutex init: recursive attribute then init; ENOMEM/EAGAIN return -1; EINVAL and unknown errors reported with the source line
 0x024840b0,90,kernel_pthread_mutex_destroy,kernel,edge-verified,Dantelion2 PthreadMutex destroy: EBUSY returns -2; EINVAL then the unknown error reported with the source line
-0x02484110,183,kernel_pthread_mutex_lock,kernel,edge-verified,Dantelion2 PthreadMutex lock (untimed when timeout is -1); ETIMEDOUT returns -3; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
+0x02484110,183,kernel_pthread_mutex_lock,kernel,verified,Dantelion2 PthreadMutex lock (untimed when timeout is -1); ETIMEDOUT returns -3; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
 0x024841d0,177,kernel_pthread_mutex_try_lock,kernel,edge-verified,Dantelion2 PthreadMutex try lock: EBUSY returns -2; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
-0x02484290,71,kernel_pthread_mutex_unlock,kernel,edge-verified,Dantelion2 PthreadMutex unlock: 0 and EPERM accepted; EINVAL or any other result reported with the source line
+0x02484290,71,kernel_pthread_mutex_unlock,kernel,verified,Dantelion2 PthreadMutex unlock: 0 and EPERM accepted; EINVAL or any other result reported with the source line
 0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
 0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
 0x024847d0,309,engine_fast_small_object_allocator_delete_locked_024847d0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"
