@@ -127,13 +127,18 @@ def changed_replacements(base: str, head: str) -> list[dict]:
     return [replacements[name] for name in sorted(replacements)]
 
 
-def changed_families(base: str, head: str) -> list[dict]:
-    def read_head(path):
+def reader_at(rev: str):
+    """A function giving a repository file's text at rev, or None when it has no such file."""
+    def read(path):
         try:
-            return git('show', f'{head}:{path}')
+            return git('show', f'{rev}:{path}')
         except subprocess.CalledProcessError:
             return None
-    return session_report.branch_family_changes(base, read_head)
+    return read
+
+
+def changed_families(base: str, head: str) -> list[dict]:
+    return session_report.branch_family_changes(base, reader_at(head))
 
 
 def check_runtime_report(text: str) -> list[str]:
@@ -233,14 +238,14 @@ def check_documentation_report(text: str) -> list[str]:
 
 
 def check_report(text: str, paths: list[str], required_replacements: list | None = None,
-                 required_families: list | None = None) -> list[str]:
+                 required_families: list | None = None, read_record=None) -> list[str]:
     """Validate the report selected from changed files, never from labels or body claims."""
     scope = classify_paths(paths)
     if scope['classification'] == 'runtime-only':
         return check_runtime_report(text)
     if scope['classification'] == 'documentation-only':
         return check_documentation_report(text)
-    return session_report.check_body(text, required_replacements, required_families)
+    return session_report.check_body(text, required_replacements, required_families, read_record)
 
 
 def run_check(argv: list[str], label: str) -> bool:
@@ -285,7 +290,7 @@ def check_pull_request(base: str, head: str, body_path: str) -> int:
         except (subprocess.CalledProcessError, KeyError) as exc:
             print(f'runtime-pr: cannot inspect changed function replacements: {exc}', file=sys.stderr)
             return 2
-    errors = check_report(body, paths, required, required_families)
+    errors = check_report(body, paths, required, required_families, reader_at(head))
     for error in errors:
         print(f'runtime-pr: {error}', file=sys.stderr)
     return 1 if errors else 0

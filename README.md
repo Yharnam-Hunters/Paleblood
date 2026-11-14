@@ -22,7 +22,8 @@ you bring your own copy.
 ## Status
 
 **The game is not playable yet.** In local test runs it starts up, goes through the title screen,
-menus and character creation, and loads the first area, Iosefka's Clinic.
+menus and character creation, and loads the first area, Iosefka's Clinic. With a scripted
+controller the hunter walks into the clinic's first beast, dies, and wakes in the Hunter's Dream.
 
 [![functions verified](https://yharnam-hunters.github.io/Paleblood/badge-verified.svg)](STATUS.md)
 [![functions replaced](https://yharnam-hunters.github.io/Paleblood/badge-replaced.svg)](STATUS.md)
