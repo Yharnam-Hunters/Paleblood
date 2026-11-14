@@ -10,6 +10,9 @@ ai_character_link_ids,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
 ai_character_negated_third_column,edge,,6,6,0,0,f963cbb2620dee66,2026-11-13
 ai_character_ready_check,edge,,61,61,0,0,f963cbb2620dee66,2026-11-13
 ai_debug_draw_axes_0135d810,edge,,8,8,0,0,e267bbf5ff2ac570,2026-11-13
+ai_debug_end_0163bb50,edge,,32,32,0,0,e3c2894811c316e5,2026-11-14
+ai_debug_flush_01633ac0,edge,,17,17,0,0,e3c2894811c316e5,2026-11-14
+ai_debug_set_position_016334b0,edge,,45,45,0,0,e3c2894811c316e5,2026-11-14
 ai_draw_layer_color_02232a60,edge,,52,52,0,0,e267bbf5ff2ac570,2026-11-13
 ai_draw_world_021d6ea0,edge,,22,22,0,0,057632b510c654b1,2026-11-13
 ai_entity_point_029ae440,edge,,34,34,0,0,057632b510c654b1,2026-11-13
@@ -39,6 +42,7 @@ ai_goal_func_is_finish_timer,edge,,76,76,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_is_finish_turn_timer,edge,,12,12,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_number,edge,,54,54,0,0,6e8620fd37a797bc,2026-11-13
 ai_goal_func_set_timer,edge,,62,62,0,0,6e8620fd37a797bc,2026-11-13
+ai_group_reset_02224090,edge,,31,31,0,0,e3c2894811c316e5,2026-11-14
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,60,203,203,0,0,f6e94c85e455f408,2026-10-07
