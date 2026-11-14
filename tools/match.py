@@ -18,8 +18,9 @@ external references as relocations in a throwaway object, and compares the two:
                  (relocations), and a GOT load the linker relaxed to `lea` (decided at link time);
                  and every relocation reaches the same place as the original's field
   targets_checked  each relocation resolved to a function or global the repository names
-                 (symbols/functions.csv, RT_ORIGINAL / RT_GLOBAL), an import by name id, or our
-                 own read-only data compared by content, and found equal to the original's
+                 (symbols/functions.csv, a family member's name, RT_ORIGINAL / RT_GLOBAL), an
+                 import by name id, or our own read-only data compared by content, and found
+                 equal to the original's
   match_percent  similarity of the two instruction sequences, with branch targets inside the
                  function as offsets and references outside it as placeholders
   objdiff        objdiff-cli's own score for the same pair of objects, when --objdiff (or
@@ -478,12 +479,19 @@ def game_image(elf: str) -> GameImage:
 
 def repository_symbols(root: str) -> dict[str, set[int]]:
     """{name: addresses} of the game's functions and globals that the repository names:
-    symbols/functions.csv, and the RT_ORIGINAL / RT_GLOBAL declarations of the replacements.
-    Matching sources are left out, so a name can never vouch for itself."""
+    symbols/functions.csv, the members of the function families under their member names
+    (symbols/families/<family>.csv, docs/FAMILIES.md), and the RT_ORIGINAL / RT_GLOBAL
+    declarations of the replacements. Matching sources are left out, so a name can never vouch
+    for itself."""
     if root in _SYMBOLS:
         return _SYMBOLS[root]
+    import families as fam
     names: dict[str, set[int]] = {}
     for r in read_csv(os.path.join(root, 'symbols', 'functions.csv')):
+        names.setdefault(r['name'], set()).add(int(r['address'], 16))
+    # A family member is a function the repository names like any other: a matching source can
+    # call it (leaf_reads_first_dword_013e9ea0) instead of declaring it again with RT_ORIGINAL.
+    for r in fam.function_rows(root):
         names.setdefault(r['name'], set()).add(int(r['address'], 16))
     matching = os.path.join(root, 'game', 'matching')
     for top in ('game', 'runtime'):

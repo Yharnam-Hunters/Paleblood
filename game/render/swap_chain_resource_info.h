@@ -25,6 +25,18 @@ struct ResourceInfoProcessor {
 };
 static_assert(offsetof(ResourceInfoProcessor, services) == 0x40);
 static_assert(sizeof(ResourceInfoProcessor) == 0x48);
+// Completion label finalization reads: the label's address, the shared counter that hands out
+// label values, and the one value the counter must never hand out.
+struct ResourceInfoProcessorServices {
+    uint8_t unknown_00[0x10];
+    Field<uint64_t> label_address;
+    Field<uint32_t *> label_counter;
+    uint8_t unknown_20[8];
+    Field<uint64_t> reserved_label;
+};
+static_assert(offsetof(ResourceInfoProcessorServices, label_address) == 0x10);
+static_assert(offsetof(ResourceInfoProcessorServices, label_counter) == 0x18);
+static_assert(offsetof(ResourceInfoProcessorServices, reserved_label) == 0x28);
 
 // Normalization reads one optional DWORD through this embedded payload.
 struct ResourceInfoSuppliedParameter { Field<uint32_t> value; };

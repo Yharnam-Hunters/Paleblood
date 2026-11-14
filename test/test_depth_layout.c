@@ -122,6 +122,66 @@ static void geometry_boundaries(void)
     }
 }
 
+/* Expanded micro tiles hold 128/256/64 bytes for D16/D32/S8. The compressed-to-32B
+   ADDR5 path is inapplicable. Literal coordinates cross both X/Y bits 3 and 4;
+   in particular S8 (8,0)=256 and (8,4)=288 must not acquire an extra address bit. */
+static void expanded_addr5_masks(void)
+{
+    static const char *const planes[] = {"d16", "d32", "s8"};
+    static const char *const layouts[] = {"linear", "1d", "p8-2d"};
+    static const unsigned bytes[] = {2, 4, 1};
+    static const uint32_t info[] = {0, 0x20, 0x001a0c40};
+    static const uint64_t strides[][3] = {{4096, 8192, 2048}, {4096, 8192, 2048}, {65536, 131072, 32768}};
+    static const uint64_t p8_slice_origins[][3] = {{0, 79872, 159744}, {0, 145408, 290816}, {0, 47104, 94208}};
+    static const struct {
+        unsigned x, y, linear_element, thin_element;
+        uint64_t p8_bytes[3];
+    } points[] = {
+        {0, 0, 0, 0, {0, 0, 0}},
+        {8, 0, 8, 64, {256, 256, 256}},
+        {16, 0, 16, 128, {768, 768, 768}},
+        {0, 8, 256, 256, {16640, 16640, 16640}},
+        {0, 16, 512, 512, {8704, 8704, 8704}},
+        {8, 4, 136, 96, {320, 384, 288}},
+        {8, 8, 264, 320, {16384, 16384, 16384}},
+        {16, 16, 528, 640, {8448, 8448, 8448}},
+        {31, 31, 1023, 1023, {24958, 25084, 24895}},
+    };
+    for (unsigned plane = 0; plane < 3; ++plane) {
+        for (unsigned layout = 0; layout < 3; ++layout) {
+            for (unsigned mask = 0; mask < 16; ++mask) {
+                const unsigned before_checks = checks, before_failures = failures;
+                const unsigned width = layout == 2 ? 128 : 32;
+                const unsigned height = layout == 2 ? 64 : 32;
+                const unsigned pixels = layout == 2 ? 32768 : 2048;
+                const unsigned z_info = (plane == 0 ? 1u : 3u) | (2u << 13);
+                const unsigned stencil_info = 1u | (2u << 13);
+                const rt_depth_aspect aspect = plane == 2 ? RT_DEPTH_ASPECT_STENCIL : RT_DEPTH_ASPECT_Z;
+                rt_depth_layout d = {0};
+                const int status = decode(info[layout] | mask, z_info, stencil_info, width, height, pixels, aspect, &d);
+                CHECK(status == 0);
+                if (status == 0) {
+                    CHECK(d.width == width && d.height == height && d.tiles.element_bytes == bytes[plane]);
+                    CHECK(d.tiles.kind == (layout == 0 ? RT_TILING_LINEAR : layout == 1 ? RT_TILING_1D : RT_TILING_2D));
+                    CHECK(d.tiles.slice_bytes == strides[layout][plane] && d.tiles.tile_split == 0);
+                    for (unsigned point = 0; point < sizeof points / sizeof *points; ++point) {
+                        const uint64_t expected = layout == 2 ? points[point].p8_bytes[plane]
+                            : (uint64_t)(layout == 0 ? points[point].linear_element : points[point].thin_element) * bytes[plane];
+                        CHECK(rt_tiling_offset(&d.tiles, points[point].x, points[point].y, 0) == expected);
+                    }
+                    for (unsigned slice = 0; slice < 3; ++slice) {
+                        const uint64_t expected = layout == 2 ? p8_slice_origins[plane][slice] : slice * strides[layout][plane];
+                        CHECK(rt_tiling_offset(&d.tiles, 0, 0, slice) == expected);
+                    }
+                    guarded_copy(&d);
+                }
+                printf("depth ADDR5 {\"id\":\"addr5/%s/%s/%02u\",\"mask\":%u,\"decode_status\":%d,\"checks\":%u,\"failures\":%u}\n",
+                       planes[plane], layouts[layout], mask, mask, status, checks - before_checks, failures - before_failures);
+            }
+        }
+    }
+}
+
 static void refusal(uint32_t info,uint32_t z,uint32_t s,unsigned width,unsigned height,unsigned pixels,rt_depth_aspect aspect)
 {
     rt_depth_layout out,before;memset(&out,0xa5,sizeof out);memcpy(&before,&out,sizeof out);
@@ -129,14 +189,13 @@ static void refusal(uint32_t info,uint32_t z,uint32_t s,unsigned width,unsigned 
 }
 int main(void)
 {
-    canonical();direct_and_stride();geometry_boundaries();
+    canonical();direct_and_stride();geometry_boundaries();expanded_addr5_masks();
     for(unsigned samples=1;samples<4;++samples)refusal(0x001d0c40,1|samples<<2,1,256,8,32768,RT_DEPTH_ASPECT_Z);
     refusal(0x001d0c40,1|(1u<<2),1,256,8,32768,RT_DEPTH_ASPECT_STENCIL);
     refusal(0x001d0c40,0,1,256,8,32768,RT_DEPTH_ASPECT_Z);
     refusal(0x001d0c40,2,1,256,8,32768,RT_DEPTH_ASPECT_Z);
     refusal(0x001d0c40,1,0,256,8,32768,RT_DEPTH_ASPECT_STENCIL);
     refusal(0x001d0c40,1,1,256,8,32768,(rt_depth_aspect)99);
-    refusal(0x001d0c41,1,1,256,8,32768,RT_DEPTH_ASPECT_Z);
     refusal(0x001d0a40,1,1,256,8,32768,RT_DEPTH_ASPECT_Z);
     refusal(0x00050c40,1,1,256,8,32768,RT_DEPTH_ASPECT_Z);
     refusal(0x001d0c50,1,1,256,8,32768,RT_DEPTH_ASPECT_Z);

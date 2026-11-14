@@ -2,8 +2,9 @@ name: macos-metal
 
 on:
   push:
-    # main only: a pull request's branch is checked by its pull_request run and the merge queue's
-    # temporary branch by its merge_group run, so a push to either would test the same commit again.
+    # main only: a pull request's branch is checked by its pull_request run. No merge_group run:
+    # this workflow's checks are not required, and merge_group ignores the path filters, so it
+    # would run for every queued pull request.
     branches: [main]
     paths:
       - '.github/workflows/macos-metal.yml'
@@ -14,6 +15,9 @@ on:
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'test/test_metal_upload.mm'
+      - 'test/test_metal_presentation.mm'
+      - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_window_position.c'
       - 'test/test_pixel_vm.c'
@@ -21,6 +25,7 @@ on:
       - 'test/test_metal_depth.c'
       - 'test/test_metal_rectangles.c'
       - 'test/test_metal_rectangle_values.mm'
+      - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
       - 'test/test_metal_compute_barriers.c'
       - 'test/test_compute_thread_ids.c'
@@ -38,6 +43,8 @@ on:
       - 'test/metal_cube_programs.h'
       - 'test/metal_permutation_programs.h'
       - 'test/metal_storage_programs.h'
+      - 'test/test_metal_blend_banks.c'
+      - 'test/test_metal_vertex_instancing.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -48,6 +55,7 @@ on:
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
       - 'test/test_gcn_spirv.c'
+      - 'test/pixel_constant_wqm_programs.h'
       - 'test/gcn_programs.h'
   pull_request:
     paths:
@@ -59,6 +67,9 @@ on:
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'test/test_metal_upload.mm'
+      - 'test/test_metal_presentation.mm'
+      - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_window_position.c'
       - 'test/test_pixel_vm.c'
@@ -66,6 +77,7 @@ on:
       - 'test/test_metal_depth.c'
       - 'test/test_metal_rectangles.c'
       - 'test/test_metal_rectangle_values.mm'
+      - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
       - 'test/test_metal_compute_barriers.c'
       - 'test/test_compute_thread_ids.c'
@@ -83,6 +95,8 @@ on:
       - 'test/metal_cube_programs.h'
       - 'test/metal_permutation_programs.h'
       - 'test/metal_storage_programs.h'
+      - 'test/test_metal_blend_banks.c'
+      - 'test/test_metal_vertex_instancing.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -93,8 +107,8 @@ on:
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
       - 'test/test_gcn_spirv.c'
+      - 'test/pixel_constant_wqm_programs.h'
       - 'test/gcn_programs.h'
-  merge_group:
 
 permissions:
   contents: read
@@ -109,11 +123,12 @@ jobs:
         arch: [arm64, x86_64]
     steps:
       - uses: actions/checkout@v4
-      - name: Configure normal root build with Metal smoke compilation
+      - name: Configure normal root build with Metal test compilation
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
           -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_ENABLE_METAL_SMOKE_TEST=ON
+          -DPB_ENABLE_METAL_PRESENTATION_TEST=ON
           -DPB_ENABLE_METAL_EXECUTOR=ON
       - name: Check that normal runtime and game targets remain available
         run: |
@@ -124,8 +139,8 @@ jobs:
           names = set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', Path('targets.txt').read_text()))
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
-      - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_compute_barriers test_metal_coherence test_metal_images test_metal_storage test_metal_r8_projection test_metal_volumes test_metal_permutations test_metal_srgb_storage test_metal_cube_stores test_compute_thread_ids test_compute_wave_votes test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_window_position test_pixel_vm_metal test_metal_shader_order --parallel 2
+      - name: Compile Metal library and owned test executables
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_window_position test_pixel_vm_metal test_metal_shader_order test_compute_thread_ids test_compute_wave_votes test_metal_compute_barriers test_metal_cube_stores test_metal_permutations test_metal_srgb_storage test_metal_storage test_metal_volumes test_metal_r8_projection --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
