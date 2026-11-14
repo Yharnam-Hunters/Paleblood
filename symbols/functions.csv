@@ -781,6 +781,10 @@ address,size,name,system,status,notes
 0x02bc0e00,196,engine_wide_string_construct_02bc0e00,engine,edge-verified,"Wide string from null-terminated text: default allocator (created on first use), container heap check, empty inline string, counted assign 0x02a2a720 with wcslen (0 for empty)"
 0x02bc1ca0,218,physics_ids_reserve_02bc1ca0,physics,edge-verified,"Grow a 32-bit id vector to a capacity: 4-aligned buffer from its heap (+0x20), ids copied, old buffer freed; a null buffer goes through the transaction failure report and is kept"
 0x02c6d580,149,frame_timing_thread_random,frame_timing,edge-verified,This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds
+0x02d03420,46,menu_system_text_dialog_status_02d03420,menu,edge-verified,"Dantelion text dialog: the dialog backend's status while the system dialog is open, -1 otherwise (the backend made on first use)"
+0x02d03450,60,menu_system_text_dialog_open_02d03450,menu,edge-verified,"Dantelion text dialog: unless open, asks the dialog backend to open the system dialog with the settings and records the answer as the open flag"
+0x02d03490,105,menu_system_text_dialog_take_text_02d03490,menu,edge-verified,"Dantelion text dialog: once the backend's status is 2 or 3, closes the object and asks the backend for the text; false while closed or running"
+0x02d03500,26,menu_system_text_dialog_set_up_02d03500,menu,edge-verified,"Dantelion text dialog: unless the system dialog is open, copies the settings into the object (0x02d03520) and returns true"
 0x02e61140,67,frame_timing_time_of_day_us,frame_timing,edge-verified,Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored
 0x02e61280,101,frame_timing_time_seed_words,frame_timing,edge-verified,"Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call"
 0x02e67d20,80,loading_stdio_close_files,loading,edge-verified,"fclose and clear the FILE pointers at +0x10; +0x8 and +0x0 in that order; skipping null ones"
