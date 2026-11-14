@@ -102,30 +102,64 @@ def aligned_cases():
         c('alignment_zero_plain', [(0x20, U), (0x400, F), (0x20, U)], 0x40, 0),
         c('alignment_8_plain', [(0x20, U), (0x400, F), (0x20, U)], 0x40, 8),
         c('alignment_16_plain', [(0x20, U), (0x400, F), (0x20, U)], 0x40, 16),
+        c('alignment_0x20_not_plain', [(0x10, U), (0x400, F), (0x20, U)], 0x40, 0x20),
         c('available_short', [(0x20, U), (0x400, F), (0x20, U)], 0x40, 0x40, available=0x3f),
+        c('available_exact', [(0x20, U), (0x400, F), (0x20, U)], 0x40, 0x40, available=0x40),
         # The plain allocation takes list 7 for a 0x70 block; an aligned one would skip to 9.
         c('alignment_16_plain_list_choice', [(0x20, U), (0xf0, F), (0x20, U), (0x200, F), (0x20, U)], 0x68, 16),
         # Block at 0x30: payload 0x40, on 0x40 already.
         c('fast_already_aligned_split', [(0x20, U), (0x400, F), (0x20, U)], 0x40, 0x40),
-        c('fast_already_aligned_whole', [(0x20, U), (0x100, F), (0x20, U)], 0xf8, 0x40),
+        c('search_already_aligned_whole', [(0x20, U), (0x100, F), (0x20, U)], 0xf8, 0x40),
+        # Payload already on the alignment: what is left is only a header (kept out of the
+        # lists), or a block that joins a non-empty list.
+        c('aligned_rest_header_only', [(0x20, U), (0x60, F), (0x20, U)], 0x40, 0x40),
+        c('aligned_rest_joins_nonempty', [(0x20, U), (0x80, F), (0x20, U), (0x30, F), (0x20, U)], 0x40, 0x40),
         # Block at 0x10: payload 0x20, not on 0x40: a 0x20 front block stays free.
         c('fast_front_and_rest', [(0x400, F), (0x20, U)], 0x40, 0x40),
         c('fast_front_header_only', [(0x10, U), (0x400, F), (0x20, U)], 0x40, 0x40),
-        c('fast_front_joins_nonempty', [(0x20, U), (0x20, F), (0x20, U), (0x400, F), (0x20, U)], 0x40, 0x40),
+        c('fast_aligned_rest_into_empty_list', [(0x20, U), (0x20, F), (0x20, U), (0x400, F), (0x20, U)], 0x40, 0x40),
         c('fast_lowest_larger_list', [(0x400, F), (0x20, U), (0x800, F), (0x20, U)], 0x40, 0x80),
         c('fast_list_keeps_others', [(0x400, F), (0x20, U), (0x500, F), (0x20, U)], 0x40, 0x80),
+        # The worst case (alignment plus block size) on a power of two (0x80: list 8) and just
+        # below one (0x70: list 7): the unchecked path takes the first list above it.
+        c('fast_worst_case_on_power_of_two', [(0x10, U), (0x80, F), (0x20, U), (0x100, F), (0x20, U)], 0x38, 0x40),
+        c('fast_worst_case_below_power_of_two', [(0x10, U), (0x80, F), (0x20, U), (0x100, F), (0x20, U)], 0x28, 0x40),
+        # The unchecked path takes the higher list's block although a lower one would fit.
+        c('fast_skips_fitting_lower_block', [(0x10, U), (0x70, F), (0x20, U), (0x400, F), (0x20, U)], 0x48, 0x40),
+        # The same at the larger alignments the unchecked path still takes (pins its limit).
+        c('fast_skips_fitting_lower_block_0x80', [(0x10, U), (0xf0, F), (0x20, U), (0x800, F), (0x20, U)], 0x48, 0x80),
+        c('fast_skips_fitting_lower_block_0x100', [(0x10, U), (0x1f0, F), (0x20, U), (0x800, F), (0x20, U)], 0x48, 0x100),
+        c('fast_skips_fitting_lower_block_0x200', [(0x10, U), (0x3f0, F), (0x20, U), (0x800, F), (0x20, U)], 0x48, 0x200),
         # No list above the worst case: the search from the request's own list.
-        c('search_own_list_fits', [(0x20, U), (0xa0, F), (0x20, U)], 0x40, 0x40),
-        c('search_skips_unfit_block', [(0x10, U), (0x60, F), (0x20, U), (0xa0, F), (0x20, U)], 0x40, 0x40),
-        c('search_rest_exact', [(0x10, U), (0x80, F), (0x20, U)], 0x48, 0x40),
-        c('search_rest_header_only', [(0x10, U), (0x90, F), (0x20, U)], 0x48, 0x40),
+        c('search_first_nonempty_list_fits', [(0x20, U), (0xa0, F), (0x20, U)], 0x40, 0x40),
+        # The first block of the list fits: its payload is off the alignment, so a header-only
+        # front block stays out of the lists, and nothing is left behind the allocation.
+        c('search_first_block_misaligned', [(0x10, U), (0x60, F), (0x20, U), (0xa0, F), (0x20, U)], 0x40, 0x40),
+        # A 0x50 block that doesn't fit, then a 0x70 one that does, in the same list (both orders).
+        c('search_skips_unfit_block', [(0x10, U), (0x50, F), (0x20, U), (0x70, F), (0x20, U)], 0x48, 0x40),
+        c('search_fit_before_unfit_block', [(0x10, U), (0x70, F), (0x20, U), (0x50, F), (0x20, U)], 0x48, 0x40),
+        c('search_rest_0x20_pushed', [(0x10, U), (0x80, F), (0x20, U)], 0x48, 0x40),
+        c('search_rest_0x30_pushed', [(0x10, U), (0x90, F), (0x20, U)], 0x48, 0x40),
         c('search_next_list', [(0x10, U), (0x70, F), (0x20, U), (0x1f0, F), (0x20, U)], 0x48, 0x100),
-        c('search_none', [(0x10, U), (0x70, F), (0x20, U)], 0x48, 0x40),
-        c('search_next_at_aligned', [(0x10, U), (0x30, F), (0x20, U)], 0x10, 0x40),
+        c('search_rest_header_only', [(0x10, U), (0x70, F), (0x20, U)], 0x48, 0x40),
+        c('search_fits_with_room_0x18', [(0x10, U), (0x30, F), (0x20, U)], 0x10, 0x40),
+        # Non-empty lists, and no block in them fits: the search gives up (null).
+        c('search_none', [(0x10, U), (0x50, F), (0x20, U)], 0x48, 0x40),
+        # The block's header sits on the alignment, its payload doesn't: the aligned payload is
+        # the next one, which leaves no room.
+        c('search_header_on_alignment_none', [(0x30, U), (0x60, F), (0x20, U)], 0x48, 0x40),
+        c('search_none_two_lists', [(0x10, U), (0x50, F), (0x20, U), (0x90, F), (0x20, U)], 0x48, 0x100),
         c('alignment_0x400_searches', [(0x20, U), (0x2000, F), (0x20, U)], 0x40, 0x400),
         c('alignment_0x400_two_lists', [(0x10, U), (0x420, F), (0x20, U), (0x900, F), (0x20, U)], 0x100, 0x400),
+        # 0x400 is past the unchecked limit: the search takes the lower block on the alignment
+        # where the unchecked path would take the higher list's first block.
+        c('alignment_0x400_searches_lower_block', [(0x3e0, U), (0x80, F), (0x20, U), (0x800, F), (0x20, U)], 0x40, 0x400),
         c('alignment_0x1000', [(0x20, U), (0x3000, F), (0x20, U)], 0x40, 0x1000),
         c('request_zero', [(0x400, F), (0x20, U)], 0, 0x40),
+        # The block size's rounding step: a request of 0x18 needs a 0x20 block (a header-only
+        # rest is left), 0x19 a 0x30 one (the whole block).
+        c('request_0x18_block_0x20', [(0x20, U), (0x30, F), (0x20, U)], 0x18, 0x20),
+        c('request_0x19_block_0x30', [(0x20, U), (0x30, F), (0x20, U)], 0x19, 0x20),
         c('no_lists', [(0x20, U)], 0x40, 0x40),
     ]
 

@@ -440,6 +440,11 @@ TARGET_LISTS = [
      node(kind=2, place=(1.0, 2.0, 2.6)), node(kind=2, place=(1.0, 1.4, 3.0), matches=1)],
     [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0, 5.0)), node(kind=2, place=(0.0, 0.0, 0.0, -7.0)),
      node(kind=2, place=(0.1, 0.0, 0.0, 0.0), matches=1), node(kind=2, place=(0.0, 0.0, 0.0, 0.3))],
+    # Just inside half a metre: squared distance one step below 0.25 (as floats), so the limit must
+    # be exactly 0.25; the mirrored entry is already marked.
+    [node(kind=2, priority=1.0, place=(0.0, 0.0, 0.0)),
+     node(kind=2, place=(0.2723987102508545, 0.35387587547302246, 0.22487951815128326)),
+     node(kind=2, place=(-0.2723987102508545, 0.35387587547302246, 0.22487951815128326), matches=1)],
     # A place not yet valid never matches, even 0.1 m from the main target.
     [node(kind=2, priority=1.0, place=(0, 0, 0)), node(kind=2, valid=0, place=(0.1, 0, 0))],
     # Node kind 0x41 is not a target entry (only the low seven bits are compared, against 1).
