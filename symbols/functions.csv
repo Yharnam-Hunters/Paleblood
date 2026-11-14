@@ -250,17 +250,17 @@ address,size,name,system,status,notes
 0x0167f840,32,ai_goal_func_is_finish_timer,ai,edge-verified,AI goal script binding IsFinishTimer: goal timer <= 0 (false above index 15)
 0x0167f860,20,ai_goal_func_is_finish_turn_timer,ai,edge-verified,AI goal script binding IsFinishTimerForTurnBeforeAtk: the turn-before-attack timer <= 0
 0x0167f880,26,ai_goal_func_get_number,ai,edge-verified,"AI goal script binding GetNumber: goal script number 0..63, 0.0 above"
-0x01693850,1175,ai_is_inside_direction,ai,edge-verified,"Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series)"
+0x01693850,1175,ai_is_inside_direction,ai,verified,"Inside test: 3D distance <= limit and flat angle between direction and target line below half the cone (cos series)"
 0x0169acf0,114,ai_character_has_effect_state,ai,edge-verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,edge-verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
-0x016a52b0,1936,ai_sight_test,ai,edge-verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"
+0x016a52b0,1936,ai_sight_test,ai,verified,"Sight test: nose distance at any angle, else eye distance by darkness from a moved-back eye point, begin distance, width/height cone, optional line-of-sight ray (layer 0x29); unseeable flag wins"
 0x016a5a50,43,ai_sight_query_reset_target,ai,edge-verified,"Sight query: target half reset (origin, no height or size, visibility 1, light, seeable)"
 0x016a85c0,1463,ai_perception_update,ai,edge-verified,"Perception update per think: target-list update, then target state and type from the list (kind 4/5 battle, main entry's state, kind 3/11 caution), facing check, force battle"
 0x016acfa0,384,ai_perception_current_handle,ai,verified,"Perception: handle of the current target (kind-4 node, kind-5 node, main entry, kind-3 node), character or place"
-0x016ad400,287,ai_perception_target_visible,ai,edge-verified,"Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11"
-0x016b2760,512,ai_target_list_refresh_noticed,ai,edge-verified,"Target list: refresh the noticed character's entry (clock 0, visible, refreshed bit) or allocate and link a new 0xa0-byte entry; notice record update"
+0x016ad400,287,ai_perception_target_visible,ai,verified,"Target list: visible flag of the first kind-4 node, else true for kind 5, else the main entry's flag, else true for kind 3 or 11"
+0x016b2760,512,ai_target_list_refresh_noticed,ai,verified,"Target list: refresh the noticed character's entry (clock 0, visible, refreshed bit) or allocate and link a new 0xa0-byte entry; notice record update"
 0x016b30a0,368,ai_target_list_mark_main_matches,ai,verified,"Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x01708410,168,ai_pending_event_fire,ai,verified,"Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index"
