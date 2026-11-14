@@ -605,6 +605,19 @@ Instead:
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
        context when the main thread drew (found at the opening movie, 10 November 2026).
+     - **Tables a compute shader reads through its user data are copied when it is recorded.** The
+       game hands some compute shaders a pointer (user data 2-3) to a 16-byte table in a per-frame
+       ring that holds a buffer descriptor, and writes that ring slot again a frame or two later; the
+       console's GPU has read it by then. A batch here can still be waiting to run, and about one
+       clinic boot in six stopped on the LUT pass (compute shader `0x20d1b00800`) reading another
+       table's words as its descriptor ("a shader reached outside the guest memory"): logged at record
+       time, all 52,000 of its descriptors were sound. Now the translator lists the shader's `s_load`s
+       through user-data pointer pairs it does not write, at constant offsets (`gcn_table_snapshot_plan`,
+       up to 15 words), the executor copies their words into the push constants after the user data as
+       it records the dispatch, and the loads take the copy. A table that open or submitted GPU work
+       may store to is not copied, and its loads read memory when the dispatch runs, as before. A
+       tighter bound on how far the GPU may trail (tried first, not merged) looked slower in an A/B on
+       a loaded machine, and a bound loose enough to keep the overlap would not close the window.
      - **A batch the GPU does not finish stops by name.** Each wait for submitted work gives the GPU
        20 seconds, far past any batch the game's frames make; then the run stops naming the oldest
        unfinished batch's draws (vertex and pixel shader, most vertices) and dispatches (shader, most

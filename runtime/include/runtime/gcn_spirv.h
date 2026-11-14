@@ -159,6 +159,38 @@ typedef struct {
 int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, char *error,
                      size_t error_size);
 
+/* Table snapshots: the small tables a compute program reads with s_load through a user-data pointer
+   pair it does not write, at an immediate or literal offset (as gcn_memory_reads finds them). The
+   game hands such shaders a pointer into a per-frame ring (a 16-byte table holding a buffer
+   descriptor) and rewrites the ring's slot a frame or two later: the console's GPU has read it by
+   then, as it starts on a buffer soon after its submission, but a batch here may still be waiting to
+   run, and the shader then read another table's words (a garbage descriptor). So the executor copies
+   each such table's words when it records the dispatch, into the push constants after the user data
+   (gcn_compute_layout's table_snapshot), and the translated loads take the copy when the executor
+   says it holds one: word 0 of the snapshot is a mask, bit k for entry k; entry k's dwords follow
+   from word 1 + first_word. An entry the executor cannot copy (pending GPU work may store there)
+   leaves its bit clear and the load reads memory as it runs, as before.
+   uses[] lists each s_load's dword position with its entry. Entries take the loads in program order
+   while their words fit (GCN_TABLE_SNAPSHOT_WORDS); a load past that, or one whose pointer is not
+   such a pair, reads memory. */
+enum { GCN_TABLE_SNAPSHOT_WORDS = 15, GCN_TABLE_SNAPSHOT_ENTRIES = 15, GCN_TABLE_SNAPSHOT_USES = 32 };
+typedef struct {
+    unsigned pointer_sgpr;   /* the user-data SGPR pair holding the pointer (48 bits) */
+    uint32_t offset, dwords; /* the bytes from the pointer, and how many dwords the load reads */
+    unsigned first_word;     /* where its dwords start among the snapshot's data words */
+} gcn_table_entry;
+typedef struct {
+    gcn_table_entry entries[GCN_TABLE_SNAPSHOT_ENTRIES];
+    unsigned entry_count;
+    struct {
+        uint32_t at;         /* the s_load's dword position in the program */
+        unsigned entry;
+    } uses[GCN_TABLE_SNAPSHOT_USES];
+    unsigned use_count;
+} gcn_table_snapshot;
+/* The snapshot plan of a program; 0, or -1 with the reason (code that does not decode). */
+int gcn_table_snapshot_plan(const uint32_t *code, size_t dwords, gcn_table_snapshot *plan, char *error, size_t error_size);
+
 /* A table-driven copy: a compute program that loads its workgroup's entry of three 32-bit words (x, y,
    count) from a table buffer, indexed by its workgroup's x index, and in each thread (lane id v0, its
    local x index) loads the source buffer's element y + v0 and stores it as the destination buffer's
@@ -257,6 +289,9 @@ typedef struct {
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
     gcn_lds lds;              /* the workgroup's LDS (above) */
     uint64_t gds_address;     /* the GDS's GPU address (above), or 0 */
+    const gcn_table_snapshot *table_snapshot; /* when not NULL, the program's plan (gcn_table_snapshot_plan):
+                                                 its loads take the snapshot words after the user data, at
+                                                 push-constant byte push_constant_offset + 4 * GCN_USER_SGPR_MAX */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program

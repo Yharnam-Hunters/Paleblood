@@ -57,6 +57,8 @@ enum { TRANSLATION_REASON_BYTES = 4096 };
 enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
 enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
+/* a compute shader's push constants: its user data, then its table snapshot's mask and words (gcn_spirv.h) */
+enum { TABLE_SNAPSHOT_BYTES = (GCN_TABLE_SNAPSHOT_WORDS + 1) * 4, COMPUTE_PUSH_BYTES = USER_DATA_BYTES + TABLE_SNAPSHOT_BYTES };
 enum { COLOR_8 = 0x1, COLOR_32 = 0x4, COLOR_16_16 = 0x5, COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
        SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000 };
@@ -275,6 +277,7 @@ typedef struct {
     gcn_image_binding images[GCN_MAX_IMAGES];
     unsigned image_count;
     uint32_t user_read;              /* the user SGPRs it reads before writing them (gcn_spirv.h) */
+    gcn_table_snapshot tables;       /* the tables it reads through user-data pointers, copied at each dispatch */
     VkShaderModule module;
     VkPipeline pipeline;
 } compute_entry;
@@ -1210,8 +1213,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     const VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 2,
                                                .pPushConstantRanges = ranges};
     if (vkCreatePipelineLayout(x->device, &layout, NULL, &x->layout) != VK_SUCCESS) return failed(error, error_size, "no pipeline layout");
-    /* a compute shader's user data at the start of its push constants */
-    const VkPushConstantRange compute_range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES};
+    /* a compute shader's user data at the start of its push constants, its table snapshot after it */
+    const VkPushConstantRange compute_range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, COMPUTE_PUSH_BYTES};
     const VkPipelineLayoutCreateInfo compute_layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                                        .pushConstantRangeCount = 1, .pPushConstantRanges = &compute_range};
     if (vkCreatePipelineLayout(x->device, &compute_layout, NULL, &x->compute_layout) != VK_SUCCESS)
@@ -4389,40 +4392,45 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
    register layout. VK_NULL_HANDLE after failing. */
-static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, const gcn_image_binding *images,
-                                       unsigned image_count, uint32_t *user_read, char *error, size_t error_size)
+static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, const gcn_image_binding *images,
+                                                 unsigned image_count, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->compute_count; i++) {
         const compute_entry *e = &x->computes[i];
         if (e->code == c->code && !memcmp(e->threads, c->threads, sizeof e->threads) && e->user_sgprs == c->user_sgprs &&
             e->workgroup_id_enables == c->workgroup_id_enables && e->image_count == image_count &&
-            !memcmp(e->images, images, image_count * sizeof *images)) {
-            *user_read = e->user_read;
-            return e->pipeline;
-        }
+            !memcmp(e->images, images, image_count * sizeof *images))
+            return e;
     }
     if (x->compute_count == MAX_COMPUTE_PIPELINES) {
         failed(error, error_size, "more compute pipelines than the executor keeps");
-        return VK_NULL_HANDLE;
+        return NULL;
     }
     if (c->code < x->guest_base || c->code >= x->guest_base + x->size || c->code % 4) {
         failed(error, error_size, "compute shader code at %#llx is outside the GPU-visible memory", (unsigned long long)c->code);
-        return VK_NULL_HANDLE;
+        return NULL;
     }
+    const uint32_t *const code = (const uint32_t *)(uintptr_t)c->code;
+    const size_t code_dwords = (size_t)((x->guest_base + x->size - c->code) / 4);
+    char reason[TRANSLATION_REASON_BYTES];
+    gcn_table_snapshot tables;
+    if (gcn_table_snapshot_plan(code, code_dwords, &tables, reason, sizeof reason)) {
+        failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
+        return NULL;
+    }
+    uint32_t user_read = 0;
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
                                        .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, 1, x->compute_count),
-                                       .images = images, .image_count = image_count, .user_data_read = user_read,
-                                       .gds_address = x->gds_address};
+                                       .images = images, .image_count = image_count, .user_data_read = &user_read,
+                                       .gds_address = x->gds_address, .table_snapshot = &tables};
     uint32_t *spirv = NULL;
     size_t words = 0;
-    char reason[TRANSLATION_REASON_BYTES];
-    const int translated = gcn_translate_compute((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4),
-                                                 &layout, &spirv, &words, reason, sizeof reason);
+    const int translated = gcn_translate_compute(code, code_dwords, &layout, &spirv, &words, reason, sizeof reason);
     sweep_shader(x, "compute", c->code, translated ? reason : NULL, spirv, words);
     if (translated) {
         failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-        return VK_NULL_HANDLE;
+        return NULL;
     }
     const VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
     VkShaderModule module = VK_NULL_HANDLE;
@@ -4430,7 +4438,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     free(spirv);
     if (made != VK_SUCCESS) {
         failed(error, error_size, "the device refused a translated compute shader");
-        return VK_NULL_HANDLE;
+        return NULL;
     }
     const VkComputePipelineCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -4441,13 +4449,13 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     if (vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
         vkDestroyShaderModule(x->device, module, NULL);
         failed(error, error_size, "the device refused a compute pipeline");
-        return VK_NULL_HANDLE;
+        return NULL;
     }
     compute_entry *e = &x->computes[x->compute_count++];
-    *e = (compute_entry){.user_read = *user_read, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+    *e = (compute_entry){.user_read = user_read, .tables = tables, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                          .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count, .module = module, .pipeline = pipeline};
     memcpy(e->images, images, image_count * sizeof *images);
-    return pipeline;
+    return e;
 }
 
 /* ---- images ---- */
@@ -5630,6 +5638,29 @@ static int fill_target_from_group(rt_executor *x, target_entry *t, uint64_t grou
     return 0;
 }
 
+/* A dispatch's table snapshot (gcn_spirv.h, "Table snapshots"): each entry's words copied from guest
+   memory now, as the dispatch is recorded, with its bit set in the mask (words[0]). An entry whose
+   pointer is not set, whose table lies outside the guest memory, or which open or submitted work may
+   store to is left out: its loads read memory when the dispatch runs. */
+static void snapshot_tables(const rt_executor *x, const gcn_table_snapshot *tables, const uint32_t *user, uint32_t user_set,
+                            uint32_t words[GCN_TABLE_SNAPSHOT_WORDS + 1])
+{
+    enum { POINTER_HIGH_MASK = 0xffff };
+    memset(words, 0, (GCN_TABLE_SNAPSHOT_WORDS + 1) * sizeof *words);
+    for (unsigned k = 0; k < tables->entry_count; k++) {
+        const gcn_table_entry *e = &tables->entries[k];
+        if (e->pointer_sgpr + 2 > GCN_USER_SGPR_MAX || (~user_set >> e->pointer_sgpr & 3)) continue;
+        const uint64_t pointer = (uint64_t)(user[e->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[e->pointer_sgpr];
+        const uint64_t address = pointer + e->offset, bytes = (uint64_t)e->dwords * 4;
+        if (address % 4 || address < x->guest_base || address - x->guest_base > x->size || bytes > x->size - (address - x->guest_base)) continue;
+        int stored = 0;
+        for (unsigned slot = 0; slot < BATCH_SLOTS && !stored; slot++) stored = batch_may_store(x, slot, address, bytes, 0);
+        if (stored) continue;
+        memcpy(&words[1 + e->first_word], (const uint8_t *)x->view + (address - x->guest_base), bytes);
+        words[0] |= 1u << k;
+    }
+}
+
 /* The memory a dispatch of the compute shader reads now, as spans (gcn_memory_reads: each descriptor's
    range, each s_load's bytes); *anywhere when it cannot be bounded. For a table-driven copy whose table
    can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores; groups is
@@ -5730,10 +5761,12 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (stage_images(x, "compute", c->code, 0, s->compute_user, c->user_sgprs, s->compute_user_set, 0, bindings, views, NULL, &image_count, error,
                      error_size))
         return -1;
-    uint32_t user_read = 0;
-    const VkPipeline pipeline = compute_pipeline_for(x, c, bindings, image_count, &user_read, error, error_size);
-    if (!pipeline) return -1;
-    if (check_user_data("compute", c->code, user_read, s->compute_user_set, error, error_size)) return -1;
+    const compute_entry *entry = compute_pipeline_for(x, c, bindings, image_count, error, error_size);
+    if (!entry) return -1;
+    if (check_user_data("compute", c->code, entry->user_read, s->compute_user_set, error, error_size)) return -1;
+    uint32_t push[COMPUTE_PUSH_BYTES / 4];
+    memcpy(push, s->compute_user, USER_DATA_BYTES);
+    snapshot_tables(x, &entry->tables, s->compute_user, s->compute_user_set, push + GCN_USER_SGPR_MAX);
     const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, NULL, 0, &set,
@@ -5748,9 +5781,9 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | (groups ? 0 : VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT), 0, 1, &earlier, 0, NULL,
                          0, NULL);
-    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, entry->pipeline);
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
-    vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
+    vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, COMPUTE_PUSH_BYTES, push);
     note_work(x, c->code, 0, groups ? (uint64_t)groups[0] * groups[1] * groups[2] : 0);
     if (filled) vkCmdDispatch(commands, 1, 1, 1); /* its first workgroup: the rest is the same bytes (fill_target_from_group) */
     else if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);

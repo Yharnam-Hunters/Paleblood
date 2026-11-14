@@ -2761,6 +2761,42 @@ static void gds_counters(rt_executor *x)
     CHECK(slots == (1ull << APPENDING) - 1 && taken == ~0ull);
 }
 
+/* A table a compute shader reads through a user-data pointer is the one the pointer held when the
+   dispatch was recorded (gcn_spirv.h, "Table snapshots"): table_descriptor_store loads its buffer
+   descriptor from the table at s[2:3]; the game rewrites such a ring slot before a lagging batch runs,
+   so here the table is rewritten to name another buffer after the dispatch is recorded and before its
+   batch is submitted. The stores still land in the first buffer, and none in the second. */
+static void table_snapshot_at_record(rt_executor *x)
+{
+    enum { TABLE_BUFFER = 0xc0e90000, TABLE_CODE = 0x2f000, TABLE = 0x3c00000, FIRST_OUT = 0x3c01000, SECOND_OUT = 0x3c02000, LANES = 64,
+           USER_SGPRS = 4, UNTOUCHED = 0xdeadbeef };
+    char error[256] = "";
+    memcpy((void *)(uintptr_t)at(TABLE_CODE), table_descriptor_store, sizeof table_descriptor_store);
+    uint32_t *const first = (uint32_t *)(uintptr_t)at(FIRST_OUT), *const second = (uint32_t *)(uintptr_t)at(SECOND_OUT);
+    for (unsigned i = 0; i < LANES; i++) first[i] = second[i] = UNTOUCHED;
+    uint32_t *const table = (uint32_t *)(uintptr_t)at(TABLE);
+    descriptor(table, at(FIRST_OUT), DWORD_STRIDE);
+    const uint64_t code = at(TABLE_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, USER_SGPRS << 1, LANES, 1, 1};
+    const uint32_t user[USER_SGPRS] = {0, 0, (uint32_t)at(TABLE), (uint32_t)(at(TABLE) >> 32)};
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(TABLE_BUFFER, shader) == 0);
+    CHECK(rt_render_record_user_data(TABLE_BUFFER, 0x10, RT_STAGE_COMPUTE, 0, user, USER_SGPRS, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(TABLE_BUFFER, 0x20, one, error, sizeof error) == 0);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(TABLE_BUFFER, 0x30, &count);
+    uint64_t ticket = 0;
+    const int recorded = rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error);
+    descriptor(table, at(SECOND_OUT), DWORD_STRIDE); /* the slot's next use, before the batch runs */
+    const int ran = recorded || rt_executor_finish(x, error, sizeof error);
+    if (ran) fprintf(stderr, "table snapshot: %s\n", error);
+    CHECK(ran == 0);
+    int stored = 1, untouched = 1;
+    for (unsigned i = 0; i < LANES; i++) stored &= first[i] == i, untouched &= second[i] == UNTOUCHED;
+    CHECK(stored && untouched);
+}
+
 /* User data a shader uses that no call has set stops the draw by name, rather than running on zeros: a
    pixel shader whose image descriptor is in s[0:7], with only slots 0-3 set, and after a reset none. */
 static void unset_user_data(rt_executor *x)
@@ -4410,6 +4446,7 @@ int main(void)
     target_read_in_buffer(x);
     table_copied(x);
     gds_counters(x);
+    table_snapshot_at_record(x);
     state_across_buffers(x);
     indexed_draws(x);
     indexed_packets(x, fd);
