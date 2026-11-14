@@ -89,6 +89,7 @@ typedef struct {
     unsigned stack_slots;
     uint64_t steps, step_limit;
     unsigned xmm_written;              /* bit n: xmm n written by the traced code */
+    unsigned xmm_inputs;               /* bit n: xmm n (2..7) read before it was written: an argument */
     /* Thread-local storage. Guest code reads its thread pointer at gs:[0] (the loader rewrites
        the game's fs:[0] to gs) and reaches its variables at that pointer plus an offset. */
     uint64_t thread_base;              /* the calling thread's GS base, or 0 when it has none */
@@ -421,9 +422,10 @@ static int argument_index(x86_reg r)
     }
 }
 
-/* Vector argument registers the case cannot set (only xmm0 and xmm1 are case arguments) must
-   not be read before the traced code writes them. Also notes the argument registers the
-   instruction sets: one the traced code set since the last import holds a value of its own. */
+/* Notes the vector argument registers xmm2..xmm7 read before the traced code writes them: they
+   are inputs, which the case gives like xmm0 and xmm1 (always given). Also notes the argument
+   registers the instruction sets: one the traced code set since the last import holds a value of
+   its own. */
 static int check_registers(trace_state *t, const cs_insn *in)
 {
     cs_regs read, written;
@@ -434,7 +436,7 @@ static int check_registers(trace_state *t, const cs_insn *in)
         for (unsigned i = 0; i < nread; i++) {
             int x = xmm_index((x86_reg)read[i]);
             if (x >= 2 && x <= 7 && !(t->xmm_written & (1u << x)))
-                return -1;
+                t->xmm_inputs |= 1u << x;
         }
     for (unsigned i = 0; i < nwritten; i++) {
         int x = xmm_index((x86_reg)written[i]);
@@ -779,7 +781,7 @@ static void step(trace_state *t, ucontext_t *uc)
     if (unsupported(in))
         return stop(t, uc, "an instruction the tracer does not model");
     if (check_registers(t, in))
-        return stop(t, uc, "a vector argument register other than xmm0 or xmm1 is read");
+        return stop(t, uc, "an instruction's register accesses could not be decoded");
     const uint64_t next = rip + in->size;
     /* Memory operands below use the registers' values before this instruction, as does this. */
     uint64_t base_origin[8] = {0};
@@ -932,6 +934,7 @@ static int collect(trace_state *t, rt_trace_log *log)
     log->write_count = t->nwrites;
     log->qword_count = t->qwords;
     log->stack_slots = t->stack_slots;
+    log->xmm_inputs = t->xmm_inputs;
     log->steps = t->steps;
     log->thread_base = t->thread_hi ? t->thread_base : 0;   /* the code read through gs */
     log->incomplete = t->incomplete;

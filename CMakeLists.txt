@@ -86,7 +86,7 @@ add_test(NAME capture_trace COMMAND test_capture_trace --self-test)
 add_test(NAME capture_trace_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_trace>
                  capture_trace_scale capture_trace_stack_args capture_trace_scale_float capture_trace_twice
-                 capture_trace_copy capture_trace_use_import capture_trace_thread_counter)
+                 capture_trace_copy capture_trace_use_import capture_trace_thread_counter capture_trace_return_xmm2)
 set_tests_properties(capture_trace_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 add_executable(test_capture_hooks test/test_capture_hooks.cpp test/capture_trace_guest.S)
