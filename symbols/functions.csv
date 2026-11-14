@@ -172,6 +172,7 @@ address,size,name,system,status,notes
 0x014759d0,83,render_set_gs_shader,render,edge-verified,Reserve 29 DWORDs; forward the opaque full register pointer including null to sceGnmSetGsShader; zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry
 0x01475a30,83,render_update_gs_shader,render,edge-verified,Reserve 29 DWORDs; forward the opaque register pointer to sceGnmUpdateGsShader; a zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry
 0x01475a90,93,render_set_esgs_ring_itemsize,render,edge-verified,Write the low 15 bits to VGT_ESGS_RING_ITEMSIZE after three-word admission; publish from the captured cursor and retain final-packet observation
+0x01475af0,279,render_set_gs_ring_sizes,render,edge-verified,Reserve 17 DWORDs; write four GS item sizes and GSVS offsets with masked maximum and total; retain live cursor reloads and late descriptor reads
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
@@ -278,6 +279,7 @@ address,size,name,system,status,notes
 0x0169acf0,114,ai_character_has_effect_state,ai,verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
 0x0169ad80,134,ai_character_gather_effect_states,ai,verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
 0x0169af00,126,ai_character_ready_check,ai,verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
+0x0169d160,2248,ai_hearing_test,ai,edge-verified,"Hearing: whether the enemy hears one sound (range less the sound-cut distance against the gap; otherwise the ear's reach by width and height angle) and remembers it"
 0x0169da30,763,ai_hearing_in_ear_range,ai,edge-verified,"Hearing: does a sphere around a sound point reach the ear (within the ear height angle: reach plus radius; beyond it: the sphere surface crosses the angle edge segment)"
 0x0169fad0,155,ai_character_link_ids,ai,verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
 0x016a3be0,154,ai_update_time_scheduler_reserve,ai,edge-verified,"AI update-time scheduler: books an update in a 100-frame ring, moving it to the first later frame below the per-frame limit"
