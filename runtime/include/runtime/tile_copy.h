@@ -7,8 +7,8 @@
    (runtime/tiling.h), run as a compute shader so render targets and textures move between their
    Vulkan images and guest memory without the CPU touching the texels.
 
-   Each invocation moves one element (a texel, or a block of a block-compressed image) of `dwords`
-   32-bit words. Invocation i takes element k = i % 64, in memory order, of micro tile i / 64 (micro
+   Each invocation moves one element (a texel, or a block of a block-compressed image) of 1, 2, 4, 8
+   or 16 bytes. Invocation i takes element k = i % 64, in memory order, of micro tile i / 64 (micro
    tiles counted along each row of them, row after row, slice after slice), so neighbouring lanes
    touch neighbouring guest memory. The table holds 32-bit words: the 64 elements' byte offsets in
    their micro tile in increasing order (rt_tiling_micro_spread's values, sorted), the texel place
@@ -42,9 +42,10 @@ enum {
     RT_TILE_COPY_TILES, RT_TILE_COPY_GROUPS_X, RT_TILE_COPY_PIECES_LOG2, RT_TILE_COPY_PUSH_WORDS
 };
 
-/* The compute shader (SPIR-V 1.5) moving elements of `dwords` words (1, 2 or 4) to the tiled image
-   (to_tiled) or from it. Returns 0 with a new array the caller frees, or -1. */
-int rt_tile_copy_shader(unsigned dwords, int to_tiled, uint32_t **spirv, size_t *word_count);
+/* The compute shader (SPIR-V 1.5) moving elements of `element_bytes` bytes (1, 2, 4, 8 or 16) to the
+   tiled image (to_tiled) or from it; 1- and 2-byte elements need the device's 8- and 16-bit storage
+   buffer access (Vulkan 1.2 storageBuffer8BitAccess, Vulkan 1.1 storageBuffer16BitAccess). Returns 0 with a new array the caller frees, or -1. */
+int rt_tile_copy_shader(unsigned element_bytes, int to_tiled, uint32_t **spirv, size_t *word_count);
 
 #ifdef __cplusplus
 }
