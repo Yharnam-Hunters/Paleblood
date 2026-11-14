@@ -240,6 +240,7 @@ event_flag_write,recorded,,101,101,0,0,1a46ef419f934205,2026-11-12
 event_flag_write,edge,,15,15,0,0,1a46ef419f934205,2026-11-12
 frame_timing_config_get_int_024eba00,recorded,,48,48,0,0,ddcaf2bc1351e4b0,2026-11-13
 frame_timing_config_get_int_024eba00,edge,,21,21,0,0,ddcaf2bc1351e4b0,2026-11-13
+frame_timing_create_handle_from_levels_02265580,edge,,40,40,0,0,a3a0cba6b12c8685,2026-11-14
 frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_1000,edge,,22,22,0,0,cd53367af0bda73a,2026-10-31
@@ -250,6 +251,7 @@ frame_timing_dungeon_gate_step_init_for_channel_load,edge,,8,8,0,0,cd53367af0bda
 frame_timing_dungeon_gate_step_init_for_channel_load,edge,60,8,8,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_step_mode_switch,edge,,15,15,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_step_mode_switch,edge,60,15,15,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_fill_creation_part1_0231fbc0,edge,,223,223,0,0,a3a0cba6b12c8685,2026-11-14
 frame_timing_flipper_init,recorded,,13,13,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_flipper_init,recorded,30,13,13,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_flipper_init,recorded,60,13,13,0,0,29a2f7c09f92f53d,2026-10-07
