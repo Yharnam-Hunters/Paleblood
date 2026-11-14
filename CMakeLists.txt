@@ -124,6 +124,7 @@ endif()
 add_test(NAME syslib COMMAND test_syslib)
 include(cmake/HostTimeTests.cmake)
 include(cmake/HostThreadTests.cmake)
+include(cmake/DarwinDiskGuestTLSTests.cmake)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
 add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)
 target_include_directories(pbgcn_decode PUBLIC runtime/include)

@@ -19,7 +19,8 @@ symbols/verification.csv   one row per function, case set and option: the latest
 symbols/quarantine.csv     cases that cannot be used, each with the reason.
   function, cases, option, case (the case file's name without .json), reason, date
 
-A function may be verified only when it has current recorded and edge rows without an option,
+An edge-verified function needs a current edge row without an option. A function may be verified
+only when it has current recorded and edge rows without an option,
 and none of its current rows has a failure that is not quarantined (docs/VERIFY.md,
 "Quarantine"); tools/validate_functions.py enforces it. A current byte-exact row in
 symbols/matching.csv (tools/match.py, docs/MATCHING.md) may stand in for the recorded row, but only
@@ -158,8 +159,9 @@ def order_errors(rows: list[dict], rel: str, key) -> list[str]:
 
 
 def check(root: str, funcs: list[dict]) -> list[str]:
-    """Errors for verified functions without a clean, current record, for results of any function
-    that are for other code, and for malformed rows."""
+    """Errors for verified functions without a clean, current record, for edge-verified functions
+    without a current edge result, for results of any function that are for other code, and for
+    malformed rows."""
     errs: list[str] = []
     try:
         results = read_csv(os.path.join(root, 'symbols', 'verification.csv'), VERIFICATION_HEADER)
@@ -226,6 +228,25 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             errs.append(f"{where} but its {label} result (symbols/verification.csv:{r['_line']}) is for other code: "
                         f"run it again with --record")
     errs += stale_errors(root, by_function, {f['name'] for f in funcs if f['status'] == 'verified'})
+    errs += missing_edge_errors(root, funcs, by_function)
+    return errs
+
+
+def missing_edge_errors(root: str, funcs: list[dict], by_function: dict[str, list[dict]]) -> list[str]:
+    """An edge-verified function without a current, passing edge result without an option. The
+    status says its edge cases pass; the row is the evidence, for the code as it is (check() reports
+    verified functions with the rest of what verified needs)."""
+    errs = []
+    for f in funcs:
+        if f['status'] != 'edge-verified':
+            continue
+        current = source_hash(root, f['name'])
+        if not any(r['cases'] == 'edge' and r['option'] == '' and r['source'] == current
+                   and int(r['total']) > 0 and int(r['failed']) == 0
+                   for r in by_function.get(f['name'], [])):
+            errs.append(f"symbols/functions.csv:{f['_line']}: {f['name']} is edge-verified without a current, "
+                        f"passing edge result in symbols/verification.csv: run its edge cases with "
+                        f"tools/verify.py run --record edge (docs/VERIFY.md, \"Recorded results and quarantine\")")
     return errs
 
 
