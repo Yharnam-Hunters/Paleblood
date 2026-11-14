@@ -2525,8 +2525,6 @@ static uint32_t user_data_block(translator *t)
     return id;
 }
 
-/* The starting registers: user data in the first SGPRs, the workgroup index, and v0-v2 the lane's
-   position in the workgroup. */
 static void tessellation_registers(translator *t, const stage_layout *layout);
 
 /* A vertex shader's instancing inputs (runtime/gcn_spirv.h): the instance index (InstanceIndex: draws start at
