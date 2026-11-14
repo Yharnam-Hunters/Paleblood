@@ -3167,13 +3167,15 @@ static float small_float_value(uint32_t bits, int mantissa_bits)
    10_11_11 float one, a 32 float one and a 16_16 float one (Thin1DThin, tiling index 13) is written
    back to their memory as halves (x first), as unsigned 11-, 11- and 10-bit floats (x in the low
    bits), as one float (red) and as two halves (red, green): red (x + 0.5) / 16, green (y + 0.5) / 16,
-   blue 0.25 (alpha 1 in the halves). Reading them as BGRA stops by name. */
+   blue 0.25 (alpha 1 in the halves). An 8 UNORM target (one byte) takes red as a byte. Reading them as
+   BGRA stops by name. */
 static void float_targets(rt_executor *x)
 {
     enum { FLOAT_BUFFER = 0xc0fb0000, HALVES = 0x1b00000, SMALL_FLOATS = 0x1b80000, ONE_FLOAT = 0x1b40000, TWO_HALVES = 0x1ae0000,
-           THIN_1D = 13, NUMBER_FLOAT = 7 };
-    static const struct { uint32_t address, format, bytes, channels; } cases[] = {
-        {HALVES, 0xc, 8, 4}, {SMALL_FLOATS, 0x6, 4, 3}, {ONE_FLOAT, 0x4, 4, 1}, {TWO_HALVES, 0x5, 4, 2}};
+           ONE_BYTE = 0x2b00000, THIN_1D = 13, NUMBER_FLOAT = 7, NUMBER_UNORM = 0 };
+    static const struct { uint32_t address, format, bytes, channels, number; } cases[] = {
+        {HALVES, 0xc, 8, 4, NUMBER_FLOAT}, {SMALL_FLOATS, 0x6, 4, 3, NUMBER_FLOAT}, {ONE_FLOAT, 0x4, 4, 1, NUMBER_FLOAT},
+        {TWO_HALVES, 0x5, 4, 2, NUMBER_FLOAT}, {ONE_BYTE, 0x1, 1, 1, NUMBER_UNORM}};
     char error[200] = "";
     for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
         rt_tiling layout;
@@ -3184,7 +3186,7 @@ static void float_targets(rt_executor *x)
         const uint32_t offset = record_setup(FLOAT_BUFFER, at(cases[c].address), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         uint32_t words[RT_COLOR_TARGET_WORDS];
         color_target(words, at(cases[c].address), cases[c].format, SWAP_STD);
-        words[4] |= NUMBER_FLOAT << 8, words[5] = THIN_1D;
+        words[4] |= cases[c].number << 8, words[5] = THIN_1D;
         CHECK(rt_render_record_color_target(FLOAT_BUFFER, offset, 0, words, error, sizeof error) == 0);
         const int ran = rt_executor_run(x, FLOAT_BUFFER, record_triangle_draw(FLOAT_BUFFER, offset + 0x10), error, sizeof error);
         if (ran) fprintf(stderr, "float target %#x: %s\n", cases[c].format, error);
@@ -3200,13 +3202,16 @@ static void float_targets(rt_executor *x)
                     for (unsigned k = 0; k < cases[c].channels; k++) got[k] = half_value(h[k]);
                 } else if (cases[c].format == 0x4) {
                     memcpy(&got[0], texel, 4);
+                } else if (cases[c].format == 0x1) { /* COLOR_8 UNORM: red as a byte */
+                    got[0] = texel[0] / 255.0f;
                 } else {
                     uint32_t p;
                     memcpy(&p, texel, 4);
                     got[0] = small_float_value(p & 0x7ff, 6), got[1] = small_float_value(p >> 11 & 0x7ff, 6), got[2] = small_float_value(p >> 22, 5);
                 }
                 const float want[4] = {((float)px + 0.5f) / SIZE, ((float)y + 0.5f) / SIZE, 0.25f, 1};
-                for (unsigned k = 0; k < cases[c].channels; k++) placed &= fabsf(got[k] - want[k]) <= want[k] / 32 + 1e-3f;
+                const float rounding = cases[c].bytes == 1 ? 1.0f / 255 : 0; /* a byte's step */
+                for (unsigned k = 0; k < cases[c].channels; k++) placed &= fabsf(got[k] - want[k]) <= want[k] / 32 + 1e-3f + rounding;
             }
         if (!placed) fprintf(stderr, "float target %#x: texels not as drawn\n", cases[c].format);
         CHECK(placed);
