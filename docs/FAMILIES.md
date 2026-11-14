@@ -33,7 +33,7 @@ tables (CI).
 extents in `symbols/ghidra_functions.csv`. A function is a member only when:
 
 - its bytes, from its start to its exported size, are exactly the family's shape (a shape is hex
-  bytes and at most one parameter field: `{u8}`, `{d8}` a positive displacement, `{u32}`);
+  bytes and at most one parameter field: `{u8}`, `{d8}` a positive displacement, `{u32}`, `{d32}` a positive 32-bit displacement);
 - every byte after it up to the next function is the compiler's NOP padding, and that extent is
   at least 14 bytes, so the hook's absolute jump overwrites only padding (QUIRKS.md: a hook is a
   14-byte jump; a member shorter than that is hooked across its own padding, never into the next
@@ -98,16 +98,25 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `returns_zero` | `31 c0 c3` | functions that return false, null or 0 (all of rax) |
 | `returns_constant` | `b8 {u32} c3` | functions that return a fixed number, zero-extended to rax |
 | `reads_qword_field` | `48 8b 47 {d8} c3` | getters of a 64-bit field (often a pointer) K bytes into the object |
+| `reads_far_qword_field` | `48 8b 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_dword_field` | `8b 47 {d8} c3` | getters of a 32-bit field, zero-extended |
+| `reads_far_dword_field` | `8b 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_word_field` | `0f b7 47 {d8} c3` | getters of a 16-bit field, zero-extended |
+| `reads_far_word_field` | `0f b7 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_byte_field` | `0f b6 47 {d8} c3` | getters of an 8-bit field, zero-extended (`mov al, [rdi+K]` is excluded) |
+| `reads_far_byte_field` | `0f b6 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `field_address` | `48 8d 47 {d8} c3` | the address of a member or base-class part, K bytes into the object |
+| `far_field_address` | `48 8d 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |
+| `writes_far_qword_field` | `48 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
+| `writes_far_dword_field` | `89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_word_field` | `66 89 77 {d8} c3` | setters of a 16-bit field |
+| `writes_far_word_field` | `66 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |
+| `writes_far_byte_field` | `40 88 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_first_qword` | `48 89 37 c3` | setters of the 64-bit field at the start of the object |
 | `writes_first_dword` | `89 37 c3` | setters of the 32-bit field at the start of the object |
 | `returns_first_argument` | `48 89 f8 c3` | identity functions: return the first argument |

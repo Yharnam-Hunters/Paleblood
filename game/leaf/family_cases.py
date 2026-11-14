@@ -13,6 +13,8 @@ from the member's address and its shape parameter.
 """
 from __future__ import annotations
 
+import hashlib
+
 ARGUMENT_REGISTERS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
 # An entry rax no correct replacement produces by accident (the harness otherwise enters with 0).
 RAX_SEED = 0x5aa5c33c0ff0e11e
@@ -62,6 +64,23 @@ def returns_a_value(address: str, value: int | None) -> list[dict]:
 
 
 OBJECT_SIZE = 0xa0     # room for the largest positive 8-bit offset plus a qword, from either start
+SHIFTED_START = 0x10  # where the shifted cases' object starts in its buffer
+
+
+def object_size(offset: int) -> int:
+    """OBJECT_SIZE, or for a far field (the _far families) room for the field plus a qword
+    after it from the shifted start."""
+    return max(OBJECT_SIZE, SHIFTED_START + offset + 0x10)
+
+
+def object_bytes(seed: int, size: int) -> str:
+    """probe_bytes for an object of up to 255 bytes. A larger one (a far field) is SHA-256 of
+    the seed and the block number, block after block: no repeating pattern, so a read or a
+    store at a wrong offset still shows."""
+    if size <= 255:
+        return probe_bytes(seed, size)
+    blocks = (hashlib.sha256(f'{seed}:{block}'.encode()).digest() for block in range((size + 31) // 32))
+    return b''.join(blocks)[:size].hex()
 
 
 def field_cases(address: str, value: int | None) -> list[dict]:
@@ -70,9 +89,10 @@ def field_cases(address: str, value: int | None) -> list[dict]:
     value; the object starts at the buffer and 16 bytes into it, with two byte patterns. The
     other arguments point into a probe buffer and are compared after the call; rax is seeded."""
     out = []
-    for case_id, seed, start in (('object_a', 3, 0), ('object_b', 101, 0), ('object_shifted', 57, 0x10)):
+    size = object_size(value or 0)
+    for case_id, seed, start in (('object_a', 3, 0), ('object_b', 101, 0), ('object_shifted', 57, SHIFTED_START)):
         case = base_case(address, case_id, 'i64')
-        case['buffers'] = {'object': {'size': OBJECT_SIZE, 'bytes': probe_bytes(seed, OBJECT_SIZE)},
+        case['buffers'] = {'object': {'size': size, 'bytes': object_bytes(seed, size)},
                            'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
         case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
         case['args']['rdi'] = f'buf:object+0x{start:x}'
@@ -89,12 +109,13 @@ def setter_cases(address: str, value: int | None) -> list[dict]:
     other offset changes other bytes. rax is seeded (a setter leaves it), the other arguments point
     into a probe buffer, and the argument registers are compared."""
     offset = value or 0
+    size = object_size(offset)
     out = []
-    for case_id, seed, start in (('object_a', 5, 0), ('object_b', 133, 0), ('object_shifted', 71, 0x10)):
-        pattern = bytes.fromhex(probe_bytes(seed, OBJECT_SIZE))
+    for case_id, seed, start in (('object_a', 5, 0), ('object_b', 133, 0), ('object_shifted', 71, SHIFTED_START)):
+        pattern = bytes.fromhex(object_bytes(seed, size))
         field = pattern[start + offset:start + offset + 8]
         case = base_case(address, case_id, 'i64')
-        case['buffers'] = {'object': {'size': OBJECT_SIZE, 'bytes': pattern.hex()},
+        case['buffers'] = {'object': {'size': size, 'bytes': pattern.hex()},
                            'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
         case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
         case['args']['rdi'] = f'buf:object+0x{start:x}'
@@ -178,3 +199,21 @@ def cases(family: str, address: str, value: int | None) -> list[dict]:
     if family not in CASES:
         raise KeyError(f'no case generator for family {family}')
     return CASES[family](address, value)
+
+
+# The far field families are the field getters and setters with a 32-bit displacement (an offset
+# of 0x80 or more): the same cases, with the object sized for the offset, and the same mutants.
+FAR_FIELD_FAMILIES = {
+    'reads_far_qword_field': 'reads_qword_field',
+    'reads_far_dword_field': 'reads_dword_field',
+    'reads_far_word_field': 'reads_word_field',
+    'reads_far_byte_field': 'reads_byte_field',
+    'far_field_address': 'field_address',
+    'writes_far_qword_field': 'writes_qword_field',
+    'writes_far_dword_field': 'writes_dword_field',
+    'writes_far_word_field': 'writes_word_field',
+    'writes_far_byte_field': 'writes_byte_field',
+}
+for far, near in FAR_FIELD_FAMILIES.items():
+    CASES[far] = CASES[near]
+    MUTANTS[far] = MUTANTS[near]

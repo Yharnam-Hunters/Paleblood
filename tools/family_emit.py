@@ -342,6 +342,29 @@ MATCHING_TEMPLATES = {
 }
 
 
+# The far field families (symbols/families.csv, `{d32}`): the field getters and setters whose
+# field is 0x80 bytes or more into the object, so the instruction has a 32-bit displacement.
+# The bodies are the near family's; only the header differs.
+FAR_FIELD_FAMILIES = {
+    'reads_far_qword_field': ('reads_qword_field', 'mov rax, [rdi+K]; ret', '64-bit field getters'),
+    'reads_far_dword_field': ('reads_dword_field', 'mov eax, [rdi+K]; ret', '32-bit field getters'),
+    'reads_far_word_field': ('reads_word_field', 'movzx eax, word [rdi+K]; ret', '16-bit field getters'),
+    'reads_far_byte_field': ('reads_byte_field', 'movzx eax, byte [rdi+K]; ret', '8-bit field getters'),
+    'far_field_address': ('field_address', 'lea rax, [rdi+K]; ret', 'member and base addresses'),
+    'writes_far_qword_field': ('writes_qword_field', 'mov [rdi+K], rsi; ret', '64-bit field setters'),
+    'writes_far_dword_field': ('writes_dword_field', 'mov [rdi+K], esi; ret', '32-bit field setters'),
+    'writes_far_word_field': ('writes_word_field', 'mov [rdi+K], si; ret', '16-bit field setters'),
+    'writes_far_byte_field': ('writes_byte_field', 'mov [rdi+K], sil; ret', '8-bit field setters'),
+}
+for far, (near, instruction, what) in FAR_FIELD_FAMILIES.items():
+    TEMPLATES[far] = {**TEMPLATES[near], 'header': (
+        f'// {what[0].upper()}{what[1:]}, 0x80 bytes or more into the object: every member of the\n'
+        f'// {far} family (symbols/families.csv) is `{instruction}` with a\n'
+        '// 32-bit displacement K. The body is the near family\'s; one replacement per offset K.\n')}
+    MATCHING_TEMPLATES[far] = {**MATCHING_TEMPLATES[near], 'header': (
+        f'// {what[0].upper()}{what[1:]}, far: `{instruction}` with a 32-bit displacement K.\n'
+        '// One function per offset K.\n')}
+
 def matching_path(root: str, family: dict) -> str:
     return os.path.join(root, 'game', 'matching', family['system'], f"{family['family']}.c")
 
