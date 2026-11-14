@@ -909,6 +909,9 @@ address,replacement,system,returns
 0x02a6f3d0,bb_engine_array64_reserve_02a6f3d0,engine,void
 0x02a70890,bb_loading_kernel_file_open,loading,i32
 0x02a70920,bb_loading_kernel_file_read,loading,i32
+0x02a70950,bb_loading_kernel_file_write,loading,i32
+0x02a70980,bb_loading_kernel_file_seek,loading,i32
+0x02a709c0,bb_loading_kernel_file_close,loading,void
 0x02a70a90,bb_loading_stream_handle_construct_02a70a90,loading,void
 0x02a76110,bb_engine_array64_push_back_02a76110,engine,void
 0x02a76a30,bb_engine_array64_reserve_02a76a30,engine,void
