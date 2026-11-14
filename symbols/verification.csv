@@ -378,6 +378,8 @@ frame_timing_get_monotonic_ms,option-recorded,wait-sleep,91,91,0,0,3a73b48ae6f6d
 frame_timing_get_monotonic_ms,option-recorded,wait-spin,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_us,recorded,,800,799,0,1,4e1059aed1298996,2026-11-14
 frame_timing_get_monotonic_us,edge,,20,20,0,0,4e1059aed1298996,2026-11-14
+frame_timing_give_handle_to_local_request_02269d40,edge,,22,22,0,0,705c39228e7f29bd,2026-11-14
+frame_timing_give_handle_to_server_request_02269e30,edge,,22,22,0,0,705c39228e7f29bd,2026-11-14
 frame_timing_holygrail_until_idle_0200f970,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_until_idle_0200f970,edge,60,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_until_idle_020118f0,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
