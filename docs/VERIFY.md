@@ -216,6 +216,13 @@ on the path the fixed clock takes, which may not be the recorded one, so its rev
 Other faults are left alone: the case still ends with `signal 11`. `--trace-instructions` runs
 keep the real counter (the instruction tracer refuses `rdtsc` anyway).
 
+Fixed-sequence interception is supported only on Linux x86-64. On other platforms, the loader
+exports the same API but `rt_fixed_tsc_install` refuses with `-1` and `errno=ENOTSUP`, without
+installing a signal handler or changing counter behavior. `rt_fixed_tsc_reads` then reports zero
+intercepted reads; it does not supply a counter value. The harness currently requests a fixed
+sequence only on Linux. A macOS loader build or unsupported-API test does not validate the fixed
+sequence or deterministic counter-dependent comparisons.
+
 ## Limits
 
 - The function runs alone: whatever it calls inside the game runs too, as original code,

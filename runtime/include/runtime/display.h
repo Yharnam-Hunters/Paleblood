@@ -12,8 +12,7 @@
      headless  frames are kept and counted; with --display-capture DIR each presented frame is
                also written there as frame-NNNNNN.ppm (by a writer thread, off the flip), for tests and
                for looking at a run;
-     window    frames are shown in a window, with Vulkan (when the runtime was built with Vulkan
-               and SDL3). */
+     window    frames are shown with AppKit/Metal on selected macOS builds or Vulkan/SDL3. */
 
 #include <stdint.h>
 
@@ -24,7 +23,7 @@ extern "C" {
 typedef enum { RT_DISPLAY_NONE, RT_DISPLAY_HEADLESS, RT_DISPLAY_WINDOW } rt_display_mode;
 
 /* Chooses the mode before the guest runs; capture_dir may be NULL. Returns 0, or -1 when the mode
-   is not available in this build (window without Vulkan and SDL3). */
+   is not available in this build (window without a selected backend). */
 int rt_display_configure(rt_display_mode mode, const char *capture_dir);
 
 /* Video out registered count frame buffers of width x height pixels on a port. */
