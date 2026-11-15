@@ -120,9 +120,9 @@ jobs:
         run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_runtime_window test_window_mailbox test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth --parallel 2
       # Match macos-boot: no optional host package from the runner's other architecture.
       # Guest startup requires a whole-process x86-64 build; ARM still compiles the adapter fixture.
-      - name: Compile actual Metal CLI and guest recovery scope
+      - name: Compile Metal runtime and guest recovery scope
         if: matrix.arch == 'x86_64'
-        run: cmake --build build --target pbboot test_boot_scope_darwin --parallel 2
+        run: cmake --build build --target pbboot pbloader bbrt bbgame test_boot_scope_darwin --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
