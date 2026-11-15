@@ -37,7 +37,10 @@ extents in `symbols/ghidra_functions.csv`. A function is a member only when:
 - every byte after it up to the next function is the compiler's NOP padding, and that extent is
   at least 14 bytes, so the hook's absolute jump overwrites only padding (QUIRKS.md: a hook is a
   14-byte jump; a member shorter than that is hooked across its own padding, never into the next
-  function);
+  function). The next function is the next one in `symbols/ghidra_functions.csv`, or an earlier
+  address after the member that a relative relocation points at: Ghidra misses functions only
+  reached through a pointer, such as the `.init_array` entry that often follows a static
+  initializer;
 - no relocation writes into its extent, no community patch line (`--patches`) does, it has no row
   in `symbols/functions.csv` and no source file under `game/` names its address (a declared
   original or an observe hook).

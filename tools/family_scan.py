@@ -26,7 +26,9 @@ member only if all of these hold, and the scan prints how many each one excluded
     the field's target
   - every byte after it up to the next function is the compiler's NOP padding, and that
     extent is at least 14 bytes (the hook's absolute jump overwrites the padding, never the next
-    function)
+    function); the next function is the next one in symbols/ghidra_functions.csv, or an earlier
+    address after the member that a relative relocation points at (a function only reached
+    through a pointer, such as an .init_array entry, which Ghidra did not find)
   - no relocation writes into its extent
   - it has no row in symbols/functions.csv (a hand replacement or a named function)
   - no source file under game/ names its address (a declared original or an observe hook)
@@ -52,6 +54,7 @@ DT_NULL, DT_SCE_JMPREL, DT_SCE_PLTRELSZ = 0, 0x61000029, 0x6100002d
 DT_SCE_RELA, DT_SCE_RELASZ = 0x6100002f, 0x61000031
 PT_DYNAMIC, PT_SCE_DYNLIBDATA = 2, 0x61000000
 RELA_SIZE = 24
+R_X86_64_RELATIVE = 8
 # The NOP encodings compilers pad functions with (one-byte nop, the 0f 1f forms with any number
 # of 66 prefixes, the cs-prefixed long form), and int3.
 PADDING = re.compile(rb'(?:\x66*\x2e?\x0f\x1f\x84\x00\x00\x00\x00\x00|\x66*\x0f\x1f\x44\x00\x00'
@@ -68,8 +71,8 @@ def default_elf() -> str | None:
     return path if os.path.isfile(path) else None
 
 
-def relocated_offsets(data: bytes) -> list[int]:
-    """Sorted addresses (ELF vaddr + BASE) of every 8-byte slot a relocation writes."""
+def relocations(data: bytes) -> list[tuple[int, int, int]]:
+    """(slot address, type, addend) of every relocation; addresses are ELF vaddr + BASE."""
     phoff, = struct.unpack_from('<Q', data, 0x20)
     phnum, = struct.unpack_from('<H', data, 0x38)
     dynamic = dynlib = None
@@ -93,10 +96,20 @@ def relocated_offsets(data: bytes) -> list[int]:
             continue
         start = dynlib + tags[table]
         for off in range(start, start + tags[size], RELA_SIZE):
-            r_offset, = struct.unpack_from('<Q', data, off)
-            out.append(r_offset + BASE)
-    out.sort()
+            r_offset, r_info, r_addend = struct.unpack_from('<QQq', data, off)
+            out.append((r_offset + BASE, r_info & 0xffffffff, r_addend))
     return out
+
+
+def relocated_offsets(data: bytes) -> list[int]:
+    """Sorted addresses (ELF vaddr + BASE) of every 8-byte slot a relocation writes."""
+    return sorted(slot for slot, _, _ in relocations(data))
+
+
+def pointed_addresses(data: bytes) -> list[int]:
+    """Sorted addresses (ELF vaddr + BASE) that relative relocations point at: among them every
+    function reached only through a pointer (.init_array entries, tables of callbacks)."""
+    return sorted({addend + BASE for _, kind, addend in relocations(data) if kind == R_X86_64_RELATIVE})
 
 
 def patched_ranges(path: str) -> list[tuple[int, int]]:
@@ -137,6 +150,7 @@ class Scanner:
                           for r in read_csv(os.path.join(root, 'symbols', 'ghidra_functions.csv'))]
         self.named = {int(r['address'], 16) for r in read_csv(os.path.join(root, 'symbols', 'functions.csv'))}
         self.relocated = relocated_offsets(self.image.data)
+        self.pointed = pointed_addresses(self.image.data)
         self.in_source = source_addresses(root)
         self.patched = patched_ranges(patches) if patches else []
         self.libraries = self._libraries()
@@ -158,10 +172,18 @@ class Scanner:
         return None if off is None else self.image.data[off:off + size]
 
     def extent(self, index: int) -> int | None:
-        """Bytes from function INDEX to the next function, or None for the last one."""
+        """Bytes from function INDEX to the next function, or None for the last one. The next
+        function is the next one in symbols/ghidra_functions.csv, or an earlier address after the
+        function's end that a relative relocation points at: Ghidra misses functions only reached
+        through a pointer (an .init_array entry right after a static initializer)."""
         if index + 1 >= len(self.functions):
             return None
-        return self.functions[index + 1][0] - self.functions[index][0]
+        address, size = self.functions[index]
+        following = self.functions[index + 1][0]
+        i = bisect.bisect_left(self.pointed, address + size)
+        if i < len(self.pointed) and self.pointed[i] < following:
+            following = self.pointed[i]
+        return following - address
 
     def classify(self, index: int, shape: fam.Shape) -> tuple[str, dict | None]:
         """('member', row) or (exclusion reason, None) for function INDEX against SHAPE."""

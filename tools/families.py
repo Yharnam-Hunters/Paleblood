@@ -26,7 +26,9 @@ symbols/families/<family>.csv      one row per member
   address    PS4 virtual address (ascending)
   size       its size in symbols/ghidra_functions.csv
   extent     the bytes up to the next function: the member plus the compiler's NOP padding,
-             which the 14-byte hook jump may overwrite (a member needs extent >= 14)
+             which the 14-byte hook jump may overwrite (a member needs extent >= 14); the next
+             function is the next exported one, or an earlier address a relative relocation
+             points at (a function Ghidra did not find, such as an .init_array entry)
   value      the shape's parameter for this member (hex), empty when the shape has none
   status     replaced, edge-verified or verified (CONTRIBUTING.md)
 
