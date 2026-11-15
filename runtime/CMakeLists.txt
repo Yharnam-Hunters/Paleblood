@@ -21,7 +21,7 @@ if(CAPSTONE_FOUND)
     target_link_libraries(bbrt PUBLIC PkgConfig::CAPSTONE pthread)
 endif()
 # The executable loader on its own, for the verification harness (tools/harness.py loads it).
-add_library(pbloader SHARED loader.c nid.c)
+add_library(pbloader SHARED loader.c nid.c fixed_tsc.c)
 target_include_directories(pbloader PUBLIC include)
 # The boot harness: runs the executable's entry on our runtime (runtime/boot.c). System library
 # implementations are compiled in directly, so the linker keeps every RT_SYSLIB entry.
@@ -90,4 +90,8 @@ target_link_libraries(pbboot PRIVATE ${CMAKE_DL_LIBS} atrac9 pbhost_time)
 
 if(TARGET guest_pointer_owned)
     target_link_libraries(pbboot PRIVATE guest_pointer_owned)
+endif()
+
+if(APPLE)
+    target_sources(pbboot PRIVATE boot_arena.c)
 endif()
