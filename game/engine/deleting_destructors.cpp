@@ -8,6 +8,9 @@
 //  - destroys_with_<D>_then_deletes: like destroys_then_deletes, with the destructor D;
 //  - destroys_with_<D>_then_frees: the destructor D, then the object goes to the free (slot
 //    0x68) of the allocator the global 0x057e7320 points at.
+//  - calls_empty_destructor_then_deletes: the destructor is an empty function (a member of
+//    returns_nothing), so only operator delete is called; naming the empty function here would
+//    take it out of its family.
 // All end in a tail call.
 #include <cstddef>
 #include <cstdint>
@@ -116,4 +119,9 @@ extern "C" uint64_t bb_engine_destroys_with_0x006fa840_then_frees(void *object)
 extern "C" uint64_t bb_engine_destroys_with_0x0045a480_then_frees(void *object)
 {
     return destroy_then_free(destructor_0045a480, object);
+}
+
+extern "C" void bb_engine_calls_empty_destructor_then_deletes(void *object)
+{
+    operator_delete(object);
 }
