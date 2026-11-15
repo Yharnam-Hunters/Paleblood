@@ -177,9 +177,12 @@ MUTANTS = {
     'writes_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     # Records that call virtual functions: no call, and the one rule each family keeps (the heap
     # text, the value, the state check, the free) left out.
-    'writes_wide_string_at_0x28_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_at_0x28'],
-    'writes_wide_string_through_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_through_0x20'],
-    'writes_text_at_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_text_without_value'],
+    'writes_wide_string_at_0x28_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_at_0x28',
+        'bb_mutant_wide_string_at_0x28_write_read_after_value', 'bb_mutant_wide_string_at_0x28_text_read_after_value'],
+    'writes_wide_string_through_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_through_0x20',
+        'bb_mutant_wide_string_through_0x20_write_read_after_value', 'bb_mutant_wide_string_through_0x20_text_read_after_value'],
+    'writes_text_at_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_text_without_value',
+        'bb_mutant_text_at_0x20_write_read_after_value', 'bb_mutant_text_at_0x20_text_read_after_value'],
     'toggles_flag_at_8_through_first_virtual': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_toggle_at_8_ignores_state'],
     'toggles_flag_at_0x20_through_first_virtual': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_toggle_at_0x20_ignores_state'],
     'resets_wide_string_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_resets_wide_string_at_8_without_free'],
@@ -187,7 +190,8 @@ MUTANTS = {
     'tail_calls_slot_0_of_nth_node_at_0x30': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_calls_node_after_the_nth'],
     'shifts_arguments_into_virtual_0x88': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_virtual_0x88_keeps_second_argument'],
     'calls_0x78_stores_dword_at_0x20_calls_0xa8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_restarts_without_storing_dword'],
-    'flushes_pending_through_member_at_0x40': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_flushes_while_flushing'],
+    'flushes_pending_through_member_at_0x40': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_flushes_while_flushing',
+        'bb_mutant_flushes_through_table_read_before_prepare', 'bb_mutant_flushes_with_flags_read_before_calls'],
     'tail_calls_0x68_of_what_0x38_returns': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_calls_0x68_of_object_itself'],
     'erases_subtree_through_allocator_at_0x18': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_erases_left_spine_only'],
     'erases_subtree_with_wide_string_at_0x28': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_erases_nodes_without_their_strings'],
@@ -219,11 +223,13 @@ def record_stub(table: int, slot: int) -> str:
 
 
 def stubbed_table(case: dict, name: str, table: int, seed: int, argc: dict[int, int],
-                  returns: dict[int, int] | None = None) -> None:
+                  returns: dict[int, int] | None = None, attach: bool = True) -> None:
     """Buffer NAME gets a table of stubs at +0: slot offset K's stub compares argc[K] arguments
-    (1 for the rest) and returns returns[K] (else its own value)."""
+    (1 for the rest) and returns returns[K] (else its own value). Unattached, the table is only
+    buffer NAME_table, for a callback to store."""
     case['buffers'][f'{name}_table'] = {'size': 8 * RECORD_TABLE_SLOTS}
-    case['memory'].append({'addr': f'buf:{name}+0x0', 'pointer': f'{name}_table'})
+    if attach:
+        case['memory'].append({'addr': f'buf:{name}+0x0', 'pointer': f'{name}_table'})
     for slot in range(RECORD_TABLE_SLOTS):
         case['memory'].append({'addr': f'buf:{name}_table+0x{8 * slot:x}', 'guest': record_stub(table, slot)})
         value = (returns or {}).get(8 * slot, seed << 32 | table << 8 | slot)
@@ -270,12 +276,42 @@ def sink_case(address: str, family: str, case_id: str, seed: int, capacity: int)
     return case
 
 
+def callback_rewrite_case(address: str, family: str, seed: int, capacity: int) -> dict:
+    """The record is its own sink, and its value callback (slot 0x60) swaps the record's table for
+    another and points the text somewhere else: the write function and the text read before the
+    call are the ones passed on, so a member that reads either again after the call differs."""
+    case = sink_case(address, family, f'callback_rewrites_{capacity:x}_{seed}', seed, capacity)
+    case['args']['rsi'] = 'buf:record'
+    del case['buffers']['sink'], case['buffers']['sink_table']
+    case['memory'] = [m for m in case['memory'] if not m['addr'].startswith('buf:sink')]
+    case['stubs'] = [s for s in case['stubs'] if int(s['address'], 16) < RECORD_STUB_BASE + RECORD_TABLE_STRIDE]
+    for stub in case['stubs']:
+        if stub['address'] == record_stub(0, SINK_WRITE // 8):
+            stub['argc'] = 3
+    stubbed_table(case, 'swapped', 2, seed, {RECORD_VALUE: 1, SINK_WRITE: 3}, attach=False)
+    case['buffers']['moved'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 5)}
+    writes = [{'arg': 0, 'offset': 0, 'pointer': 'swapped_table'}]
+    if family == 'writes_wide_string_through_0x20_to_sink':
+        case['buffers']['moved_string'] = {'size': 0x28, 'bytes': (bytes(8) + wide_string_bytes(seed + 6, capacity)).hex()}
+        case['memory'].append({'addr': 'buf:moved_string+0x8', 'pointer': 'moved'})
+        writes.append({'arg': 0, 'offset': 0x20, 'pointer': 'moved_string'})
+    else:
+        writes.append({'arg': 0, 'offset': 0x28 if family == 'writes_wide_string_at_0x28_to_sink' else 0x20,
+                       'pointer': 'moved'})
+    for stub in case['stubs']:
+        if stub['address'] == record_stub(0, RECORD_VALUE // 8):
+            stub['writes'] = writes
+    return case
+
+
 def sink_cases(address: str, family: str) -> list[dict]:
-    """Two seeds; the wide strings at each capacity of WIDE_CAPACITIES."""
+    """Two seeds; the wide strings at each capacity of WIDE_CAPACITIES; and per seed a value
+    callback that rewrites the write function and the text (heap text, so its pointer is read)."""
+    rewrites = [callback_rewrite_case(address, family, seed, WIDE_HEAP_CAPACITY) for seed in (19, 113)]
     if family == 'writes_text_at_0x20_to_sink':
-        return [sink_case(address, family, f'text_{seed}', seed, 0) for seed in (19, 113)]
+        return [sink_case(address, family, f'text_{seed}', seed, 0) for seed in (19, 113)] + rewrites
     return [sink_case(address, family, f'capacity_{capacity:x}_{seed}', seed, capacity)
-            for seed in (19, 113) for capacity in WIDE_CAPACITIES]
+            for seed in (19, 113) for capacity in WIDE_CAPACITIES] + rewrites
 
 
 def toggle_case(address: str, state_at: int, case_id: str, on: int, state: int, result: int) -> dict:
@@ -417,10 +453,33 @@ def flush_case(address: str, case_id: str, flags: int = PENDING_HAS_WORK, count:
     return case
 
 
+PENDING_REWRITTEN_FLAGS = 0xb5      # bit 1 clear, others mixed
+
+
+def flush_rewrite_case(address: str, case_id: str, by_prepare: bool) -> dict:
+    """The prepare callback (slot 0x18) swaps the pending object's table, so flush (slot 0x20) is
+    the new table's; and the prepare or the flush callback rewrites the flags, which the member
+    reads again to clear bit 1. A member that keeps the table or the flags from before the calls
+    differs."""
+    case = flush_case(address, case_id)
+    stubbed_table(case, 'swapped', 1, 61, {0x18: 2, 0x20: 2}, attach=False)
+    flags = {'arg': 0, 'offset': 0xc, 'bytes': f'{PENDING_REWRITTEN_FLAGS:02x}'}
+    prepare, flush = record_stub(0, 0x18 // 8), record_stub(1, 0x20 // 8)
+    for stub in case['stubs']:
+        if stub['address'] == prepare:
+            stub['writes'] = [{'arg': 0, 'offset': 0, 'pointer': 'swapped_table'}] + ([flags] if by_prepare else [])
+        elif stub['address'] == flush and not by_prepare:
+            stub['writes'] = [flags]
+    return case
+
+
 def flush_cases(address: str) -> list[dict]:
     """A flush (bit 0 alone, and every other flag bit but 1 set), and each reason not to: no
-    holder, no pending object, no work bit, count 0, already flushing."""
-    return [flush_case(address, 'flush'),
+    holder, no pending object, no work bit, count 0, already flushing; and callbacks that swap
+    the table and rewrite the flags (in the prepare, and in the flush)."""
+    return [flush_rewrite_case(address, 'prepare_rewrites', True),
+            flush_rewrite_case(address, 'flush_rewrites_flags', False),
+            flush_case(address, 'flush'),
             flush_case(address, 'flush_other_flags', flags=0xfd, count=0x80000000),
             flush_case(address, 'no_holder', holder=False),
             flush_case(address, 'no_pending', pending=False),
