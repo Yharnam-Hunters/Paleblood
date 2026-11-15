@@ -1,0 +1,9 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+leaf_resets_first_qword_returning_object_0061f150,edge,,3,3,0,0,eac502974d7a9310,2026-11-15
+leaf_resets_first_qword_returning_object_006a16d0,edge,,3,3,0,0,eac502974d7a9310,2026-11-15
+leaf_resets_first_qword_returning_object_01b5dfb0,edge,,3,3,0,0,eac502974d7a9310,2026-11-15
+leaf_resets_first_qword_returning_object_01b5ea60,edge,,3,3,0,0,eac502974d7a9310,2026-11-15
+leaf_resets_first_qword_returning_object_01edaee0,edge,,3,3,0,0,eac502974d7a9310,2026-11-15
+leaf_resets_first_qword_returning_object_01fa5fa0,edge,,3,3,0,0,eac502974d7a9310,2026-11-15
+leaf_resets_first_qword_returning_object_01fd7c50,edge,,3,3,0,0,eac502974d7a9310,2026-11-15
+leaf_resets_first_qword_returning_object_02bc7d40,edge,,3,3,0,0,eac502974d7a9310,2026-11-15

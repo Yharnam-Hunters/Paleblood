@@ -34,6 +34,94 @@ def base_case(address: str, case_id: str, returns: str) -> dict:
             'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
 
 
+def pointer_case(address: str, case_id: str, seed: int, target: str | None, target_size: int = 0xa0) -> dict:
+    """An object of distinct bytes whose qword at +8 points at a TARGET buffer of distinct bytes
+    (or is 0 for None); rax is seeded and the other arguments point into a probe buffer."""
+    case = base_case(address, case_id, 'i64')
+    pattern = bytearray.fromhex(probe_bytes(seed))
+    pattern[8:16] = bytes(8)
+    case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': pattern.hex()},
+                       'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
+    if target is not None:
+        case['buffers'][target] = {'size': target_size, 'bytes': probe_bytes(seed + 2, target_size)}
+        case['memory'].append({'addr': 'buf:object+0x8', 'pointer': target})
+    case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
+    case['args'].update({'rdi': 'buf:object', 'rax': hex(RAX_SEED)})
+    case['observe_registers'] = list(ARGUMENT_REGISTERS)
+    return case
+
+
+def through_pointer_cases(address: str, value: int | None) -> list[dict]:
+    """A read or address K bytes into the object that the pointer at +8 points at: two objects
+    and targets of distinct bytes (a read at another offset or width returns another value)."""
+    return [pointer_case(address, 'target_a', 41, 'target'), pointer_case(address, 'target_b', 97, 'target')]
+
+
+PART_OFFSET = 0xd0
+
+
+def part_pointer_cases(address: str, value: int | None) -> list[dict]:
+    """The pointer at +8 plus PART_OFFSET, or null: a target large enough for the part, and a null
+    pointer (the result must be 0, not PART_OFFSET). The original computes in rcx, so the cases
+    compare rax and memory, not the argument registers."""
+    cases = [pointer_case(address, 'owner', 43, 'owner', PART_OFFSET + 0x10),
+             pointer_case(address, 'null_owner', 59, None)]
+    for case in cases:
+        del case['observe_registers']
+    return cases
+
+
+STRING_POINTER = 0x30   # where the object keeps the wide string pointer
+STRING_TEXT = 0x8       # inline text, or the heap text pointer
+STRING_CAPACITY = 0x20
+
+
+def wide_string_cases(address: str, value: int | None) -> list[dict]:
+    """The text of the wide string at +0x30: capacities 0 and 7 (inline: the string's address plus
+    8) and 8 and 2**63 (the heap text pointer at +8, which points at its own buffer)."""
+    out = []
+    for n, capacity in enumerate((0, 7, 8, 1 << 63)):
+        case = base_case(address, f'capacity_{capacity:x}', 'i64')
+        pattern = bytearray.fromhex(probe_bytes(61 + n))
+        pattern[STRING_POINTER:STRING_POINTER + 8] = bytes(8)
+        string = bytearray.fromhex(probe_bytes(71 + n, 0x28))
+        string[STRING_CAPACITY:STRING_CAPACITY + 8] = capacity.to_bytes(8, 'little')
+        case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': pattern.hex()},
+                           'string': {'size': 0x28, 'bytes': string.hex()},
+                           'heap_text': {'size': 0x20, 'bytes': probe_bytes(81 + n, 0x20)},
+                           'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(91 + n)}}
+        case['memory'] = [{'addr': f'buf:object+0x{STRING_POINTER:x}', 'pointer': 'string'},
+                          {'addr': f'buf:string+0x{STRING_TEXT:x}', 'pointer': 'heap_text'}]
+        case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
+        case['args'].update({'rdi': 'buf:object', 'rax': hex(RAX_SEED)})
+        case['observe_registers'] = list(ARGUMENT_REGISTERS)
+        out.append(case)
+    return out
+
+
+def first_field_store_cases(address: str, value: int | None) -> list[dict]:
+    """A store at the start of the object whose shape parameter is the stored constant, not an
+    offset: setter_cases at offset 0 (any other store shows; rax must come back as the object)."""
+    return setter_cases(address, None)
+
+
+BIT_FIELD_VALUES = ((0xfffffff5, 0x12345abc), (0x0, 0xffffffff), (0x2ab, 0x7))
+
+
+def bit_field_cases(address: str, value: int | None) -> list[dict]:
+    """A bit-field write to the first dword of an object of distinct bytes, from esi (and edx):
+    values with bits beyond the field set (which must not reach the dword), all clear and in range.
+    The originals leave a scratch value in eax and change esi and edx, so the cases compare memory
+    only (returns void)."""
+    out = []
+    for n, (first, second) in enumerate(BIT_FIELD_VALUES):
+        case = base_case(address, f'values_{n}', 'void')
+        case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': probe_bytes(101 + 7 * n)}}
+        case['args'] = {'rdi': 'buf:object', 'rsi': hex(first), 'rdx': hex(second), 'rax': hex(RAX_SEED)}
+        out.append(case)
+    return out
+
+
 def untouched_state_cases(address: str, returns: str) -> list[dict]:
     """Cases for a body that must not touch memory or the argument registers: every argument
     points into a probe buffer (any write through one shows), the argument registers are
@@ -295,6 +383,17 @@ CASES = {
     'reads_nth_list_node_dword': list_lookup_cases,
     'reads_qword_field': field_cases,
     'reads_dword_field': field_cases,
+    'stores_constant_in_first_dword_returning_object': first_field_store_cases,
+    'reads_dword_through_pointer_at_8': through_pointer_cases,
+    'reads_qword_through_pointer_at_8': through_pointer_cases,
+    'address_through_pointer_at_8': through_pointer_cases,
+    'returns_all_bits': returns_a_value,
+    'resets_first_qword_returning_object': setter_cases,
+    'adjusts_pointer_at_8_unless_null': part_pointer_cases,
+    'reads_wide_string_text_at_0x30': wide_string_cases,
+    'writes_top_four_bits_of_first_dword': bit_field_cases,
+    'writes_low_ten_bits_of_first_dword': bit_field_cases,
+    'packs_first_dword_from_two_bit_fields': bit_field_cases,
     'reads_word_field': field_cases,
     'reads_byte_field': field_cases,
     'field_address': field_cases,
@@ -335,6 +434,24 @@ MUTANTS = {
     # Field getters: the neighbouring offset's replacement is the off-by-offset mutant.
     'reads_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
     'reads_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    # Constructors, reads through the pointer at +8 and small records: the neighbouring value's
+    # replacement, a missing store, the wrong return, the text always inline, a whole-dword store.
+    'stores_constant_in_first_dword_returning_object': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
+                                                        'bb_mutant_returns_zero'],
+    'reads_dword_through_pointer_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'reads_qword_through_pointer_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'address_through_pointer_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'returns_all_bits': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_one',
+                         'bb_mutant_returns_low_all_bits'],
+    'resets_first_qword_returning_object': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
+                                            'bb_mutant_returns_zero'],
+    'adjusts_pointer_at_8_unless_null': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                         'bb_mutant_returns_first_argument'],
+    'reads_wide_string_text_at_0x30': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                       'bb_mutant_wide_string_text_inline'],
+    'writes_top_four_bits_of_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword'],
+    'writes_low_ten_bits_of_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword'],
+    'packs_first_dword_from_two_bit_fields': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword'],
     'reads_word_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
     'reads_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
     'field_address': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],

@@ -386,6 +386,106 @@ def matching_path(root: str, family: dict) -> str:
     return os.path.join(root, 'game', 'matching', family['system'], f"{family['family']}.c")
 
 
+# Tagging constructors and reads through the pointer at +8 (symbols/families.csv); the small exact
+# records of the same change are in game/leaf/small_objects.cpp.
+TEMPLATES['stores_constant_in_first_dword_returning_object'] = {
+    'header': ('// Tagging constructors: every member of the stores_constant_in_first_dword_returning_object\n'
+               '// family (symbols/families.csv) is `mov dword [rdi], imm32; mov rax, rdi; ret`: the first\n'
+               '// dword (a type or kind tag) gets the constant and the object comes back.\n'),
+    'shared': '#include <cstdint>\n\nstruct ObjectStartingWithTag {\n    uint32_t tag;\n};\n',
+    'per_value': ('constexpr uint32_t tag_{name} = {value};\n'
+                  'extern "C" ObjectStartingWithTag *{symbol}(ObjectStartingWithTag *object)\n'
+                  '{{\n    object->tag = tag_{name};\n    return object;\n}}\n'),
+}
+POINTER_AT_8 = ('#include "object_field.h"\n\n'
+                'template <typename Target>\nstruct ObjectPointingAt {\n    uint64_t unknown_before_pointer;\n'
+                '    Target *target;\n};\n')
+for family, (field_type, returns, body, what) in {
+        'reads_dword_through_pointer_at_8': ('uint32_t', 'uint64_t', 'return object->target->field;',
+                                             'the dword K bytes into the object that the pointer at +8 points at'),
+        'reads_qword_through_pointer_at_8': ('uint64_t', 'uint64_t', 'return object->target->field;',
+                                             'the qword K bytes into the object that the pointer at +8 points at'),
+        'address_through_pointer_at_8': ('uint8_t', 'uint8_t *', 'return &object->target->field;',
+                                         'the address K bytes into the object that the pointer at +8 points at'),
+}.items():
+    TEMPLATES[family] = {
+        'header': (f'// Every member of the {family} family (symbols/families.csv) returns\n'
+                   f'// {what}. One replacement per offset K.\n'),
+        'shared': POINTER_AT_8,
+        'per_value': ('constexpr std::size_t offset_{name} = {value};\n'
+                      f'static_assert(field_is_at_offset<offset_{{name}}, {field_type}>);\n'
+                      f'extern "C" {returns} {{symbol}}(const ObjectPointingAt<ObjectWithFieldAt<offset_{{name}}, {field_type}>> *object)\n'
+                      f'{{{{\n    {body}\n}}}}\n'),
+    }
+    width = {'uint32_t': 'dword', 'uint64_t': 'qword', 'uint8_t': 'byte'}[field_type]
+    c_returns = 'uint8_t *' if field_type == 'uint8_t' else field_type
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// Reads through the pointer at +8: {what}.\n',
+        'shared': STDINT,
+        'per_value': (field_struct(width)
+                      + 'struct object_pointing_at_{name} {{\n    uint64_t unknown_before_pointer;\n'
+                      f'    struct object_with_{width}_at_{{name}} *target;\n}}}};\n'
+                      f'{c_returns} {{symbol}}(const struct object_pointing_at_{{name}} *object)\n'
+                      f'{{{{\n    {body}\n}}}}\n'),
+    }
+MATCHING_TEMPLATES['stores_constant_in_first_dword_returning_object'] = {
+    'header': '// Tagging constructors: `mov dword [rdi], imm32; mov rax, rdi; ret`.\n',
+    'shared': STDINT + '\nstruct object_starting_with_tag {\n    uint32_t tag;\n};\n',
+    'per_value': ('static const uint32_t tag_{name} = {value}u;\n'
+                  'struct object_starting_with_tag *{symbol}(struct object_starting_with_tag *object)\n'
+                  '{{\n    object->tag = tag_{name};\n    return object;\n}}\n'),
+}
+MATCHING_TEMPLATES['returns_all_bits'] = {
+    'header': '// Functions that return -1: `mov rax, -1; ret`.\n',
+    'shared': '',
+    'single': 'long long {symbol}(void)\n{{\n    return -1;\n}}\n',
+}
+MATCHING_TEMPLATES['resets_first_qword_returning_object'] = {
+    'header': '// Resetting constructors: `mov qword [rdi], 0; mov rax, rdi; ret`.\n',
+    'shared': STDINT + '\nstruct object_starting_with_qword {\n    uint64_t first;\n};\n',
+    'single': ('struct object_starting_with_qword *{symbol}(struct object_starting_with_qword *object)\n'
+               '{{\n    object->first = 0;\n    return object;\n}}\n'),
+}
+MATCHING_TEMPLATES['adjusts_pointer_at_8_unless_null'] = {
+    'header': '// Null-safe base adjustments: the pointer at +8 plus 0xd0, or null.\n',
+    'shared': (STDINT + '\n/* The owner\'s layout is not known, only the offset of its base-class subobject. */\n'
+               'struct owner;\n\n#define OWNER_BASE_SUBOBJECT 0xd0\n\n'
+               'struct object_pointing_at_owner {\n    uint64_t unknown_before_pointer;\n    struct owner *owner;\n};\n'),
+    'single': ('void *{symbol}(const struct object_pointing_at_owner *object)\n'
+               '{{\n    return object->owner ? (uint8_t *)object->owner + OWNER_BASE_SUBOBJECT : 0;\n}}\n'),
+}
+MATCHING_TEMPLATES['reads_wide_string_text_at_0x30'] = {
+    'header': '// Wide string text: inline at +8 below capacity 8 (at +0x20), else the heap text pointer at +8.\n',
+    'shared': (STDINT + '\nenum {{ inline_capacity = 8 }};\n\nstruct wide_string {\n    uint64_t unknown_before_text;\n'
+               '    union {\n        uint16_t inline_text[inline_capacity];\n        uint16_t *heap_text;\n    }} text;\n'
+               '    uint64_t length;\n    uint64_t capacity;\n}};\n\n'
+               'struct object_with_wide_string {\n    uint8_t unknown_before_string[0x30];\n'
+               '    struct wide_string *string;\n}};\n').replace('{{', '{').replace('}}', '}'),
+    'single': ('const uint16_t *{symbol}(const struct object_with_wide_string *object)\n'
+               '{{\n    const struct wide_string *string = object->string;\n'
+               '    return string->capacity < inline_capacity ? string->text.inline_text : string->text.heap_text;\n}}\n'),
+}
+BIT_FIELDS = (STDINT + '\nenum { low_bits = 10, middle_bits = 18, top_bits = 4 };\n\n'
+              'struct packed_bits {\n    uint32_t low : low_bits;\n    uint32_t middle : middle_bits;\n'
+              '    uint32_t top : top_bits;\n};\n')
+MATCHING_TEMPLATES['writes_top_four_bits_of_first_dword'] = {
+    'header': '// Bit-field setters: bits 28..31 of the first dword.\n',
+    'shared': BIT_FIELDS,
+    'single': 'void {symbol}(struct packed_bits *bits, uint32_t value)\n{{\n    bits->top = value;\n}}\n',
+}
+MATCHING_TEMPLATES['writes_low_ten_bits_of_first_dword'] = {
+    'header': '// Bit-field setters: bits 0..9 of the first dword.\n',
+    'shared': BIT_FIELDS,
+    'single': 'void {symbol}(struct packed_bits *bits, uint32_t value)\n{{\n    bits->low = value;\n}}\n',
+}
+MATCHING_TEMPLATES['packs_first_dword_from_two_bit_fields'] = {
+    'header': '// Bit-field packers: bits 0..9 and 28..31 of the first dword, the middle clear.\n',
+    'shared': BIT_FIELDS,
+    'single': ('void {symbol}(struct packed_bits *bits, uint32_t low, uint32_t top)\n'
+               '{{\n    struct packed_bits packed = {{low, 0, top}};\n    *bits = packed;\n}}\n'),
+}
+
+
 def matching_source(family: dict) -> str:
     """The matching source relative to the repository, as symbols/families/<family>.matching.csv names it."""
     return f"game/matching/{family['system']}/{family['family']}.c"
