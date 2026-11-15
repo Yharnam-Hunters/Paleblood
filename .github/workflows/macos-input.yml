@@ -1,0 +1,44 @@
+name: macos-input
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-input.yml'
+      - 'runtime/input/input_host_macos.c'
+      - 'runtime/input/input_host_macos.h'
+      - 'runtime/input/input.c'
+      - 'runtime/include/runtime/input_host.h'
+      - 'test/macos_input/**'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-input.yml'
+      - 'runtime/input/input_host_macos.c'
+      - 'runtime/input/input_host_macos.h'
+      - 'runtime/input/input.c'
+      - 'runtime/include/runtime/input_host.h'
+      - 'test/macos_input/**'
+
+permissions:
+  contents: read
+
+jobs:
+  keyboard:
+    name: Native keyboard CPU (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15, arch: arm64}
+          - {runner: macos-15-intel, arch: x86_64}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the standalone owned keyboard fixture
+        run: >-
+          cmake -S test/macos_input -B build-input -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+      - name: Compile the actual provider and shared input mapping
+        run: cmake --build build-input --target test_macos_input --parallel 2
+      - name: Check mapping, focus, snapshots and recovery masks
+        run: ctest --test-dir build-input --no-tests=error --output-on-failure -R '^macos_input$'

@@ -54,12 +54,27 @@
 #include "runtime/input_host.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
+#if defined(PB_METAL_WINDOW)
+#include "runtime/window_boot.h"
+#include <time.h>
+#endif
 
+#if defined(__APPLE__) && defined(__MACH__)
+#if !defined(__x86_64__)
+#error Darwin guest startup requires a whole-process x86-64 build.
+#endif
+#include "runtime/boot_arena.h"
+#include "runtime/guest_pointer.h"
+#include <libkern/OSCacheControl.h>
+#else
 #include <asm/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -67,8 +82,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
+#if defined(__APPLE__) && defined(__MACH__)
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 
 #define GUEST_BASE 0x800000000ull
@@ -136,7 +154,14 @@ static const char *const outcome_names[] = {"running", "unimplemented", "fault",
                                             "stopped", "runtime stop"};
 
 static sigjmp_buf back_to_host;
+#if defined(__APPLE__) && defined(__MACH__)
+static _Atomic enum outcome outcome = RUNNING;
+static _Atomic int recovery_active;
+static int terminal_call;
+static rt_boot_arena image_arena;
+#else
 static volatile enum outcome outcome = RUNNING;
+#endif
 /* The host thread that runs the boot. A stop on any other guest thread is recorded there and the
    main thread is told (SIGUSR1) to make the report; only the first stop counts. */
 static pthread_t main_thread;
@@ -149,6 +174,117 @@ static volatile int fault_signal;
 static volatile int exit_code;
 /* An implemented system function that stopped the run (rt_fatal): its name and the reason. */
 static char runtime_stop_function[128], runtime_stop_reason[256];
+#if defined(PB_METAL_WINDOW)
+static atomic_int window_ready, window_pending_close;
+static atomic_flag window_request_seen=ATOMIC_FLAG_INIT;
+static char window_stop_function[128],window_stop_reason[256];
+#endif
+
+#if defined(PB_METAL_WINDOW)
+/* Process alarms can remain pending on AppKit's blocked main thread. This timer sends only
+   to the coordinator. All owner operations hold ALRM/USR1 blocked through mutex unlock. */
+enum { WINDOW_TIMER_IDLE, WINDOW_TIMER_ARMED, WINDOW_TIMER_FIRED };
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    pthread_t thread,owner;
+    uint64_t generation;
+    struct timespec deadline;
+    int state,shutdown,started;
+} window_timer;
+
+static int window_deadline_reached(const struct timespec *now,const struct timespec *deadline)
+{
+    return now->tv_sec>deadline->tv_sec || (now->tv_sec==deadline->tv_sec && now->tv_nsec>=deadline->tv_nsec);
+}
+static void *window_timer_main(void *unused)
+{
+    (void)unused;
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    while (!window_timer.shutdown) {
+        while (!window_timer.shutdown && window_timer.state!=WINDOW_TIMER_ARMED)
+            if (pthread_cond_wait(&window_timer.changed,&window_timer.lock)) _exit(125);
+        if (window_timer.shutdown) break;
+        const uint64_t generation=window_timer.generation;
+        const struct timespec deadline=window_timer.deadline;
+        struct timespec now;
+        if (clock_gettime(CLOCK_UPTIME_RAW,&now)) _exit(125);
+        if (!window_deadline_reached(&now,&deadline)) {
+            struct timespec remaining={deadline.tv_sec-now.tv_sec,deadline.tv_nsec-now.tv_nsec};
+            if (remaining.tv_nsec<0) {remaining.tv_nsec+=1000000000;--remaining.tv_sec;}
+            const int waited=pthread_cond_timedwait_relative_np(&window_timer.changed,&window_timer.lock,&remaining);
+            if (waited && waited!=ETIMEDOUT) _exit(125);
+        }
+        if (window_timer.shutdown || generation!=window_timer.generation || window_timer.state!=WINDOW_TIMER_ARMED) continue;
+        if (clock_gettime(CLOCK_UPTIME_RAW,&now)) _exit(125);
+        if (!window_deadline_reached(&now,&deadline)) continue;
+        window_timer.state=WINDOW_TIMER_FIRED;
+        /* Disarm cannot finish before this send. No GUI/mailbox lock or acknowledgment. */
+        if (pthread_kill(window_timer.owner,SIGALRM)) _exit(125);
+    }
+    if (pthread_mutex_unlock(&window_timer.lock)) _exit(125);
+    return NULL;
+}
+static int window_timer_start(void)
+{
+    sigset_t mask;
+    if (pthread_sigmask(SIG_SETMASK,NULL,&mask) || sigismember(&mask,SIGALRM)!=1 ||
+        sigismember(&mask,SIGUSR1)!=1 || window_timer.started) return -1;
+    if (pthread_mutex_init(&window_timer.lock,NULL)) return -1;
+    if (pthread_cond_init(&window_timer.changed,NULL)) {pthread_mutex_destroy(&window_timer.lock);return -1;}
+    window_timer.owner=pthread_self();window_timer.generation=0;
+    window_timer.state=WINDOW_TIMER_IDLE;window_timer.shutdown=0;
+    if (pthread_create(&window_timer.thread,NULL,window_timer_main,NULL)) {
+        pthread_cond_destroy(&window_timer.changed);pthread_mutex_destroy(&window_timer.lock);return -1;
+    }
+    window_timer.started=1;return 0;
+}
+static void window_timer_arm(unsigned seconds)
+{
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    ++window_timer.generation;
+    window_timer.state=seconds ? WINDOW_TIMER_ARMED:WINDOW_TIMER_IDLE;
+    if (seconds) {
+        if (clock_gettime(CLOCK_UPTIME_RAW,&window_timer.deadline)) _exit(125);
+        window_timer.deadline.tv_sec+=seconds;
+    }
+    if (pthread_cond_signal(&window_timer.changed) || pthread_mutex_unlock(&window_timer.lock)) _exit(125);
+}
+static int window_timer_disarm(void)
+{
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    struct timespec now;
+    if (clock_gettime(CLOCK_UPTIME_RAW,&now)) _exit(125);
+    const int due=window_timer.state==WINDOW_TIMER_FIRED || (window_timer.state==WINDOW_TIMER_ARMED &&
+        window_deadline_reached(&now,&window_timer.deadline));
+    ++window_timer.generation;window_timer.state=WINDOW_TIMER_IDLE;
+    if (pthread_cond_signal(&window_timer.changed) || pthread_mutex_unlock(&window_timer.lock)) _exit(125);
+    return due;
+}
+static void window_timer_finish(void)
+{
+    if (!window_timer.started) return;
+    sigset_t owned,previous,pending;
+    if (sigemptyset(&owned) || sigaddset(&owned,SIGALRM) || sigaddset(&owned,SIGUSR1) ||
+        pthread_sigmask(SIG_BLOCK,&owned,&previous)) _exit(125);
+    if (pthread_mutex_lock(&window_timer.lock)) _exit(125);
+    /* Every returned recovery scope has already disarmed and accounted its deadline. */
+    if (window_timer.state!=WINDOW_TIMER_IDLE) _exit(125);
+    ++window_timer.generation;window_timer.shutdown=1;
+    if (pthread_cond_signal(&window_timer.changed) || pthread_mutex_unlock(&window_timer.lock) ||
+        pthread_join(window_timer.thread,NULL)) _exit(125);
+    for (;;) {
+        if (sigpending(&pending)) _exit(125);
+        if (sigismember(&pending,SIGALRM)!=1) break;
+        sigset_t alarm_set;int received=0;
+        if (sigemptyset(&alarm_set) || sigaddset(&alarm_set,SIGALRM) ||
+            sigwait(&alarm_set,&received) || received!=SIGALRM) _exit(125);
+    }
+    if (pthread_cond_destroy(&window_timer.changed) || pthread_mutex_destroy(&window_timer.lock)) _exit(125);
+    window_timer.started=0;
+    if (pthread_sigmask(SIG_SETMASK,&previous,NULL)) _exit(125);
+}
+#endif
 
 /* Claims the run's one stop; false when another thread stopped first. */
 static int claim_stop(void)
@@ -157,11 +293,41 @@ static int claim_stop(void)
     return atomic_compare_exchange_strong(&stopped, &expected, 1);
 }
 
+#if defined(PB_METAL_WINDOW)
+static void publish_window_stop(void)
+{
+    if (!claim_stop()) return;
+    memcpy(runtime_stop_function,window_stop_function,sizeof runtime_stop_function);
+    memcpy(runtime_stop_reason,window_stop_reason,sizeof runtime_stop_reason);
+    outcome=RUNTIME_STOP;
+    atomic_store_explicit(&stopped,2,memory_order_release);
+    (void)pthread_kill(main_thread,SIGUSR1);
+}
+void rt_boot_window_request_stop(const char *function,const char *reason)
+{
+    if (atomic_flag_test_and_set_explicit(&window_request_seen,memory_order_seq_cst)) return;
+    snprintf(window_stop_function,sizeof window_stop_function,"%s",function ? function : "window");
+    snprintf(window_stop_reason,sizeof window_stop_reason,"%s",reason ? reason : "window stop requested");
+    /* Store-before-load pairs with the coordinator's ready-store/pending-load. No signal
+       or stop publication may interrupt the trusted TCB qualification. */
+    atomic_store_explicit(&window_pending_close,1,memory_order_seq_cst);
+    if (atomic_load_explicit(&window_ready,memory_order_seq_cst)) publish_window_stop();
+}
+#endif
+
 /* After a stop is recorded: unwind on the main thread; on another guest thread, wake the main one
    to make the report and wait for the process to end there. */
 static _Noreturn void unwind(void)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    atomic_store_explicit(&stopped,2,memory_order_release); /* Publish the complete stop payload. */
+    if (pthread_equal(pthread_self(),main_thread)) {
+        if (atomic_load(&recovery_active)) siglongjmp(back_to_host,1);
+        _exit(125); /* A native error outside guest recovery cannot jump to an expired frame. */
+    }
+#else
     if (pthread_equal(pthread_self(), main_thread)) siglongjmp(back_to_host, 1);
+#endif
     pthread_kill(main_thread, SIGUSR1);
     for (;;) pause();
 }
@@ -212,9 +378,13 @@ static void guest_exited(int status)
 
 static void guest_exit(int code)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    guest_exited(code);
+#else
     exit_code = code;
     outcome = EXITED;
     siglongjmp(back_to_host, 1);
+#endif
 }
 
 /* Ends the process once the run is reported. When the guest stops, its other threads are still
@@ -227,6 +397,9 @@ static void guest_exit(int code)
    not with fflush(NULL), which would lock every open stream, including any a parked thread holds. */
 static _Noreturn void end_after_report(int code)
 {
+#if defined(PB_METAL_WINDOW)
+    atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+#endif
     fflush(stdout);
     fflush(stderr);
     _exit(code);
@@ -235,24 +408,55 @@ static _Noreturn void end_after_report(int code)
 static void on_signal(int sig, siginfo_t *info, void *context)
 {
     const ucontext_t *uc = context;
+#if defined(__APPLE__) && defined(__MACH__)
+    if (sig==SIGUSR1) {
+        if (!pthread_equal(pthread_self(),main_thread)) return;
+        if (atomic_load_explicit(&stopped,memory_order_acquire)==2 && atomic_load(&recovery_active))
+            siglongjmp(back_to_host,1);
+        return; /* A stop between phases is consumed before another guest call. */
+    }
+    if (!atomic_load(&recovery_active) && pthread_equal(pthread_self(),main_thread) && sig!=SIGALRM)
+        _exit(128+sig);
+    if (!claim_stop()) {
+        if (pthread_equal(pthread_self(),main_thread)) return;
+        for (;;) pause();
+    }
+#else
     if (sig == SIGUSR1) siglongjmp(back_to_host, 1); /* a worker stopped; its outcome is recorded */
     if (!claim_stop()) for (;;) pause();
+#endif
     if (sig == SIGALRM) {
+#if defined(__APPLE__) && defined(__MACH__)
+        fault_signal=SIGALRM;fault_address=0;
+#endif
         outcome = TIMEOUT;
     } else {
         outcome = FAULT;
         fault_signal = sig;
         fault_address = (uint64_t)(uintptr_t)info->si_addr;
     }
+#if defined(__APPLE__) && defined(__MACH__)
+    fault_rip=(uint64_t)uc->uc_mcontext->__ss.__rip;
+    if (pthread_equal(pthread_self(),main_thread) && !atomic_load(&recovery_active)) {
+        atomic_store_explicit(&stopped,2,memory_order_release);
+        return; /* A late owned timeout remains recorded without using an expired frame. */
+    }
+#else
     fault_rip = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+#endif
     unwind();
 }
 
 /* Calls fn(a, b, c) on the guest stack: rt_boot_call(fn, a, stack_top, b, c). */
 uint64_t rt_boot_call(void *fn, void *a, void *stack_top, void *b, void *c);
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_BOOT_CALL_SYMBOL "_rt_boot_call"
+#else
+#define RT_BOOT_CALL_SYMBOL "rt_boot_call"
+#endif
 __asm__(".text\n"
-        ".globl rt_boot_call\n"
-        "rt_boot_call:\n"
+        ".globl " RT_BOOT_CALL_SYMBOL "\n"
+        RT_BOOT_CALL_SYMBOL ":\n"
         "  push %rbp\n  push %rbx\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
         "  mov %rsp, %r12\n"
         "  mov %rdx, %rsp\n"
@@ -269,6 +473,61 @@ __asm__(".text\n"
    apart from main so that no caller state is live across the jump back. */
 static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void *c, void *stack_top, int timeout)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    sigset_t owned,previous,pending;
+    if (sigemptyset(&owned) || sigaddset(&owned,SIGALRM) || sigaddset(&owned,SIGUSR1) ||
+        pthread_sigmask(SIG_BLOCK,&owned,&previous)) _exit(125);
+    if (!sigsetjmp(back_to_host,1)) {
+        atomic_store(&recovery_active,1);
+#if defined(PB_METAL_WINDOW)
+        if (window_timer.started && !atomic_load_explicit(&stopped,memory_order_acquire))
+            window_timer_arm((unsigned)timeout);
+#endif
+        if (pthread_sigmask(SIG_SETMASK,&previous,NULL)) _exit(125);
+        if (!atomic_load_explicit(&stopped,memory_order_acquire)) {
+            enum outcome expected=RETURNED;
+            (void)atomic_compare_exchange_strong(&outcome,&expected,RUNNING);
+#if defined(PB_METAL_WINDOW)
+            if (!window_timer.started)
+#endif
+                alarm((unsigned)timeout);
+            rt_boot_call(fn,a,stack_top,b,c);
+            expected=RUNNING;
+            (void)atomic_compare_exchange_strong(&outcome,&expected,RETURNED);
+        }
+    }
+    if (pthread_sigmask(SIG_BLOCK,&owned,NULL)) _exit(125);
+#if defined(PB_METAL_WINDOW)
+    const int deadline_expired=window_timer.started ? window_timer_disarm():0;
+    if (!window_timer.started)
+#endif
+        alarm(0);
+    /* Disarm and consume pending timeouts before leaving this recovery frame. A pending
+       timeout is a result, not a successful near-pass; worker payload publication wins first. */
+    for (;;) {
+        if (sigpending(&pending)) _exit(125);
+        if (sigismember(&pending,SIGALRM)!=1) break;
+        sigset_t alarms;int received=0;
+        if (sigemptyset(&alarms) || sigaddset(&alarms,SIGALRM) || sigwait(&alarms,&received) || received!=SIGALRM) _exit(125);
+        if (claim_stop()) {
+            outcome=TIMEOUT;fault_signal=SIGALRM;fault_rip=fault_address=0;
+            atomic_store_explicit(&stopped,2,memory_order_release);
+        }
+    }
+#if defined(PB_METAL_WINDOW)
+    if (deadline_expired && claim_stop()) {
+        outcome=TIMEOUT;fault_signal=SIGALRM;fault_rip=fault_address=0;
+        atomic_store_explicit(&stopped,2,memory_order_release);
+    }
+#endif
+    if (terminal_call && claim_stop()) {
+        outcome=RETURNED;
+        atomic_store_explicit(&stopped,2,memory_order_release);
+    }
+    while (atomic_load_explicit(&stopped,memory_order_acquire)==1) sched_yield();
+    atomic_store(&recovery_active,0);
+    if (pthread_sigmask(SIG_SETMASK,&previous,NULL)) _exit(125);
+#else
     outcome = RUNNING;
     if (!sigsetjmp(back_to_host, 1)) {
         alarm((unsigned)timeout);
@@ -276,6 +535,7 @@ static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void
         outcome = RETURNED;
     }
     alarm(0);
+#endif
 }
 
 /* Each import's call goes through a trampoline: mark it called, then jump to the provider, or
@@ -678,9 +938,15 @@ static int install_module_hooks(char *error, size_t size)
         if (!o->stubs) {
             const uint64_t start = (o->size + PAGE_SIZE_HOST - 1) / PAGE_SIZE_HOST * PAGE_SIZE_HOST;
             void *want = o->image + start;
+#if defined(__APPLE__) && defined(__MACH__)
+            o->stubs=start+PAGE_SIZE_HOST<=MODULE_STRIDE &&
+                !rt_boot_arena_protect(&image_arena,(uintptr_t)want-(uintptr_t)image_arena.base,
+                                       PAGE_SIZE_HOST,PROT_READ|PROT_WRITE|PROT_EXEC) ? want : MAP_FAILED;
+#else
             o->stubs = start + PAGE_SIZE_HOST <= MODULE_STRIDE
                            ? rt_map_anonymous_at(want, PAGE_SIZE_HOST, PROT_READ | PROT_WRITE | PROT_EXEC)
                            : MAP_FAILED;
+#endif
             if (o->stubs != want) {
                 o->stubs = NULL;
                 snprintf(error, size, "--module-hook %s: no room for stubs past %s", h->name, h->module);
@@ -736,146 +1002,61 @@ static const char *usage =
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
-int main(int argc, char **argv)
+static int install_boot_signals(void)
 {
-    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *frame_log = NULL, *game_library_path = NULL,
-               *input_script = NULL;
-    int timeout = 30, trace = 0, list = 0;
-    rt_display_mode display_mode = RT_DISPLAY_NONE;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
-        else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
-        else if (!strcmp(argv[i], "--game-lib") && i + 1 < argc && !game_library_path) game_library_path = argv[++i];
-        else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
-            objects[object_count++].path = argv[++i];
-        else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
-            if (add_stub_module(argv[++i])) {
-                fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--app0") && i + 1 < argc)
-            rt_process.app0_dir = argv[++i];
-        else if (!strcmp(argv[i], "--data") && i + 1 < argc)
-            rt_process.data_dir = argv[++i];
-        else if (!strcmp(argv[i], "--savedata") && i + 1 < argc)
-            rt_process.savedata_dir = argv[++i];
-        else if (!strcmp(argv[i], "--display") && i + 1 < argc) {
-            const char *mode = argv[++i];
-            if (display_mode_named(mode, &display_mode)) {
-                fprintf(stderr, "pbboot: --display %s: want none, headless or window\n", mode);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
-            display_capture = argv[++i];
-        else if (!strcmp(argv[i], "--frame-log") && i + 1 < argc)
-            frame_log = argv[++i]; /* a line per presented frame (runtime/display.h), for frame rates */
-        else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
-            const char *audio = argv[++i];
-            if (strcmp(audio, "none") && strcmp(audio, "host")) {
-                fprintf(stderr, "pbboot: --audio %s: want none or host\n", audio);
-                return 2;
-            }
-            if (rt_audio_host_configure(!strcmp(audio, "host"))) {
-                fprintf(stderr, "pbboot: --audio host: this build has no host sound (SDL3 was not found)\n");
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
-            const char *input = argv[++i];
-            if (strcmp(input, "none") && strcmp(input, "host")) {
-                fprintf(stderr, "pbboot: --input %s: want none or host\n", input);
-                return 2;
-            }
-            if (rt_input_host_configure(!strcmp(input, "host"))) {
-                fprintf(stderr, "pbboot: --input host: this build has no host input (SDL3 was not found)\n");
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--input-script") && i + 1 < argc && !input_script) input_script = argv[++i];
-        else if (!strcmp(argv[i], "--keyboard-text") && i + 1 < argc) {
-            /* What the on-screen keyboard answers (runtime/ime_dialog.h): typed, then Done. */
-            char why[128];
-            if (rt_ime_dialog_configure_text(argv[++i], why, sizeof why)) {
-                fprintf(stderr, "pbboot: --keyboard-text: %s\n", why);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
-            if (add_system_param(argv[++i])) {
-                fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--addcont") && i + 1 < argc) {
-            const char *label = argv[++i];
-            if (rt_process.addcont_count == RT_MAX_ADDCONTS || !label[0] || strlen(label) >= RT_ADDCONT_LABEL_BYTES) {
-                fprintf(stderr, "pbboot: --addcont %s: want an entitlement label of 1 to 16 characters (at most %d)\n", label,
-                        RT_MAX_ADDCONTS);
-                return 2;
-            }
-            memcpy(rt_process.addconts[rt_process.addcont_count++], label, strlen(label) + 1);
-        }
-        else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
-            if (add_app_param(argv[++i])) {
-                fprintf(stderr, "pbboot: --app-param %s: want a new ID=VALUE, ID=unread or boot=unread\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--module-hook") && i + 1 < argc) {
-            const int added = add_module_hook(argv[++i]);
-            if (added == -2) {
-                fprintf(stderr, "pbboot: --module-hook %s: more than %d module hooks\n", argv[i], MAX_MODULE_HOOKS);
-                return 2;
-            }
-            if (added) {
-                fprintf(stderr,
-                        "pbboot: --module-hook %s: want MODULE:OFFSET:SIZE:BYTES:ACTION:NAME, BYTES 5 to 16 "
-                        "lowercase hex bytes and no more than SIZE, ACTION return or stop\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!strcmp(argv[i], "--trace")) trace = 1;
-        else if (!strcmp(argv[i], "--imports")) list = 1;
-        else if (argv[i][0] != '-' && !object_count) objects[object_count++].path = argv[i];
-        else {
-            fputs(usage, stderr);
-            return 2;
-        }
+    static unsigned char alt[1 << 16];
+    stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
+#if defined(__APPLE__) && defined(__MACH__)
+    if (sigaltstack(&ss,NULL)) return -1;
+#else
+    sigaltstack(&ss, NULL);
+#endif
+    struct sigaction sa = {0};
+    sa.sa_sigaction = on_signal;
+#if defined(__APPLE__) && defined(__MACH__)
+    sa.sa_flags=SA_SIGINFO|SA_ONSTACK;
+    if (sigemptyset(&sa.sa_mask) || sigaddset(&sa.sa_mask,SIGUSR1) || sigaddset(&sa.sa_mask,SIGALRM)) return -1;
+#else
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
+#endif
+    static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
+    main_thread = pthread_self();
+    rt_fatal_observer = runtime_stopped;
+    rt_exit_observer = guest_exited;
+    for (size_t i=0;i<sizeof signals/sizeof signals[0];++i) {
+#if defined(__APPLE__) && defined(__MACH__)
+        if (sigaction(signals[i],&sa,NULL)) return -1;
+#else
+        sigaction(signals[i],&sa,NULL);
+#endif
     }
-    if (!object_count) {
-        fputs(usage, stderr);
-        return 2;
-    }
-    if (rt_input_host_enabled() && display_mode != RT_DISPLAY_WINDOW) {
-        /* The window's event loop is what reads the controller and the keyboard. */
-        fputs("pbboot: --input host needs --display window\n", stderr);
-        return 2;
-    }
-    if (input_script) {
-        /* A script plays the controller instead of the host's devices (runtime/input_host.h). */
-        char why[256];
-        if (rt_input_host_enabled()) {
-            fputs("pbboot: --input-script plays the controller: leave out --input host\n", stderr);
-            return 2;
-        }
-        if (rt_input_script_configure(input_script, why, sizeof why)) {
-            fprintf(stderr, "pbboot: --input-script: %s\n", why);
-            return 2;
-        }
-    }
-    if ((display_capture || frame_log) && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
-    rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
-    if (rt_display_configure(display_mode, display_capture)) {
-        fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
-        return 2;
-    }
-    if (frame_log && rt_display_log_frames(frame_log)) {
-        fprintf(stderr, "pbboot: --frame-log %s: cannot write the file\n", frame_log);
-        return 2;
-    }
+
+    return 0;
+}
+
+#if defined(__APPLE__) && defined(__MACH__)
+static void *qualify_main_pointer(void *tcb)
+{
+    rt_guest_pointer_bind(tcb);
+    return tcb;
+}
+#endif
+
+typedef struct {
+    const char *nid_path,*status_path,*game_library_path,*input_script;
+    int timeout,trace,list;
+} boot_options;
+
+/* The coordinator owns loading, recovery, guest TLS, entry calls and the report together. */
+static int run_boot(boot_options *options,const sigset_t *pre_gui_mask)
+{
+    const char *nid_path=options->nid_path,*status_path=options->status_path,*game_library_path=options->game_library_path,
+               *input_script=options->input_script;
+    const int timeout=options->timeout,trace=options->trace,list=options->list;
+#if !defined(__APPLE__) || !defined(__MACH__)
+    (void)pre_gui_mask;
+#endif
+    const char *phase = "eboot";
     char error[512];
     for (size_t k = 0; k < object_count; k++) {
         object *o = &objects[k];
@@ -903,7 +1084,7 @@ int main(int argc, char **argv)
     }
     char *db_text;
     db_count = read_nid_db(nid_path, &db, &db_text);
-    for (size_t k = 0; k < object_count; k++) resolve(&objects[k]);
+    if (list) for (size_t k = 0; k < object_count; k++) resolve(&objects[k]);
 
     if (list) {
         for (size_t k = 0; k < object_count; k++) {
@@ -928,11 +1109,31 @@ int main(int argc, char **argv)
         return 0;
     }
 
+#if defined(__APPLE__) && defined(__MACH__)
+    const uint64_t module_offset=MODULE_BASE-GUEST_BASE;
+    uint64_t span=objects[0].size;
+    if (object_count>1) {
+        if (span>module_offset) {fputs("pbboot: main image overlaps module slots\n",stderr);return 3;}
+        span=module_offset+(object_count-1)*MODULE_STRIDE;
+    }
+    if (rt_boot_arena_create(&image_arena,span)) {
+        fprintf(stderr,"pbboot: cannot reserve the image arena: %s\n",strerror(errno));return 3;
+    }
+    for (size_t k=0;k<object_count;++k)
+        objects[k].image=(unsigned char *)image_arena.base+(k ? module_offset+(k-1)*MODULE_STRIDE : 0);
+#endif
+    for (size_t k=0;k<object_count;++k) resolve(&objects[k]);
+
     /* Memory: each object's image, its trampolines and data imports; the guest stack and TLS. */
     for (size_t k = 0; k < object_count; k++) {
         object *o = &objects[k];
         void *want = o->image;
+#if defined(__APPLE__) && defined(__MACH__)
+        o->image=!rt_boot_arena_protect(&image_arena,(uintptr_t)want-(uintptr_t)image_arena.base,
+                                      o->size,PROT_READ|PROT_WRITE|PROT_EXEC) ? want : MAP_FAILED;
+#else
         o->image = rt_map_anonymous_at(want, o->size, PROT_READ | PROT_WRITE | PROT_EXEC);
+#endif
         o->tramp = mmap(NULL, (o->imports + 1) * TRAMPOLINE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         o->data = mmap(NULL, (o->imports + 1) * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -948,12 +1149,16 @@ int main(int argc, char **argv)
             fprintf(stderr, "pbboot: %s\n", error);
             return 3;
         }
+#if !defined(__APPLE__) || !defined(__MACH__)
         rt_elf_thread_pointer_to_gs(o->elf, o->image);
+#endif
     }
+#if !defined(__APPLE__) || !defined(__MACH__)
     if (install_module_hooks(error, sizeof error)) {
         fprintf(stderr, "pbboot: %s\n", error);
         return 3;
     }
+#endif
     for (size_t k = 0; k < object_count; k++) record_module(&objects[k]);
     uint64_t proc_param_size;
     const uint64_t proc_param = rt_elf_proc_param(objects[0].elf, &proc_param_size);
@@ -961,7 +1166,11 @@ int main(int argc, char **argv)
     rt_process.image_size = objects[0].size;
     rt_process.proc_param = proc_param_size ? objects[0].image + proc_param : NULL;
 
-    unsigned char *stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    int stack_flags=MAP_PRIVATE|MAP_ANONYMOUS;
+#ifdef MAP_STACK
+    stack_flags|=MAP_STACK;
+#endif
+    unsigned char *stack=mmap(NULL,STACK_SIZE,PROT_READ|PROT_WRITE,stack_flags,-1,0);
     if (stack == MAP_FAILED) {
         fprintf(stderr, "pbboot: cannot map the stack: %s\n", strerror(errno));
         return 3;
@@ -984,12 +1193,52 @@ int main(int argc, char **argv)
         fprintf(stderr, "pbboot: no memory for the thread-local storage block\n");
         return 3;
     }
+#if !defined(__APPLE__) || !defined(__MACH__)
     if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)tp)) {
         fprintf(stderr, "pbboot: arch_prctl: %s\n", strerror(errno));
         return 3;
     }
 
+#endif
     rt_thread_register_main(stack, STACK_SIZE);
+#if defined(__APPLE__) && defined(__MACH__)
+    if (install_boot_signals()) {fprintf(stderr,"pbboot: cannot install guest recovery: %s\n",strerror(errno));return 3;}
+#if defined(PB_METAL_WINDOW)
+    if (pre_gui_mask && window_timer_start()) {
+        fputs("pbboot: cannot start coordinator timeout timer\n",stderr);return 3;
+    }
+#endif
+    if (pre_gui_mask && pthread_sigmask(SIG_SETMASK,pre_gui_mask,NULL)) {
+        fputs("pbboot: cannot restore coordinator signal mask\n",stderr);return 3;
+    }
+    run_guest((void *)qualify_main_pointer,tp,NULL,NULL,stack+STACK_SIZE-64,timeout);
+    if (outcome!=RETURNED) {fputs("pbboot: main TCB qualification failed before guest entry\n",stderr);return 3;}
+#if defined(PB_METAL_WINDOW)
+    if (pre_gui_mask) {
+        atomic_store_explicit(&window_ready,1,memory_order_seq_cst);
+        if (atomic_load_explicit(&window_pending_close,memory_order_seq_cst)) {
+            publish_window_stop();
+            while (atomic_load_explicit(&stopped,memory_order_acquire)==1) sched_yield();
+            goto boot_results;
+        }
+    }
+#endif
+    const uint32_t gs_offset=rt_guest_pointer_offset();
+    for (size_t k=0;k<object_count;++k) {
+        object *o=&objects[k];size_t changed=0;
+        if (rt_elf_thread_pointer_to_gs_offset(o->elf,o->image,gs_offset,&changed)) {
+            fputs("pbboot: cannot rewrite the qualified guest TLS displacement\n",stderr);return 3;
+        }
+        sys_icache_invalidate(o->image,(size_t)o->size);
+        sys_icache_invalidate(o->tramp,(o->imports+1)*TRAMPOLINE_SIZE);
+    }
+    if (install_module_hooks(error,sizeof error)) {fprintf(stderr,"pbboot: %s\n",error);return 3;}
+    for (size_t k=0;k<object_count;++k) {
+        if (objects[k].stubs) sys_icache_invalidate(objects[k].stubs,PAGE_SIZE_HOST);
+        sys_icache_invalidate(objects[k].image,(size_t)objects[k].size);
+    }
+#endif
+
     rt_input_position_source position_source = NULL;
     if (game_library_path) {
         /* Retain this library until process exit: installed jumps and optional probes refer to
@@ -1022,17 +1271,9 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    static unsigned char alt[1 << 16];
-    stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
-    sigaltstack(&ss, NULL);
-    struct sigaction sa = {0};
-    sa.sa_sigaction = on_signal;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
-    static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
-    main_thread = pthread_self();
-    rt_fatal_observer = runtime_stopped;
-    rt_exit_observer = guest_exited;
-    for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
+#if !defined(__APPLE__) || !defined(__MACH__)
+    if (install_boot_signals()) {fprintf(stderr,"pbboot: cannot install guest recovery: %s\n",strerror(errno));return 3;}
+#endif
 
     if (prepare_module_tls(tp - tls_size, tls_size, error, sizeof error)) {
         fprintf(stderr, "pbboot: module TLS: %s\n", error);
@@ -1042,7 +1283,6 @@ int main(int argc, char **argv)
     unsigned char *stack_top = stack + STACK_SIZE - 64;
     /* Modules first, in the order given: entry(argument size 0, no arguments, no start override)
        runs the module's constructors and then its start function. */
-    const char *phase = "eboot";
     for (size_t k = 1; k < object_count; k++) {
         phase = objects[k].label;
         run_guest(objects[k].image + rt_elf_entry(objects[k].elf), NULL, NULL, NULL, stack_top, timeout);
@@ -1056,9 +1296,16 @@ int main(int argc, char **argv)
             const char *argv[3];
         } params = {1, 0, {"eboot.bin", NULL, NULL}};
         phase = "eboot";
+#if defined(__APPLE__) && defined(__MACH__)
+        terminal_call=1;
+#endif
         run_guest(objects[0].image + rt_elf_entry(objects[0].elf), &params, (void *)guest_exit, NULL, stack_top, timeout);
     }
 
+#if defined(PB_METAL_WINDOW)
+boot_results:
+    atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+#endif
     /* Results */
     size_t called_total = 0;
     for (size_t k = 0; k < object_count; k++)
@@ -1227,4 +1474,161 @@ int main(int argc, char **argv)
         fclose(f);
     }
     end_after_report(0);
+}
+
+#if defined(PB_METAL_WINDOW)
+static int window_run_boot(void *options,const sigset_t *pre_gui_mask)
+{
+    const int result=run_boot(options,pre_gui_mask);
+    atomic_store_explicit(&window_ready,0,memory_order_seq_cst);
+    window_timer_finish();
+    return result;
+}
+#endif
+
+int main(int argc, char **argv)
+{
+    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *frame_log = NULL, *game_library_path = NULL,
+               *input_script = NULL;
+    int timeout = 30, trace = 0, list = 0;
+    rt_display_mode display_mode = RT_DISPLAY_NONE;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
+        else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
+        else if (!strcmp(argv[i], "--game-lib") && i + 1 < argc && !game_library_path) game_library_path = argv[++i];
+        else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
+            objects[object_count++].path = argv[++i];
+        else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
+            if (add_stub_module(argv[++i])) {
+                fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--app0") && i + 1 < argc)
+            rt_process.app0_dir = argv[++i];
+        else if (!strcmp(argv[i], "--data") && i + 1 < argc)
+            rt_process.data_dir = argv[++i];
+        else if (!strcmp(argv[i], "--savedata") && i + 1 < argc)
+            rt_process.savedata_dir = argv[++i];
+        else if (!strcmp(argv[i], "--display") && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (display_mode_named(mode, &display_mode)) {
+                fprintf(stderr, "pbboot: --display %s: want none, headless or window\n", mode);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
+            display_capture = argv[++i];
+        else if (!strcmp(argv[i], "--frame-log") && i + 1 < argc)
+            frame_log = argv[++i]; /* a line per presented frame (runtime/display.h), for frame rates */
+        else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
+            const char *audio = argv[++i];
+            if (strcmp(audio, "none") && strcmp(audio, "host")) {
+                fprintf(stderr, "pbboot: --audio %s: want none or host\n", audio);
+                return 2;
+            }
+            if (rt_audio_host_configure(!strcmp(audio, "host"))) {
+                fprintf(stderr, "pbboot: --audio host: this build has no host sound (SDL3 was not found)\n");
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
+            const char *input = argv[++i];
+            if (strcmp(input, "none") && strcmp(input, "host")) {
+                fprintf(stderr, "pbboot: --input %s: want none or host\n", input);
+                return 2;
+            }
+            if (rt_input_host_configure(!strcmp(input, "host"))) {
+                fprintf(stderr, "pbboot: --input host: this build has no host input provider\n");
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--input-script") && i + 1 < argc && !input_script) input_script = argv[++i];
+        else if (!strcmp(argv[i], "--keyboard-text") && i + 1 < argc) {
+            /* What the on-screen keyboard answers (runtime/ime_dialog.h): typed, then Done. */
+            char why[128];
+            if (rt_ime_dialog_configure_text(argv[++i], why, sizeof why)) {
+                fprintf(stderr, "pbboot: --keyboard-text: %s\n", why);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
+            if (add_system_param(argv[++i])) {
+                fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--addcont") && i + 1 < argc) {
+            const char *label = argv[++i];
+            if (rt_process.addcont_count == RT_MAX_ADDCONTS || !label[0] || strlen(label) >= RT_ADDCONT_LABEL_BYTES) {
+                fprintf(stderr, "pbboot: --addcont %s: want an entitlement label of 1 to 16 characters (at most %d)\n", label,
+                        RT_MAX_ADDCONTS);
+                return 2;
+            }
+            memcpy(rt_process.addconts[rt_process.addcont_count++], label, strlen(label) + 1);
+        }
+        else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
+            if (add_app_param(argv[++i])) {
+                fprintf(stderr, "pbboot: --app-param %s: want a new ID=VALUE, ID=unread or boot=unread\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--module-hook") && i + 1 < argc) {
+            const int added = add_module_hook(argv[++i]);
+            if (added == -2) {
+                fprintf(stderr, "pbboot: --module-hook %s: more than %d module hooks\n", argv[i], MAX_MODULE_HOOKS);
+                return 2;
+            }
+            if (added) {
+                fprintf(stderr,
+                        "pbboot: --module-hook %s: want MODULE:OFFSET:SIZE:BYTES:ACTION:NAME, BYTES 5 to 16 "
+                        "lowercase hex bytes and no more than SIZE, ACTION return or stop\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--trace")) trace = 1;
+        else if (!strcmp(argv[i], "--imports")) list = 1;
+        else if (argv[i][0] != '-' && !object_count) objects[object_count++].path = argv[i];
+        else {
+            fputs(usage, stderr);
+            return 2;
+        }
+    }
+    if (!object_count) {
+        fputs(usage, stderr);
+        return 2;
+    }
+    if (rt_input_host_enabled() && display_mode != RT_DISPLAY_WINDOW) {
+        /* The window's event loop is what reads the controller and the keyboard. */
+        fputs("pbboot: --input host needs --display window\n", stderr);
+        return 2;
+    }
+    if (input_script) {
+        /* A script plays the controller instead of the host's devices (runtime/input_host.h). */
+        char why[256];
+        if (rt_input_host_enabled()) {
+            fputs("pbboot: --input-script plays the controller: leave out --input host\n", stderr);
+            return 2;
+        }
+        if (rt_input_script_configure(input_script, why, sizeof why)) {
+            fprintf(stderr, "pbboot: --input-script: %s\n", why);
+            return 2;
+        }
+    }
+    if ((display_capture || frame_log) && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
+    if (rt_display_configure(display_mode, display_capture)) {
+        fprintf(stderr, "pbboot: --display window: this build has no window backend (enable Metal on macOS or Vulkan with SDL3)\n");
+        return 2;
+    }
+    if (frame_log && rt_display_log_frames(frame_log)) {
+        fprintf(stderr, "pbboot: --frame-log %s: cannot write the file\n", frame_log);
+        return 2;
+    }
+    boot_options options={nid_path,status_path,game_library_path,input_script,timeout,trace,list};
+#if defined(PB_METAL_WINDOW)
+    if (display_mode==RT_DISPLAY_WINDOW && !list) return rt_display_window_run(window_run_boot,&options);
+#endif
+    return run_boot(&options,NULL);
 }

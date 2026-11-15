@@ -1,22 +1,26 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Controller input from the host (runtime/input/): what scePadReadState reports
    (runtime/syslib/pad.c). With pbboot's --input none, the default, no backend is installed and the
-   pad is at rest. With --input host (a build with SDL3, and --display window), input_host_sdl.c
-   reads the first SDL gamepad and the window's keyboard on the window's event thread and installs
-   itself as the backend; the title's vibration goes to the gamepad's rumble.
+   pad is at rest. With --input host and --display window, the selected window backend
+   installs samples: SDL reads its first gamepad and keyboard and forwards vibration;
+   the native AppKit provider reads its window's keyboard.
 
    Three layers, so each can be tested on its own:
    - the backend: a source of samples and a sink for vibration (rt_input_backend), installed with
      rt_input_install; a test installs a fake one;
    - the mapping: a host gamepad's buttons and axes and the keyboard's keys, host-neutral, turned
      into a sample in the title's terms (rt_input_map), with the default keyboard layout;
-   - the SDL glue (input_host_sdl.c): copies SDL's state into the host-neutral form. */
+   - the host glue: SDL device polling or AppKit key events, copied into the host-neutral form. */
 #ifndef RUNTIME_INPUT_HOST_H
 #define RUNTIME_INPUT_HOST_H
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* The button bits of the state's `buttons` word (the OpenOrbis homebrew SDK's _types/pad.h,
    enum OrbisPadButton; shadPS4's pad.h, OrbisPadButtonDataOffset, agrees). */
@@ -150,13 +154,11 @@ extern const int rt_default_key_count;
 void rt_input_map(const rt_host_gamepad *gamepad, const bool *keys, int key_count, rt_touch_tracker *touches,
                   rt_pad_sample *sample);
 
-/* Host input: turns it on or off before the boot. 0, or -1 when this build has no host input
-   (SDL3 was not found). */
+/* Host input: turns it on or off before boot. 0, or -1 when this build has no host input provider. */
 int rt_input_host_configure(int enabled);
 int rt_input_host_enabled(void);
-/* Called by the display window on its event thread after it handled the window's events
-   (display_vulkan.c): reads the gamepad and the keyboard into the backend's sample, and applies the
-   title's vibration to the gamepad's rumble. Nothing when host input is off. */
+/* Called by the window on its event thread after events. SDL polls gamepad/keyboard and
+   applies rumble; AppKit publishes the held key state. Nothing when host input is off. */
 void rt_input_host_pump(void);
 
 /* Scripted input (pbboot --input-script SPEC, runtime/input/input_script.c), for unattended boots:
@@ -286,5 +288,9 @@ int rt_input_script_configure(const char *spec, char *error, size_t error_size);
    and whether the installed script needs one. */
 void rt_input_script_set_position_source(rt_input_position_source source);
 int rt_input_script_needs_position(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

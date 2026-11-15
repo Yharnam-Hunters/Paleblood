@@ -129,7 +129,57 @@ without retries until a frame displays. The CTest limit remains 30 seconds.
 
 These tests do not capture the user’s screen, verify physical scanout, force `NO_DRAWABLE`,
 device loss, allocation exhaustion or hardware timeout, or exercise guest execution. The
-runtime’s `--display window`, host input and audio are not wired by this primitive.
+primitive leaves runtime window lifecycle, host input and audio to separate providers.
+
+## Runtime window
+
+In a full x86-64 macOS build with `PB_ENABLE_METAL_EXECUTOR=ON`, `pbboot --display window`
+runs AppKit on the process main thread and the complete loading, recovery, guest TLS and report
+body on one owned coordinator. Before AppKit creates internal threads, main blocks SIGALRM
+and SIGUSR1; the coordinator restores the original mask only after installing its recovery
+handlers. An incoming mask that already blocks either owned signal is refused. Headless/default
+boots and import listing retain the direct boot path. Darwin guest execution still requires a
+whole-process x86-64 build.
+
+Close and backend errors use a returning stop request. A request before successful TCB
+qualification stays pending; the unchanged qualification failure gate remains authoritative.
+After qualification the coordinator publishes readiness and checks that pending request before
+guest entry. The existing first-stop publication preserves a prior guest result. Reporting still
+uses `_exit`, so parked guest threads cannot force driver or libc teardown under abandoned locks.
+The GUI never joins until a coordinator-done publication proves the callback returned.
+
+The display boundary copies host BGRA bytes into a bounded latest-frame mailbox, converting
+BGRA to RGBA once, with row order and alpha unchanged. No guest/display pointer reaches AppKit.
+Only the GUI owns its window, layer and Metal context. It takes mailbox snapshots with try-lock,
+releases that lock before Metal calls, and never takes the display lock. Publishers mask owned
+recovery signals only through mutex release. Window open waits in at most 500 released relative 10 ms timed
+slices and observes atomic cancellation between them. Frame dimensions must be 1..4096; this
+primitive bound does not change unrelated headless allocations.
+
+Source-size changes recreate the Metal context; window/backing-scale changes adjust only view
+and layer bounds/scale. The real borrowed layer is passed to configure/present, with production
+capture disabled. A missing drawable keeps the context and drops that snapshot; the next newly
+submitted frame is attempted on an ordinary timer turn. Failed or timed-out contexts are
+removed. The 1000 ms present wait bounds post-commit GPU completion, not pipeline compilation or
+system drawable acquisition. Flip/capture counts keep their existing meanings; a rapid guest
+return does not prove a queued frame reached the window or physical scanout.
+
+`test_window_mailbox` exercises the actual copy helper with independent asymmetric channel,
+alpha and row literals, latest-frame replacement, copied-source lifetime, dimension changes,
+bounds refusals, mask preservation and cancelled open. The opt-in
+`test_metal_runtime_window` drives the actual adapter from an owned worker, captures genuine
+pre-present drawable bytes for 7x1 and 1x5 sources, observes callbacks/positive times, resizes and
+requests a real window close. It is registered with the existing
+`PB_ENABLE_METAL_PRESENTATION_TEST` option and a 30-second CTest limit. These are owned fixtures;
+source inclusion in that test adds observations without adding production diagnostic APIs.
+The separate `metal_runtime_window_framebuffer_only` CTest runs the same fixture with
+`--framebuffer-only`: all seven presents use nil capture and retain the production layer
+`framebufferOnly=YES` before and after presentation. It checks API results, acquisition/callback
+counts, named positive presentation times, resize handling and close, with zero pixel readbacks.
+That profile makes no literal-pixel or screen-image claim; the default readback profile retains
+its seven independent BGRA literals. Each profile runs in its own process.
+Fresh native runtime/CLI recovery and window qualification are required; source authoring alone
+is not a game, screenshot, input/audio or device-failure result.
 
 ## Draw executor
 
@@ -153,8 +203,17 @@ cmake --build build-metal-draw --target test_metal_executor --parallel 2
 ctest --test-dir build-metal-draw -R '^metal_executor$' --output-on-failure
 ```
 
-The optional Metal executor selects the headless display, no host audio, and the no-host-input
-provider for boot wiring. These build targets do not qualify a full macOS boot or host controller input.
+The optional Metal executor selects an AppKit window provider for `--display window`.
+`--input host` enables its native keyboard with the existing controller layout: W/A/S/D for
+movement, arrows for the right stick, I/J/K/L for the D-pad, Return or Space for cross, and
+Backspace for circle. The complete layout is in [the controller documentation](runtime-syscalls.md#the-controller-libscepad).
+Keys follow physical US-key positions, as the shared USB HID mapping does. Left Shift is L3;
+right Shift does not press it. Command chords stay with AppKit. Losing application or key-window
+focus releases held controls, so returning to the game does not leave movement stuck.
+
+`--input none` remains the default, and `--input-script` remains exclusive with host input.
+Host gamepads, rumble and host audio are unavailable in this native Metal path.
+The default display is still `none`; `headless` and `--imports` call the boot body directly.
 
 The executor processes recorded calls in submission order. Registers, targets, shaders, user data,
 scissors and index state carry across submitted buffers until an explicit `rt_executor_reset`.

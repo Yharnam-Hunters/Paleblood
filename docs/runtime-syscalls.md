@@ -921,8 +921,8 @@ The runtime models one standard controller, the one user's, always connected
 (`runtime/syslib/pad.c`). Its state comes from the input backend (`runtime/input_host.h`,
 `runtime/input/`): by default (`pbboot --input none`, `tools/boot.py --input none`) none is
 installed and the pad is at rest, so CI and recorded boots read the same state as before. With
-`--input host` the host's first gamepad and the window's keyboard drive it, and the title's
-vibration rumbles the gamepad.
+`--input host` the selected window backend drives it: SDL uses its first gamepad and keyboard
+and forwards vibration; the native AppKit backend uses its window's keyboard.
 
 **Sources.**
 - **Signatures and layouts:** the OpenOrbis homebrew SDK's `Pad.h`, `_types/pad.h` and
@@ -965,8 +965,8 @@ vibration rumbles the gamepad.
 | `scePadGetControllerInformation` | touch pad 1920 × 942; stick deadzones 13 (the runtime's choice); connected; a local pad |
 | `scePadSetVibration` | 0; the speeds are kept (`rt_pad_vibration`) and passed to the backend: with `--input host`, the large motor to SDL's low-frequency rumble, the small one to the high-frequency rumble |
 
-**Host input (`pbboot --input host`, `tools/boot.py --input host`).** It needs a build with SDL3
-(the window's) and `--display window`, since the window's event loop reads the devices: SDL's
+**Host input (`pbboot --input host`, `tools/boot.py --input host`).** It requires `--display window`.
+SDL builds use the window's SDL3: its
 events are pumped on the display's thread (`display_vulkan.c`), never from a guest thread, and
 after each pump `rt_input_host_pump` samples the gamepad and keyboard there
 (`runtime/input/input_host_sdl.c`). The state therefore changes once per presented frame. For
@@ -1002,6 +1002,12 @@ cancel out, and buttons combine. The default layout (`rt_default_keys`, `runtime
 The runtime's choices: the L2 and R2 bits are set while their trigger is off zero; touch ids count
 0..127 and wrap, down fingers listed first; a held vibration is sent to SDL again every 30
 seconds, as SDL's rumble lasts at most about 65.
+
+The native AppKit window uses the same physical-key layout without SDL. Its event thread updates
+key state and publishes a locked sample for guest readers. Both owned recovery signals stay
+masked until the input lock is released. Left/right Shift are distinguished by the SDK's device
+flags; Command chords release game controls, and losing application or key-window focus releases
+all held keys. This provider has keyboard input only; gamepad devices and rumble remain unavailable.
 
 **Scripted input (`pbboot --input-script SPEC`, `tools/boot.py --no-record --input-script SPEC`).**
 For unattended boots, a timed script plays the controller through the same backend interface
