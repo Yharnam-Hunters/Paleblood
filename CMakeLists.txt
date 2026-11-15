@@ -276,3 +276,4 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 # game-specific ones beside their system (game/<system>/tests/).
 add_library(bbfamily_mutants SHARED test/family_mutants.c game/engine/tests/family_mutants.c)
 target_include_directories(bbfamily_mutants PRIVATE runtime/include)
+target_compile_options(bbfamily_mutants PRIVATE -ffp-contract=off -fno-fast-math)
