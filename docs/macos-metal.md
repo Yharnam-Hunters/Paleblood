@@ -217,7 +217,7 @@ non-copy colour operations and partial colour masks stop with a reason.
 submissions, in the persistent graphics state. Reset returns these words to zero.
 They specify formatted fast-clear texel bits; writing them does not clear a target.
 The admitted uncompressed draw path does not consume them. Active fast-clear or
-compression flags and non-normal colour modes still stop before shader work.
+compression flags and unsupported colour modes still stop before shader work.
 Only the two documented words in each of the eight banks are admitted. The
 [AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
 specify their addresses and bank stride.
