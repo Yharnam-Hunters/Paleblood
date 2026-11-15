@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// AI: hearing. The hearing test (0x0169d160) decides whether an enemy hears one sound and, when
-// it does, remembers where the sound came from; the ear's shape (0x0169da30) answers whether a
-// sphere around a point reaches the enemy's ear.
+// AI: hearing. For each sound around an enemy, the sound check (0x0169cef0) finds who or what
+// made it and whether the enemy can hear that kind of maker; the hearing test (0x0169d160) then
+// decides whether the enemy hears the sound and, when it does, remembers where it came from; the
+// ear's shape (0x0169da30) answers whether a sphere around a point reaches the enemy's ear.
+//
+// The sound check, in plain words:
+// - A sound made by a character is checked by teams. Each character belongs to a team (a number
+//   below 32), and two 32 x 32 tables of the game say which teams hear which: one for most
+//   sounds, and, for sounds whose AiSound row sets useHitDamageTeam, the pair of attack-hit team
+//   tables, each counting only when the sound asks for it. The maker's size goes to the hearing
+//   test, which takes it off the gap. A sound whose character is gone is not heard.
+// - A sound made by an object is heard when the object still exists, and a sound of the third
+//   kind always; neither has a size. A sound of any other kind is not heard.
 //
 // The hearing test, in plain words:
 // - A sound carries for its range, less the enemy's sound-cut distance (NpcThinkParam
@@ -45,6 +55,7 @@
 #include "../engine/scalar.h"
 #include "../engine/vector.h"
 #include "../engine/vector_operations.h"
+#include "../param/param_repository.h"
 #include "perception_math.h"
 #include "runtime/original.h"
 
@@ -81,14 +92,17 @@ static_assert(offsetof(ThinkParamHolder, row) == 0x8);
 
 // The enemy's character, as hearing asks it through its vtable.
 struct HearingOwner;
+struct Team;
 struct HearingOwnerVtable {
-    void *unknown_slots_0x00[0x18 / 8];
+    void *unknown_slots_0x00[0x10 / 8];
+    void (*team)(Team *out, HearingOwner *);
     Vec4 (*position)(HearingOwner *);
     void *unknown_slot_0x20;
     Vec4 (*forward)(HearingOwner *);
     void *unknown_slots_0x30[(0x40 - 0x30) / 8];
     float (*size)(HearingOwner *);
 };
+static_assert(offsetof(HearingOwnerVtable, team) == 0x10);
 static_assert(offsetof(HearingOwnerVtable, position) == 0x18 && offsetof(HearingOwnerVtable, forward) == 0x28);
 static_assert(offsetof(HearingOwnerVtable, size) == 0x40);
 struct HearingOwner {
@@ -127,17 +141,29 @@ struct Listener {
 static_assert(offsetof(Listener, owner) == 0x8 && offsetof(Listener, think_params) == 0x10);
 static_assert(offsetof(Listener, memory) == 0x18 && offsetof(Listener, hearing_scale) == 0x20);
 
-// One sound, as the hearing test reads it.
+// Who or what made a sound.
+enum class SoundMaker : int32_t {
+    character = 0,
+    object = 1,
+    other = 2,                    // heard without asking who made it
+};
+
+// One sound, as the sound check and the hearing test read it.
 struct Sound {
     uint8_t unknown_0x00[0x10];
     Vec4 position;
-    uint8_t unknown_0x20[0x8];
+    SoundMaker maker;
+    uint32_t maker_handle;        // the character or object that made it; no_handle for none
     float range;
     uint8_t unknown_0x2c[0x4];
     int32_t ai_sound_id;          // the sound's AiSound param row
+    uint8_t uses_hit_team_table_a;  // with useHitDamageTeam: the first attack-hit table counts
+    uint8_t uses_hit_team_table_b;  // with useHitDamageTeam: the second one counts
 };
-static_assert(offsetof(Sound, position) == 0x10 && offsetof(Sound, range) == 0x28);
-static_assert(offsetof(Sound, ai_sound_id) == 0x30);
+static_assert(offsetof(Sound, position) == 0x10 && offsetof(Sound, maker) == 0x20);
+static_assert(offsetof(Sound, maker_handle) == 0x24 && offsetof(Sound, range) == 0x28);
+static_assert(offsetof(Sound, ai_sound_id) == 0x30 && offsetof(Sound, uses_hit_team_table_a) == 0x34);
+static_assert(offsetof(Sound, uses_hit_team_table_b) == 0x35);
 
 constexpr float at_the_ear = 0.0001f;          // closer than this is always heard
 constexpr float flat_length_epsilon = 0.00001f;  // a shorter ground direction is no direction
@@ -353,6 +379,191 @@ extern "C" void bb_ai_hearing_test(Listener *listener, const Sound *sound, bool 
         if (!heard_by_ear(h, row)) return;
     }
     remember(listener, sound, source_size);
+}
+
+namespace {
+
+// ---- the sound check: who made the sound ----
+
+constexpr uint32_t no_handle = 0xffffffff;
+
+// The world's characters (WorldChrMan), as a handle finds one: bits 14..19 of the handle pick a
+// character set (ChrSet) and the low 14 bits an entry in it (ChrSetEntry, 0x38 bytes). The
+// layout names follow droogie/bbhost's notes (world_chr_man.hpp, chr_handle.hpp, chr_set.hpp).
+// A sound's maker, as far as the sound check reads it: its size sits in the physics module
+// (ChrIns +0x3b0 module table, +0x68; bbhost's SprjChrPhysicsModule).
+struct MakerPhysics {
+    uint8_t unknown_0x000[0x358];
+    float size;                   // taken off the gap by the hearing test
+};
+struct MakerModules {
+    uint8_t unknown_0x00[0x68];
+    const MakerPhysics *physics;
+};
+struct MakerCharacter {
+    uint8_t unknown_0x000[0x3b0];
+    const MakerModules *modules;
+};
+static_assert(offsetof(MakerPhysics, size) == 0x358 && offsetof(MakerModules, physics) == 0x68);
+static_assert(offsetof(MakerCharacter, modules) == 0x3b0);
+
+struct CharacterSlot {
+    MakerCharacter *character;
+    uint8_t unknown_0x08[0x30];
+};
+static_assert(sizeof(CharacterSlot) == 0x38);
+struct CharacterBlock {
+    int32_t count;
+    uint8_t unknown_0x04[0x4];
+    CharacterSlot *slots;
+};
+static_assert(offsetof(CharacterBlock, slots) == 0x8);
+struct CharacterBlockLimit {
+    uint8_t unknown_0x00[0x18];
+    int32_t extra_blocks;         // the blocks a handle may name, less uncounted_blocks
+};
+constexpr int32_t uncounted_blocks = 2;
+static_assert(offsetof(CharacterBlockLimit, extra_blocks) == 0x18);
+constexpr int character_block_shift = 14, character_block_bits = 6;
+constexpr uint32_t character_slot_mask = 0x3fff;
+struct WorldCharacters {
+    uint8_t unknown_0x000[0x8];
+    const CharacterBlockLimit *limit;
+    uint8_t unknown_0x010[0x840];
+    CharacterBlock *blocks[1 << character_block_bits];
+};
+static_assert(offsetof(WorldCharacters, limit) == 0x8 && offsetof(WorldCharacters, blocks) == 0x850);
+
+RT_GLOBAL(0x0593e878, world_characters, WorldCharacters *);
+RT_GLOBAL(0x04d3b26b, world_characters_name, const char);
+
+// The world's objects, as a handle finds one: bits 20..27 of the handle pick a group and the low
+// 20 bits a slot in it. Only whether the slot exists matters here.
+struct ObjectSlot {
+    uint8_t unknown_0x000[0x2e0];
+};
+struct ObjectGroup {
+    uint8_t unknown_0x000[0xc8];
+    int32_t count;
+    uint8_t unknown_0x0cc[0x4];
+    ObjectSlot *slots;
+    uint8_t unknown_0x0d8[0x120];
+};
+static_assert(offsetof(ObjectGroup, count) == 0xc8 && offsetof(ObjectGroup, slots) == 0xd0);
+static_assert(sizeof(ObjectGroup) == 0x1f8);
+struct ObjectTable {
+    uint8_t unknown_0x00[0x20];
+    int32_t group_count;
+    uint8_t unknown_0x24[0x4];
+    ObjectGroup *groups;
+};
+static_assert(offsetof(ObjectTable, group_count) == 0x20 && offsetof(ObjectTable, groups) == 0x28);
+constexpr int object_group_shift = 20, object_group_bits = 8;
+constexpr uint32_t object_slot_mask = 0xfffff;
+
+RT_GLOBAL(0x0593b168, world_objects, ObjectTable *);
+
+uint32_t bits(uint32_t value, int shift, int count) { return (value >> shift) & ((1u << count) - 1); }
+
+// Whether `slot` of an array at `slots` is a real address: the game checks the slot's address,
+// not the array's, so a null array still has its slots past the first.
+template <typename Slot> bool slot_address_set(const Slot *slots, uint32_t slot)
+{
+    return reinterpret_cast<uintptr_t>(slots) + slot * sizeof(Slot) != 0;
+}
+
+// The character a handle names, or null when it names none.
+MakerCharacter *find_character(const WorldCharacters *world, uint32_t handle)
+{
+    if (handle == no_handle) return nullptr;
+    const uint32_t block_index = bits(handle, character_block_shift, character_block_bits);
+    if (static_cast<int32_t>(block_index) >= world->limit->extra_blocks + uncounted_blocks) return nullptr;
+    const CharacterBlock *block = world->blocks[block_index];
+    if (!block) return nullptr;
+    const uint32_t slot = handle & character_slot_mask;
+    if (static_cast<int32_t>(slot) >= block->count || !slot_address_set(block->slots, slot)) return nullptr;
+    return block->slots[slot].character;
+}
+
+// Whether the object a handle names still exists.
+bool object_exists(const ObjectTable *objects, uint32_t handle)
+{
+    if (handle == no_handle) return false;
+    const uint32_t group_index = bits(handle, object_group_shift, object_group_bits);
+    if (static_cast<int32_t>(group_index) >= objects->group_count) return false;
+    const ObjectGroup &group = objects->groups[group_index];
+    const uint32_t slot = handle & object_slot_mask;
+    return static_cast<int32_t>(slot) < group.count && slot_address_set(group.slots, slot);
+}
+
+// ---- the sound check: whether the listener's team hears the maker's ----
+
+// What the team queries fill in: a small object whose `number` is the team type (below 32). For
+// a character, 0x01cc2910 starts from its ChrIns team_type (+0x88) and may override it from its
+// effects (one override is 29, bbhost's Indiscriminate team); it is called, not rewritten here.
+struct Team {
+    const void *vtable;
+    uint32_t number;
+};
+static_assert(offsetof(Team, number) == 0x8);
+constexpr uint32_t team_count = 32;
+using TeamTable = uint8_t[team_count][team_count];   // [listener's team][maker's team]: nonzero hears
+
+RT_ORIGINAL(0x01cc2910, character_team, void(Team *out, const MakerCharacter *));
+// The table for most sounds (the global holds its address) and the two attack-hit tables.
+RT_GLOBAL(0x057e4560, hearing_team_table, const TeamTable *);
+RT_GLOBAL(0x04b31560, hit_team_table_a, const TeamTable);
+RT_GLOBAL(0x04b31960, hit_team_table_b, const TeamTable);
+
+// The part of an AiSoundParam row the sound check reads.
+struct AiSoundRow {
+    uint8_t unknown_0x00[0xc];
+    uint8_t use_hit_damage_team;  // judge by the attack-hit team tables
+};
+static_assert(offsetof(AiSoundRow, use_hit_damage_team) == 0xc);
+RT_ORIGINAL(0x02312b60, find_ai_sound_row, void(param::RowLookup *out, int32_t id));
+
+RT_ORIGINAL(0x0169d160, hearing_test, void(Listener *, const Sound *, bool audible, float source_size));
+
+// Whether the listener's team hears sounds `maker` makes.
+bool team_hears(const Listener *listener, const Sound *sound, const MakerCharacter *maker)
+{
+    param::RowLookup lookup{sound->ai_sound_id, {}, nullptr};
+    find_ai_sound_row(&lookup, sound->ai_sound_id);
+    const auto *row = reinterpret_cast<const AiSoundRow *>(lookup.row);
+
+    Team listener_team, maker_team;
+    HearingOwner *owner = listener->owner;
+    owner->vtable->team(&listener_team, owner);
+    character_team(&maker_team, maker);
+    const uint32_t l = listener_team.number, m = maker_team.number;
+    if (!row || !row->use_hit_damage_team) return (*hearing_team_table.get())[l][m] != 0;
+    return (sound->uses_hit_team_table_a && hit_team_table_a.get()[l][m]) ||
+           (sound->uses_hit_team_table_b && hit_team_table_b.get()[l][m]);
+}
+
+}  // namespace
+
+// The sound check: finds who or what made `sound` and hands it to the hearing test with whether
+// the enemy can hear that maker and the maker's size.
+extern "C" void bb_ai_hearing_check_sound(Listener *listener, const Sound *sound)
+{
+    switch (sound->maker) {
+    case SoundMaker::other:
+        hearing_test(listener, sound, true, 0.0f);
+        return;
+    case SoundMaker::object:
+        if (object_exists(world_objects.get(), sound->maker_handle)) hearing_test(listener, sound, true, 0.0f);
+        return;
+    case SoundMaker::character: {
+        const WorldCharacters *world = engine::require(world_characters, world_characters_name.address());
+        const MakerCharacter *maker = find_character(world, sound->maker_handle);
+        if (!maker) return;
+        const float maker_size = maker->modules->physics->size;
+        hearing_test(listener, sound, team_hears(listener, sound, maker), maker_size);
+        return;
+    }
+    }
 }
 
 }  // namespace ai
