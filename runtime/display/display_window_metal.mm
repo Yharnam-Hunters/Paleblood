@@ -4,6 +4,7 @@
 #include "runtime/graphics_metal.h"
 #include "runtime/process.h"
 #include "window_mailbox.h"
+#include "../input/input_host_macos.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <atomic>
@@ -15,6 +16,33 @@
 
 /* Kept until process exit: a stopped guest/helper may still call the display boundary. */
 static rt_window_mailbox *mailbox;
+
+/* First responder for physical game keys; Command chords continue along AppKit's chain. */
+@interface PBGameView : NSView
+@end
+@implementation PBGameView
+- (BOOL)acceptsFirstResponder {return YES;}
+- (void)keyDown:(NSEvent *)event
+{
+    rt_input_host_macos_modifiers(event.modifierFlags);
+    const int handled=rt_input_host_macos_key(event.keyCode,1);
+    rt_input_host_pump();
+    if (!handled) [super keyDown:event];
+}
+- (void)keyUp:(NSEvent *)event
+{
+    rt_input_host_macos_modifiers(event.modifierFlags);
+    const int handled=rt_input_host_macos_key(event.keyCode,0);
+    rt_input_host_pump();
+    if (!handled) [super keyUp:event];
+}
+- (void)flagsChanged:(NSEvent *)event
+{
+    rt_input_host_macos_modifiers(event.modifierFlags);
+    rt_input_host_pump();
+    [super flagsChanged:event];
+}
+@end
 
 @interface PBRunWindow : NSObject <NSApplicationDelegate,NSWindowDelegate> {
 @public
@@ -33,6 +61,7 @@ static rt_window_mailbox *mailbox;
 }
 - (void)tick;
 - (void)fail:(const char *)reason;
+- (void)updateInputFocus;
 @end
 
 static void *coordinate(void *opaque)
@@ -48,6 +77,7 @@ static void *coordinate(void *opaque)
 @implementation PBRunWindow
 - (void)fail:(const char *)reason
 {
+    rt_input_host_macos_focus(0);
     rt_window_mailbox_cancel(mailbox);
     rt_boot_window_request_stop("Metal window",reason);
 }
@@ -78,6 +108,26 @@ static void *coordinate(void *opaque)
 {
     (void)sender;[self fail:"window close requested"];return NO;
 }
+- (void)updateInputFocus
+{
+    rt_input_host_macos_focus(NSApp.isActive && window.isKeyWindow);
+}
+- (void)windowDidBecomeKey:(NSNotification *)notification
+{
+    (void)notification;[self updateInputFocus];
+}
+- (void)windowDidResignKey:(NSNotification *)notification
+{
+    (void)notification;rt_input_host_macos_focus(0);
+}
+- (void)applicationDidBecomeActive:(NSNotification *)notification
+{
+    (void)notification;[self updateInputFocus];
+}
+- (void)applicationDidResignActive:(NSNotification *)notification
+{
+    (void)notification;rt_input_host_macos_focus(0);
+}
 - (void)windowDidResize:(NSNotification *)notification
 {
     (void)notification;
@@ -91,6 +141,7 @@ static void *coordinate(void *opaque)
 - (void)pump
 {
     if (done.load(std::memory_order_acquire)) {
+        rt_input_host_macos_focus(0);
         rt_window_mailbox_cancel(mailbox);
         [timer invalidate];timer=nil;
         window.delegate=nil;[window orderOut:nil];window=nil;layer=nil;
@@ -111,12 +162,14 @@ static void *coordinate(void *opaque)
                 backing:NSBackingStoreBuffered defer:NO];
             if (!window) {[self fail:"cannot create AppKit window"];return;}
             window.title=@"Paleblood";window.releasedWhenClosed=NO;window.delegate=self;
-            NSView *view=[[NSView alloc] initWithFrame:window.contentView.bounds];
+            NSView *view=[[PBGameView alloc] initWithFrame:window.contentView.bounds];
             layer=[CAMetalLayer layer];
             if (!view || !layer) {[self fail:"cannot create AppKit Metal view/layer"];return;}
             layer.frame=view.bounds;
             layer.contentsScale=window.backingScaleFactor;layer.framebufferOnly=YES;view.layer=layer;view.wantsLayer=YES;
-            window.contentView=view;[window center];[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];
+            window.contentView=view;[window makeFirstResponder:view];
+            [window center];[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];
+            [self updateInputFocus];
         }
         (void)rt_window_mailbox_opened(mailbox); /* A busy publisher is retried on an ordinary tick. */
     }
@@ -142,7 +195,7 @@ static void *coordinate(void *opaque)
 - (void)tick
 {
     try {
-        @try {[self pump];}
+        @try {rt_input_host_pump();[self pump];}
         @catch (NSException *exception) {rt_metal_offscreen_destroy(&context);[self fail:exception.reason.UTF8String];}
     } catch (const std::exception &exception) {rt_metal_offscreen_destroy(&context);[self fail:exception.what()];}
       catch (...) {rt_metal_offscreen_destroy(&context);[self fail:"unexpected native window exception"];}

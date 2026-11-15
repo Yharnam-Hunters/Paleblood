@@ -203,9 +203,17 @@ cmake --build build-metal-draw --target test_metal_executor --parallel 2
 ctest --test-dir build-metal-draw -R '^metal_executor$' --output-on-failure
 ```
 
-The optional Metal executor selects an AppKit window provider for `--display window`, plus no
-host audio and no host input. `none` remains the default; `headless` and `--imports` call the
-boot body directly. These providers do not establish host controller or audio support.
+The optional Metal executor selects an AppKit window provider for `--display window`.
+`--input host` enables its native keyboard with the existing controller layout: W/A/S/D for
+movement, arrows for the right stick, I/J/K/L for the D-pad, Return or Space for cross, and
+Backspace for circle. The complete layout is in [the controller documentation](runtime-syscalls.md#the-controller-libscepad).
+Keys follow physical US-key positions, as the shared USB HID mapping does. Left Shift is L3;
+right Shift does not press it. Command chords stay with AppKit. Losing application or key-window
+focus releases held controls, so returning to the game does not leave movement stuck.
+
+`--input none` remains the default, and `--input-script` remains exclusive with host input.
+Host gamepads, rumble and host audio are unavailable in this native Metal path.
+The default display is still `none`; `headless` and `--imports` call the boot body directly.
 
 The executor processes recorded calls in submission order. Registers, targets, shaders, user data,
 scissors and index state carry across submitted buffers until an explicit `rt_executor_reset`.

@@ -17,6 +17,12 @@ on:
       - 'runtime/display/display_window_metal.mm'
       - 'runtime/display/window_mailbox.c'
       - 'runtime/display/window_mailbox.h'
+      - 'runtime/input/input_host_macos.c'
+      - 'runtime/input/input_host_macos.h'
+      - 'runtime/input/input.c'
+      - 'runtime/include/runtime/input_host.h'
+      - 'test/macos_input/**'
+      - 'test/test_macos_input_window.mm'
       - 'runtime/include/runtime/display_window.h'
       - 'runtime/include/runtime/window_boot.h'
       - 'runtime/include/runtime/graphics_metal.h'
@@ -57,6 +63,12 @@ on:
       - 'runtime/display/display_window_metal.mm'
       - 'runtime/display/window_mailbox.c'
       - 'runtime/display/window_mailbox.h'
+      - 'runtime/input/input_host_macos.c'
+      - 'runtime/input/input_host_macos.h'
+      - 'runtime/input/input.c'
+      - 'runtime/include/runtime/input_host.h'
+      - 'test/macos_input/**'
+      - 'test/test_macos_input_window.mm'
       - 'runtime/include/runtime/display_window.h'
       - 'runtime/include/runtime/window_boot.h'
       - 'runtime/include/runtime/graphics_metal.h'
@@ -117,12 +129,14 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and owned test executables
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_runtime_window test_window_mailbox test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth --parallel 2
+        run: cmake --build build --target pbmetal test_macos_input test_macos_input_window test_metal_offscreen test_metal_upload test_metal_presentation test_metal_runtime_window test_window_mailbox test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth --parallel 2
       # Match macos-boot: no optional host package from the runner's other architecture.
       # Guest startup requires a whole-process x86-64 build; ARM still compiles the adapter fixture.
       - name: Compile Metal runtime and guest recovery scope
         if: matrix.arch == 'x86_64'
         run: cmake --build build --target pbboot pbloader bbrt bbgame test_boot_scope_darwin --parallel 2
+      - name: Check the native keyboard provider on the root build
+        run: ctest --test-dir build --no-tests=error --output-on-failure -R '^macos_input$'
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:

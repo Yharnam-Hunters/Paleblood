@@ -55,7 +55,7 @@ if(PkgConfig_FOUND)
 endif()
 if(APPLE AND PB_ENABLE_METAL_EXECUTOR)
     set(PB_DISPLAY_SOURCES display/display.c display/display_window_metal.mm display/window_mailbox.c renderer/renderer.c audio/audio_host_none.c
-        input/input_host_none.c)
+        input/input_host_macos.c)
     message(STATUS "renderer: Metal executor with AppKit window presentation")
 elseif(PB_SDL3_FOUND AND PB_VULKAN_FOUND)
     set(PB_DISPLAY_SOURCES display/display.c display/display_vulkan.c renderer/renderer.c audio/audio_host_sdl.c

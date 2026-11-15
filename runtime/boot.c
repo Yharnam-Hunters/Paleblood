@@ -1540,7 +1540,7 @@ int main(int argc, char **argv)
                 return 2;
             }
             if (rt_input_host_configure(!strcmp(input, "host"))) {
-                fprintf(stderr, "pbboot: --input host: this build has no host input (SDL3 was not found)\n");
+                fprintf(stderr, "pbboot: --input host: this build has no host input provider\n");
                 return 2;
             }
         }

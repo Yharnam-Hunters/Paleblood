@@ -44,6 +44,25 @@ class WindowStartup(startup.Startup):
                              result.stdout + result.stderr)
         return result, status
 
+    def test_native_host_keyboard_enters_owned_guest(self):
+        result, status = self.boot(startup.simple(b'\xc3'), extra=('--input', 'host'))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIsNotNone(status, result.stdout + result.stderr)
+        self.assertEqual(status['outcome'], 'returned')
+        self.assertEqual(status['phase'], 'eboot')
+
+    def test_native_host_input_requires_window(self):
+        result, status = self.boot(startup.simple(b'\xc3'), extra=('--input', 'host', '--display', 'headless'))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIsNone(status)
+        self.assertIn('--input host needs --display window', result.stderr)
+
+    def test_native_host_input_and_script_are_exclusive(self):
+        result, status = self.boot(startup.simple(b'\xc3'), extra=('--input', 'host', '--input-script', '0:cross'))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIsNone(status)
+        self.assertIn('leave out --input host', result.stderr)
+
     def test_unserviced_owned_queue_observer_has_explicit_native_failure(self):
         with patch.dict(os.environ, {'BB_OWNED_WINDOW_SKIP_QUEUE': '1'}):
             result, status = self.boot(startup.simple(b'\xc3'))
