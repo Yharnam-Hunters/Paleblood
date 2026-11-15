@@ -172,7 +172,7 @@ static int owned_boot(void *unused,const sigset_t *previous)
     check("focus restored to actual view",ready());expect(0);
     if (!post(NSEventTypeKeyDown,kVK_Return)) return 1;expect(RT_PAD_BUTTON_CROSS);
     dispatch_sync(dispatch_get_main_queue(),^{
-        [NSApp deactivate];
+        [NSApp hide:nil];
         // Let the actual application callback clear controls. No direct backend calls here.
     });
     // Window resignation precedes application deactivation; await the latter before reactivation.
@@ -186,7 +186,7 @@ static int owned_boot(void *unused,const sigset_t *previous)
     }
     expect(0);
     dispatch_sync(dispatch_get_main_queue(),^{
-        [NSApp activateIgnoringOtherApps:YES];[window makeKeyAndOrderFront:nil];
+        [NSApp unhide:nil];[NSApp activateIgnoringOtherApps:YES];[window makeKeyAndOrderFront:nil];
     });
     check("reactivated real key view",ready());
     if (!post(NSEventTypeKeyDown,kVK_Return)) return 1;expect(RT_PAD_BUTTON_CROSS);
