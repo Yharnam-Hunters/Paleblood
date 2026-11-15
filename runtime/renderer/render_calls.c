@@ -641,7 +641,7 @@ int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t g
     return record(buffer, &call, error, error_size);
 }
 
-/* SET_BASE writes the address's bits 3-31 and 32-39 (the library's writer, 0x014742f0, masks them so):
+/* SET_BASE carries address bits 3-31 and 32-39:
    the base the GPU uses is those bits alone. */
 int rt_render_record_indirect_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size)
 {
