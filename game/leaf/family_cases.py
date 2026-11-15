@@ -141,6 +141,8 @@ CASES = {
     'calls_0x78_stores_dword_at_0x20_calls_0xa8': lambda address, value: restart_cases(address),
     'flushes_pending_through_member_at_0x40': lambda address, value: flush_cases(address),
     'tail_calls_0x68_of_what_0x38_returns': lambda address, value: returned_object_cases(address),
+    'erases_subtree_through_allocator_at_0x18': lambda address, value: tree_cases(address, False),
+    'erases_subtree_with_wide_string_at_0x28': lambda address, value: tree_cases(address, True),
     'writes_dword_field': setter_cases,
     'writes_word_field': setter_cases,
     'writes_byte_field': setter_cases,
@@ -187,6 +189,8 @@ MUTANTS = {
     'calls_0x78_stores_dword_at_0x20_calls_0xa8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_restarts_without_storing_dword'],
     'flushes_pending_through_member_at_0x40': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_flushes_while_flushing'],
     'tail_calls_0x68_of_what_0x38_returns': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_calls_0x68_of_object_itself'],
+    'erases_subtree_through_allocator_at_0x18': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_erases_left_spine_only'],
+    'erases_subtree_with_wide_string_at_0x28': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_erases_nodes_without_their_strings'],
     'writes_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_word_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
@@ -438,6 +442,67 @@ def returned_object_cases(address: str) -> list[dict]:
                 stub['ret'] = 'buf:inner'
         out.append(case)
     return out
+
+
+# Tree erases: a tree of five nodes (n0 over n1 and n2, n1's right child n3, n2's left child n4)
+# and the nil node. The allocator's slot 0x70 compares the allocator and the node, so the order
+# of the frees shows.
+TREE_NODES = {'n0': ('n1', 'n2'), 'n1': ('nil', 'n3'), 'n2': ('n4', 'nil'), 'n3': ('nil', 'nil'),
+              'n4': ('nil', 'nil')}
+NODE_SIZE = 0x50
+NODE_IS_NIL = 0x19
+NODE_STRING = 0x28
+NODE_CAPACITIES = {'n0': 7, 'n1': 8, 'n2': 1 << 63, 'n3': 7, 'n4': 8}
+
+
+def tree_case(address: str, case_id: str, start: str, strings: bool) -> dict:
+    """Erase from node START; with STRINGS each node holds a wide string at +0x28 (capacities
+    from NODE_CAPACITIES, the heap ones pointing at their own text) with a second allocator
+    after it. Compared as void: the frees, in order."""
+    case = base_case(address, case_id, 'void')
+    case['buffers'] = {'tree': {'size': 0x20, 'bytes': probe_bytes(73, 0x20)},
+                       'alloc': {'size': PROBE_SIZE, 'bytes': probe_bytes(79)}}
+    nil = bytearray.fromhex(probe_bytes(83, NODE_SIZE))
+    nil[NODE_IS_NIL] = 1
+    case['buffers']['nil'] = {'size': NODE_SIZE, 'bytes': nil.hex()}
+    for i, (node, (left, right)) in enumerate(TREE_NODES.items()):
+        pattern = bytearray.fromhex(probe_bytes(89 + i, NODE_SIZE))
+        pattern[NODE_IS_NIL] = 0
+        if strings:
+            pattern[NODE_STRING:NODE_STRING + 0x20] = wide_string_bytes(97 + i, NODE_CAPACITIES[node])
+            if NODE_CAPACITIES[node] >= WIDE_HEAP_CAPACITY:
+                case['buffers'][f'{node}_text'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(101 + i)}
+                case['memory'].append({'addr': f'buf:{node}+0x{NODE_STRING:x}', 'pointer': f'{node}_text'})
+            case['memory'].append({'addr': f'buf:{node}+0x{NODE_STRING + 0x20:x}', 'pointer': 'strings'})
+        case['buffers'][node] = {'size': NODE_SIZE, 'bytes': pattern.hex()}
+        case['memory'] += [{'addr': f'buf:{node}+0x0', 'pointer': left},
+                           {'addr': f'buf:{node}+0x10', 'pointer': right}]
+    case['memory'].append({'addr': 'buf:tree+0x18', 'pointer': 'alloc'})
+    stubbed_table(case, 'alloc', 0, 73, {FREE_SLOT: 2})
+    if strings:
+        case['buffers']['strings'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(107)}
+        stubbed_table(case, 'strings', 1, 73, {FREE_SLOT: 2})
+    # A stub entry scripts one call: slot 0x70 gets one entry per node freed (and per heap text).
+    freed = subtree(start)
+    frees = {record_stub(0, FREE_SLOT // 8): len(freed),
+             record_stub(1, FREE_SLOT // 8): sum(NODE_CAPACITIES[n] >= WIDE_HEAP_CAPACITY for n in freed)}
+    for stub in list(case['stubs']):
+        for _ in range(frees.get(stub['address'], 1) - 1):
+            case['stubs'].append(dict(stub))
+    case['args'] = {'rdi': 'buf:tree', 'rsi': f'buf:{start}', 'rax': hex(RAX_SEED)}
+    return case
+
+
+def subtree(node: str) -> list[str]:
+    if node == 'nil':
+        return []
+    left, right = TREE_NODES[node]
+    return [node] + subtree(left) + subtree(right)
+
+
+def tree_cases(address: str, strings: bool) -> list[dict]:
+    """The whole tree, a leaf, a node with only a left child, and the nil node (no free)."""
+    return [tree_case(address, f'from_{start}', start, strings) for start in ('n0', 'n3', 'n2', 'nil')]
 
 
 def cases(family: str, address: str, value: int | None) -> list[dict]:

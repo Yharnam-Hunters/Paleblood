@@ -134,6 +134,29 @@ uint64_t bb_mutant_calls_0x68_of_object_itself(void *object, uint64_t second)
     return bb_mutant_slot(object, 0x68)(object, second);
 }
 
+/* Frees the node and its left children but never the right subtrees. */
+void bb_mutant_erases_left_spine_only(uint8_t *tree, uint8_t *node)
+{
+    void *allocator = *(void **)(tree + 0x18);
+    while (!node[0x19]) {
+        uint8_t *left = *(uint8_t **)node;
+        bb_mutant_slot(allocator, 0x70)(allocator, node);
+        node = left;
+    }
+}
+
+/* Frees every node (right subtrees first) without resetting its wide string. */
+void bb_mutant_erases_nodes_without_their_strings(uint8_t *tree, uint8_t *node)
+{
+    void *allocator = *(void **)(tree + 0x18);
+    while (!node[0x19]) {
+        bb_mutant_erases_nodes_without_their_strings(tree, *(uint8_t **)(node + 0x10));
+        uint8_t *left = *(uint8_t **)node;
+        bb_mutant_slot(allocator, 0x70)(allocator, node);
+        node = left;
+    }
+}
+
 /* Returns one. */
 uint64_t bb_mutant_returns_one(void)
 {

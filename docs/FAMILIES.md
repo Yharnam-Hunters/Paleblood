@@ -117,6 +117,8 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `calls_0x78_stores_dword_at_0x20_calls_0xa8` | 46 exact bytes | call slot 0x78 with 0, store a dword at +0x20, call slot 0xa8, set the byte at +8 |
 | `flushes_pending_through_member_at_0x40` | 92 exact bytes | when the object behind +0x40 has work and is not busy, call its slots 0x18 and 0x20 and clear its count |
 | `tail_calls_0x68_of_what_0x38_returns` | 36 exact bytes | call slot 0x38, then tail-call slot 0x68 of the object it returned with the second argument |
+| `erases_subtree_through_allocator_at_0x18` | 81 exact bytes | free the nodes of a subtree through slot 0x70 of the allocator at +0x18 (right first, recursively) |
+| `erases_subtree_with_wide_string_at_0x28` | 124 exact bytes | the same, resetting the wide string at +0x28 of each node first |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
 | `writes_word_field` | `66 89 77 {d8} c3` | setters of a 16-bit field |
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |

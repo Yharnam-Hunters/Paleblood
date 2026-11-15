@@ -460,6 +460,18 @@ MATCHING_TEMPLATES['tail_calls_0x68_of_what_0x38_returns'] = {
     'single': 'uint64_t {symbol}(void *object, uint64_t second)\n{{\n    void *inner = ((inner_function)virtual_slot(object, inner_slot))(object, second);\n    return virtual_slot(inner, outer_slot)(inner, second);\n}}\n',
 }
 
+# Tree erases (game/leaf/virtual_records.cpp).
+MATCHING_TEMPLATES['erases_subtree_through_allocator_at_0x18'] = {
+    'header': '// Records that call virtual functions: free the nodes of a subtree through slot 0x70 of the allocator at +0x18 (right first, recursively).\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { free_slot = 0x70 };\n\nstruct tree_node {\n    struct tree_node *left;\n    struct tree_node *parent;\n    struct tree_node *right;\n    uint8_t color;\n    uint8_t is_nil;\n};\n\nstruct tree {\n    uint8_t unknown_0x0[0x18];\n    void *allocator;\n};\n',
+    'single': 'void {symbol}(struct tree *tree, struct tree_node *node)\n{{\n    while (!node->is_nil) {{\n        {symbol}(tree, node->right);\n        struct tree_node *left = node->left;\n        virtual_slot(tree->allocator, free_slot)(tree->allocator, node);\n        node = left;\n    }}\n}}\n',
+}
+MATCHING_TEMPLATES['erases_subtree_with_wide_string_at_0x28'] = {
+    'header': '// Records that call virtual functions: the same, resetting the wide string at +0x28 of each node first.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { free_slot = 0x70 };\n\nstruct tree_node {\n    struct tree_node *left;\n    struct tree_node *parent;\n    struct tree_node *right;\n    uint8_t color;\n    uint8_t is_nil;\n    uint8_t unknown_0x1a[0xe];\n    struct wide_string string;\n    void *allocator;\n};\n\nstruct tree {\n    uint8_t unknown_0x0[0x18];\n    void *allocator;\n};\n',
+    'single': 'void {symbol}(struct tree *tree, struct tree_node *node)\n{{\n    while (!node->is_nil) {{\n        {symbol}(tree, node->right);\n        struct tree_node *left = node->left;\n        if (node->string.capacity >= heap_capacity)\n            virtual_slot(node->allocator, free_slot)(node->allocator, node->string.text.heap_text);\n        node->string.capacity = inline_capacity;\n        node->string.size = 0;\n        node->string.text.inline_text[0] = 0;\n        virtual_slot(tree->allocator, free_slot)(tree->allocator, node);\n        node = left;\n    }}\n}}\n',
+}
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])

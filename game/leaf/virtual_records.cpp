@@ -279,3 +279,53 @@ extern "C" uint64_t bb_leaf_tail_calls_0x68_of_what_0x38_returns(void *object, u
     void *inner = virtual_slot<InnerFunction>(object, inner_slot)(object, second);
     return virtual_slot<OuterFunction>(inner, outer_slot)(inner, second);
 }
+
+// Tree erases: the nodes of a subtree are freed through slot 0x70 of the tree's allocator, the
+// right subtree first (recursively), then the node, then on along its left child, until the nil
+// node. The second family resets the wide string each node holds first.
+namespace {
+
+struct TreeNode {
+    TreeNode *left;
+    TreeNode *parent;
+    TreeNode *right;
+    uint8_t color;
+    uint8_t is_nil;
+};
+static_assert(offsetof(TreeNode, right) == 0x10);
+static_assert(offsetof(TreeNode, is_nil) == 0x19);
+
+struct TreeWithAllocator {
+    uint8_t unknown_0x0[0x18];
+    void *allocator;
+};
+static_assert(offsetof(TreeWithAllocator, allocator) == 0x18);
+
+using NodeFreeFunction = void (*)(void *allocator, TreeNode *node);
+constexpr std::size_t node_free_slot = 0x70;
+constexpr std::size_t node_string = 0x28;
+
+template <bool ResetString>
+void erase_subtree(TreeWithAllocator *tree, TreeNode *node)
+{
+    while (!node->is_nil) {
+        erase_subtree<ResetString>(tree, node->right);
+        TreeNode *left = node->left;
+        if constexpr (ResetString)
+            reset<node_string>(node);
+        virtual_slot<NodeFreeFunction>(tree->allocator, node_free_slot)(tree->allocator, node);
+        node = left;
+    }
+}
+
+}  // namespace
+
+extern "C" void bb_leaf_erases_subtree_through_allocator_at_0x18(void *tree, void *node)
+{
+    erase_subtree<false>(static_cast<TreeWithAllocator *>(tree), static_cast<TreeNode *>(node));
+}
+
+extern "C" void bb_leaf_erases_subtree_with_wide_string_at_0x28(void *tree, void *node)
+{
+    erase_subtree<true>(static_cast<TreeWithAllocator *>(tree), static_cast<TreeNode *>(node));
+}
