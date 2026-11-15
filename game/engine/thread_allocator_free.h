@@ -44,14 +44,21 @@ struct ThreadAllocatorHolder {
 };
 static_assert(offsetof(ThreadAllocatorHolder, allocator) == 0x58);
 
-// The size is passed as the original's edx: 32 bits, zero-extended.
-inline uint64_t free_object(void *object, uint32_t class_size)
+// The sized free of the thread's allocator. The size is passed as the original's edx: 32 bits,
+// zero-extended.
+inline uint64_t free_sized(void *object, uint32_t size)
 {
     auto *holder = *reinterpret_cast<ThreadAllocatorHolder **>(thread_pointer() + thread_allocator_offset.get());
     ThreadAllocator *allocator = holder->allocator;
     const SizedFree free = allocator->vtable[sized_free_slot / sizeof(SizedFree)];
+    return free(allocator, object, size);
+}
+
+// The object's allocation size, or CLASS_SIZE when it says size_default.
+inline uint64_t free_object(void *object, uint32_t class_size)
+{
     const uint16_t size = static_cast<const HeadedObject *>(object)->header.allocation_size;
-    return free(allocator, object, size != size_default ? size : class_size);
+    return free_sized(object, size != size_default ? size : class_size);
 }
 
 }  // namespace engine::thread_allocator_free

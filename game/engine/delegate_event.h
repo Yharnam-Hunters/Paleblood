@@ -42,6 +42,7 @@ inline void post(void *poster, uint32_t kind, uint64_t value, uint64_t data)
     const Delegate &delegate = static_cast<Poster *>(poster)->delegate;
     if (delegate.function == 0)
         return;
+    // The value is the low 32 bits (the text event's originals leave it unset; it is 0 here).
     const Event event{kind, static_cast<uint32_t>(value), data};
     uint8_t *object = delegate.object + delegate.adjustment;
     Handler handler;

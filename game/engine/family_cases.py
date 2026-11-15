@@ -169,7 +169,53 @@ def delegate_forward_cases(address: str, value: int | None) -> list[dict]:
             forward_case(address, 'unset_other', None, 11)]
 
 
+def destructor_cases(address: str, value: int | None) -> list[dict]:
+    """The thread allocator as in thread_free_case; the object's first qword (the vtable store)
+    is compared with the memory, and the free gets 0x28 whatever the header says."""
+    out = []
+    for case_id, header, seed in (('header_own_size', 0x0030_0001, 17), ('header_default', SIZE_DEFAULT << 16, 19)):
+        case = thread_free_case(address, case_id, header, seed)
+        out.append(case)
+    return out
+
+
+WCSLEN = '0x02fbf228'
+WIDE_STRING_ASSIGN = '0x02a2a310'
+
+
+def text_event_case(address: str, case_id: str, text: str, function: str | None, seed: int) -> dict:
+    """The poster's +0x48 points at TEXT (UTF-16, terminated); wcslen (when the text is not
+    empty) and the wide string assign are stubs comparing the text; the delegate is as in
+    delegate_case. The handler compares the bound object, the context and the event's kind and
+    data (its middle dword is unset in the originals)."""
+    case = delegate_case(address, case_id, function, seed)
+    encoded = (text + '\0').encode('utf-16-le')
+    case['buffers']['text'] = {'size': len(encoded), 'bytes': encoded.hex()}
+    case['buffers']['string'] = {'size': 0x38, 'bytes': bytes((seed * 5 + i) & 0xff for i in range(0x38)).hex()}
+    case['memory'].append({'addr': 'buf:poster+0x48', 'pointer': 'text'})
+    case['args']['rsi'] = 'buf:string'
+    stubs = []
+    if text:
+        stubs.append({'address': WCSLEN, 'argc': 1, 'ret': len(text),
+                      'argmem': [{'arg': 0, 'size': len(encoded)}]})
+    stubs.append({'address': WIDE_STRING_ASSIGN, 'argc': 3, 'ret': 0,
+                  'argmem': [{'arg': 1, 'size': len(encoded)}]})
+    for stub in case['stubs']:
+        stub['argmem'] = [{'arg': 1, 'size': 4}, {'arg': 1, 'offset': 8, 'size': 8}]
+    case['stubs'] = stubs + case['stubs']
+    return case
+
+
+def text_event_cases(address: str, value: int | None) -> list[dict]:
+    """Text and empty text (no wcslen), each with the delegate unset, direct and virtual."""
+    return [text_event_case(address, f'{name}_{function or "unset"}', text, function, seed)
+            for name, text in (('text', 'Hunter'), ('empty', ''))
+            for function, seed in ((None, 23), ('direct', 29), ('virtual', 31))]
+
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'deleting_destructor_freeing_0x28_bytes': destructor_cases,
+         'posts_text_event_to_delegate_at_0x50': text_event_cases,
          'calls_delegate_at_0x18_else_virtual_0x80': delegate_forward_cases,
          'posts_event_to_delegate_at_0x50': delegate_event_cases,
          'frees_object_through_thread_allocator': thread_free_cases}
@@ -186,6 +232,10 @@ MUTANTS = {
     # No call; and the delegate called without its adjustment (slot 0x80 given 0).
     'calls_delegate_at_0x18_else_virtual_0x80': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
                                                  'bb_mutant_delegate_at_0x18_without_adjustment'],
+    # No write and no call. (A mutant that gets the vtable or the thread allocator wrong would need
+    # the game image, which the mutant library does not see.)
+    'deleting_destructor_freeing_0x28_bytes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'posts_text_event_to_delegate_at_0x50': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 
