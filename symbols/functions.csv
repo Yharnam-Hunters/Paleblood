@@ -177,6 +177,7 @@ address,size,name,system,status,notes
 0x01475af0,279,render_set_gs_ring_sizes,render,edge-verified,Reserve 17 DWORDs; write four GS item sizes and GSVS offsets with masked maximum and total; retain live cursor reloads and late descriptor reads
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
+0x01475ec0,135,render_wait_register,render,edge-verified,Emit register-space WAIT_REG_MEM with a low16 address and low3 comparison; preserve full reference and mask then increment the live cursor after seven stores
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
 0x014761a0,156,render_emit_shader_descriptor16_014761a0,render,edge-verified,"NOP with descriptor control 0x68750004, then SET_SH_REG of a 16-byte descriptor at the stage base plus slot (8 words)"
 0x01476240,172,render_emit_shader_descriptor32_01476240,render,edge-verified,"NOP with descriptor control 0x68750005, then SET_SH_REG of a 32-byte descriptor at the stage base plus slot (12 words)"
