@@ -395,6 +395,49 @@ TEMPLATES['allocates_from_thread_allocator'] = {
 }
 
 
+# Relative families whose copies differ in one immediate (one replacement per value).
+TEMPLATES['calls_virtual_on_object_found_by_0x02c4f560'] = {
+    'header': ('// Every member of calls_virtual_on_object_found_by_0x02c4f560 (symbols/families.csv) is a\n'
+               '// copy of the same function reaching the same finder: it finds the object a handle names\n'
+               '// in the context and tail-calls the object\'s slot K. One replacement per slot offset K.\n'),
+    'shared': '#include "found_object_call.h"\n',
+    'per_value': ('constexpr uint32_t slot_offset_{name} = {value};\n'
+                  'extern "C" uint64_t {symbol}(const engine::found_object_call::Handle *handle, void *context)\n{{\n'
+                  '    return engine::found_object_call::call_virtual(handle, context, slot_offset_{name});\n}}\n'),
+}
+
+TEMPLATES['clears_hk_array_freeing_to_0x058018b0'] = {
+    'header': ('// Every member of clears_hk_array_freeing_to_0x058018b0 (symbols/families.csv) is a copy\n'
+               '// of Havok\'s array clear and deallocate reaching the same allocator, for elements of\n'
+               '// 1 << K bytes. One replacement per element shift K.\n'),
+    'shared': '#include "hk_array_clear.h"\n',
+    'per_value': ('constexpr uint32_t element_shift_{name} = {value};\n'
+                  'extern "C" void {symbol}(engine::HkArray<void> *array)\n{{\n'
+                  '    engine::hk_array_clear::clear_and_deallocate(array, element_shift_{name});\n}}\n'),
+}
+
+TEMPLATES['calls_0x005c9770_on_member_unless_self'] = {
+    'header': ('// Every member of calls_0x005c9770_on_member_unless_self (symbols/families.csv) is a copy\n'
+               '// of the same function: unless the third argument is the object, it dispatches to the\n'
+               '// listeners of the member at +K. One replacement per member offset K.\n'),
+    'shared': '#include "member_listener_dispatch.h"\n',
+    'per_value': ('constexpr uint32_t member_offset_{name} = {value};\n'
+                  'extern "C" bool {symbol}(void *object, void *first, void *second)\n{{\n'
+                  '    return engine::member_listener_dispatch::dispatch_unless_self(object, first, second, '
+                  'member_offset_{name});\n}}\n'),
+}
+
+TEMPLATES['allocates_page_into_table_from_0x02795780'] = {
+    'header': ('// Every member of allocates_page_into_table_from_0x02795780 (symbols/families.csv) is a\n'
+               '// copy of the same function reaching the same arena allocate: it stores a new page of K\n'
+               '// bytes in the table\'s slot, growing the slots first. One replacement per page size K.\n'),
+    'shared': '#include "arena_page_table.h"\n',
+    'per_value': ('constexpr uint32_t page_bytes_{name} = {value};\n'
+                  'extern "C" void {symbol}(engine::arena_page_table::PageTable *table, uint64_t index)\n{{\n'
+                  '    engine::arena_page_table::add_page(table, index, page_bytes_{name});\n}}\n'),
+}
+
+
 def matching_path(root: str, family: dict) -> str:
     return os.path.join(root, 'game', 'matching', family['system'], f"{family['family']}.c")
 

@@ -332,6 +332,11 @@ MUTANTS = {
     'allocates_from_thread_allocator': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
+# The relative families whose copies differ in one immediate (parameterized_family_cases.py).
+_parameterized = _load('parameterized_family_cases')
+CASES.update(_parameterized.CASES)
+MUTANTS.update(_parameterized.MUTANTS)
+
 
 def cases(family: str, address: str, value: int | None) -> list[dict]:
     return CASES[family](address, value)
