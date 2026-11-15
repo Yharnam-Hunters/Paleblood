@@ -51,6 +51,7 @@ address,size,name,system,status,notes
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b070,58,audio_fmod_copy_output_label,audio,edge-verified,Copy the fixed output label for a positive signed DWORD count; set the final NUL after the counted copy; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
+0x0111b0e0,50,audio_fmod_initialize_output_callback,audio,edge-verified,Forward initialization with a null-preserving context adjustment; preserve pointer and DWORD arguments; return the callee status
 0x011ab3a0,260,kernel_memory_pool_free_011ab3a0,kernel,verified,"Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool"
 0x011c4510,15,engine_store_word_product,engine,verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
 0x011c47f0,29,engine_string_length,engine,verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
