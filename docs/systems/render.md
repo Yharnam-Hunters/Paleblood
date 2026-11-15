@@ -348,6 +348,8 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x00fb4ac0` | 89 | `render_yebis_context_instantiate` | edge-verified | YEBIS IPfxContext::Instantiate allocates a context; initializes its base; publishes its vtable then constructs the GNM shim; returns the allocation pointer |
+| `0x00fb6d20` | 30 | `render_yebis_initialize_interface` | edge-verified | Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer |
 | `0x00fbc3e0` | 670 | `render_yebis_get_recursive_sample_parameters` | verified | YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion |
 | `0x01471270` | 57 | `render_command_buffer_init` | verified | Initialize command pointers and callback; rounding capacity down to complete DWORDs while preserving auxiliary fields. |
 | `0x014712d0` | 51 | `render_compose_record_encoding_fields` | verified | Pack one byte and five masked fields into an encoding DWORD; no memory access. |
@@ -375,6 +377,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x014739b0` | 344 | `render_set_depth_render_target` | verified | Emit depth/stencil; view and HTILE registers; or clear DB_Z_INFO and DB_STENCIL_INFO for an absent descriptor. Preserve repeated validity tests and delayed reads when output overlaps descriptor state. |
 | `0x01473fe0` | 90 | `render_set_vgt_primitive_type` | verified | Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE. |
 | `0x014741b0` | 156 | `render_emit_draw_index_auto` | verified | Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet. |
+| `0x01474250` | 157 | `render_emit_draw_opaque_auto` | edge-verified | Emit the fixed opaque DRAW_INDEX_AUTO profile and query-selected trace marker or NOP. Preserve live flags and distinct cursor publications under overlapping packet stores. |
 | `0x014749c0` | 97 | `render_set_gds_oa` | edge-verified | Writes a five-word SET_UCONFIG_REG packet with full DWORD GDS_OA_CNTL and cleared counter and address; byte-result callback admission; publishes the live cursor after all stores |
 | `0x01474a30` | 86 | `render_set_dispatch_draw_index` | edge-verified | Write the unmasked VGT_DISPATCH_DRAW_INDEX DWORD after three-word admission; publish from the captured cursor after the packet stores. |
 | `0x01474f30` | 92 | `render_set_vertex_reuse` | edge-verified | Write VGT_REUSE_OFF as the input byte XOR 1; reserve three DWORDs and publish from the captured cursor after ordered stores. |
@@ -399,8 +402,10 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x014759d0` | 83 | `render_set_gs_shader` | edge-verified | Reserve 29 DWORDs; forward the opaque full register pointer including null to sceGnmSetGsShader; zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry |
 | `0x01475a30` | 83 | `render_update_gs_shader` | edge-verified | Reserve 29 DWORDs; forward the opaque register pointer to sceGnmUpdateGsShader; a zero low-DWORD result adds 116 to the live cursor; AL callback admission reloads without capacity retry |
 | `0x01475a90` | 93 | `render_set_esgs_ring_itemsize` | edge-verified | Write the low 15 bits to VGT_ESGS_RING_ITEMSIZE after three-word admission; publish from the captured cursor and retain final-packet observation |
+| `0x01475af0` | 279 | `render_set_gs_ring_sizes` | edge-verified | Reserve 17 DWORDs; write four GS item sizes and GSVS offsets with masked maximum and total; retain live cursor reloads and late descriptor reads |
 | `0x01475da0` | 101 | `render_emit_event_write` | verified | Emit EVENT_WRITE with a masked event type and the original table-selected event index. |
 | `0x01475e10` | 173 | `render_emit_shader_preparation_range_01475e10` | edge-verified | ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback |
+| `0x01475ec0` | 135 | `render_wait_register` | edge-verified | Emit register-space WAIT_REG_MEM with a low16 address and low3 comparison; preserve full reference and mask then increment the live cursor after seven stores |
 | `0x01476030` | 140 | `render_set_shader_stages_01476030` | edge-verified | SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first |
 | `0x014761a0` | 156 | `render_emit_shader_descriptor16_014761a0` | edge-verified | NOP with descriptor control 0x68750004, then SET_SH_REG of a 16-byte descriptor at the stage base plus slot (8 words) |
 | `0x01476240` | 172 | `render_emit_shader_descriptor32_01476240` | edge-verified | NOP with descriptor control 0x68750005, then SET_SH_REG of a 32-byte descriptor at the stage base plus slot (12 words) |
