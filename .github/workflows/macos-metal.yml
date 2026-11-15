@@ -18,6 +18,7 @@ on:
       - 'test/test_metal_presentation.mm'
       - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
+      - 'test/test_metal_depth_bounds.c'
       - 'test/test_metal_depth.c'
       - 'test/test_metal_rectangles.c'
       - 'test/test_metal_rectangle_values.mm'
@@ -52,6 +53,7 @@ on:
       - 'test/test_metal_presentation.mm'
       - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
+      - 'test/test_metal_depth_bounds.c'
       - 'test/test_metal_depth.c'
       - 'test/test_metal_rectangles.c'
       - 'test/test_metal_rectangle_values.mm'
@@ -104,7 +106,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and owned test executables
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_vertex_only --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth_bounds test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_vertex_only --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
