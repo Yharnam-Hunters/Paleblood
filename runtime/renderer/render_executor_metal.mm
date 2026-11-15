@@ -230,7 +230,7 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
         }
         /* GFX7 has two formatted clear words per target, fifteen registers apart.
            Retain them independently; target_for still refuses active fast clears. */
-        if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + RT_COLOR_TARGETS * CB_COLOR_REGISTER_STRIDE &&
+        if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + static_cast<unsigned>(RT_COLOR_TARGETS) * CB_COLOR_REGISTER_STRIDE &&
             (address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE < 2) {
             const unsigned relative = address - CB_COLOR0_CLEAR_WORD0;
             state.clear_words[relative / CB_COLOR_REGISTER_STRIDE][relative % CB_COLOR_REGISTER_STRIDE] = value;
