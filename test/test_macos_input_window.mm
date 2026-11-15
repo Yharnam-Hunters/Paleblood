@@ -100,6 +100,17 @@ static bool ready(void)
         if (std::chrono::steady_clock::now()>=until) return false;sched_yield();
     } while (true);
 }
+static bool inactive(void)
+{
+    const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    for (;;) {
+        __block bool active=true;
+        dispatch_sync(dispatch_get_main_queue(),^{active=NSApp.isActive;});
+        if (!active) return true;
+        if (std::chrono::steady_clock::now()>=until) return false;
+        sched_yield();
+    }
+}
 static int owned_boot(void *unused,const sigset_t *previous)
 {
     (void)unused;
@@ -164,6 +175,8 @@ static int owned_boot(void *unused,const sigset_t *previous)
         [NSApp deactivate];
         // Let the actual application callback clear controls. No direct backend calls here.
     });
+    // Window resignation precedes application deactivation; await the latter before reactivation.
+    check("application deactivation completed",inactive());
     const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
     for (;;) {
         rt_pad_sample current;rt_input_sample(&current);
