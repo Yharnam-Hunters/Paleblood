@@ -42,7 +42,12 @@ RELEASE_COUNTED = '0x027ee1e0'
 DESTROY_BASE = '0x006f92f0'
 
 
-def member_release_case(case_id: str, address: str, member: str | int, count: int | None, seed: int) -> dict:
+OBJECT_ALLOCATOR = '0x057e7320'    # the global that points at the allocator
+ALLOCATOR_FREE = '0x00400280'      # a stand-in for the allocator's slot 0x68, stubbed
+
+
+def member_release_case(case_id: str, address: str, member: str | int, count: int | None, seed: int,
+                        freed: bool = False) -> dict:
     """A holder whose +0xc0 is MEMBER: 0, a tagged value, or 'counted' (a buffer whose dword at
     +0x20 is COUNT). The release function (when the masked count is not 0) and the base
     destructor are stubs comparing their object and the bytes behind it (the vtable already
@@ -63,21 +68,35 @@ def member_release_case(case_id: str, address: str, member: str | int, count: in
                                   'argmem': [{'arg': 0, 'size': 0x28}]})
     case['stubs'].append({'address': DESTROY_BASE, 'argc': 1, 'ret': 0,
                           'argmem': [{'arg': 0, 'offset': 0xc0, 'size': 8}]})
+    if freed:
+        # The deleting twin: then the allocator's slot 0x68, comparing the allocator and the holder.
+        case['returns'] = 'i64'
+        case['buffers'].update({'allocator': {'size': 0x20, 'bytes': bytes((seed * 3 + i) & 0xff for i in range(0x20)).hex()},
+                                'allocator_table': {'size': 0x80}})
+        case['memory'] += [{'addr': OBJECT_ALLOCATOR, 'pointer': 'allocator'},
+                           {'addr': 'buf:allocator+0x0', 'pointer': 'allocator_table'},
+                           {'addr': 'buf:allocator_table+0x68', 'guest': ALLOCATOR_FREE}]
+        case['stubs'].append({'address': ALLOCATOR_FREE, 'argc': 2, 'ret': seed << 40 | 0xf3ee})
     return case
 
 
-def member_release_cases(address: str, value: int | None) -> list[dict]:
+def member_release_cases(address: str, value: int | None, freed: bool = False) -> list[dict]:
     """No member; a tagged one; a counted one with the count 5, 0x400000 (masked 0: no release)
-    and 0xffc00001 (masked 1)."""
-    return [member_release_case('none', address, 0, None, 3),
-            member_release_case('tagged', address, 0x123457, None, 5),
-            member_release_case('counted', address, 'counted', 5, 7),
-            member_release_case('counted_masked_zero', address, 'counted', 0x400000, 11),
-            member_release_case('counted_high_bits', address, 'counted', 0xffc00001, 13)]
+    and 0xffc00001 (masked 1). FREED: the deleting twin's cases."""
+    return [member_release_case('none', address, 0, None, 3, freed),
+            member_release_case('tagged', address, 0x123457, None, 5, freed),
+            member_release_case('counted', address, 'counted', 5, 7, freed),
+            member_release_case('counted_masked_zero', address, 'counted', 0x400000, 11, freed),
+            member_release_case('counted_high_bits', address, 'counted', 0xffc00001, 13, freed)]
+
+
+def member_release_free_cases(address: str, value: int | None) -> list[dict]:
+    return member_release_cases(address, value, freed=True)
 
 
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
-         'releases_member_at_0xc0_then_destroys_base': member_release_cases}
+         'releases_member_at_0xc0_then_destroys_base': member_release_cases,
+         'releases_member_at_0xc0_then_destroys_and_frees': member_release_free_cases}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
@@ -87,6 +106,7 @@ MUTANTS = {
     # No call and no write. (A mutant reaching the vtable or the base destructor would need the
     # game image, which the mutant library does not see.)
     'releases_member_at_0xc0_then_destroys_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'releases_member_at_0xc0_then_destroys_and_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 

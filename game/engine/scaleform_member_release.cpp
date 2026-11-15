@@ -4,7 +4,9 @@
 // header entries), releases the member it holds at +0xc0, then tail-calls the base class's
 // destructor. The member is either a tagged value (bit 0 set), which is decremented in place, or
 // a pointer to a counted object: when the 22-bit count at +0x20 is not 0, it is decremented and
-// the release function is called with the object.
+// the release function is called with the object. The family
+// releases_member_at_0xc0_then_destroys_and_frees is its deleting twin: the same, then the object
+// goes to the free (slot 0x68) of the allocator the global 0x057e7320 points at.
 #include <cstddef>
 #include <cstdint>
 
@@ -34,9 +36,15 @@ struct Holder {
 };
 static_assert(offsetof(Holder, member) == 0xc0);
 
-}  // namespace
+struct Allocator;
+using Free = uint64_t (*)(Allocator *allocator, void *object);
+struct Allocator {
+    const Free *vtable;
+};
+constexpr std::size_t free_slot = 0x68;
+RT_GLOBAL(0x057e7320, object_allocator, Allocator *const);
 
-extern "C" void bb_engine_releases_member_at_0xc0_then_destroys_base(void *object)
+void release_member_and_destroy(void *object)
 {
     auto *holder = static_cast<Holder *>(object);
     holder->vtable = static_cast<const uint8_t *>(rt_guest(class_vtable)) + vtable_header;
@@ -53,4 +61,18 @@ extern "C" void bb_engine_releases_member_at_0xc0_then_destroys_base(void *objec
         }
     }
     destroy_base(object);
+}
+
+}  // namespace
+
+extern "C" void bb_engine_releases_member_at_0xc0_then_destroys_base(void *object)
+{
+    release_member_and_destroy(object);
+}
+
+extern "C" uint64_t bb_engine_releases_member_at_0xc0_then_destroys_and_frees(void *object)
+{
+    release_member_and_destroy(object);
+    Allocator *allocator = object_allocator.get();
+    return allocator->vtable[free_slot / sizeof(Free)](allocator, object);
 }
