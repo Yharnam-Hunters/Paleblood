@@ -49,6 +49,11 @@ class Shapes(unittest.TestCase):
         for negative_or_zero in ('488b47f8c3', '488b4700c3'):
             with self.assertRaises(fam.ShapeError):
                 disp.value(bytes.fromhex(negative_or_zero))
+        far = fam.parse_shape('48 8b 87 {d32} c3')
+        self.assertEqual(far.value(bytes.fromhex('488b87d0cc0200c3')), 0x2ccd0)
+        for negative_or_zero in ('488b87d0feffffc3', '488b8700000000c3', '488b8700000080c3'):
+            with self.assertRaises(fam.ShapeError):
+                far.value(bytes.fromhex(negative_or_zero))
 
     def test_bad_shapes_are_refused(self):
         for text in ('', 'C3', 'b8 {u32} {u8}', 'zz', 'b8 {u16}'):
