@@ -117,6 +117,11 @@ CASES = {'initialize_static_wide_string': static_wide_string_cases,
          'destroys_with_0x006fa840_then_frees': destroy_then_delete_cases('0x006fa840', freed=True),
          'destroys_with_0x0045a480_then_frees': destroy_then_delete_cases('0x0045a480', freed=True),
          'calls_empty_destructor_then_deletes': destroy_then_delete_cases(None),
+         'destroys_with_0x010ee390_then_deletes': destroy_then_delete_cases('0x010ee390'),
+         'destroys_with_0x016ea820_then_deletes': destroy_then_delete_cases('0x016ea820'),
+         'destroys_with_0x02afd720_then_deletes': destroy_then_delete_cases('0x02afd720'),
+         'destroys_with_0x0274a7f0_then_deletes': destroy_then_delete_cases('0x0274a7f0'),
+         'destroys_with_0x006fbd50_then_frees': destroy_then_delete_cases('0x006fbd50', freed=True),
 }
 
 MUTANTS = {
@@ -138,6 +143,11 @@ MUTANTS = {
     'destroys_with_0x006fa840_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'destroys_with_0x0045a480_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'calls_empty_destructor_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x010ee390_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x016ea820_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x02afd720_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x0274a7f0_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x006fbd50_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 

@@ -43,6 +43,11 @@ RT_ORIGINAL(0x007164e0, destructor_007164e0, void(void *object));
 RT_ORIGINAL(0x005696e0, destructor_005696e0, void(void *object));
 RT_ORIGINAL(0x006fa840, destructor_006fa840, void(void *object));
 RT_ORIGINAL(0x0045a480, destructor_0045a480, void(void *object));
+RT_ORIGINAL(0x010ee390, destructor_010ee390, void(void *object));
+RT_ORIGINAL(0x016ea820, destructor_016ea820, void(void *object));
+RT_ORIGINAL(0x02afd720, destructor_02afd720, void(void *object));
+RT_ORIGINAL(0x0274a7f0, destructor_0274a7f0, void(void *object));
+RT_ORIGINAL(0x006fbd50, destructor_006fbd50, void(void *object));
 
 template <typename Destroy>
 void destroy_then_delete(const Destroy &destroy, void *object)
@@ -124,4 +129,29 @@ extern "C" uint64_t bb_engine_destroys_with_0x0045a480_then_frees(void *object)
 extern "C" void bb_engine_calls_empty_destructor_then_deletes(void *object)
 {
     operator_delete(object);
+}
+
+extern "C" void bb_engine_destroys_with_0x010ee390_then_deletes(void *object)
+{
+    destroy_then_delete(destructor_010ee390, object);
+}
+
+extern "C" void bb_engine_destroys_with_0x016ea820_then_deletes(void *object)
+{
+    destroy_then_delete(destructor_016ea820, object);
+}
+
+extern "C" void bb_engine_destroys_with_0x02afd720_then_deletes(void *object)
+{
+    destroy_then_delete(destructor_02afd720, object);
+}
+
+extern "C" void bb_engine_destroys_with_0x0274a7f0_then_deletes(void *object)
+{
+    destroy_then_delete(destructor_0274a7f0, object);
+}
+
+extern "C" uint64_t bb_engine_destroys_with_0x006fbd50_then_frees(void *object)
+{
+    return destroy_then_free(destructor_006fbd50, object);
 }
