@@ -168,39 +168,39 @@ ignore the result.
 | `0x0111a720` | 22 | `kernel_file_seek_absolute` | edge-verified | Forward the full opaque descriptor and zero-extended unsigned32 absolute offset; full64 seek result sign maps to 0 or 19; synthetic wire edge cases only |
 | `0x0111a8a0` | 26 | `kernel_thread_self` | verified | Copy the complete opaque current-thread handle to the output and return zero |
 | `0x0111abb0` | 207 | `kernel_mutex_create` | verified | Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup |
-| `0x0111ac80` | 78 | `kernel_mutex_destroy` | edge-verified | Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result |
-| `0x0111acd0` | 30 | `kernel_mutex_lock` | edge-verified | Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21 |
-| `0x0111acf0` | 30 | `kernel_mutex_unlock` | edge-verified | Accept a null mutex without a call; forward its full pointer to unlock; preserve API writes and translate nonzero low32 results to 0x21 |
+| `0x0111ac80` | 78 | `kernel_mutex_destroy` | verified | Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result |
+| `0x0111acd0` | 30 | `kernel_mutex_lock` | verified | Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21 |
+| `0x0111acf0` | 30 | `kernel_mutex_unlock` | verified | Accept a null mutex without a call; forward its full pointer to unlock; preserve API writes and translate nonzero low32 results to 0x21 |
 | `0x0111ad10` | 103 | `kernel_semaphore_create` | verified | Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21 |
 | `0x0111ad80` | 23 | `kernel_semaphore_destroy` | edge-verified | Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21 |
 | `0x0111ada0` | 30 | `kernel_semaphore_wait` | verified | Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21 |
 | `0x0111adc0` | 28 | `kernel_semaphore_signal` | verified | Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21 |
-| `0x011ab3a0` | 260 | `kernel_memory_pool_free_011ab3a0` | edge-verified | Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool |
-| `0x0247ecb0` | 15 | `kernel_light_mutex_construct` | edge-verified | DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was |
+| `0x011ab3a0` | 260 | `kernel_memory_pool_free_011ab3a0` | verified | Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool |
+| `0x0247ecb0` | 15 | `kernel_light_mutex_construct` | verified | DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was |
 | `0x0247ecc0` | 118 | `kernel_light_mutex_delete` | edge-verified | DLLightMutex deleting destructor: destroys an initialized mutex (errors reported) without clearing the flag then frees the object |
-| `0x0247ed40` | 115 | `kernel_light_mutex_destruct` | edge-verified | DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported |
-| `0x0247edc0` | 124 | `kernel_light_mutex_finalize` | edge-verified | DLLightMutex finalize: asks the vtable; EBUSY returns -2 and keeps the flag; otherwise the flag clears after any error reports |
-| `0x0247ee40` | 49 | `kernel_light_mutex_initialize` | edge-verified | DLLightMutex initialize: asks the vtable; the PthreadMutex initialize (0x02483fe0); a nonzero result is returned and the flag stays clear |
-| `0x0247ee90` | 226 | `kernel_light_mutex_lock` | edge-verified | DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used |
-| `0x0247ef80` | 230 | `kernel_light_mutex_try_lock` | edge-verified | DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used |
-| `0x0247f070` | 124 | `kernel_light_mutex_unlock` | edge-verified | DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used |
-| `0x0247f180` | 15 | `kernel_read_write_lock_construct` | edge-verified | DLReadWriteLock constructor: its vtable and a cleared initialized flag; the system lock handle is left as it was |
+| `0x0247ed40` | 115 | `kernel_light_mutex_destruct` | verified | DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported |
+| `0x0247edc0` | 124 | `kernel_light_mutex_finalize` | verified | DLLightMutex finalize: asks the vtable; EBUSY returns -2 and keeps the flag; otherwise the flag clears after any error reports |
+| `0x0247ee40` | 49 | `kernel_light_mutex_initialize` | verified | DLLightMutex initialize: asks the vtable; the PthreadMutex initialize (0x02483fe0); a nonzero result is returned and the flag stays clear |
+| `0x0247ee90` | 226 | `kernel_light_mutex_lock` | verified | DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used |
+| `0x0247ef80` | 230 | `kernel_light_mutex_try_lock` | verified | DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used |
+| `0x0247f070` | 124 | `kernel_light_mutex_unlock` | verified | DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used |
+| `0x0247f180` | 15 | `kernel_read_write_lock_construct` | verified | DLReadWriteLock constructor: its vtable and a cleared initialized flag; the system lock handle is left as it was |
 | `0x0247f190` | 81 | `kernel_read_write_lock_delete` | edge-verified | DLReadWriteLock deleting destructor: destroys an initialized lock (EINVAL reported) without clearing the flag then frees the object |
-| `0x0247f1f0` | 85 | `kernel_read_write_lock_destruct` | edge-verified | DLReadWriteLock destructor: destroys an initialized lock; EBUSY keeps the flag set; EINVAL reported; otherwise the flag clears |
-| `0x0247f250` | 94 | `kernel_read_write_lock_finalize` | edge-verified | DLReadWriteLock finalize: asks the vtable; EBUSY returns -2 and keeps the flag; EINVAL reported; otherwise the flag clears |
-| `0x0247f2b0` | 244 | `kernel_read_write_lock_initialize` | edge-verified | DLReadWriteLock initialize: ENOMEM/EAGAIN return -1; any other result sets the flag after the EPERM/EBUSY/EINVAL/EFAULT report chain |
-| `0x0247f3d0` | 198 | `kernel_read_write_lock_write` | edge-verified | DLReadWriteLock write lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EDEADLK reports fall through to the unknown error |
+| `0x0247f1f0` | 85 | `kernel_read_write_lock_destruct` | verified | DLReadWriteLock destructor: destroys an initialized lock; EBUSY keeps the flag set; EINVAL reported; otherwise the flag clears |
+| `0x0247f250` | 94 | `kernel_read_write_lock_finalize` | verified | DLReadWriteLock finalize: asks the vtable; EBUSY returns -2 and keeps the flag; EINVAL reported; otherwise the flag clears |
+| `0x0247f2b0` | 244 | `kernel_read_write_lock_initialize` | verified | DLReadWriteLock initialize: ENOMEM/EAGAIN return -1; any other result sets the flag after the EPERM/EBUSY/EINVAL/EFAULT report chain |
+| `0x0247f3d0` | 198 | `kernel_read_write_lock_write` | verified | DLReadWriteLock write lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EDEADLK reports fall through to the unknown error |
 | `0x0247f4a0` | 146 | `kernel_read_write_lock_try_write` | edge-verified | DLReadWriteLock try write lock: EBUSY returns -2; EINVAL then EDEADLK reported; anything else returns 0 |
-| `0x0247f540` | 115 | `kernel_read_write_lock_unlock_0247f540` | edge-verified | DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported |
-| `0x0247f5c0` | 115 | `kernel_read_write_lock_unlock_0247f5c0` | edge-verified | DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported |
-| `0x0247f640` | 206 | `kernel_read_write_lock_read` | edge-verified | DLReadWriteLock read lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EAGAIN/EDEADLK reports fall through |
-| `0x0247f710` | 115 | `kernel_read_write_lock_unlock_0247f710` | edge-verified | DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported |
+| `0x0247f540` | 115 | `kernel_read_write_lock_unlock_0247f540` | verified | DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported |
+| `0x0247f5c0` | 115 | `kernel_read_write_lock_unlock_0247f5c0` | verified | DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported |
+| `0x0247f640` | 206 | `kernel_read_write_lock_read` | verified | DLReadWriteLock read lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EAGAIN/EDEADLK reports fall through |
+| `0x0247f710` | 115 | `kernel_read_write_lock_unlock_0247f710` | verified | DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported |
 | `0x02483e80` | 204 | `kernel_condition_wait` | verified | Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path |
-| `0x02483fe0` | 196 | `kernel_pthread_mutex_initialize` | edge-verified | Dantelion2 PthreadMutex init: recursive attribute then init; ENOMEM/EAGAIN return -1; EINVAL and unknown errors reported with the source line |
+| `0x02483fe0` | 196 | `kernel_pthread_mutex_initialize` | verified | Dantelion2 PthreadMutex init: recursive attribute then init; ENOMEM/EAGAIN return -1; EINVAL and unknown errors reported with the source line |
 | `0x024840b0` | 90 | `kernel_pthread_mutex_destroy` | edge-verified | Dantelion2 PthreadMutex destroy: EBUSY returns -2; EINVAL then the unknown error reported with the source line |
-| `0x02484110` | 183 | `kernel_pthread_mutex_lock` | edge-verified | Dantelion2 PthreadMutex lock (untimed when timeout is -1); ETIMEDOUT returns -3; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error |
+| `0x02484110` | 183 | `kernel_pthread_mutex_lock` | verified | Dantelion2 PthreadMutex lock (untimed when timeout is -1); ETIMEDOUT returns -3; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error |
 | `0x024841d0` | 177 | `kernel_pthread_mutex_try_lock` | edge-verified | Dantelion2 PthreadMutex try lock: EBUSY returns -2; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error |
-| `0x02484290` | 71 | `kernel_pthread_mutex_unlock` | edge-verified | Dantelion2 PthreadMutex unlock: 0 and EPERM accepted; EINVAL or any other result reported with the source line |
+| `0x02484290` | 71 | `kernel_pthread_mutex_unlock` | verified | Dantelion2 PthreadMutex unlock: 0 and EPERM accepted; EINVAL or any other result reported with the source line |
 
 ## Structs and globals
 
