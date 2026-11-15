@@ -238,6 +238,16 @@ def first_writer(width: str) -> str:
 
 
 MATCHING_TEMPLATES = {
+    'increments_dword_field': {
+        'header': '// DWORD increments with wrap and a zero-extended machine result. This matching\n'
+                  '// view does not assert an original source-level API declaration.\n',
+        'shared': STDINT + 'struct dword_counter_storage {\n'
+                          '    uint8_t unknown_0x0000[8];\n'
+                          '    uint32_t counter;\n};\n',
+        'single': 'uint32_t {symbol}(struct dword_counter_storage *object)\n'
+                  '{{\n    uint32_t next = object->counter + 1u;\n'
+                  '    object->counter = next;\n    return next;\n}}\n',
+    },
     'returns_nothing': {
         'header': '// Empty functions: a lone `ret`.\n',
         'shared': '',
