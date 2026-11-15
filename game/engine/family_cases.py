@@ -48,16 +48,36 @@ def object_buffer(seed: int, size: int = 0x40) -> dict:
     return {'size': size, 'bytes': bytes((seed * 11 + i) & 0xff for i in range(size)).hex()}
 
 
-def destroys_then_deletes_cases(address: str, value: int | None) -> list[dict]:
-    """The shared destructor, then operator delete, both stubs comparing the object; two seeds
-    (the object's contents must come through untouched)."""
-    return [{'schema': 1, 'address': address, 'id': f'object_{seed}', 'returns': 'void',
-             'buffers': {'object': object_buffer(seed)}, 'memory': [], 'imports': [],
-             'stubs': [{'address': SHARED_DESTRUCTOR, 'argc': 1, 'ret': seed},
-                       {'address': OPERATOR_DELETE, 'argc': 1, 'ret': 0}],
-             'args': {'rdi': 'buf:object', 'rsi': hex(0x1111111111111111 * (seed & 0xf)),
-                      'rax': '0x5aa5c33c0ff0e11e'}}
-            for seed in (3, 5)]
+OBJECT_ALLOCATOR = '0x057e7320'    # the global that points at the allocator
+ALLOCATOR_FREE = '0x00400280'      # a stand-in for the allocator's slot 0x68, stubbed
+
+
+def destroy_then_delete_cases(destructor: str, freed: bool = False):
+    """The destructor, then operator delete (or, FREED, slot 0x68 of the allocator the global
+    points at, comparing the allocator and the object), all stubs comparing the object; two
+    seeds (the object's contents must come through untouched)."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for seed in (3, 5):
+            case = {'schema': 1, 'address': address, 'id': f'object_{seed}', 'returns': 'i64' if freed else 'void',
+                    'buffers': {'object': object_buffer(seed)}, 'memory': [], 'imports': [],
+                    'stubs': [{'address': destructor, 'argc': 1, 'ret': seed}],
+                    'args': {'rdi': 'buf:object', 'rsi': hex(0x1111111111111111 * (seed & 0xf)),
+                             'rax': '0x5aa5c33c0ff0e11e'}}
+            if freed:
+                case['buffers'].update({'allocator': object_buffer(seed + 1, 0x20), 'allocator_table': {'size': 0x80}})
+                case['memory'] += [{'addr': OBJECT_ALLOCATOR, 'pointer': 'allocator'},
+                                   {'addr': 'buf:allocator+0x0', 'pointer': 'allocator_table'},
+                                   {'addr': 'buf:allocator_table+0x68', 'guest': ALLOCATOR_FREE}]
+                case['stubs'].append({'address': ALLOCATOR_FREE, 'argc': 2, 'ret': seed << 40 | 0xf3ee})
+            else:
+                case['stubs'].append({'address': OPERATOR_DELETE, 'argc': 1, 'ret': 0})
+            out.append(case)
+        return out
+    return cases
+
+
+destroys_then_deletes_cases = destroy_then_delete_cases(SHARED_DESTRUCTOR)
 
 
 def virtual_delete_case(case_id: str, address: str, flag: int, seed: int) -> dict:
@@ -85,7 +105,17 @@ def virtual_delete_cases(address: str, value: int | None) -> list[dict]:
 
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
          'destroys_then_deletes': destroys_then_deletes_cases,
-         'calls_virtual_0x28_then_deletes_if_asked': virtual_delete_cases}
+         'calls_virtual_0x28_then_deletes_if_asked': virtual_delete_cases,
+         'destroys_with_0x01402180_then_deletes': destroy_then_delete_cases('0x01402180'),
+         'destroys_with_0x010e7ca0_then_deletes': destroy_then_delete_cases('0x010e7ca0'),
+         'destroys_with_0x01401dc0_then_deletes': destroy_then_delete_cases('0x01401dc0'),
+         'destroys_with_0x01640e70_then_deletes': destroy_then_delete_cases('0x01640e70'),
+         'destroys_with_0x0139c4f0_then_deletes': destroy_then_delete_cases('0x0139c4f0'),
+         'destroys_with_0x007164e0_then_frees': destroy_then_delete_cases('0x007164e0', freed=True),
+         'destroys_with_0x005696e0_then_frees': destroy_then_delete_cases('0x005696e0', freed=True),
+         'destroys_with_0x006fa840_then_frees': destroy_then_delete_cases('0x006fa840', freed=True),
+         'destroys_with_0x0045a480_then_frees': destroy_then_delete_cases('0x0045a480', freed=True),
+}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
@@ -96,6 +126,15 @@ MUTANTS = {
     'destroys_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'calls_virtual_0x28_then_deletes_if_asked': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
                                                  'bb_mutant_virtual_0x28_never_deletes'],
+    'destroys_with_0x01402180_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x010e7ca0_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x01401dc0_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x01640e70_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x0139c4f0_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x007164e0_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x005696e0_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x006fa840_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_with_0x0045a480_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 
