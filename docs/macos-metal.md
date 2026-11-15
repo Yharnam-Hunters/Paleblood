@@ -167,6 +167,14 @@ ordinary record or placed binding starts a new use of that buffer, even if its o
 It supports viewport 0, vertex/pixel shaders and their separate user-data ranges, auto-index and
 16/32-bit indexed triangle lists, and one COLOR_8_8_8_8 render target (UNORM or sRGB, either
 component order).
+Index data above a 4GiB pool-relative offset uses a page-aligned, shared Metal buffer
+window with a small native offset. The window aliases the pool's bytes without a CPU
+copy, so GPU-produced indices remain current. The draw retains the pool mapping until
+completion; allocation failure stops by name. Direct and offset indexed triangle lists
+and strips use the same window. `metal_index_windows` checks low, boundary-crossing,
+high and exact-pool-end spans with both index widths in a sparse 5GiB pool, including
+repeated GPU-produced indices, exact pixels and bounded input/canary comparisons.
+
 Targets are limited to 4096 pixels per axis; viewport X/Y scales and translations must be
 finite and within ±4096, with a positive X scale and a nonzero Y scale.
 Vertex input profiles 0 through 3 reuse the common translator. VGPR0 holds the vertex ID;

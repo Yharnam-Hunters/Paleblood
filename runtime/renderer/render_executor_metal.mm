@@ -1237,6 +1237,22 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         pass.stencilAttachment.loadAction = MTLLoadActionLoad; pass.stencilAttachment.storeAction = MTLStoreActionStore;
     }
     *static_cast<volatile uint32_t *>(x->stop.contents) = 0;
+    /* Keep native index offsets within one host page, without a CPU index copy.
+       The command also retains x->memory through useResource below, so its mapping
+       remains alive while this page-aligned alias is bound, including failed waits. */
+    id<MTLBuffer> index_buffer = x->memory;
+    NSUInteger native_index_offset = indices ? indices->offset : 0;
+    if (indices && indices->offset > UINT32_MAX) {
+        const uint64_t page = static_cast<uint64_t>(getpagesize());
+        const uint64_t begin = indices->offset - indices->offset % page;
+        const uint64_t end = indices->offset + static_cast<uint64_t>(count) *
+            (indices->type == MTLIndexTypeUInt16 ? 2u : 4u);
+        const uint64_t rounded_end = end + (page - end % page) % page;
+        index_buffer = [x->device newBufferWithBytesNoCopy:static_cast<uint8_t *>(x->view) + begin
+            length:static_cast<NSUInteger>(rounded_end - begin) options:MTLResourceStorageModeShared deallocator:nil];
+        if (!index_buffer) return failed(error,size,"Metal refused the high-offset index buffer window");
+        native_index_offset = static_cast<NSUInteger>(indices->offset - begin);
+    }
     id<MTLCommandBuffer> command = [x->queue commandBuffer];
     if (!command) return failed(error,size,"Metal draw command allocation failed");
     if (has_depth) {
@@ -1265,7 +1281,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         ? MTLPrimitiveTypeTriangleStrip : MTLPrimitiveTypeTriangle;
     if (indices)
         [encoder drawIndexedPrimitives:primitive indexCount:count indexType:indices->type
-            indexBuffer:x->memory indexBufferOffset:indices->offset instanceCount:state.instances baseVertex:0 baseInstance:0];
+            indexBuffer:index_buffer indexBufferOffset:native_index_offset instanceCount:state.instances baseVertex:0 baseInstance:0];
     else [encoder drawPrimitives:primitive vertexStart:0 vertexCount:count instanceCount:state.instances baseInstance:0];
     [encoder endEncoding];
     if (depth.z.write || depth.stencil.write) {
