@@ -29,6 +29,19 @@ uint64_t bb_mutant_returns_zero(void)
     return 0;
 }
 
+/* The delegate at +0x18 called on its bound object without the adjustment (and, unset, slot 0x80
+ * of the argument given 0 for the address). */
+uint64_t bb_mutant_delegate_at_0x18_without_adjustment(uint8_t *owner, uint8_t *argument)
+{
+    typedef uint64_t (*handler)(void *, void *, uint64_t);
+    uintptr_t function = *(uintptr_t *)(owner + 0x30);
+    if (function == 0)
+        return (*(handler *)(*(uint8_t **)argument + 0x80))(argument, 0, 0);
+    uint8_t *object = *(uint8_t **)(owner + 0x18);
+    handler call = function & 1 ? *(handler *)(*(uint8_t **)object + function - 1) : (handler)function;
+    return call(object, argument, *(uint32_t *)(owner + 0x40));
+}
+
 /* Returns one. */
 uint64_t bb_mutant_returns_one(void)
 {

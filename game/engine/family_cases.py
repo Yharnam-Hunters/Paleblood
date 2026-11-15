@@ -124,7 +124,53 @@ def delegate_event_cases(address: str, value: int | None) -> list[dict]:
             delegate_case(address, 'direct_other', 'direct', 11)]
 
 
+FALLBACK = '0x00400180'            # stand-ins for the argument's slot 0x80 and the delegate, stubbed
+FORWARDED_HANDLER = '0x004001c0'
+
+
+def forward_case(address: str, case_id: str, function: str | None, seed: int) -> dict:
+    """An owner with a delegate at +0x18 (FUNCTION as in delegate_case; the bound object is the
+    target plus 0x10) and a second argument with a table whose slot 0x80 is a stub (comparing it
+    and the address it gets). The handler compares the bound object, the argument and the
+    context."""
+    owner = bytearray((seed * 17 + i) & 0xff for i in range(0x48))
+    owner[0x30:0x38] = bytes(8)
+    case = {'schema': 1, 'address': address, 'id': case_id, 'returns': 'i64',
+            'buffers': {'owner': {'size': 0x48, 'bytes': owner.hex()},
+                        'argument': {'size': 0x20, 'bytes': bytes((seed * 3 + i) & 0xff for i in range(0x20)).hex()},
+                        'argument_table': {'size': 0x90},
+                        'target': {'size': 0x30, 'bytes': bytes((seed + i) & 0xff for i in range(0x30)).hex()},
+                        'target_table': {'size': 0x30}},
+            'memory': [{'addr': 'buf:argument+0x0', 'pointer': 'argument_table'},
+                       {'addr': 'buf:argument_table+0x80', 'guest': FALLBACK}],
+            'imports': [],
+            'stubs': [{'address': FALLBACK, 'argc': 2, 'ret': seed << 32 | 0x80}],
+            'args': {'rdi': 'buf:owner', 'rsi': 'buf:argument', 'rdx': hex(0x0123456789abcdef ^ seed << 56),
+                     'rax': '0x5aa5c33c0ff0e11e'}}
+    if function:
+        case['memory'] += [{'addr': 'buf:owner+0x18', 'pointer': 'target'},
+                           {'addr': 'buf:owner+0x38', 'bytes': struct.pack('<q', 0x10).hex()},
+                           {'addr': 'buf:owner+0x40', 'bytes': struct.pack('<I', 0x900d0000 | seed).hex()},
+                           {'addr': 'buf:target+0x10', 'pointer': 'target_table'},
+                           {'addr': f'buf:target_table+0x{HANDLER_SLOT:x}', 'guest': FORWARDED_HANDLER}]
+        if function == 'direct':
+            case['memory'].append({'addr': 'buf:owner+0x30', 'guest': FORWARDED_HANDLER})
+        else:
+            case['memory'].append({'addr': 'buf:owner+0x30', 'bytes': struct.pack('<Q', HANDLER_SLOT + 1).hex()})
+        case['stubs'].append({'address': FORWARDED_HANDLER, 'argc': 3, 'ret': seed << 32 | 0x18})
+    return case
+
+
+def delegate_forward_cases(address: str, value: int | None) -> list[dict]:
+    """No delegate (slot 0x80 of the argument), a direct handler and a virtual one."""
+    return [forward_case(address, 'unset', None, 3),
+            forward_case(address, 'direct', 'direct', 5),
+            forward_case(address, 'virtual', 'virtual', 7),
+            forward_case(address, 'unset_other', None, 11)]
+
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'calls_delegate_at_0x18_else_virtual_0x80': delegate_forward_cases,
          'posts_event_to_delegate_at_0x50': delegate_event_cases,
          'frees_object_through_thread_allocator': thread_free_cases}
 
@@ -137,6 +183,9 @@ MUTANTS = {
     'frees_object_through_thread_allocator': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     # No call, and the other event kind's replacement.
     'posts_event_to_delegate_at_0x50': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    # No call; and the delegate called without its adjustment (slot 0x80 given 0).
+    'calls_delegate_at_0x18_else_virtual_0x80': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                                 'bb_mutant_delegate_at_0x18_without_adjustment'],
 }
 
 
