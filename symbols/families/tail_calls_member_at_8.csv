@@ -1,0 +1,16 @@
+address,size,extent,value,status
+0x00e13330,13,16,0x18,edge-verified
+0x013741b0,13,16,0x18,edge-verified
+0x014aa150,13,16,0x58,edge-verified
+0x0212aa10,13,16,0x10,edge-verified
+0x02477a50,13,16,0x20,edge-verified
+0x024781f0,13,16,0x38,edge-verified
+0x02484480,13,16,0x48,edge-verified
+0x024961b0,13,16,0x8,edge-verified
+0x025b3890,13,16,0x48,edge-verified
+0x025d1e30,13,16,0x70,edge-verified
+0x02a33710,13,16,0x20,edge-verified
+0x02d00f20,13,16,0x70,edge-verified
+0x02d00fc0,13,16,0x70,edge-verified
+0x02d66830,13,16,0x48,edge-verified
+0x02e5d1d0,13,16,0x70,edge-verified

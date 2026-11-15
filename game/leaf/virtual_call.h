@@ -19,6 +19,14 @@ Function virtual_function(const void *object)
     return virtual_table[SlotOffset / sizeof(Function)];
 }
 
+// The function EntryOffset bytes into a table of functions.
+template <std::size_t EntryOffset, typename Function = ForwardedFunction>
+Function table_entry(const void *table)
+{
+    static_assert(EntryOffset % sizeof(Function) == 0, "an entry is a whole function pointer");
+    return static_cast<const Function *>(table)[EntryOffset / sizeof(Function)];
+}
+
 // The pointer Offset bytes into the object.
 template <std::size_t Offset>
 void *member_at(const void *object)

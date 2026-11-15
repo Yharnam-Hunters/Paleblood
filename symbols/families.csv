@@ -16,6 +16,13 @@ tail_calls_member_at_0x10,leaf,48 8b 7f 10 48 8b 07 48 8b 40 {d8} ff e0,i64,34,4
 passes_dword_argument_to_member_at_8,leaf,8b 36 48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0,i64,15,225,"forwarding thunk: slot K of the object at rdi+8, with the dword rsi points at as its second argument"
 calls_member_at_8_with_constant,leaf,55 48 89 e5 48 8b 7f 08 48 8b 07 be {u32} ff 50 40 5d c3,i64,24,504,"call slot 0x40 of the object at rdi+8 with the constant K, return its result; one replacement per K"
 exports_member_at_0x20_and_tail_calls_it,leaf,48 8b 47 20 48 89 06 48 8b 7f 20 48 8b 07 ff 60 08,i64,22,374,"store the pointer at rdi+0x20 through rsi, then tail-call slot 8 of the object it points at"
+tail_calls_virtual_unless_null,leaf,48 85 ff 74 09 48 8b 07 48 8b 40 {d8} ff e0 b8 25 00 00 00 c3,i64,71,1420,"null-checked forwarding thunk: tail-call slot K of the object's virtual table, or return 0x25 when the object is null"
+tail_jumps_through_member_at_8,leaf,48 8b 7f 08 48 8b 07 ff 60 {d8},i64,47,470,"forwarding thunk: jmp [slot K] of the object the pointer at rdi+8 points at, which becomes the first argument"
+tail_jumps_through_member_at_0x10,leaf,48 8b 7f 10 48 8b 07 ff 60 {d8},i64,36,360,"forwarding thunk: jmp [slot K] of the object the pointer at rdi+0x10 points at, which becomes the first argument"
+tail_calls_member_at_8,leaf,48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0,i64,15,195,"forwarding thunk: slot K of the virtual table of the object the pointer at rdi+8 points at, which becomes the first argument"
+tail_calls_far_virtual_slot,leaf,48 8b 07 48 8b 80 {u32} ff e0,i64,37,444,forwarding thunk: tail-call slot K (a 32-bit offset) of the object's virtual table with the same arguments
+tail_jumps_through_far_virtual_slot,leaf,48 8b 07 ff a0 {u32},i64,20,180,forwarding thunk: jmp [slot K] (a 32-bit offset) of the object's virtual table with the same arguments
+tail_jumps_through_table_with_second_argument,leaf,48 89 f8 48 89 f7 ff 60 {d8},i64,11,99,"the first argument is a table of functions: jmp [entry K] with the second argument as its first (and still its second), the others as they came"
 reads_first_qword,leaf,48 8b 07 c3,i64,42,168,"first-field getter: mov rax, [rdi]; ret"
 reads_first_dword,leaf,8b 07 c3,i64,29,87,"first 32-bit field getter: mov eax, [rdi]; ret, zero-extended to rax"
 writes_qword_field,leaf,48 89 77 {d8} c3,void,109,545,"64-bit field setter: mov [rdi+K], rsi; ret; leaves rax"

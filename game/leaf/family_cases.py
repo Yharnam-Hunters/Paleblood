@@ -204,6 +204,55 @@ def exported_member_cases(address: str, value: int | None) -> list[dict]:
     return forward_pair(address, 8, member=0x20, second='buf:probe+0x10')
 
 
+NULL_OBJECT_RESULT = 0x25
+FAR_STUB_BASE = 0x00508000
+FAR_WINDOW = 4           # far slots scripted on each side of the one called
+
+
+def null_checked_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object's own table, and a null object (no call, 0x25 in rax)."""
+    null = base_case(address, 'null_object', 'i64')
+    null['args'] = {'rdi': '0x0', 'rsi': hex(RAX_SEED ^ 1), 'rax': hex(RAX_SEED)}
+    return forward_pair(address, value) + [null]
+
+
+def member_at_8_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object the pointer at +8 points at."""
+    return forward_pair(address, value, member=8)
+
+
+def member_at_0x10_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object the pointer at +0x10 points at."""
+    return forward_pair(address, value, member=0x10)
+
+
+def far_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE (an offset past the 8-bit ones) of the object's own table. The table is as long
+    as the slot needs, and the slots within FAR_WINDOW of it are stubs too, returning their own
+    values, so a neighbouring slot is a different call."""
+    cases = []
+    last = value // 8 + FAR_WINDOW
+    for case_id, seed in (('objects_a', 7), ('objects_b', 151)):
+        case = forward_case(address, case_id, seed, value)
+        cases.append(case)
+        case['buffers']['own_table']['size'] = 8 * (last + 1)
+        for i in range(max(TABLE_SLOTS, value // 8 - FAR_WINDOW), last + 1):
+            stub = f'0x{FAR_STUB_BASE + STUB_SLOT_STRIDE * i:08x}'
+            case['memory'].append({'addr': f'buf:own_table+0x{8 * i:x}', 'guest': stub})
+            case['stubs'].append({'address': stub, 'argc': FORWARDED_ARGUMENTS, 'argf32': [0],
+                                  'ret': (seed << 40 | 1 << 24 | i) & WORD_MASK})
+    return cases
+
+
+def table_entry_cases(address: str, value: int | None) -> list[dict]:
+    """rdi points straight at a table of stubs (not at an object); entry VALUE gets the second
+    argument (a probe buffer address) as its first and second arguments."""
+    cases = forward_pair(address, value, second='buf:probe+0x0')
+    for case in cases:
+        case['args']['rdi'] = 'buf:own_table+0x0'
+    return cases
+
+
 def returns_float_zero(address: str, value: int | None) -> list[dict]:
     """A body that zeroes xmm0 and nothing else: xmm0 and xmm1 enter seeded and are compared whole
     (vec), and the untouched-state cases check rax, memory and the argument registers."""
@@ -230,6 +279,13 @@ CASES = {
     'passes_dword_argument_to_member_at_8': member_dword_argument_cases,
     'calls_member_at_8_with_constant': member_constant_call_cases,
     'exports_member_at_0x20_and_tail_calls_it': exported_member_cases,
+    'tail_calls_virtual_unless_null': null_checked_slot_cases,
+    'tail_jumps_through_member_at_8': member_at_8_slot_cases,
+    'tail_jumps_through_member_at_0x10': member_at_0x10_slot_cases,
+    'tail_calls_member_at_8': member_at_8_slot_cases,
+    'tail_calls_far_virtual_slot': far_slot_cases,
+    'tail_jumps_through_far_virtual_slot': far_slot_cases,
+    'tail_jumps_through_table_with_second_argument': table_entry_cases,
     'reads_first_qword': field_cases,
     'reads_first_dword': field_cases,
     'writes_qword_field': setter_cases,
@@ -273,6 +329,13 @@ MUTANTS = {
     'calls_member_at_8_with_constant': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'exports_member_at_0x20_and_tail_calls_it': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
                                                  'bb_mutant_tail_calls_member_at_0x20_without_export'],
+    'tail_calls_virtual_unless_null': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_member_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_calls_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_calls_far_virtual_slot': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_far_virtual_slot': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_table_with_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'reads_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
                           'bb_mutant_reads_first_dword'],
     'reads_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
