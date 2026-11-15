@@ -500,14 +500,46 @@ class MatchingValues(unittest.TestCase):
 
 
 class MatchingSources(unittest.TestCase):
-    def test_every_family_has_a_matching_template_and_its_symbols(self):
+    def test_every_registered_family_has_a_matching_template_and_its_symbols(self):
+        # A focused tooling prerequisite can add support before its family is registered.
+        # Every registered exact family still needs a template; staged support cannot waive that.
         # A relative family's members are large enough to record (docs/FAMILIES.md, "Relative
         # shapes"), so they take the recorded path to verified and need no matching template.
         exact = {f['family'] for f in fam.families(ROOT) if not fam.parse_shape(f['shape']).rels}
-        self.assertEqual(set(family_emit.MATCHING_TEMPLATES), exact)
+        self.assertLessEqual(exact, set(family_emit.MATCHING_TEMPLATES))
         text = family_emit.render_matching(ROOT, 'reads_qword_field')
         self.assertIn('uint64_t leaf_reads_qword_field_0x8(const struct object_with_qword_at_0x8 *object)', text)
         self.assertNotIn('bb_leaf_', text)      # the replacements' source hash must not see it
+
+    def counter_root(self, root, name='increments_dword_field', value=''):
+        write_csv(os.path.join(root, fam.FAMILIES_TABLE), fam.FAMILY_HEADER,
+                  [[name, 'leaf', '8b 47 08 ff c0 89 47 08 c3', 'i64', 1, 9, 'synthetic shape']])
+        write_csv(fam.members_path(root, name), fam.MEMBER_HEADER,
+                  [['0x00401000', 9, 16, value, 'replaced']])
+
+    def test_fixed_counter_matching_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.counter_root(root)
+            text = family_emit.render_matching(root, 'increments_dword_field')
+        self.assertIn('uint8_t unknown_0x0000[8];', text)
+        self.assertIn('uint32_t counter;', text)
+        self.assertEqual(text.count('uint32_t leaf_increments_dword_field('), 1)
+        self.assertIn('uint32_t next = object->counter + 1u;', text)
+        self.assertIn('object->counter = next;', text)
+        self.assertIn('return next;', text)
+        self.assertNotIn('bb_leaf_', text)
+
+    def test_fixed_counter_matching_source_rejects_a_parameter(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.counter_root(root, value='0x8')
+            with self.assertRaisesRegex(SystemExit, 'parameter values but one matching function'):
+                family_emit.render_matching(root, 'increments_dword_field')
+
+    def test_unsupported_matching_family_is_still_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.counter_root(root, name='unsupported_counter')
+            with self.assertRaisesRegex(SystemExit, 'no matching template'):
+                family_emit.render_matching(root, 'unsupported_counter')
 
 
 if __name__ == '__main__':
