@@ -59,8 +59,35 @@ def static_vtable_cases(family: str):
     return cases
 
 
+RELEASE_FUNCTION = '0x00400240'   # a stand-in for slot 0x18 of the member's table, stubbed
+RELEASE_SLOT = 0x18
+
+
+def release_member_cases(address: str, value: int | None) -> list[dict]:
+    """No member at +8 (only the vtable is stored), and a member whose table's slot 0x18 is a stub
+    comparing the member; the object starts all ones and as a pattern."""
+    out = []
+    for seed, fill in ((3, 0xff), (5, None)):
+        body = bytes(fill if fill is not None else (seed * 11 + i) & 0xff for i in range(0x20))
+        for member in (False, True):
+            c = {'schema': 1, 'address': address, 'id': f'{"member" if member else "no_member"}_{seed}',
+                 'returns': 'void', 'buffers': {'object': {'size': 0x20, 'bytes': body.hex()}},
+                 'memory': [{'addr': 'buf:object+0x8', 'bytes': bytes(8).hex()}], 'imports': [], 'stubs': [],
+                 'args': {'rdi': 'buf:object', 'rsi': '0x2222222222222222', 'rax': '0x5aa5c33c0ff0e11e'}}
+            if member:
+                c['buffers']['member'] = {'size': 0x10, 'bytes': bytes((seed + i) & 0xff for i in range(0x10)).hex()}
+                c['buffers']['table'] = {'size': 0x20}
+                c['memory'] = [{'addr': 'buf:object+0x8', 'pointer': 'member'},
+                               {'addr': 'buf:member+0x0', 'pointer': 'table'},
+                               {'addr': f'buf:table+0x{RELEASE_SLOT:x}', 'guest': RELEASE_FUNCTION}]
+                c['stubs'] = [{'address': RELEASE_FUNCTION, 'argc': 1, 'ret': seed}]
+            out.append(c)
+    return out
+
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
-         **{name: static_vtable_cases(name) for name in STATIC_VTABLE_SETTERS}}
+         **{name: static_vtable_cases(name) for name in STATIC_VTABLE_SETTERS},
+         'stores_vtable_0x05541b90_then_releases_member_at_8': release_member_cases}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
@@ -71,6 +98,8 @@ MUTANTS = {
     'sets_static_vtable_at_0x05ac59b0': ['bb_mutant_does_nothing'],
     'sets_static_vtable_at_0x05ac59c0': ['bb_mutant_does_nothing'],
     'sets_static_vtable_at_0x05ac59d0': ['bb_mutant_does_nothing'],
+    # Nothing stored or called; or the member released but no vtable stored.
+    'stores_vtable_0x05541b90_then_releases_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_releases_member_at_8_only'],
 }
 
 

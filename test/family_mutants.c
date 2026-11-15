@@ -29,6 +29,15 @@ uint64_t bb_mutant_returns_zero(void)
     return 0;
 }
 
+/* Slot 0x18 of the object at +8 called when there is one, but no vtable stored. */
+void bb_mutant_releases_member_at_8_only(uint8_t *object)
+{
+    typedef void (*release)(void *member);
+    uint8_t *member = *(uint8_t **)(object + 8);
+    if (member)
+        (*(release *)(*(uint8_t **)member + 0x18))(member);
+}
+
 /* Returns one. */
 uint64_t bb_mutant_returns_one(void)
 {
