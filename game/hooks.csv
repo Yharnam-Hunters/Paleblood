@@ -25,8 +25,10 @@ address,replacement,system,returns
 0x00b68770,bb_frame_timing_generator_buffer_size_00b68770,frame_timing,i32
 0x00b69450,bb_frame_timing_generator_fill_00b69450,frame_timing,void
 0x00b6a030,bb_frame_timing_generator_refresh_00b6a030,frame_timing,void
+0x00fb6d20,bb_render_yebis_initialize_interface,render,void
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
+0x011185a0,bb_audio_fmod_stop_thread,audio,i32
 0x0111a620,bb_kernel_file_open,kernel,i32
 0x0111a6b0,bb_kernel_file_close,kernel,i32
 0x0111a6e0,bb_kernel_file_read_count,kernel,i32
@@ -46,6 +48,7 @@ address,replacement,system,returns
 0x0111ada0,bb_kernel_semaphore_wait,kernel,i32
 0x0111adc0,bb_kernel_semaphore_signal,kernel,i32
 0x0111b060,bb_audio_fmod_output_driver_count,audio,i64
+0x0111b070,bb_audio_fmod_copy_output_label,audio,i64
 0x0111b0b0,bb_audio_fmod_output_defaults,audio,i64
 0x011ab3a0,bb_kernel_memory_pool_free_011ab3a0,kernel,void
 0x011c4510,bb_engine_store_word_product,engine,i64
@@ -170,8 +173,10 @@ address,replacement,system,returns
 0x014759d0,bb_render_set_gs_shader,render,void
 0x01475a30,bb_render_update_gs_shader,render,void
 0x01475a90,bb_render_set_esgs_ring_itemsize,render,void
+0x01475af0,bb_render_set_gs_ring_sizes,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x01475e10,bb_render_emit_shader_preparation_range_01475e10,render,void
+0x01475ec0,bb_render_wait_register,render,void
 0x01476030,bb_render_set_shader_stages_01476030,render,void
 0x014761a0,bb_render_emit_shader_descriptor16_014761a0,render,void
 0x01476240,bb_render_emit_shader_descriptor32_01476240,render,void
@@ -262,6 +267,10 @@ address,replacement,system,returns
 0x0165bb70,bb_ai_func_get_current_target_state,ai,i32
 0x0165bb90,bb_ai_func_get_previous_target_state,ai,i32
 0x0165ca50,bb_ai_func_is_visible_target,ai,i8
+0x0167b6b0,bb_ai_func_register_goal_no_update,ai,void
+0x0167b710,bb_ai_func_register_goal_update_time,ai,void
+0x0167b790,bb_ai_func_register_goal_no_interrupt,ai,void
+0x0167b7f0,bb_ai_func_enable_combo_attack_cancel,ai,void
 0x0167f2a0,bb_ai_goal_func_set_timer,ai,void
 0x0167f2d0,bb_ai_goal_func_set_number,ai,void
 0x0167f820,bb_ai_goal_func_get_timer,ai,f32
@@ -272,9 +281,11 @@ address,replacement,system,returns
 0x0169acf0,bb_ai_character_has_effect_state,ai,i8
 0x0169ad80,bb_ai_character_gather_effect_states,ai,void
 0x0169af00,bb_ai_character_ready_check,ai,i8
+0x0169cef0,bb_ai_hearing_check_sound,ai,void
 0x0169d160,bb_ai_hearing_test,ai,void
 0x0169da30,bb_ai_hearing_in_ear_range,ai,i8
 0x0169fad0,bb_ai_character_link_ids,ai,i64
+0x016a3be0,bb_ai_update_time_scheduler_reserve,ai,f32
 0x016a5050,bb_engine_array64_push_back_016a5050,engine,void
 0x016a5130,bb_engine_array64_reserve_016a5130,engine,void
 0x016a52b0,bb_ai_sight_test,ai,i8
