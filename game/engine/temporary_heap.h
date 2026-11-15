@@ -10,6 +10,7 @@
 #include "fixed_allocator.h"
 #include "linear_heap.h"
 #include "runtime/original.h"
+#include "runtime/game_guest_pointer.h"
 #include "thread.h"
 
 namespace engine::temporary_heap {
@@ -40,14 +41,25 @@ RT_ORIGINAL(0x0247d250, create_for_thread, void());
 
 constexpr uint64_t default_size = 0x20000;
 
+// Darwin replacements borrow the runtime's qualified guest slot; the host's GS:0 belongs to
+// the host. Resolve this on each access, including after an allocator changes the guest TCB.
+inline unsigned char *temporary_thread_pointer()
+{
+#if defined(__APPLE__) && defined(__MACH__)
+    return rt_game_guest_thread_pointer();
+#else
+    return thread_pointer();
+#endif
+}
+
 inline TemporaryHeap *&thread_heap()
 {
-    return *reinterpret_cast<TemporaryHeap **>(thread_pointer() + thread_heap_offset.get());
+    return *reinterpret_cast<TemporaryHeap **>(temporary_thread_pointer() + thread_heap_offset.get());
 }
 
 inline uint64_t &thread_heap_size()
 {
-    return *reinterpret_cast<uint64_t *>(thread_pointer() + thread_heap_size_offset.get());
+    return *reinterpret_cast<uint64_t *>(temporary_thread_pointer() + thread_heap_size_offset.get());
 }
 
 // The quit query singleton and the default allocator, each made when missing (in that order).
