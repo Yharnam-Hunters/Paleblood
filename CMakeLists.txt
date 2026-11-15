@@ -30,6 +30,9 @@ endif()
 
 enable_testing()
 include(cmake/HostLockTests.cmake)
+if(APPLE)
+    add_subdirectory(test/fixed_tsc)
+endif()
 if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     if(CMAKE_OSX_ARCHITECTURES)
         set(PB_GUEST_TLS_ARCH "${CMAKE_OSX_ARCHITECTURES}")
@@ -269,3 +272,8 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 # Deliberately wrong replacements for the function families' mutation tests (tools/verify.py
 # family); a test library, never loaded by the runtime.
 add_library(bbfamily_mutants SHARED test/family_mutants.c)
+
+include(cmake/DarwinBootTests.cmake)
+include(cmake/BootArenaTests.cmake)
+
+include(cmake/GameBridgeTests.cmake)

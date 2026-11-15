@@ -12,10 +12,19 @@ on:
       - 'cmake/Metal.cmake'
       - 'cmake/MetalExecutor.cmake'
       - 'runtime/graphics_metal.mm'
+      - 'runtime/CMakeLists.txt'
+      - 'runtime/boot.c'
+      - 'runtime/display/display_window_metal.mm'
+      - 'runtime/display/window_mailbox.c'
+      - 'runtime/display/window_mailbox.h'
+      - 'runtime/include/runtime/display_window.h'
+      - 'runtime/include/runtime/window_boot.h'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_upload.mm'
       - 'test/test_metal_presentation.mm'
+      - 'test/test_metal_runtime_window.mm'
+      - 'test/test_window_mailbox.c'
       - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_depth.c'
@@ -43,10 +52,19 @@ on:
       - 'cmake/Metal.cmake'
       - 'cmake/MetalExecutor.cmake'
       - 'runtime/graphics_metal.mm'
+      - 'runtime/CMakeLists.txt'
+      - 'runtime/boot.c'
+      - 'runtime/display/display_window_metal.mm'
+      - 'runtime/display/window_mailbox.c'
+      - 'runtime/display/window_mailbox.h'
+      - 'runtime/include/runtime/display_window.h'
+      - 'runtime/include/runtime/window_boot.h'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_upload.mm'
       - 'test/test_metal_presentation.mm'
+      - 'test/test_metal_runtime_window.mm'
+      - 'test/test_window_mailbox.c'
       - 'test/metal_frame_pixels.h'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_depth.c'
@@ -88,6 +106,7 @@ jobs:
           -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_ENABLE_METAL_SMOKE_TEST=ON
           -DPB_ENABLE_METAL_PRESENTATION_TEST=ON
           -DPB_ENABLE_METAL_EXECUTOR=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=TRUE
       - name: Check that normal runtime and game targets remain available
         run: |
           cmake --build build --target help > targets.txt
@@ -98,7 +117,12 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and owned test executables
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_runtime_window test_window_mailbox test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth --parallel 2
+      # Match macos-boot: no optional host package from the runner's other architecture.
+      # Guest startup requires a whole-process x86-64 build; ARM still compiles the adapter fixture.
+      - name: Compile Metal runtime and guest recovery scope
+        if: matrix.arch == 'x86_64'
+        run: cmake --build build --target pbboot pbloader bbrt bbgame test_boot_scope_darwin --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
