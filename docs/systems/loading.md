@@ -200,6 +200,9 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x02a6f140` | 645 | `loading_stream_event_array_reallocate_02a6f140` | edge-verified | DLResourceStreamLoadEventQueue event array reallocate (same code as 0x02a6bc50 for 0x160 events) |
 | `0x02a70890` | 141 | `loading_kernel_file_open` | verified | sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error |
 | `0x02a70920` | 46 | `loading_kernel_file_read` | edge-verified | sceKernelRead the file's descriptor; -1 on a negative count; else store the count when asked and return 0 |
+| `0x02a70950` | 46 | `loading_kernel_file_write` | edge-verified | sceKernelWrite to the file's descriptor; -1 on a negative count; else store the count when asked and return 0 |
+| `0x02a70980` | 53 | `loading_kernel_file_seek` | edge-verified | sceKernelLseek the file's descriptor with the origin handed on; -1 on a negative position; else store the position when asked and return 0 |
+| `0x02a709c0` | 33 | `loading_kernel_file_close` | edge-verified | sceKernelClose the file's descriptor; set the descriptor to -1 and clear the open bit whatever the kernel answers |
 | `0x02a70a90` | 84 | `loading_stream_handle_construct_02a70a90` | edge-verified | Stream handle constructor: resource handle; stream vtable; queue; info remembers the queue when both are set |
 | `0x02aa4a30` | 128 | `loading_finished_entry_construct_02aa4a30` | edge-verified | finished entry constructor: result base + handle to the info the manager finds for the request words |
 | `0x02aa4ab0` | 75 | `loading_finished_entry_copy_construct_02aa4ab0` | edge-verified | finished entry copy constructor: result base copy + handle assign |
