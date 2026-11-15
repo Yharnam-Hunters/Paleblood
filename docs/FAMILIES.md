@@ -98,6 +98,9 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `zeroes_record_and_stores_first_argument` | 126 exact bytes (`symbols/families.csv`) | record initializers: clear 15 words at the second argument, store the first after them, return 0 |
 | `returns_zero` | `31 c0 c3` | functions that return false, null or 0 (all of rax) |
 | `returns_constant` | `b8 {u32} c3` | functions that return a fixed number, zero-extended to rax |
+| `matches_sixteen_byte_key` | 45 exact bytes | key matches: the size argument is 16 and the key equals the 16 bytes at +0x18 |
+| `counts_list_nodes` | 28 exact bytes | the length of the singly linked list at +0x30 (next pointer at +0x10) |
+| `reads_nth_list_node_dword` | 34 exact bytes | the dword at +0x18 of the nth node of the list at +0x30, or 0 |
 | `reads_qword_field` | `48 8b 47 {d8} c3` | getters of a 64-bit field (often a pointer) K bytes into the object |
 | `reads_far_qword_field` | `48 8b 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_dword_field` | `8b 47 {d8} c3` | getters of a 32-bit field, zero-extended |

@@ -396,6 +396,36 @@ def matching_symbol(family: dict, value: str) -> str:
     return fam.replacement(family, value)[len('bb_'):]
 
 
+# Key match and list walks (symbols/families.csv; replacements in game/leaf/keys_and_lists.cpp).
+MATCHING_TEMPLATES['matches_sixteen_byte_key'] = {
+    'header': '// Key matches: size 16 and the key equal to the 16 bytes at +0x18 (second halves only for a\n'
+              '// non-zero first half).\n',
+    'shared': (STDINT + '\nstruct key {\n    uint64_t first;\n    uint64_t second;\n};\n\n'
+               'struct object_with_key {\n    uint8_t unknown_before_key[0x18];\n    struct key key;\n};\n'),
+    'single': ('int {symbol}(const struct object_with_key *object, const struct key *key, uint32_t size)\n'
+               '{{\n    if (size != sizeof(struct key))\n        return 0;\n'
+               '    return key->first == object->key.first && (key->first == 0 || key->second == object->key.second);\n}}\n'),
+}
+LIST_SHARED = (STDINT + '\nstruct list_node {\n    uint8_t unknown_before_next[0x10];\n    struct list_node *next;\n'
+               '    uint32_t value;\n};\n\nstruct object_with_list {\n    uint8_t unknown_before_list[0x30];\n'
+               '    struct list_node *first;\n};\n')
+MATCHING_TEMPLATES['counts_list_nodes'] = {
+    'header': '// List lengths: the nodes from +0x30 through each next pointer at +0x10.\n',
+    'shared': LIST_SHARED,
+    'single': ('uint32_t {symbol}(const struct object_with_list *object)\n'
+               '{{\n    uint32_t count = 0;\n'
+               '    for (const struct list_node *node = object->first; node; node = node->next)\n'
+               '        count++;\n    return count;\n}}\n'),
+}
+MATCHING_TEMPLATES['reads_nth_list_node_dword'] = {
+    'header': '// List lookups: the dword at +0x18 of node INDEX of the list at +0x30, or 0.\n',
+    'shared': LIST_SHARED,
+    'single': ('uint32_t {symbol}(const struct object_with_list *object, uint32_t index)\n'
+               '{{\n    for (const struct list_node *node = object->first; node; node = node->next, index--)\n'
+               '        if (index == 0)\n            return node->value;\n    return 0;\n}}\n'),
+}
+
+
 def render_matching(root: str, name: str) -> str:
     rows = [f for f in fam.families(root) if f['family'] == name]
     if not rows:
