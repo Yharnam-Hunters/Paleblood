@@ -408,10 +408,11 @@ MATCHING_TEMPLATES['resets_first_qword_returning_object'] = {
 }
 MATCHING_TEMPLATES['adjusts_pointer_at_8_unless_null'] = {
     'header': '// Null-safe base adjustments: the pointer at +8 plus 0xd0, or null.\n',
-    'shared': (STDINT + '\nstruct part {\n    uint8_t unknown_before_part[0xd0];\n    uint8_t part;\n};\n\n'
-               'struct object_pointing_at_part {\n    uint64_t unknown_before_pointer;\n    struct part *owner;\n};\n'),
-    'single': ('uint8_t *{symbol}(const struct object_pointing_at_part *object)\n'
-               '{{\n    return object->owner ? &object->owner->part : 0;\n}}\n'),
+    'shared': (STDINT + '\n/* The owner\'s layout is not known, only the offset of its base-class subobject. */\n'
+               'struct owner;\n\n#define OWNER_BASE_SUBOBJECT 0xd0\n\n'
+               'struct object_pointing_at_owner {\n    uint64_t unknown_before_pointer;\n    struct owner *owner;\n};\n'),
+    'single': ('void *{symbol}(const struct object_pointing_at_owner *object)\n'
+               '{{\n    return object->owner ? (uint8_t *)object->owner + OWNER_BASE_SUBOBJECT : 0;\n}}\n'),
 }
 MATCHING_TEMPLATES['reads_wide_string_text_at_0x30'] = {
     'header': '// Wide string text: inline at +8 below capacity 8 (at +0x20), else the heap text pointer at +8.\n',

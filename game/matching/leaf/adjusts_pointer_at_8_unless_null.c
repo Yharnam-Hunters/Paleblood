@@ -6,17 +6,17 @@
 
 #include <stdint.h>
 
-struct part {
-    uint8_t unknown_before_part[0xd0];
-    uint8_t part;
-};
+/* The owner's layout is not known, only the offset of its base-class subobject. */
+struct owner;
 
-struct object_pointing_at_part {
+#define OWNER_BASE_SUBOBJECT 0xd0
+
+struct object_pointing_at_owner {
     uint64_t unknown_before_pointer;
-    struct part *owner;
+    struct owner *owner;
 };
 
-uint8_t *leaf_adjusts_pointer_at_8_unless_null(const struct object_pointing_at_part *object)
+void *leaf_adjusts_pointer_at_8_unless_null(const struct object_pointing_at_owner *object)
 {
-    return object->owner ? &object->owner->part : 0;
+    return object->owner ? (uint8_t *)object->owner + OWNER_BASE_SUBOBJECT : 0;
 }

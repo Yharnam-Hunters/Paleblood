@@ -14,6 +14,7 @@
 // The bit-field setters write parts of the first dword: bits 28..31 from the low 4 bits of the
 // second argument, bits 0..9 from its low 10 bits, or both at once with bits 10..27 cleared.
 // They return nothing (the originals leave a scratch value in eax).
+#include <cstddef>
 #include <cstdint>
 
 namespace {
@@ -22,14 +23,15 @@ struct ObjectStartingWithQword {
     uint64_t first;
 };
 
-struct Part {
-    uint8_t unknown_before_part[0xd0];
-    uint8_t part;
-};
+// The owner's layout is not known; only the offset of its base-class subobject is: every member
+// adds 0xd0 to a non-null owner pointer and keeps null, the adjustment a compiler emits when it
+// converts a pointer to a base class that does not start the object.
+struct Owner;
+constexpr std::ptrdiff_t owner_base_subobject = 0xd0;
 
-struct ObjectPointingAtPart {
+struct ObjectPointingAtOwner {
     uint64_t unknown_before_pointer;
-    Part *owner;
+    Owner *owner;
 };
 
 constexpr uint64_t inline_capacity = 8;
@@ -72,9 +74,11 @@ extern "C" ObjectStartingWithQword *bb_leaf_resets_first_qword_returning_object(
     return object;
 }
 
-extern "C" uint8_t *bb_leaf_adjusts_pointer_at_8_unless_null(const ObjectPointingAtPart *object)
+extern "C" void *bb_leaf_adjusts_pointer_at_8_unless_null(const ObjectPointingAtOwner *object)
 {
-    return object->owner != nullptr ? &object->owner->part : nullptr;
+    if (object->owner == nullptr)
+        return nullptr;
+    return reinterpret_cast<uint8_t *>(object->owner) + owner_base_subobject;
 }
 
 extern "C" const char16_t *bb_leaf_reads_wide_string_text_at_0x30(const ObjectWithWideString *object)
