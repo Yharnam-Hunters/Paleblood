@@ -38,13 +38,59 @@ def static_wide_string_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
-CASES = {'initialize_static_wide_string': static_wide_string_cases}
+def slot_table_cases(address: str, value: int | None) -> list[dict]:
+    """A table buffer of 0x90 bytes (a pattern; the bytes past +0x80 must stay) and two owners;
+    every written byte and the result are compared."""
+    out = []
+    for seed, owner in ((3, '0x123456789abcdef0'), (5, '0xfedcba9876543210')):
+        out.append({'schema': 1, 'address': address, 'id': f'table_{seed}', 'returns': 'i64',
+                    'buffers': {'table': {'size': 0x90, 'bytes': bytes((seed * 29 + i) & 0xff for i in range(0x90)).hex()}},
+                    'memory': [], 'imports': [], 'stubs': [],
+                    'args': {'rdi': owner, 'rsi': 'buf:table', 'rax': '0x5aa5c33c0ff0e11e'}})
+    return out
+
+
+CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'fills_3_slots_with_05ac5cac': slot_table_cases,
+         'fills_1_slot_with_05ac5e6b': slot_table_cases,
+         'fills_1_slot_with_05ac5cac': slot_table_cases,
+         'fills_4_slots_with_05ac5cac': slot_table_cases,
+         'fills_5_slots_with_05ac5cac': slot_table_cases,
+         'fills_1_slot_with_05acd45c': slot_table_cases,
+         'fills_1_slot_with_05acd1bc': slot_table_cases,
+         'fills_2_slots_with_05acd45c': slot_table_cases,
+         'fills_2_slots_with_05ac5cac': slot_table_cases,
+         'fills_1_slot_with_05acee04': slot_table_cases,
+         'fills_1_slot_with_05ac5dfd': slot_table_cases,
+         'fills_1_slot_with_05ac5f5b': slot_table_cases,
+         'fills_2_slots_05ac74a5_05ac74a3': slot_table_cases,
+         'fills_2_slots_05ac74a7_05ac5cac': slot_table_cases,
+         'fills_2_slots_05ac74a4_05ac74a3': slot_table_cases,
+         'fills_2_slots_05ac74a9_05ac5cac': slot_table_cases,
+}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
     # publishing the guard skips the allocator, the string and the registration on a clear guard,
     # and overwrites a set guard's other bytes.
     'initialize_static_wide_string': ['bb_mutant_does_nothing', 'bb_mutant_static_wide_string_guard_only'],
+    # No write. (A mutant with the wrong pointers would need the game image.)
+    'fills_3_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5e6b': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_4_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_5_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05acd45c': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05acd1bc': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_with_05acd45c': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05acee04': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5dfd': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5f5b': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a5_05ac74a3': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a7_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a4_05ac74a3': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a9_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 
