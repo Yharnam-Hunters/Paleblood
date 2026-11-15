@@ -97,6 +97,7 @@ ai_target_speed_record_update,edge,,128,128,0,0,962565c5970bd876,2026-11-13
 ai_update_time_scheduler_reserve,edge,,256,256,0,0,2caacd0bc8cb2daa,2026-11-14
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
+audio_fmod_stop_thread,edge,,152,152,0,0,dd97c1ac5331e35c,2026-11-15
 audio_fmod_string_copy,recorded,,77,77,0,0,c17e74fefe35579f,2026-11-12
 audio_fmod_string_copy,edge,,40,40,0,0,c17e74fefe35579f,2026-11-12
 audio_fmod_string_copy_counted,recorded,,71,71,0,0,950224f5b69d2ee0,2026-11-12
