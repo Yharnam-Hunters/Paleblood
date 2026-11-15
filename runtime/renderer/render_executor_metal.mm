@@ -655,10 +655,18 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         return failed(error,size,"%s image is outside the GPU-visible pool",stage), nil;
     if (storage_layout) *storage_layout = levels[0].layout;
     MetalImage *entry = nullptr;
-    for (auto &image : x->images)
-        if (image.storage == storage && std::equal(image.words.begin(),image.words.end(),words)) { entry = &image; break; }
+    /* At most GCN_MAX_IMAGES sequential lookups precede a draw/dispatch. Promoting
+       every hit and insertion keeps all of that call's views newer than victims;
+       repeated writable aliases must continue to share one native view. */
+    static_assert(static_cast<unsigned>(MAX_IMAGES) >= static_cast<unsigned>(GCN_MAX_IMAGES));
+    auto hit = std::find_if(x->images.begin(),x->images.end(),[&](const MetalImage &image) {
+        return image.storage == storage && std::equal(image.words.begin(),image.words.end(),words);
+    });
+    if (hit != x->images.end()) {
+        std::rotate(hit,hit + 1,x->images.end());
+        entry = &x->images.back();
+    }
     if (!entry) {
-        if (x->images.size() == MAX_IMAGES) return failed(error,size,"%s image cache is full",stage), nil;
         MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
         descriptor.textureType = arrayed ? MTLTextureType2DArray : MTLTextureType2D; /* 1D is lowered as 2D by SPIRV-Cross. */
         descriptor.pixelFormat = format.metal; descriptor.width = d.width; descriptor.height = height;
@@ -673,7 +681,10 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
             levels:NSMakeRange(d.base_level,d.last_level - d.base_level + 1) slices:NSMakeRange(first,slices) swizzle:swizzle];
         if (!view) return failed(error,size,"Metal image view allocation failed"), nil;
         MetalImage image; std::copy(words,words + RT_IMAGE_DESCRIPTOR_WORDS,image.words.begin());
-        image.storage = storage; image.texture = texture; image.view = view; x->images.push_back(std::move(image)); entry = &x->images.back();
+        image.storage = storage; image.texture = texture; image.view = view;
+        /* Keep the old cache intact if either replacement allocation failed. */
+        if (x->images.size() == MAX_IMAGES) x->images.erase(x->images.begin());
+        x->images.push_back(std::move(image)); entry = &x->images.back();
     }
     const auto *base = static_cast<const uint8_t *>(x->view) + d.address - x->guest_base;
     for (unsigned level = 0; level <= d.last_level; ++level) {

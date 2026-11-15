@@ -414,7 +414,15 @@ translations also match image dimensions, array/type/component layout and origin
 publish exposed slices back to canonical guest bytes before reporting a later shader stop. Current
 bytes in unexposed slices and layout padding survive publication. Read-only images do not publish
 stale texels over buffer writes. Pixel and storage-image views have separate usage-aware cache
-entries and exchange data through the pool. This provides ordered dispatch/draw/CPU visibility;
+entries and exchange data through the pool. The shared cache retains 64 views in
+least-recently-used order. A successful new allocation replaces the oldest entry;
+every hit promotes its complete descriptor/usage key. At most sixteen sequential
+bindings precede a draw or dispatch, so its already-bound views remain resident and
+repeated writable aliases still share one native view. All completed storage writes
+are published before the next call can evict their cache entries. `metal_image_cache`
+checks sampled/storage churn beyond the limit, revisits, CPU updates, writeback and
+three loaded descriptors that bind a current image again after a cache miss. It
+uses owned small textures and independent raw-buffer/pixel/padding oracles. This provides ordered dispatch/draw/CPU visibility;
 it does not establish arbitrary image/buffer alias coherence inside one dispatch.
 
 Each compute submission completes before a later dispatch or draw consumes its
