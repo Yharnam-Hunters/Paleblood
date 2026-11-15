@@ -18,20 +18,29 @@ struct MemberFunctionPointer {
 
 constexpr uintptr_t virtual_member_function = 1;  // the low bit of a virtual one's function field
 
-struct BoundMethod {
-    void *target;
-    ForwardedFunction function;
-};
+// The forwarded call of a method that returns nothing (no result is passed on).
+using ForwardedProcedure = void (*)(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                    uint64_t fifth, uint64_t sixth);
 
-// The method on the object: the object plus the adjustment, and the function to call on it.
-inline BoundMethod bind(void *object, const MemberFunctionPointer &method)
+template <typename Function>
+struct Bound {
+    void *target;
+    Function function;
+};
+using BoundMethod = Bound<ForwardedFunction>;
+
+// The method on the object: the object plus the adjustment, and the function to call on it, read
+// as FUNCTION (ForwardedFunction for a method whose result is passed on, ForwardedProcedure for
+// one that returns nothing).
+template <typename Function = ForwardedFunction>
+inline Bound<Function> bind(void *object, const MemberFunctionPointer &method)
 {
     void *target = static_cast<uint8_t *>(object) + method.adjustment;
     if ((method.function & virtual_member_function) == 0)
-        return {target, reinterpret_cast<ForwardedFunction>(method.function)};
+        return {target, reinterpret_cast<Function>(method.function)};
     const uint8_t *virtual_table = *static_cast<const uint8_t *const *>(target);
     const std::size_t slot_offset = method.function - virtual_member_function;
-    return {target, *reinterpret_cast<const ForwardedFunction *>(virtual_table + slot_offset)};
+    return {target, *reinterpret_cast<const Function *>(virtual_table + slot_offset)};
 }
 
 #endif

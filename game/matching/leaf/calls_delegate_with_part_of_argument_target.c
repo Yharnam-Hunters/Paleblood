@@ -28,14 +28,14 @@ struct argument {
     uint8_t *target;
 };
 
-uint64_t leaf_calls_delegate_with_part_of_argument_target(const struct record *record, const struct argument *argument, uint64_t third, uint64_t fourth,
-                  uint64_t fifth, uint64_t sixth)
+void leaf_calls_delegate_with_part_of_argument_target(const struct record *record, const struct argument *argument, uint64_t third, uint64_t fourth,
+              uint64_t fifth, uint64_t sixth)
 {
     if (argument == 0 || argument->target == 0 || record->object == 0)
-        return 0;
+        return;
     uint8_t *target = (uint8_t *)record->object + record->method.adjustment;
     forwarded_function function = (forwarded_function)record->method.function;
     if (record->method.function & virtual_member_function)
         function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);
-    return function(target, (uint64_t)(argument->target + argument_part_offset), record->value, fourth, fifth, sixth);
+    function(target, (uint64_t)(argument->target + argument_part_offset), record->value, fourth, fifth, sixth);
 }

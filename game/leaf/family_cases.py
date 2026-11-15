@@ -64,11 +64,13 @@ def delegate_case(address: str, family: str, case_id: str, seed: int, path: str)
     target 8 into the object), or a path the guard stops: 'no_method', 'no_object',
     'flag_clear' (every other bit of the flag byte set), 'no_argument', 'no_argument_target'.
     Every slot and the plain function are stubs returning their own values and comparing the
-    registers the family's call passes; xmm0 enters seeded and its float is compared. Calls
-    return the stub's rax (i64); a stopped call is compared as void (the original leaves rax)."""
+    registers the family's call passes; xmm0 enters seeded and its float is compared. A family
+    with a guard returns nothing (on a guard exit the original leaves rax as it was, so the method
+    has no result): its calls are compared as void too. An unguarded forwarder passes the
+    stub's rax on (i64)."""
     layout = DELEGATE_LAYOUTS[family]
     calls = path in ('virtual', 'direct')
-    case = base_case(address, case_id, 'i64' if calls else 'void')
+    case = base_case(address, case_id, 'i64' if calls and 'guard' not in layout else 'void')
     record = bytearray.fromhex(probe_bytes(seed, DELEGATE_RECORD_SIZE))
     obj, method = layout['object'], layout['method']
     record[obj:obj + 8] = bytes(8)

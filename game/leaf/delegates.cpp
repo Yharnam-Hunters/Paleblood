@@ -144,72 +144,72 @@ static_assert(offsetof(CallsDelegateAt0x50WhenArgumentFlaggedArgument, flags) ==
 
 }  // namespace
 
-extern "C" uint64_t bb_leaf_calls_delegate_with_argument_field_0x10(void *object, uint64_t second, uint64_t third, uint64_t fourth,
-                                                                    uint64_t fifth, uint64_t sixth)
+extern "C" void bb_leaf_calls_delegate_with_argument_field_0x10(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                                uint64_t fifth, uint64_t sixth)
 {
     const auto *record = static_cast<const CallsDelegateWithArgumentField0x10Record *>(object);
     const auto *argument = reinterpret_cast<const CallsDelegateWithArgumentField0x10Argument *>(second);
     (void)third;
     if (record->method.function == 0 || record->object == nullptr)
-        return 0;  // the original returns with rax as it was
-    const BoundMethod method = bind(record->object, record->method);
+        return;  // the original returns with rax as it was: no result
+    const Bound<ForwardedProcedure> method = bind<ForwardedProcedure>(record->object, record->method);
     BB_TAIL_CALL return method.function(method.target, argument->value, record->value, fourth, fifth, sixth);
 }
 
-extern "C" uint64_t bb_leaf_calls_delegate_with_argument_field_8(void *object, uint64_t second, uint64_t third, uint64_t fourth,
-                                                                 uint64_t fifth, uint64_t sixth)
+extern "C" void bb_leaf_calls_delegate_with_argument_field_8(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                             uint64_t fifth, uint64_t sixth)
 {
     const auto *record = static_cast<const CallsDelegateWithArgumentField8Record *>(object);
     const auto *argument = reinterpret_cast<const CallsDelegateWithArgumentField8Argument *>(second);
     (void)third;
     if (record->method.function == 0 || record->object == nullptr)
-        return 0;  // the original returns with rax as it was
-    const BoundMethod method = bind(record->object, record->method);
+        return;  // the original returns with rax as it was: no result
+    const Bound<ForwardedProcedure> method = bind<ForwardedProcedure>(record->object, record->method);
     BB_TAIL_CALL return method.function(method.target, argument->value, record->value, fourth, fifth, sixth);
 }
 
-extern "C" uint64_t bb_leaf_calls_delegate_with_dword_at_0x20(void *object, uint64_t second, uint64_t third, uint64_t fourth,
-                                                              uint64_t fifth, uint64_t sixth)
+extern "C" void bb_leaf_calls_delegate_with_dword_at_0x20(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                          uint64_t fifth, uint64_t sixth)
 {
     const auto *record = static_cast<const CallsDelegateWithDwordAt0x20Record *>(object);
     (void)second;
     if (record->method.function == 0 || record->object == nullptr)
-        return 0;  // the original returns with rax as it was
-    const BoundMethod method = bind(record->object, record->method);
+        return;  // the original returns with rax as it was: no result
+    const Bound<ForwardedProcedure> method = bind<ForwardedProcedure>(record->object, record->method);
     BB_TAIL_CALL return method.function(method.target, record->value, third, fourth, fifth, sixth);
 }
 
-extern "C" uint64_t bb_leaf_calls_delegate_at_0x18_with_dword_at_0x40(void *object, uint64_t second, uint64_t third, uint64_t fourth,
-                                                                      uint64_t fifth, uint64_t sixth)
+extern "C" void bb_leaf_calls_delegate_at_0x18_with_dword_at_0x40(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                                  uint64_t fifth, uint64_t sixth)
 {
     const auto *record = static_cast<const CallsDelegateAt0x18WithDwordAt0x40Record *>(object);
     (void)third;
     if (record->method.function == 0)
-        return 0;  // the original returns with rax as it was
-    const BoundMethod method = bind(record->object, record->method);
+        return;  // the original returns with rax as it was: no result
+    const Bound<ForwardedProcedure> method = bind<ForwardedProcedure>(record->object, record->method);
     BB_TAIL_CALL return method.function(method.target, second, record->value, fourth, fifth, sixth);
 }
 
-extern "C" uint64_t bb_leaf_calls_flagged_delegate_with_dword_at_0x18(void *object, uint64_t second, uint64_t third, uint64_t fourth,
-                                                                      uint64_t fifth, uint64_t sixth)
+extern "C" void bb_leaf_calls_flagged_delegate_with_dword_at_0x18(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                                  uint64_t fifth, uint64_t sixth)
 {
     const auto *record = static_cast<const CallsFlaggedDelegateWithDwordAt0x18Record *>(object);
     (void)second;
     if ((record->flags & record_call_flag) == 0)
-        return 0;  // the original returns with rax as it was
-    const BoundMethod method = bind(record->object, record->method);
+        return;  // the original returns with rax as it was: no result
+    const Bound<ForwardedProcedure> method = bind<ForwardedProcedure>(record->object, record->method);
     BB_TAIL_CALL return method.function(method.target, record->value, third, fourth, fifth, sixth);
 }
 
-extern "C" uint64_t bb_leaf_calls_delegate_with_part_of_argument_target(void *object, uint64_t second, uint64_t third, uint64_t fourth,
-                                                                        uint64_t fifth, uint64_t sixth)
+extern "C" void bb_leaf_calls_delegate_with_part_of_argument_target(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                                    uint64_t fifth, uint64_t sixth)
 {
     const auto *record = static_cast<const CallsDelegateWithPartOfArgumentTargetRecord *>(object);
     const auto *argument = reinterpret_cast<const CallsDelegateWithPartOfArgumentTargetArgument *>(second);
     (void)third;
     if (argument == nullptr || argument->target == nullptr || record->object == nullptr)
-        return 0;  // the original returns with rax as it was
-    const BoundMethod method = bind(record->object, record->method);
+        return;  // the original returns with rax as it was: no result
+    const Bound<ForwardedProcedure> method = bind<ForwardedProcedure>(record->object, record->method);
     BB_TAIL_CALL return method.function(method.target, reinterpret_cast<uint64_t>(argument->target + argument_part_offset), record->value, fourth, fifth, sixth);
 }
 
@@ -237,13 +237,13 @@ extern "C" uint64_t bb_leaf_forwards_to_delegate_at_0x20(void *object, uint64_t 
     BB_TAIL_CALL return method.function(method.target, second, third, fourth, fifth, sixth);
 }
 
-extern "C" uint64_t bb_leaf_calls_delegate_at_0x50_when_argument_flagged(void *object, uint64_t second, uint64_t third, uint64_t fourth,
-                                                                         uint64_t fifth, uint64_t sixth)
+extern "C" void bb_leaf_calls_delegate_at_0x50_when_argument_flagged(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                                     uint64_t fifth, uint64_t sixth)
 {
     const auto *record = static_cast<const CallsDelegateAt0x50WhenArgumentFlaggedRecord *>(object);
     const auto *argument = reinterpret_cast<const CallsDelegateAt0x50WhenArgumentFlaggedArgument *>(second);
     if ((argument->flags & argument_call_flag) == 0)
-        return 0;  // the original returns with rax as it was
-    const BoundMethod method = bind(record->object, record->method);
+        return;  // the original returns with rax as it was: no result
+    const Bound<ForwardedProcedure> method = bind<ForwardedProcedure>(record->object, record->method);
     BB_TAIL_CALL return method.function(method.target, record->value, third, fourth, fifth, sixth);
 }
