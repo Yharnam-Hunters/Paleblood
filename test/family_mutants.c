@@ -84,6 +84,56 @@ BB_MUTANT_TOGGLE_IGNORES_STATE(bb_mutant_toggle_at_0x20_ignores_state, 0x20)
 BB_MUTANT_RESET_WITHOUT_FREE(bb_mutant_resets_wide_string_at_8_without_free, 8)
 BB_MUTANT_RESET_WITHOUT_FREE(bb_mutant_resets_wide_string_at_0x10_without_free, 0x10)
 
+/* Calls slot 0 of the node after the nth (or returns 0 when there is none). */
+uint64_t bb_mutant_calls_node_after_the_nth(uint8_t *object, uint64_t index, uint64_t third, uint64_t fourth,
+                                            uint64_t fifth, uint64_t sixth)
+{
+    uint8_t *node = *(uint8_t **)(object + 0x30);
+    for (uint32_t steps = (uint32_t)index + 1; node != 0 && steps != 0; --steps)
+        node = *(uint8_t **)(node + 0x10);
+    if (node == 0)
+        return 0;
+    return bb_mutant_slot(node, 0)(node, (uint64_t)0, third, fourth, fifth, sixth);
+}
+
+/* Slot 0x88 with the arguments as they came. */
+uint64_t bb_mutant_virtual_0x88_keeps_second_argument(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                                      uint64_t fifth, uint64_t sixth)
+{
+    return bb_mutant_slot(object, 0x88)(object, second, third, fourth, fifth, sixth);
+}
+
+/* Stops and starts without storing the dword at +0x20. */
+uint64_t bb_mutant_restarts_without_storing_dword(uint8_t *object, uint64_t setting)
+{
+    (void)setting;
+    bb_mutant_slot(object, 0x78)(object, (uint64_t)0);
+    uint64_t result = bb_mutant_slot(object, 0xa8)(object);
+    object[8] = 1;
+    return result;
+}
+
+/* Flushes even while bit 1 (a flush running) is set. */
+void bb_mutant_flushes_while_flushing(uint8_t *object, uint64_t argument)
+{
+    uint8_t **holder = *(uint8_t ***)(object + 0x40);
+    uint8_t *pending = holder ? *holder : 0;
+    if (pending == 0 || !(pending[0xc] & 1) || *(uint32_t *)(pending + 0x10) == 0)
+        return;
+    pending[0xc] |= 2;
+    bb_mutant_slot(pending, 0x18)(pending, argument);
+    bb_mutant_slot(pending, 0x20)(pending, argument);
+    pending[0xc] &= 0xfd;
+    *(uint32_t *)(pending + 0x10) = 0;
+}
+
+/* Calls slot 0x68 of the object itself, after slot 0x38. */
+uint64_t bb_mutant_calls_0x68_of_object_itself(void *object, uint64_t second)
+{
+    bb_mutant_slot(object, 0x38)(object, second);
+    return bb_mutant_slot(object, 0x68)(object, second);
+}
+
 /* Returns one. */
 uint64_t bb_mutant_returns_one(void)
 {

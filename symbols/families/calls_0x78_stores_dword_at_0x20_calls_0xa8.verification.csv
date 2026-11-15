@@ -1,0 +1,14 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae1b20,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae4f30,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae5620,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae63d0,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae6990,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae7670,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae7b60,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02ae8720,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02b02730,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02b03140,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02b03ad0,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02b04460,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15
+leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8_02b04c50,edge,,2,2,0,0,f978c7c5d1a5b88f,2026-11-15

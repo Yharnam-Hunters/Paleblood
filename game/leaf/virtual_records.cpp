@@ -159,3 +159,123 @@ extern "C" void bb_leaf_resets_wide_string_at_0x10(void *object)
 {
     reset<second_string>(object);
 }
+
+// Five more families: a call through the nth node of a list, a slot that gets the arguments
+// shifted down, a stop-store-start sequence, a guarded flush, and a call through the object
+// another slot returns.
+namespace {
+
+using SixArgumentFunction = uint64_t (*)(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                         uint64_t fifth, uint64_t sixth);
+
+struct ListNode {
+    uint8_t unknown_0x0[0x10];
+    ListNode *next;
+};
+static_assert(offsetof(ListNode, next) == 0x10);
+
+struct ObjectWithListAt0x30 {
+    uint8_t unknown_0x0[0x30];
+    ListNode *first;
+};
+static_assert(offsetof(ObjectWithListAt0x30, first) == 0x30);
+
+constexpr std::size_t node_slot = 0;
+constexpr std::size_t shifted_slot = 0x88;
+
+using StopFunction = uint64_t (*)(void *object, uint64_t zero);
+using StartFunction = uint64_t (*)(void *object);
+constexpr std::size_t stop_slot = 0x78;
+constexpr std::size_t start_slot = 0xa8;
+
+struct Restartable {
+    uint64_t virtual_table;
+    uint8_t started;
+    uint8_t unknown_0x9[0x17];
+    uint32_t setting;
+};
+static_assert(offsetof(Restartable, started) == 8);
+static_assert(offsetof(Restartable, setting) == 0x20);
+
+// The flushed object: bit 0 of its flags says it has work, bit 1 that a flush is running.
+using FlushFunction = void (*)(void *pending, uint64_t argument);
+constexpr std::size_t prepare_slot = 0x18;
+constexpr std::size_t flush_slot = 0x20;
+constexpr uint8_t has_work = 1;
+constexpr uint8_t flushing = 2;
+
+struct Pending {
+    uint64_t virtual_table;
+    uint32_t unknown_0x8;
+    uint8_t flags;
+    uint8_t unknown_0xd[3];
+    uint32_t count;
+};
+static_assert(offsetof(Pending, flags) == 0xc);
+static_assert(offsetof(Pending, count) == 0x10);
+
+struct HolderOfPending {
+    uint8_t unknown_0x0[0x40];
+    Pending *const *pending;
+};
+static_assert(offsetof(HolderOfPending, pending) == 0x40);
+
+using InnerFunction = void *(*)(void *object, uint64_t second);
+using OuterFunction = uint64_t (*)(void *inner, uint64_t second);
+constexpr std::size_t inner_slot = 0x38;
+constexpr std::size_t outer_slot = 0x68;
+
+}  // namespace
+
+extern "C" uint64_t bb_leaf_tail_calls_slot_0_of_nth_node_at_0x30(void *object, uint64_t index, uint64_t third,
+                                                                  uint64_t fourth, uint64_t fifth, uint64_t sixth)
+{
+    ListNode *node = static_cast<ObjectWithListAt0x30 *>(object)->first;
+    if (node == nullptr)
+        return 0;
+    for (uint32_t steps = static_cast<uint32_t>(index); steps != 0; --steps) {
+        node = node->next;
+        if (node == nullptr)
+            return 0;
+    }
+    return virtual_slot<SixArgumentFunction>(node, node_slot)(node, 0, third, fourth, fifth, sixth);
+}
+
+extern "C" uint64_t bb_leaf_shifts_arguments_into_virtual_0x88(void *object, uint64_t second, uint64_t third,
+                                                              uint64_t fourth, uint64_t fifth, uint64_t sixth)
+{
+    (void)second;
+    const uint64_t low_byte = static_cast<uint8_t>(sixth);
+    return virtual_slot<SixArgumentFunction>(object, shifted_slot)(object, third, fourth, fifth, low_byte, 0);
+}
+
+extern "C" uint64_t bb_leaf_calls_0x78_stores_dword_at_0x20_calls_0xa8(void *object, uint64_t setting)
+{
+    auto *restartable = static_cast<Restartable *>(object);
+    virtual_slot<StopFunction>(object, stop_slot)(object, 0);
+    restartable->setting = static_cast<uint32_t>(setting);
+    const uint64_t result = virtual_slot<StartFunction>(object, start_slot)(object);
+    restartable->started = 1;
+    return result;
+}
+
+extern "C" void bb_leaf_flushes_pending_through_member_at_0x40(void *object, uint64_t argument)
+{
+    Pending *const *holder = static_cast<HolderOfPending *>(object)->pending;
+    if (holder == nullptr)
+        return;
+    Pending *pending = *holder;
+    if (pending == nullptr || !(pending->flags & has_work) || pending->count == 0 || (pending->flags & flushing))
+        return;
+    pending->flags |= flushing;
+    virtual_slot<FlushFunction>(pending, prepare_slot)(pending, argument);
+    virtual_slot<FlushFunction>(pending, flush_slot)(pending, argument);
+    pending->flags &= static_cast<uint8_t>(~flushing);
+    pending->count = 0;
+}
+
+extern "C" uint64_t bb_leaf_tail_calls_0x68_of_what_0x38_returns(void *object, uint64_t second)
+{
+    void *inner = virtual_slot<InnerFunction>(object, inner_slot)(object, second);
+    return virtual_slot<OuterFunction>(inner, outer_slot)(inner, second);
+}

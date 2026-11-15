@@ -136,6 +136,11 @@ CASES = {
     'toggles_flag_at_0x20_through_first_virtual': lambda address, value: toggle_cases(address, 0x20),
     'resets_wide_string_at_8': lambda address, value: reset_cases(address, 8),
     'resets_wide_string_at_0x10': lambda address, value: reset_cases(address, 0x10),
+    'tail_calls_slot_0_of_nth_node_at_0x30': lambda address, value: nth_node_cases(address),
+    'shifts_arguments_into_virtual_0x88': lambda address, value: shifted_arguments_cases(address),
+    'calls_0x78_stores_dword_at_0x20_calls_0xa8': lambda address, value: restart_cases(address),
+    'flushes_pending_through_member_at_0x40': lambda address, value: flush_cases(address),
+    'tail_calls_0x68_of_what_0x38_returns': lambda address, value: returned_object_cases(address),
     'writes_dword_field': setter_cases,
     'writes_word_field': setter_cases,
     'writes_byte_field': setter_cases,
@@ -177,6 +182,11 @@ MUTANTS = {
     'toggles_flag_at_0x20_through_first_virtual': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_toggle_at_0x20_ignores_state'],
     'resets_wide_string_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_resets_wide_string_at_8_without_free'],
     'resets_wide_string_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_resets_wide_string_at_0x10_without_free'],
+    'tail_calls_slot_0_of_nth_node_at_0x30': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_calls_node_after_the_nth'],
+    'shifts_arguments_into_virtual_0x88': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_virtual_0x88_keeps_second_argument'],
+    'calls_0x78_stores_dword_at_0x20_calls_0xa8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_restarts_without_storing_dword'],
+    'flushes_pending_through_member_at_0x40': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_flushes_while_flushing'],
+    'tail_calls_0x68_of_what_0x38_returns': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_calls_0x68_of_object_itself'],
     'writes_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_word_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
@@ -312,6 +322,122 @@ def reset_case(address: str, string_at: int, case_id: str, seed: int, capacity: 
 
 def reset_cases(address: str, string_at: int) -> list[dict]:
     return [reset_case(address, string_at, f'capacity_{capacity:x}', 37, capacity) for capacity in WIDE_CAPACITIES]
+
+
+LIST_NODES = 3
+NODE_TABLE_SLOTS = 4     # a node's table: slot 0 and its neighbours (the harness takes 64 stubs)
+ARGUMENT_SEEDS = (0x0123456789abcdef, 0xfedcba9876543210, 0x00ff00ff00ff00ff, 0x8000000000000081)
+
+
+def seeded_arguments(case: dict, seed: int) -> None:
+    """rdx..r9 hold distinct integers."""
+    for i, reg in enumerate(ARGUMENT_REGISTERS[2:]):
+        case['args'][reg] = hex((seed * 0x9e3779b97f4a7c15 + ARGUMENT_SEEDS[i]) & (2**64 - 1))
+
+
+def nth_node_case(address: str, case_id: str, index: int, nodes: int = LIST_NODES) -> dict:
+    """A list of NODES nodes at +0x30 (each with its own small table of stubs comparing six
+    arguments, so the wrong node is a different call) and the index INDEX in rsi."""
+    case = base_case(address, case_id, 'i64')
+    case['buffers'] = {'object': {'size': 0x40, 'bytes': probe_bytes(41, 0x40)}}
+    for n in range(nodes):
+        case['buffers'][f'node{n}'] = {'size': 0x18, 'bytes': probe_bytes(43 + n, 0x18)}
+        case['memory'].append({'addr': 'buf:object+0x30' if n == 0 else f'buf:node{n - 1}+0x10',
+                               'pointer': f'node{n}'})
+        case['buffers'][f'node{n}_table'] = {'size': 8 * NODE_TABLE_SLOTS}
+        case['memory'].append({'addr': f'buf:node{n}+0x0', 'pointer': f'node{n}_table'})
+        for slot in range(NODE_TABLE_SLOTS):
+            case['memory'].append({'addr': f'buf:node{n}_table+0x{8 * slot:x}', 'guest': record_stub(n, slot)})
+            case['stubs'].append({'address': record_stub(n, slot), 'argc': 6, 'ret': 41 << 32 | n << 8 | slot})
+    if nodes:
+        case['memory'].append({'addr': f'buf:node{nodes - 1}+0x10', 'bytes': '00' * 8})
+    else:
+        case['memory'].append({'addr': 'buf:object+0x30', 'bytes': '00' * 8})
+    seeded_arguments(case, 41)
+    case['args'].update({'rdi': 'buf:object', 'rsi': hex(index), 'rax': hex(RAX_SEED)})
+    return case
+
+
+def nth_node_cases(address: str) -> list[dict]:
+    """Each node, one past the end and the largest index (0), only upper bits besides the index
+    (32 bits), and an empty list."""
+    return ([nth_node_case(address, f'node_{i}', i) for i in range(LIST_NODES + 1)]
+            + [nth_node_case(address, 'index_all_bits', 0xffffffff),
+               nth_node_case(address, 'index_upper_bits', 1 << 32 | 1),
+               nth_node_case(address, 'empty', 0, nodes=0)])
+
+
+def own_table_case(address: str, case_id: str, seed: int, argc: dict[int, int], returns: str = 'i64',
+                   size: int = 0x40) -> dict:
+    """An object with a table of stubs at +0 and seeded argument registers."""
+    case = base_case(address, case_id, returns)
+    case['buffers'] = {'object': {'size': size, 'bytes': probe_bytes(seed, size)}}
+    stubbed_table(case, 'object', 0, seed, argc)
+    seeded_arguments(case, seed)
+    case['args'].update({'rdi': 'buf:object', 'rsi': hex(seed * 0x1000193 | 1 << 40), 'rax': hex(RAX_SEED)})
+    return case
+
+
+def shifted_arguments_cases(address: str) -> list[dict]:
+    """Slot 0x88 compares all six arguments; r9 has more than its low byte set."""
+    return [own_table_case(address, f'seed_{seed}', seed, {0x88: 6}) for seed in (47, 149)]
+
+
+def restart_cases(address: str) -> list[dict]:
+    """Slots 0x78 (two arguments) and 0xa8 (one); the dword at +0x20 and the byte at +8 change."""
+    return [own_table_case(address, f'seed_{seed}', seed, {0x78: 2, 0xa8: 1}) for seed in (53, 157)]
+
+
+PENDING_HAS_WORK = 1
+PENDING_FLUSHING = 2
+
+
+def flush_case(address: str, case_id: str, flags: int = PENDING_HAS_WORK, count: int = 5,
+               holder: bool = True, pending: bool = True) -> dict:
+    """The object's +0x40 points at a holder whose first qword points at the pending object
+    (FLAGS at +0xc, COUNT at +0x10, a table of stubs: 0x18 and 0x20 compare two arguments)."""
+    case = base_case(address, case_id, 'void')
+    case['buffers'] = {'object': {'size': 0x48, 'bytes': probe_bytes(59, 0x48)},
+                       'holder': {'size': 8, 'bytes': probe_bytes(61, 8)}}
+    pattern = bytearray.fromhex(probe_bytes(67, 0x18))
+    pattern[0xc] = flags
+    pattern[0x10:0x14] = count.to_bytes(4, 'little')
+    case['buffers']['pending'] = {'size': 0x18, 'bytes': pattern.hex()}
+    stubbed_table(case, 'pending', 0, 59, {0x18: 2, 0x20: 2})
+    case['memory'].append({'addr': 'buf:object+0x40', 'pointer': 'holder'} if holder
+                          else {'addr': 'buf:object+0x40', 'bytes': '00' * 8})
+    case['memory'].append({'addr': 'buf:holder+0x0', 'pointer': 'pending'} if pending
+                          else {'addr': 'buf:holder+0x0', 'bytes': '00' * 8})
+    seeded_arguments(case, 59)
+    case['args'].update({'rdi': 'buf:object', 'rsi': '0x8877665544332211', 'rax': hex(RAX_SEED)})
+    return case
+
+
+def flush_cases(address: str) -> list[dict]:
+    """A flush (bit 0 alone, and every other flag bit but 1 set), and each reason not to: no
+    holder, no pending object, no work bit, count 0, already flushing."""
+    return [flush_case(address, 'flush'),
+            flush_case(address, 'flush_other_flags', flags=0xfd, count=0x80000000),
+            flush_case(address, 'no_holder', holder=False),
+            flush_case(address, 'no_pending', pending=False),
+            flush_case(address, 'no_work', flags=0xfc),
+            flush_case(address, 'count_zero', count=0),
+            flush_case(address, 'already_flushing', flags=PENDING_HAS_WORK | PENDING_FLUSHING)]
+
+
+def returned_object_cases(address: str) -> list[dict]:
+    """Slot 0x38 of the object (two arguments) returns another object with its own table; its
+    slot 0x68 compares two arguments."""
+    out = []
+    for seed in (71, 163):
+        case = own_table_case(address, f'seed_{seed}', seed, {0x38: 2})
+        case['buffers']['inner'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}
+        stubbed_table(case, 'inner', 1, seed, {0x68: 2})
+        for stub in case['stubs']:
+            if stub['address'] == record_stub(0, 0x38 // 8):
+                stub['ret'] = 'buf:inner'
+        out.append(case)
+    return out
 
 
 def cases(family: str, address: str, value: int | None) -> list[dict]:
