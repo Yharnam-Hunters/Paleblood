@@ -40,7 +40,7 @@ def static_wide_string_cases(address: str, value: int | None) -> list[dict]:
 
 MEMBER_RELEASE_0X10 = '0x02450560'
 MEMBER_OPERATOR_DELETE = '0x02fbe588'
-MEMBER_RELEASE_0X20 = '0x01401720'
+MEMBER_RELEASE_0X01401720 = '0x01401720'
 MEMBER_FREE_SIZED = '0x02fa1c20'
 MEMBER_OBJECT_ALLOCATOR = '0x05ac8288'
 
@@ -80,15 +80,18 @@ def vtable_release_cases(deletes: bool):
     return cases
 
 
-def member_0x20_cases(address: str, value: int | None) -> list[dict]:
-    """The member at +0x20 set (released with a stub comparing it, then cleared) or null."""
-    out = []
-    for case_id, set_member, seed in (('member', True, 3), ('no_member', False, 5)):
-        case = member_case(address, case_id, 0x20, set_member, seed)
-        if set_member:
-            case['stubs'].append({'address': MEMBER_RELEASE_0X20, 'argc': 1, 'ret': seed})
-        out.append(case)
-    return out
+def member_at_cases(offset: int):
+    """The member at OFFSET set (released through 0x01401720, a stub comparing it, then cleared)
+    or null."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for case_id, set_member, seed in (('member', True, 3), ('no_member', False, 5)):
+            case = member_case(address, case_id, offset, set_member, seed)
+            if set_member:
+                case['stubs'].append({'address': MEMBER_RELEASE_0X01401720, 'argc': 1, 'ret': seed})
+            out.append(case)
+        return out
+    return cases
 
 
 def sized_free_cases(address: str, value: int | None) -> list[dict]:
@@ -109,7 +112,8 @@ def sized_free_cases(address: str, value: int | None) -> list[dict]:
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
          'stores_vtable_releases_0x10_then_destroys': vtable_release_cases(False),
          'stores_vtable_releases_0x10_destroys_then_deletes': vtable_release_cases(True),
-         'releases_member_at_0x20_through_0x01401720': member_0x20_cases,
+         'releases_member_at_0x20_through_0x01401720': member_at_cases(0x20),
+         'releases_member_at_0x18_through_0x01401720': member_at_cases(0x18),
          'destroys_then_frees_0x10_bytes_through_0x05ac8288': sized_free_cases}
 
 MUTANTS = {
@@ -120,6 +124,7 @@ MUTANTS = {
     'stores_vtable_releases_0x10_then_destroys': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'stores_vtable_releases_0x10_destroys_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'releases_member_at_0x20_through_0x01401720': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'releases_member_at_0x18_through_0x01401720': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'destroys_then_frees_0x10_bytes_through_0x05ac8288': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
