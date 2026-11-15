@@ -129,6 +129,13 @@ CASES = {
     'reads_first_qword': field_cases,
     'reads_first_dword': field_cases,
     'writes_qword_field': setter_cases,
+    'writes_wide_string_at_0x28_to_sink': lambda address, value: sink_cases(address, 'writes_wide_string_at_0x28_to_sink'),
+    'writes_wide_string_through_0x20_to_sink': lambda address, value: sink_cases(address, 'writes_wide_string_through_0x20_to_sink'),
+    'writes_text_at_0x20_to_sink': lambda address, value: sink_cases(address, 'writes_text_at_0x20_to_sink'),
+    'toggles_flag_at_8_through_first_virtual': lambda address, value: toggle_cases(address, 8),
+    'toggles_flag_at_0x20_through_first_virtual': lambda address, value: toggle_cases(address, 0x20),
+    'resets_wide_string_at_8': lambda address, value: reset_cases(address, 8),
+    'resets_wide_string_at_0x10': lambda address, value: reset_cases(address, 0x10),
     'writes_dword_field': setter_cases,
     'writes_word_field': setter_cases,
     'writes_byte_field': setter_cases,
@@ -161,6 +168,15 @@ MUTANTS = {
     # Setters: for the four {d8} families the neighbouring offset's replacement stores at the wrong
     # place; store-then-clear-eax shows a setter must leave rax.
     'writes_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    # Records that call virtual functions: no call, and the one rule each family keeps (the heap
+    # text, the value, the state check, the free) left out.
+    'writes_wide_string_at_0x28_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_at_0x28'],
+    'writes_wide_string_through_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_through_0x20'],
+    'writes_text_at_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_text_without_value'],
+    'toggles_flag_at_8_through_first_virtual': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_toggle_at_8_ignores_state'],
+    'toggles_flag_at_0x20_through_first_virtual': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_toggle_at_0x20_ignores_state'],
+    'resets_wide_string_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_resets_wide_string_at_8_without_free'],
+    'resets_wide_string_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_resets_wide_string_at_0x10_without_free'],
     'writes_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_word_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
@@ -172,6 +188,130 @@ MUTANTS = {
     'returns_float_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one',
                            'bb_mutant_zeroes_low_float_only', 'bb_mutant_zeroes_xmm0_and_xmm1'],
 }
+
+
+# Records that call virtual functions (game/leaf/virtual_records.cpp): every slot of every fake
+# table is a stub at its own address returning its own value, so a call through the wrong slot or
+# the wrong object is a different call.
+RECORD_STUB_BASE = 0x00502000
+RECORD_TABLE_STRIDE = 0x400
+RECORD_TABLE_SLOTS = 0x20
+WIDE_HEAP_CAPACITY = 8
+WIDE_CAPACITIES = (7, 8, 1 << 63)   # inline, the smallest heap one, and one that is negative signed
+
+
+def record_stub(table: int, slot: int) -> str:
+    return f'0x{RECORD_STUB_BASE + RECORD_TABLE_STRIDE * table + 0x10 * slot:08x}'
+
+
+def stubbed_table(case: dict, name: str, table: int, seed: int, argc: dict[int, int],
+                  returns: dict[int, int] | None = None) -> None:
+    """Buffer NAME gets a table of stubs at +0: slot offset K's stub compares argc[K] arguments
+    (1 for the rest) and returns returns[K] (else its own value)."""
+    case['buffers'][f'{name}_table'] = {'size': 8 * RECORD_TABLE_SLOTS}
+    case['memory'].append({'addr': f'buf:{name}+0x0', 'pointer': f'{name}_table'})
+    for slot in range(RECORD_TABLE_SLOTS):
+        case['memory'].append({'addr': f'buf:{name}_table+0x{8 * slot:x}', 'guest': record_stub(table, slot)})
+        value = (returns or {}).get(8 * slot, seed << 32 | table << 8 | slot)
+        case['stubs'].append({'address': record_stub(table, slot), 'argc': argc.get(8 * slot, 1), 'ret': value})
+
+
+def wide_string_bytes(seed: int, capacity: int, size: int = 0x20) -> bytearray:
+    """SIZE probe bytes whose wide string at 0 has CAPACITY (its size distinct bytes)."""
+    pattern = bytearray.fromhex(probe_bytes(seed, size))
+    pattern[0x18:0x20] = capacity.to_bytes(8, 'little')
+    return pattern
+
+
+SINK_WRITE = 0x90
+RECORD_VALUE = 0x60
+
+
+def sink_case(address: str, family: str, case_id: str, seed: int, capacity: int) -> dict:
+    """A record and a sink, each with its own table of stubs: the record's slot 0x60 returns a
+    value, and the sink's slot 0x90 (compared: sink, text, value) returns the result. The text is
+    a wide string's (inline below capacity 8, else a heap buffer) or a plain pointer."""
+    case = base_case(address, case_id, 'i64')
+    record = bytearray.fromhex(probe_bytes(seed, 0x60))
+    case['buffers'] = {'sink': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)},
+                       'heap': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 2)}}
+    heap = capacity >= WIDE_HEAP_CAPACITY
+    if family == 'writes_wide_string_at_0x28_to_sink':
+        record[0x28:0x48] = wide_string_bytes(seed + 3, capacity)
+        if heap:
+            case['memory'].append({'addr': 'buf:record+0x28', 'pointer': 'heap'})
+    elif family == 'writes_wide_string_through_0x20_to_sink':
+        case['buffers']['string'] = {'size': 0x28, 'bytes': (bytes(8) + wide_string_bytes(seed + 3, capacity)).hex()}
+        case['memory'].append({'addr': 'buf:record+0x20', 'pointer': 'string'})
+        if heap:
+            case['memory'].append({'addr': 'buf:string+0x8', 'pointer': 'heap'})
+    else:
+        case['memory'].append({'addr': 'buf:record+0x20', 'pointer': 'heap'})
+    case['buffers']['record'] = {'size': 0x60, 'bytes': record.hex()}
+    stubbed_table(case, 'record', 0, seed, {RECORD_VALUE: 1})
+    stubbed_table(case, 'sink', 1, seed, {SINK_WRITE: 3})
+    for i, reg in enumerate(ARGUMENT_REGISTERS[2:]):
+        case['args'][reg] = hex((seed * 0x9e3779b97f4a7c15 + 0x0123456789abcdef * (i + 1)) & (2**64 - 1))
+    case['args'].update({'rdi': 'buf:record', 'rsi': 'buf:sink', 'rax': hex(RAX_SEED)})
+    return case
+
+
+def sink_cases(address: str, family: str) -> list[dict]:
+    """Two seeds; the wide strings at each capacity of WIDE_CAPACITIES."""
+    if family == 'writes_text_at_0x20_to_sink':
+        return [sink_case(address, family, f'text_{seed}', seed, 0) for seed in (19, 113)]
+    return [sink_case(address, family, f'capacity_{capacity:x}_{seed}', seed, capacity)
+            for seed in (19, 113) for capacity in WIDE_CAPACITIES]
+
+
+def toggle_case(address: str, state_at: int, case_id: str, on: int, state: int, result: int) -> dict:
+    """Switch ON (the second argument) with the state byte STATE; slot 0 returns RESULT (compared:
+    the object and the second argument)."""
+    case = base_case(address, case_id, 'i64')
+    pattern = bytearray.fromhex(probe_bytes(29 + state_at))
+    pattern[state_at] = state
+    case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': pattern.hex()}}
+    stubbed_table(case, 'object', 0, 29, {0: 2}, {0: result})
+    case['args'] = {'rdi': 'buf:object', 'rsi': hex(on), 'rdx': '0x7fffffffffffffff', 'rax': hex(RAX_SEED)}
+    return case
+
+
+def toggle_cases(address: str, state_at: int) -> list[dict]:
+    """On from off (and with only upper bits in rsi: still on, passed whole), on when already on
+    (no call), on refused (a result with low bits: returned, state kept), a result with only upper
+    bits (success: 0), off from on and from off (off always calls), and off refused."""
+    return [toggle_case(address, state_at, 'on', 1, 0, 0),
+            toggle_case(address, state_at, 'on_upper_bits', 1 << 32, 0, 0),
+            toggle_case(address, state_at, 'already_on', 1, 1, 0),
+            toggle_case(address, state_at, 'on_refused', 1, 0, 0x500000005),
+            toggle_case(address, state_at, 'on_result_upper_bits', 1, 0, 0x500000000),
+            toggle_case(address, state_at, 'off', 0, 1, 0),
+            toggle_case(address, state_at, 'already_off', 0, 0, 0),
+            toggle_case(address, state_at, 'off_refused', 0, 1, 9)]
+
+
+FREE_SLOT = 0x70
+
+
+def reset_case(address: str, string_at: int, case_id: str, seed: int, capacity: int) -> dict:
+    """A wide string at STRING_AT with CAPACITY and its allocator after it (a table of stubs; slot
+    0x70 compares the allocator and the heap text). Compared as void: memory and the calls."""
+    case = base_case(address, case_id, 'void')
+    pattern = bytearray.fromhex(probe_bytes(seed, 0x60))
+    pattern[string_at:string_at + 0x20] = wide_string_bytes(seed + 1, capacity)
+    case['buffers'] = {'object': {'size': 0x60, 'bytes': pattern.hex()},
+                       'allocator': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 2)},
+                       'heap': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 3)}}
+    case['memory'].append({'addr': f'buf:object+0x{string_at + 0x20:x}', 'pointer': 'allocator'})
+    if capacity >= WIDE_HEAP_CAPACITY:
+        case['memory'].append({'addr': f'buf:object+0x{string_at:x}', 'pointer': 'heap'})
+    stubbed_table(case, 'allocator', 0, seed, {FREE_SLOT: 2})
+    case['args'] = {'rdi': 'buf:object', 'rax': hex(RAX_SEED)}
+    return case
+
+
+def reset_cases(address: str, string_at: int) -> list[dict]:
+    return [reset_case(address, string_at, f'capacity_{capacity:x}', 37, capacity) for capacity in WIDE_CAPACITIES]
 
 
 def cases(family: str, address: str, value: int | None) -> list[dict]:

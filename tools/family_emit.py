@@ -396,6 +396,43 @@ def render(root: str, name: str) -> str:
     body = [template['per_value'].format(name=v, value=f'{v}u', symbol=fam.replacement(family, v)) for v in values]
     return '\n'.join(parts) + '\n' + '\n'.join(body)
 
+# Records that call virtual functions (symbols/families.csv; game/leaf/virtual_records.cpp).
+MATCHING_TEMPLATES['writes_wide_string_at_0x28_to_sink'] = {
+    'header': "// Records that call virtual functions: write the text of the wide string at +0x28 and the record's slot 0x60 value through the sink's slot 0x90.\n",
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { value_slot = 0x60, write_slot = 0x90 };\n\nstruct record {\n    uint8_t unknown_0x0[0x28];\n    struct wide_string string;\n};\n',
+    'single': 'uint64_t {symbol}(struct record *record, void *sink)\n{{\n    slot_function write = virtual_slot(sink, write_slot);\n    const uint16_t *text = record->string.capacity < heap_capacity ? record->string.text.inline_text\n                                                                    : record->string.text.heap_text;\n    return write(sink, text, virtual_slot(record, value_slot)(record));\n}}\n',
+}
+MATCHING_TEMPLATES['writes_wide_string_through_0x20_to_sink'] = {
+    'header': '// Records that call virtual functions: the same with the wide string the pointer at +0x20 points at.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { value_slot = 0x60, write_slot = 0x90 };\n\nstruct string_at_8 {\n    uint64_t unknown_0x0;\n    struct wide_string string;\n};\n\nstruct record {\n    uint8_t unknown_0x0[0x20];\n    struct string_at_8 *string;\n};\n',
+    'single': 'uint64_t {symbol}(struct record *record, void *sink)\n{{\n    slot_function write = virtual_slot(sink, write_slot);\n    struct wide_string *string = &record->string->string;\n    const uint16_t *text = string->capacity < heap_capacity ? string->text.inline_text : string->text.heap_text;\n    return write(sink, text, virtual_slot(record, value_slot)(record));\n}}\n',
+}
+MATCHING_TEMPLATES['writes_text_at_0x20_to_sink'] = {
+    'header': '// Records that call virtual functions: the same with the text pointer at +0x20.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { value_slot = 0x60, write_slot = 0x90 };\n\nstruct record {\n    uint8_t unknown_0x0[0x20];\n    const uint16_t *text;\n};\n',
+    'single': 'uint64_t {symbol}(struct record *record, void *sink)\n{{\n    slot_function write = virtual_slot(sink, write_slot);\n    const uint16_t *text = record->text;\n    return write(sink, text, virtual_slot(record, value_slot)(record));\n}}\n',
+}
+MATCHING_TEMPLATES['toggles_flag_at_8_through_first_virtual'] = {
+    'header': '// Records that call virtual functions: switch on (second argument not 0) or off through slot 0 and keep the state in the byte at +8.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { state_offset = 0x8, switch_slot = 0 };\n',
+    'single': 'uint64_t {symbol}(uint8_t *object, uint64_t on)\n{{\n    if (on != 0 && object[state_offset] != 0)\n        return 0;\n    uint64_t result = virtual_slot(object, switch_slot)(object, on);\n    if ((uint32_t)result != 0)\n        return result;\n    object[state_offset] = on != 0;\n    return 0;\n}}\n',
+}
+MATCHING_TEMPLATES['toggles_flag_at_0x20_through_first_virtual'] = {
+    'header': '// Records that call virtual functions: the same with the state in the byte at +0x20.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { state_offset = 0x20, switch_slot = 0 };\n',
+    'single': 'uint64_t {symbol}(uint8_t *object, uint64_t on)\n{{\n    if (on != 0 && object[state_offset] != 0)\n        return 0;\n    uint64_t result = virtual_slot(object, switch_slot)(object, on);\n    if ((uint32_t)result != 0)\n        return result;\n    object[state_offset] = on != 0;\n    return 0;\n}}\n',
+}
+MATCHING_TEMPLATES['resets_wide_string_at_8'] = {
+    'header': '// Records that call virtual functions: free the heap text of the wide string at +8 through its allocator and empty it.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { string_offset = 0x8, free_slot = 0x70 };\n\nstruct owned_wide_string {\n    struct wide_string string;\n    void *allocator;\n};\n',
+    'single': 'void {symbol}(uint8_t *object)\n{{\n    struct owned_wide_string *owned = (struct owned_wide_string *)(object + string_offset);\n    if (owned->string.capacity >= heap_capacity)\n        virtual_slot(owned->allocator, free_slot)(owned->allocator, owned->string.text.heap_text);\n    owned->string.capacity = inline_capacity;\n    owned->string.size = 0;\n    owned->string.text.inline_text[0] = 0;\n}}\n',
+}
+MATCHING_TEMPLATES['resets_wide_string_at_0x10'] = {
+    'header': '// Records that call virtual functions: the same with the wide string at +0x10.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { string_offset = 0x10, free_slot = 0x70 };\n\nstruct owned_wide_string {\n    struct wide_string string;\n    void *allocator;\n};\n',
+    'single': 'void {symbol}(uint8_t *object)\n{{\n    struct owned_wide_string *owned = (struct owned_wide_string *)(object + string_offset);\n    if (owned->string.capacity >= heap_capacity)\n        virtual_slot(owned->allocator, free_slot)(owned->allocator, owned->string.text.heap_text);\n    owned->string.capacity = inline_capacity;\n    owned->string.size = 0;\n    owned->string.text.inline_text[0] = 0;\n}}\n',
+}
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])

@@ -105,6 +105,13 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |
+| `writes_wide_string_at_0x28_to_sink` | 72 exact bytes | write the text of the wide string at +0x28 and the record's slot 0x60 value through the sink's slot 0x90 |
+| `writes_wide_string_through_0x20_to_sink` | 76 exact bytes | the same with the wide string the pointer at +0x20 points at |
+| `writes_text_at_0x20_to_sink` | 62 exact bytes | the same with the text pointer at +0x20 |
+| `toggles_flag_at_8_through_first_virtual` | 67 exact bytes | switch on (second argument not 0) or off through slot 0 and keep the state in the byte at +8 |
+| `toggles_flag_at_0x20_through_first_virtual` | 67 exact bytes | the same with the state in the byte at +0x20 |
+| `resets_wide_string_at_8` | 59 exact bytes | free the heap text of the wide string at +8 through its allocator and empty it |
+| `resets_wide_string_at_0x10` | 59 exact bytes | the same with the wide string at +0x10 |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
 | `writes_word_field` | `66 89 77 {d8} c3` | setters of a 16-bit field |
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |
