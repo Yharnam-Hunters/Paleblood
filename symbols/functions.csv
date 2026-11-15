@@ -26,6 +26,7 @@ address,size,name,system,status,notes
 0x00b68770,60,frame_timing_generator_buffer_size_00b68770,frame_timing,edge-verified,"Generator: the buffer size for a number of entries, from the generator's layout (0x00b685f0; its flag is not used)"
 0x00b69450,120,frame_timing_generator_fill_00b69450,frame_timing,edge-verified,"Generator: clears the pending flag of the kind-1 nodes each binding's group lists, then fills the buffer (0x00b694d0, same arguments)"
 0x00b6a030,216,frame_timing_generator_refresh_00b6a030,frame_timing,edge-verified,"Generator: hands each binding group's short records to their targets' slot 7 and long records to slot 5, with the data after each index"
+0x00fb6d20,30,render_yebis_initialize_interface,render,replaced,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,83,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
 0x0111a620,129,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
