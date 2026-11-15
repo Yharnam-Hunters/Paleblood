@@ -60,6 +60,33 @@ uint64_t bb_mutant_returns_second_argument(uint64_t first, uint64_t second)
     return second;
 }
 
+/* Record initializers (zeroes_record_and_stores_first_argument): leave the last cleared word,
+   store the record's own address as the owner, or return the owner instead of zero. */
+uint64_t bb_mutant_record_last_word_left(void *owner, uint64_t *record)
+{
+    for (int i = 0; i < 14; i++)
+        record[i] = 0;
+    record[15] = (uint64_t)(uintptr_t)owner;
+    return 0;
+}
+
+uint64_t bb_mutant_record_owner_is_record(void *owner, uint64_t *record)
+{
+    (void)owner;
+    for (int i = 0; i < 15; i++)
+        record[i] = 0;
+    record[15] = (uint64_t)(uintptr_t)record;
+    return 0;
+}
+
+uint64_t bb_mutant_record_returns_owner(void *owner, uint64_t *record)
+{
+    for (int i = 0; i < 15; i++)
+        record[i] = 0;
+    record[15] = (uint64_t)(uintptr_t)owner;
+    return (uint64_t)(uintptr_t)owner;
+}
+
 /* Stores the low 32 bits of its second argument at the start of its object: the wrong width for
    a 64-bit setter. */
 void bb_mutant_writes_first_dword(uint32_t *object, uint64_t value)
