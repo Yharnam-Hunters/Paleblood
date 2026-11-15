@@ -356,6 +356,20 @@ TEMPLATES['frees_object_through_thread_allocator'] = {
 }
 
 
+# Engine objects that post an event to their delegate (a relative family with the event kind as
+# its parameter; game/engine/delegate_event.h).
+TEMPLATES['posts_event_to_delegate_at_0x50'] = {
+    'header': ('// Every member of posts_event_to_delegate_at_0x50 (symbols/families.csv) is a copy of the\n'
+               '// same function reaching the same stack guard: when the delegate at +0x50 is set, it\n'
+               '// calls it with the event {K, a dword, a qword} and the delegate\'s context. One\n'
+               '// replacement per event kind K.\n'),
+    'shared': '#include "delegate_event.h"\n',
+    'per_value': ('constexpr uint32_t event_kind_{name} = {value};\n'
+                  'extern "C" void {symbol}(void *poster, uint64_t value, uint64_t data)\n{{\n'
+                  '    engine::delegate_event::post(poster, event_kind_{name}, value, data);\n}}\n'),
+}
+
+
 def matching_path(root: str, family: dict) -> str:
     return os.path.join(root, 'game', 'matching', family['system'], f"{family['family']}.c")
 

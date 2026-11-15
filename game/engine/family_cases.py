@@ -79,7 +79,53 @@ def thread_free_cases(address: str, value: int | None) -> list[dict]:
             thread_free_case(address, 'class_size_count_zero', SIZE_DEFAULT << 16, 13)]
 
 
+STACK_GUARD_SLOT = '0x057e3be0'   # the import slot that points at the stack guard
+HANDLER = '0x00400140'             # a stand-in for the delegate's function, stubbed
+EVENT_SIZE = 0x10
+HANDLER_SLOT = 0x20                # the virtual delegate's table offset
+
+
+def delegate_case(address: str, case_id: str, function: str | None, seed: int) -> dict:
+    """An object with a delegate at +0x50: FUNCTION None (unset), 'direct' (the handler's
+    address) or 'virtual' (1 + HANDLER_SLOT into the bound object's table). The bound object
+    is the target buffer plus an adjustment of 0x10. The handler compares the object, the
+    context and the 16-byte event its second argument points at (on the stack)."""
+    poster = bytearray((seed * 13 + i) & 0xff for i in range(0x70))
+    poster[0x58:0x60] = bytes(8)
+    case = {'schema': 1, 'address': address, 'id': case_id, 'returns': 'void',
+            'buffers': {'guard': {'size': 8, 'bytes': struct.pack('<Q', 0x2b992ddfa232 ^ seed).hex()},
+                        'poster': {'size': 0x70, 'bytes': poster.hex()},
+                        'target': {'size': 0x30, 'bytes': bytes((seed + i) & 0xff for i in range(0x30)).hex()},
+                        'target_table': {'size': 0x30}},
+            'memory': [{'addr': STACK_GUARD_SLOT, 'pointer': 'guard'}],
+            'imports': [], 'stubs': [],
+            'args': {'rdi': 'buf:poster', 'rsi': hex(0xa5a5a5a5_00000000 | seed * 0x01010101),
+                     'rdx': hex(0x0123456789abcdef ^ seed << 56), 'rcx': '0x7', 'rax': '0x5aa5c33c0ff0e11e'}}
+    if function:
+        case['memory'] += [{'addr': 'buf:poster+0x50', 'pointer': 'target'},
+                           {'addr': 'buf:poster+0x60', 'bytes': struct.pack('<q', 0x10).hex()},
+                           {'addr': 'buf:poster+0x68', 'bytes': struct.pack('<I', 0x900d0000 | seed).hex()},
+                           {'addr': 'buf:target+0x10', 'pointer': 'target_table'},
+                           {'addr': f'buf:target_table+0x{HANDLER_SLOT:x}', 'guest': HANDLER}]
+        if function == 'direct':
+            case['memory'].append({'addr': 'buf:poster+0x58', 'guest': HANDLER})
+        else:
+            case['memory'].append({'addr': 'buf:poster+0x58', 'bytes': struct.pack('<Q', HANDLER_SLOT + 1).hex()})
+        case['stubs'].append({'address': HANDLER, 'argc': 3, 'argi': [0, 2], 'ret': 0x77,
+                              'argmem': [{'arg': 1, 'size': EVENT_SIZE}]})
+    return case
+
+
+def delegate_event_cases(address: str, value: int | None) -> list[dict]:
+    """No delegate (no call), a direct handler and a virtual one, with two seeds."""
+    return [delegate_case(address, 'unset', None, 3),
+            delegate_case(address, 'direct', 'direct', 5),
+            delegate_case(address, 'virtual', 'virtual', 7),
+            delegate_case(address, 'direct_other', 'direct', 11)]
+
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'posts_event_to_delegate_at_0x50': delegate_event_cases,
          'frees_object_through_thread_allocator': thread_free_cases}
 
 MUTANTS = {
@@ -89,6 +135,8 @@ MUTANTS = {
     'initialize_static_wide_string': ['bb_mutant_does_nothing', 'bb_mutant_static_wide_string_guard_only'],
     # No call (another rax, no recorded free), and the neighbouring class size's replacement.
     'frees_object_through_thread_allocator': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    # No call, and the other event kind's replacement.
+    'posts_event_to_delegate_at_0x50': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 
