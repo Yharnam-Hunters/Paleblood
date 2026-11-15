@@ -108,6 +108,37 @@ __attribute__((naked)) void bb_mutant_clobbers_second_argument(void)
     __asm__("xorl %esi, %esi\n\tret");
 }
 
+/* The count's new value instead of the old one. */
+uint64_t bb_mutant_increment_returns_new_count(uint8_t *object)
+{
+    return __atomic_add_fetch((uint32_t *)(object + 8), 1u, __ATOMIC_SEQ_CST);
+}
+
+/* A 64-bit increment at the count: a wrapping count carries into the next four bytes. */
+uint64_t bb_mutant_increments_qword_at_8(uint8_t *object)
+{
+    return (uint32_t)__atomic_fetch_add((uint64_t *)(object + 8), 1u, __ATOMIC_SEQ_CST);
+}
+
+/* Clears of the first 8, 16 or 24 bytes: too few or too many for a record clear. */
+void bb_mutant_clears_first_8_bytes(uint64_t *object)
+{
+    object[0] = 0;
+}
+
+void bb_mutant_clears_first_16_bytes(uint64_t *object)
+{
+    object[0] = 0;
+    object[1] = 0;
+}
+
+void bb_mutant_clears_first_24_bytes(uint64_t *object)
+{
+    object[0] = 0;
+    object[1] = 0;
+    object[2] = 0;
+}
+
 /* Returns 1.0f: the wrong float. */
 float bb_mutant_returns_float_one(void)
 {

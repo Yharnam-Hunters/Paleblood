@@ -420,6 +420,54 @@ def render_matching(root: str, name: str) -> str:
     return '\n'.join(parts) + '\n\n' + '\n'.join(body)
 
 
+# Small fixed-layout families (symbols/families.csv): the tagged pointer getter is generated per
+# offset; the other four have one hand replacement each (game/leaf/small_records.cpp).
+TEMPLATES['reads_pointer_without_low_bit'] = {
+    'header': ('// Tagged pointer getters: every member of the reads_pointer_without_low_bit family\n'
+               '// (symbols/families.csv) is `mov rax, [rdi+K]; and rax, -2; ret`, the 64-bit field K\n'
+               '// bytes into the object with bit 0 (a tag kept in the pointer) cleared.\n'),
+    'shared': '#include "object_field.h"\n\nconstexpr uint64_t tag_bit = 1;\n',
+    'per_value': ('constexpr std::size_t offset_{name} = {value};\n'
+                  'static_assert(field_is_at_offset<offset_{name}, uint64_t>);\n'
+                  'extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint64_t> *object)\n'
+                  '{{\n    return object->field & ~tag_bit;\n}}\n'),
+}
+MATCHING_TEMPLATES['reads_pointer_without_low_bit'] = {
+    'header': '// Tagged pointer getters: `mov rax, [rdi+K]; and rax, -2; ret`. One function per offset K.\n',
+    'shared': STDINT + '\nstatic const uint64_t tag_bit = 1;\n',
+    'per_value': (field_struct('qword')
+                  + 'uint64_t {symbol}(const struct object_with_qword_at_{name} *object)\n'
+                  '{{\n    return object->field & ~tag_bit;\n}}\n'),
+}
+MATCHING_TEMPLATES['atomically_increments_dword_at_8'] = {
+    'header': '// Atomic count increments: `mov eax, 1; lock xadd [rdi+8], eax; ret`.\n',
+    'shared': STDINT + '\nstruct object_with_count_at_8 {\n    uint64_t unknown_before_count;\n    uint32_t count;\n};\n',
+    'single': ('uint32_t {symbol}(struct object_with_count_at_8 *object)\n'
+               '{{\n    return __sync_fetch_and_add(&object->count, 1);\n}}\n'),
+}
+MATCHING_TEMPLATES['clears_first_two_qwords'] = {
+    'header': '// Record clears: `mov qword [rdi+8], 0; mov qword [rdi], 0; ret`.\n',
+    'shared': STDINT + '\nstruct two_qwords {\n    uint64_t first;\n    uint64_t second;\n};\n',
+    'single': ('void {symbol}(struct two_qwords *object)\n'
+               '{{\n    object->second = 0;\n    object->first = 0;\n}}\n'),
+}
+MATCHING_TEMPLATES['clears_first_four_qwords'] = {
+    'header': '// Record clears: four `mov qword [rdi+K], 0` from 0x18 down to 0, `ret`.\n',
+    'shared': (STDINT + '\nstruct four_qwords {\n    uint64_t first;\n    uint64_t second;\n'
+               '    uint64_t third;\n    uint64_t fourth;\n};\n'),
+    'single': ('void {symbol}(struct four_qwords *object)\n'
+               '{{\n    object->fourth = 0;\n    object->third = 0;\n    object->second = 0;\n'
+               '    object->first = 0;\n}}\n'),
+}
+MATCHING_TEMPLATES['clears_two_qwords_and_a_dword'] = {
+    'header': '// Record clears: `mov dword [rdi+0x10], 0`, then the qwords at 8 and 0, `ret`.\n',
+    'shared': (STDINT + '\nstruct two_qwords_and_a_dword {\n    uint64_t first;\n    uint64_t second;\n'
+               '    uint32_t third;\n} __attribute__((packed));\n'),
+    'single': ('void {symbol}(struct two_qwords_and_a_dword *object)\n'
+               '{{\n    object->third = 0;\n    object->second = 0;\n    object->first = 0;\n}}\n'),
+}
+
+
 def render(root: str, name: str) -> str:
     rows = [f for f in fam.families(root) if f['family'] == name]
     if not rows:
