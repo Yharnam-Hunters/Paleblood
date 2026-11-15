@@ -212,6 +212,16 @@ resources loaded from their descriptors; colour and depth/stencil attachments us
 guest memory.
 The generic register events validate this backend's supported opaque-triangle profile: blending,
 non-copy colour operations and partial colour masks stop with a reason.
+
+`CB_COLOR0..7_CLEAR_WORD0/1` writes retain each independent raw 32-bit word across
+submissions, in the persistent graphics state. Reset returns these words to zero.
+They specify formatted fast-clear texel bits; writing them does not clear a target.
+The admitted uncompressed draw path does not consume them. Active fast-clear or
+compression flags and non-normal colour modes still stop before shader work.
+Only the two documented words in each of the eight banks are admitted. The
+[AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
+specify their addresses and bank stride.
+
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
@@ -446,6 +456,16 @@ formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logic
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, missing image/sampler descriptor guards, descriptors loaded from memory, fetch rendering through live target and
 program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip guards, depth/stencil admission, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
+
+`test_metal_color_clear_words` checks all eight banks and both words, arbitrary raw
+bits, single-bit walks, submission routes, masked draws and later submissions.
+Fresh vertex stores, literal pixels and whole-pool canaries distinguish completed
+draws from empty success. It also checks adjacent unknown registers and active
+fast-clear/compression/mode refusals before any writes, followed by recovery.
+Exact inactive raw storage, independence and zero-on-reset are source invariants;
+the public API cannot distinguish their values while fast clears are unsupported.
+No private state getter or original hardware equivalence is claimed.
+
 `test_metal_depth` additionally checks depth/stencil comparisons, operations and masks, both face
 orientations and viewport signs, native read-only behavior through overlapping triangles,
 scissored writes, padded selected slices, mixed attachment extents, null-pixel draws, retained
