@@ -183,7 +183,22 @@ def loader_library():
     lib.rt_elf_map.argtypes = [ctypes.c_void_p, ctypes.c_void_p, LOADER_BIND, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
     lib.rt_elf_thread_pointer_to_gs.restype = ctypes.c_size_t
     lib.rt_elf_thread_pointer_to_gs.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    lib.rt_fixed_tsc_install.restype = ctypes.c_int
+    lib.rt_fixed_tsc_install.argtypes = [ctypes.c_uint64, ctypes.c_uint64]
     return lib
+
+
+# The time-stamp counter both sides of a case read (runtime/fixed_tsc.c, docs/VERIFY.md): the
+# n-th rdtsc of a run returns TSC_FIRST + n * TSC_STEP, so a value the original stores (the frame
+# profiler's markers) is the same in the replacement's run.
+TSC_FIRST = 0x0000_0012_3400_0000
+TSC_STEP = 0x1_0000
+
+
+def fix_time_stamp_counter() -> None:
+    """Makes this process's rdtsc/rdtscp read the fixed sequence (a forked case runs it first)."""
+    if sys.platform == 'linux' and loader_library().rt_fixed_tsc_install(TSC_FIRST, TSC_STEP) != 0:
+        raise BadInput('cannot fix the time-stamp counter (prctl PR_SET_TSC)')
 
 
 def open_executable(path: str) -> dict:
@@ -769,6 +784,8 @@ def _run_isolated(machine: Machine, case: dict, address: str, target: int | None
                 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
                 import instruction_trace
                 instruction_trace.trace_me()
+            else:
+                fix_time_stamp_counter()
             result = run_case(machine, case, address, target)
             code = 0
         except BadInput as error:
