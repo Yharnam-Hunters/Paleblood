@@ -47,7 +47,8 @@ functions whose replacements report to the renderer are never recorded and their
 for every call, even inside a recorded call of a caller, whose trace then ends there: the renderer
 would otherwise miss that state and stop. --capture-cases caps the
 distinct cases kept per function and run. A case identical to one DIR already holds is not
-written again.
+written again. A capture boot fails (exit 3) when the runtime never prints "capture: N of M
+hooked function(s) can be recorded", or prints 0 of M: such a boot records nothing.
 
 --clip FILE writes presented frames of the run to a silent video at full resolution: FILE ends in
 .webm (VP9) or .mp4 (H.264), and must be outside the repository (it holds your own game's frames;
@@ -272,6 +273,46 @@ def capture_environment(root: str, directory: str, which: str, cases: int, elf: 
         # trace then ends there): the renderer needs each report.
         env['BB_CAPTURE_NATIVE'] = ','.join(renderer_reporting(root))
     return env
+
+
+# The runtime's report once it has prepared the hooks (runtime/capture_hooks.c). A capture boot
+# without it, or with no hook it can record, records nothing however long it runs.
+CAPTURE_BANNER = re.compile(r'capture: (\d+) of (\d+) hooked function\(s\) can be recorded')
+
+
+def run_watching_capture(cmd: list[str], timeout: float, env: dict[str, str] | None) -> tuple[int, int | None]:
+    """Runs the harness with its stderr passed through; returns its exit status and how many hooked
+    functions the runtime said it can record (None when it never said)."""
+    recordable: list[int] = []
+    with subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE, text=True, errors='replace') as p:
+
+        def forward() -> None:
+            for line in p.stderr:
+                sys.stderr.write(line)
+                banner = CAPTURE_BANNER.search(line)
+                if banner:
+                    recordable.append(int(banner.group(1)))
+
+        reader = threading.Thread(target=forward, daemon=True)
+        reader.start()
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            raise
+        finally:
+            reader.join(timeout=5)
+    return p.returncode, (recordable[-1] if recordable else None)
+
+
+def capture_problem(recordable: int | None) -> str | None:
+    """Why a capture boot recorded nothing, from the runtime's report (None: it could record)."""
+    if recordable is None:
+        return ('the runtime never said how many hooked functions it can record (no "capture: N of M '
+                'hooked function(s)" line): nothing was recorded')
+    if recordable == 0:
+        return 'the runtime can record none of the hooked functions: nothing was recorded'
+    return None
 
 
 # --clip: presented frames to a silent video (docs/ENEMY_OVERLAY.md, "Recording clips").
@@ -590,14 +631,23 @@ def main() -> int:
         if a.game_lib:
             cmd += ['--game-lib', a.game_lib]
         # The guest runs in this process's child; a hard limit covers a runaway harness.
+        def run_harness() -> tuple[int, int | None]:
+            if a.capture:
+                return run_watching_capture(cmd, a.timeout + 60, env)
+            return subprocess.run(cmd, timeout=a.timeout + 60, env=env).returncode, None
+
         try:
             if scratch:
                 with FramePruner(frames_dir, a.clip_start, a.clip_frames):
-                    p = subprocess.run(cmd, timeout=a.timeout + 60, env=env)
+                    returncode, recordable = run_harness()
             else:
-                p = subprocess.run(cmd, timeout=a.timeout + 60, env=env)
-            if p.returncode != 0 or not os.path.isfile(out):
-                print(f'boot: harness failed (exit {p.returncode})', file=sys.stderr)
+                returncode, recordable = run_harness()
+            if returncode != 0 or not os.path.isfile(out):
+                print(f'boot: harness failed (exit {returncode})', file=sys.stderr)
+                return 3
+            problem = capture_problem(recordable) if a.capture else None
+            if problem:
+                print(f'boot: --capture: {problem}', file=sys.stderr)
                 return 3
             with open(out) as f:
                 status = json.load(f)
