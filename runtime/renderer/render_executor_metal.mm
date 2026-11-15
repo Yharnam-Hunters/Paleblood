@@ -96,10 +96,20 @@ struct MetalTarget {
     id<MTLTexture> texture;
     bool initialized = false;
 };
+/* Only effective target-0 blend state belongs to a render pipeline. */
+struct MetalBlend {
+    bool enabled = false;
+    MTLBlendFactor source = MTLBlendFactorOne, destination = MTLBlendFactorZero;
+    bool operator==(const MetalBlend &other) const
+    {
+        return enabled == other.enabled && source == other.source && destination == other.destination;
+    }
+};
 struct MetalPipeline {
     id<MTLFunction> vertex, pixel;
     MTLPixelFormat format, depth_format, stencil_format;
     bool write_color, rasterize;
+    MetalBlend blend;
     id<MTLRenderPipelineState> pipeline;
 };
 struct MetalState {
@@ -246,6 +256,40 @@ static bool color_writes(const MetalState &state)
         (!state.color_control_set || (state.color_control & COLOR_MODE_MASK) != 0);
 }
 
+/* GFX7 CB_BLENDn_CONTROL factors are not Metal enum ordinals. This bounded
+   profile uses ADD and the colour factors for both RGB and alpha. */
+static int blend_factor(unsigned factor, MTLBlendFactor &out, char *error, size_t size)
+{
+    enum { BLEND_ZERO = 0, BLEND_ONE = 1, BLEND_SRC_ALPHA = 4, BLEND_ONE_MINUS_SRC_ALPHA = 5 };
+    switch (factor) {
+    case BLEND_ZERO: out = MTLBlendFactorZero; return 0;
+    case BLEND_ONE: out = MTLBlendFactorOne; return 0;
+    case BLEND_SRC_ALPHA: out = MTLBlendFactorSourceAlpha; return 0;
+    case BLEND_ONE_MINUS_SRC_ALPHA: out = MTLBlendFactorOneMinusSourceAlpha; return 0;
+    default: return failed(error,size,"blending factor %u is outside the Metal ADD profile",factor);
+    }
+}
+static int blend_state(const MetalState &state, MetalBlend &out, char *error, size_t size)
+{
+    out = {};
+    if (!color_writes(state) || !(state.blend_set & 1u) || !(state.blend_control[0] & BLEND_ENABLE)) return 0;
+    enum { FACTOR_MASK = 0x1f, COLOR_COMB_SHIFT = 5, COLOR_DEST_SHIFT = 8,
+           COMB_MASK = 7, COMB_DST_PLUS_SRC = 0, RESERVED_MASK = 7u << 13,
+           SEPARATE_ALPHA_BLEND = 1u << 29, DISABLE_ROP3 = 1u << 31 };
+    const uint32_t control = state.blend_control[0];
+    if (control & SEPARATE_ALPHA_BLEND) return failed(error,size,"separate alpha blending is outside the Metal ADD profile");
+    if (control & DISABLE_ROP3) return failed(error,size,"blending DISABLE_ROP3 is outside the Metal ADD profile");
+    if (control & RESERVED_MASK) return failed(error,size,"blending has unmodeled reserved CB_BLEND0_CONTROL bits");
+    if ((control >> COLOR_COMB_SHIFT & COMB_MASK) != COMB_DST_PLUS_SRC)
+        return failed(error,size,"blending operation is outside the Metal ADD profile");
+    if (blend_factor(control & FACTOR_MASK,out.source,error,size) ||
+        blend_factor(control >> COLOR_DEST_SHIFT & FACTOR_MASK,out.destination,error,size)) return -1;
+    /* SEPARATE_ALPHA_BLEND is clear: inactive alpha fields do not change the
+       shared factors, including their pipeline-cache identity. */
+    out.enabled = true;
+    return 0;
+}
+
 /* Validate the supported state. A zero colour mask still executes shaders and their writes. */
 static int check_state(const MetalState &state, char *error, size_t size)
 {
@@ -254,8 +298,8 @@ static int check_state(const MetalState &state, char *error, size_t size)
     if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_TRISTRIP && state.primitive != DI_PT_RECTLIST)
         return failed(error, size, "primitive type %u: only triangle lists, strips and rectangle lists are drawn yet", state.primitive);
     /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
-    if (color_writes(state) && (state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
-        return failed(error, size, "blending is not drawn yet");
+    MetalBlend blend;
+    if (blend_state(state,blend,error,size)) return -1;
     if (state.depth_set && (state.depth & DEPTH_BOUNDS_ENABLE))
         return failed(error, size, "depth bounds testing (DB_DEPTH_CONTROL.DEPTH_BOUNDS_ENABLE) is not drawn yet");
     if (state.primitive_set && state.primitive == DI_PT_RECTLIST && state.instances > 1)
@@ -851,11 +895,12 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
 
 static id<MTLRenderPipelineState> pipeline_for(rt_executor *x, id<MTLFunction> vertex, id<MTLFunction> pixel,
                                              MTLPixelFormat format, MTLPixelFormat depth_format, MTLPixelFormat stencil_format,
-                                             bool write_color, char *error, size_t size, bool rasterize = true)
+                                             bool write_color, char *error, size_t size, bool rasterize = true,
+                                             const MetalBlend &blend = {})
 {
     for (const auto &entry : x->pipelines)
         if (entry.vertex == vertex && entry.pixel == pixel && entry.format == format && entry.depth_format == depth_format &&
-            entry.stencil_format == stencil_format && entry.write_color == write_color && entry.rasterize == rasterize)
+            entry.stencil_format == stencil_format && entry.write_color == write_color && entry.rasterize == rasterize && entry.blend == blend)
             return entry.pipeline;
     if (x->pipelines.size() == MAX_PIPELINES) return failed(error, size, "draw pipeline cache is full"), nil;
     NSError *failure = nil;
@@ -864,9 +909,16 @@ static id<MTLRenderPipelineState> pipeline_for(rt_executor *x, id<MTLFunction> v
     description.colorAttachments[0].pixelFormat = format;
     description.depthAttachmentPixelFormat = depth_format; description.stencilAttachmentPixelFormat = stencil_format;
     description.colorAttachments[0].writeMask = write_color ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
+    auto *attachment = description.colorAttachments[0];
+    attachment.blendingEnabled = blend.enabled;
+    if (blend.enabled) {
+        attachment.rgbBlendOperation = MTLBlendOperationAdd; attachment.alphaBlendOperation = MTLBlendOperationAdd;
+        attachment.sourceRGBBlendFactor = blend.source; attachment.destinationRGBBlendFactor = blend.destination;
+        attachment.sourceAlphaBlendFactor = blend.source; attachment.destinationAlphaBlendFactor = blend.destination;
+    }
     id<MTLRenderPipelineState> pipeline = [x->device newRenderPipelineStateWithDescriptor:description error:&failure];
     if (!pipeline) return failed(error, size, "Metal draw pipeline: %s", failure.localizedDescription.UTF8String), nil;
-    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, rasterize, pipeline});
+    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, rasterize, blend, pipeline});
     return pipeline;
 }
 
@@ -1276,6 +1328,8 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         return failed(error,size,"a draw has no color target or depth/stencil attachment");
     const bool raster_rectangle = rectangle && !vertex_only;
     const bool write_color = color_writes(state);
+    MetalBlend blend;
+    if (blend_state(state,blend,error,size)) return -1;
     if (!state.pixel.code && !vertex_only && (write_color || !has_depth))
         return failed(error,size,"a draw with no pixel shader requires depth/stencil and no color writes");
     MetalTarget *target = state.color_enabled ? target_for(x,state.color,error,size) : nullptr;
@@ -1307,7 +1361,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;
     id<MTLRenderPipelineState> pipeline = pipeline_for(x,raster_rectangle ? rectangle_shader.raster : vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
         depth.z.texture ? depth.z.texture.pixelFormat : MTLPixelFormatInvalid,
-        depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size,!vertex_only);
+        depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size,!vertex_only,blend);
     if (!pipeline) return -1;
     MetalRectangleDraw captured;
     if (raster_rectangle && capture_rectangle(x,state,count,indices,vertex,rectangle_shader.stride,captured,error,size)) return -1;

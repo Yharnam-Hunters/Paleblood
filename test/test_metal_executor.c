@@ -1216,8 +1216,9 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
+    /* The blend guard uses AMD SRC_COLOR factor2, outside the ADD alpha profile. */
     const struct { uint32_t address, value; const char *reason; } unsupported_registers[] = {
-        {0xa1e0, 0x40000000, "blending"}, {0xa200, 2, "depth or stencil"},
+        {0xa1e0, 0x40000002, "blending"}, {0xa200, 2, "depth or stencil"},
         {0xa202, 0x20, "colour mode"}, {0xa08e, 7, "write mask"},
         {0xc242, 5, "primitive type"}, {0xa001, 0, "does not interpret"},
         {0xc242, 7, "primitive type"}, {0xa018, 0, "does not interpret"},

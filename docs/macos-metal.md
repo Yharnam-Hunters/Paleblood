@@ -210,8 +210,9 @@ validate every instruction against its declared SGPR/VGPR allocation.
 Readback is tightly packed BGRA, matching the display API. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
-The generic register events validate this backend's supported opaque-triangle profile: blending
-that can write colour, non-copy colour operations and partial colour masks stop with a reason.
+Target0 supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA factors,
+using the color factors for alpha as well. Other factors or operations, separate alpha,
+ROP3 overrides, reserved fields, non-copy color operations and partial color masks stop with a reason.
 An enabled blend flag has no effect when target 0 is unbound, its channel mask is zero or the
 colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
@@ -490,6 +491,11 @@ state, required-register presence and canonical-memory updates. Stencil-only met
 use literal S8/BGRA results and complete pool comparisons to preserve the inactive Z plane,
 metadata bytes, padding and other slices; active metadata-dependent aspects retain prework
 refusals.
+`test_metal_alpha_blend` checks literal factor-pair results, RGB and alpha bytes, pipeline-cache
+transitions and fresh destination memory in both channel orders. Its sRGB results use the
+[IEC transfer curve](https://registry.color.org/rgb-registry/srgb); RGB is encoded while
+[alpha remains linear](https://developer.apple.com/documentation/metal/mtlpixelformat).
+Owned vertex stores and full-pool guards also cover inactive blend state and unsupported-state recovery.
 `test_metal_vertex_only` checks null-pixel draws with no attachments through vertex stores and
 complete pool comparisons. The same vertex code alternates with color and depth/stencil draws;
 sparse indices, instance-input tuples, zero counts and single-execution rectangle sources have
