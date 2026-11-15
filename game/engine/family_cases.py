@@ -213,7 +213,66 @@ def text_event_cases(address: str, value: int | None) -> list[dict]:
             for function, seed in ((None, 23), ('direct', 29), ('virtual', 31))]
 
 
+CONSTRUCT_EVENT_BASE = '0x01400810'
+DESTROY_EVENT = '0x013a75d0'
+def record_event_compared(arg: int) -> list[dict]:
+    return [{'arg': arg, 'size': 8}, {'arg': arg, 'offset': 0x20, 'size': 0x10}]
+
+
+def record_event_case(address: str, case_id: str, record: str, function: str | None, seed: int) -> dict:
+    """A poster with a delegate at +8 (object +8, function +0x10, adjustment +0x18, context +0x20):
+    FUNCTION None leaves the bound object null; 'direct' or 'virtual' as in delegate_case. RECORD:
+    'none' (a null second argument), 'no_second', 'no_first' or 'full'. The event's constructor,
+    the handler and the event's destructor are stubs; the event's bytes the base constructor would
+    set (+8..+0x20) are not compared, as the stub does not set them."""
+    poster = bytearray((seed * 13 + i) & 0xff for i in range(0x30))
+    poster[0x8:0x10] = bytes(8)
+    case = {'schema': 1, 'address': address, 'id': case_id, 'returns': 'void',
+            'buffers': {'guard': {'size': 8, 'bytes': struct.pack('<Q', 0x2b992ddfa232 ^ seed).hex()},
+                        'poster': {'size': 0x30, 'bytes': poster.hex()},
+                        'record': {'size': 0x18, 'bytes': bytes((seed * 5 + i) & 0xff for i in range(0x18)).hex()},
+                        'first': {'size': 0x10}, 'second': {'size': 0x10},
+                        'target': {'size': 0x30, 'bytes': bytes((seed + i) & 0xff for i in range(0x30)).hex()},
+                        'target_table': {'size': 0x30}},
+            'memory': [{'addr': STACK_GUARD_SLOT, 'pointer': 'guard'}],
+            'imports': [], 'stubs': [],
+            'args': {'rdi': 'buf:poster', 'rsi': '0x0' if record == 'none' else 'buf:record',
+                     'rdx': '0x2222222222222222', 'rax': '0x5aa5c33c0ff0e11e'}}
+    case['memory'] += [{'addr': 'buf:record+0x0', 'bytes': '00' * 8} if record == 'no_first'
+                       else {'addr': 'buf:record+0x0', 'pointer': 'first'},
+                       {'addr': 'buf:record+0x10', 'bytes': '00' * 8} if record == 'no_second'
+                       else {'addr': 'buf:record+0x10', 'pointer': 'second'}]
+    if function:
+        case['memory'] += [{'addr': 'buf:poster+0x8', 'pointer': 'target'},
+                           {'addr': 'buf:poster+0x18', 'bytes': struct.pack('<q', 0x10).hex()},
+                           {'addr': 'buf:poster+0x20', 'bytes': struct.pack('<I', 0x900d0000 | seed).hex()},
+                           {'addr': 'buf:target+0x10', 'pointer': 'target_table'},
+                           {'addr': f'buf:target_table+0x{HANDLER_SLOT:x}', 'guest': HANDLER}]
+        if function == 'direct':
+            case['memory'].append({'addr': 'buf:poster+0x10', 'guest': HANDLER})
+        else:
+            case['memory'].append({'addr': 'buf:poster+0x10', 'bytes': struct.pack('<Q', HANDLER_SLOT + 1).hex()})
+        if record == 'full':
+            case['stubs'] = [{'address': CONSTRUCT_EVENT_BASE, 'argc': 1, 'argi': [], 'ret': 0},
+                             {'address': HANDLER, 'argc': 3, 'argi': [0, 2], 'ret': 0x77,
+                              'argmem': record_event_compared(1)},
+                             {'address': DESTROY_EVENT, 'argc': 1, 'argi': [], 'ret': 0, 'argmem': record_event_compared(0)}]
+    return case
+
+
+def record_event_cases(address: str, value: int | None) -> list[dict]:
+    """A full record with a direct and a virtual delegate; no bound object; and the record null,
+    without its +0x10 and without its +0."""
+    return [record_event_case(address, 'direct', 'full', 'direct', 3),
+            record_event_case(address, 'virtual', 'full', 'virtual', 5),
+            record_event_case(address, 'no_object', 'full', None, 7),
+            record_event_case(address, 'no_record', 'none', 'direct', 11),
+            record_event_case(address, 'no_second', 'no_second', 'direct', 13),
+            record_event_case(address, 'no_first', 'no_first', 'virtual', 17)]
+
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'posts_record_event_to_delegate_at_0x8': record_event_cases,
          'deleting_destructor_freeing_0x28_bytes': destructor_cases,
          'posts_text_event_to_delegate_at_0x50': text_event_cases,
          'calls_delegate_at_0x18_else_virtual_0x80': delegate_forward_cases,
@@ -236,6 +295,7 @@ MUTANTS = {
     # the game image, which the mutant library does not see.)
     'deleting_destructor_freeing_0x28_bytes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'posts_text_event_to_delegate_at_0x50': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'posts_record_event_to_delegate_at_0x8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 
