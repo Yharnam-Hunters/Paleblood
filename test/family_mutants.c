@@ -29,6 +29,13 @@ uint64_t bb_mutant_returns_zero(void)
     return 0;
 }
 
+/* Slot 0x28 of the object's table called, but the object never deleted. */
+void bb_mutant_virtual_0x28_never_deletes(uint8_t *object)
+{
+    typedef void (*destructor)(void *);
+    (*(destructor *)(*(uint8_t **)object + 0x28))(object);
+}
+
 /* Returns one. */
 uint64_t bb_mutant_returns_one(void)
 {
