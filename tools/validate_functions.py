@@ -167,7 +167,7 @@ def main() -> int:
 
 REVIEW_HEADER = ['address', 'name', 'date', 'reviewer', 'verdict', 'notes']
 EXTERN_C = re.compile(r'extern "C"\s+([\w ]+?)\s*(\*?)\s*\b(bb_\w+)\s*\(')
-FIELD_LIMIT = {'u8': 0xff, 'd8': 0x7f, 'u32': 0xffffffff}
+FIELD_LIMIT = {'u8': 0xff, 'd8': 0x7f, 'u32': 0xffffffff, 'd32': 0x7fffffff}
 
 
 def replacement_definitions(root: str, system: str) -> dict[str, str]:
@@ -391,7 +391,7 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
                 errs.append(f"{mw}: value must be {'empty' if shape.field is None else 'the shape parameter'}")
             elif m['value'] and not (re.fullmatch(r'0x[0-9a-f]+', m['value'])
                                       and int(m['value'], 16) <= FIELD_LIMIT[shape.field]
-                                      and (shape.field != 'd8' or int(m['value'], 16) > 0)):
+                                      and (shape.field not in ('d8', 'd32') or int(m['value'], 16) > 0)):
                 errs.append(f"{mw}: value {m['value']} is not a valid {{{shape.field}}}")
             if m['status'] not in HOOKED:
                 errs.append(f"{mw}: status '{m['status']}' must be one of {'|'.join(HOOKED)}")
