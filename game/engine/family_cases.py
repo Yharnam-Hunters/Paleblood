@@ -271,7 +271,38 @@ def record_event_cases(address: str, value: int | None) -> list[dict]:
             record_event_case(address, 'no_first', 'no_first', 'virtual', 17)]
 
 
+def sized_delete_cases(address: str, value: int | None) -> list[dict]:
+    """The thread allocator as in thread_free_case: two objects (the free gets the size K, whatever
+    the object says), and a null pointer (no call)."""
+    out = []
+    for case_id, seed in (('object', 3), ('other_object', 5), ('null', 7)):
+        case = thread_free_case(address, case_id, SIZE_DEFAULT << 16 | seed, seed)
+        case['returns'] = 'void'
+        if case_id == 'null':
+            case['args']['rdi'] = '0x0'
+        out.append(case)
+    return out
+
+
+ALLOCATE = '0x00400020'          # a stand-in for the allocator's slot 0x10, stubbed
+
+
+def allocate_cases(address: str, value: int | None) -> list[dict]:
+    """The thread allocator as in thread_free_case, its slot 0x10 a stub comparing the allocator
+    and the size and returning the allocation."""
+    out = []
+    for case_id, seed in (('allocate', 3), ('allocate_other', 5)):
+        case = thread_free_case(address, case_id, 0, seed)
+        case['memory'].append({'addr': 'buf:allocator_vt+0x10', 'guest': ALLOCATE})
+        case['stubs'] = [{'address': ALLOCATE, 'argc': 2, 'ret': 0x7f00_0000_0000 | seed << 12}]
+        case['args']['rdi'] = hex(0x0101010101010101 * seed)
+        out.append(case)
+    return out
+
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'deletes_sized_through_thread_allocator': sized_delete_cases,
+         'allocates_from_thread_allocator': allocate_cases,
          'posts_record_event_to_delegate_at_0x8': record_event_cases,
          'deleting_destructor_freeing_0x28_bytes': destructor_cases,
          'posts_text_event_to_delegate_at_0x50': text_event_cases,
@@ -296,6 +327,9 @@ MUTANTS = {
     'deleting_destructor_freeing_0x28_bytes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'posts_text_event_to_delegate_at_0x50': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'posts_record_event_to_delegate_at_0x8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    # No call, and the neighbouring size's replacement.
+    'deletes_sized_through_thread_allocator': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'allocates_from_thread_allocator': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 

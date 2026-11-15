@@ -370,6 +370,31 @@ TEMPLATES['posts_event_to_delegate_at_0x50'] = {
 }
 
 
+# The thread allocator's sized deletes (the size K is the parameter; nothing for a null pointer).
+TEMPLATES['deletes_sized_through_thread_allocator'] = {
+    'header': ('// Every member of deletes_sized_through_thread_allocator (symbols/families.csv) is a copy\n'
+               '// of the same sized delete, reaching the same thread-local offset: unless its pointer is\n'
+               '// null, it hands it to the sized free of the thread\'s allocator with the size K. One\n'
+               '// replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t size_{name} = {value};\n'
+                  'extern "C" void {symbol}(void *object)\n{{\n'
+                  '    engine::thread_allocator_free::delete_sized(object, size_{name});\n}}\n'),
+}
+
+
+# The thread allocator's allocations of a fixed size K.
+TEMPLATES['allocates_from_thread_allocator'] = {
+    'header': ('// Every member of allocates_from_thread_allocator (symbols/families.csv) is a copy of the\n'
+               '// same function, reaching the same thread-local offset: it allocates K bytes from the\n'
+               '// thread\'s allocator. One replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t size_{name} = {value};\n'
+                  'extern "C" void *{symbol}()\n{{\n'
+                  '    return engine::thread_allocator_free::allocate(size_{name});\n}}\n'),
+}
+
+
 def matching_path(root: str, family: dict) -> str:
     return os.path.join(root, 'game', 'matching', family['system'], f"{family['family']}.c")
 
