@@ -38,13 +38,20 @@ def static_wide_string_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
-CASES = {'initialize_static_wide_string': static_wide_string_cases}
+def array64_reserve_cases(address: str, value: int | None) -> list[dict]:
+    """The cases of array64_reserve_cases.py (the hand-named copies) at this member's address."""
+    return _load('array64_reserve_cases').reserve_cases(address)
+
+
+CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'reallocates_array64': array64_reserve_cases}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
     # publishing the guard skips the allocator, the string and the registration on a clear guard,
     # and overwrites a set guard's other bytes.
     'initialize_static_wide_string': ['bb_mutant_does_nothing', 'bb_mutant_static_wide_string_guard_only'],
+    'reallocates_array64': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 
