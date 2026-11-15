@@ -95,8 +95,10 @@ ai_target_list_refresh_noticed,edge,,103,103,0,0,0fcc7b78b0c4aab7,2026-11-13
 ai_target_speed_record_update,recorded,,426,426,0,0,962565c5970bd876,2026-11-13
 ai_target_speed_record_update,edge,,128,128,0,0,962565c5970bd876,2026-11-13
 ai_update_time_scheduler_reserve,edge,,256,256,0,0,2caacd0bc8cb2daa,2026-11-14
+audio_fmod_copy_output_label,edge,,291,291,0,0,2aed1d75f4a03466,2026-11-14
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
+audio_fmod_stop_thread,edge,,152,152,0,0,dd97c1ac5331e35c,2026-11-15
 audio_fmod_string_copy,recorded,,77,77,0,0,c17e74fefe35579f,2026-11-12
 audio_fmod_string_copy,edge,,40,40,0,0,c17e74fefe35579f,2026-11-12
 audio_fmod_string_copy_counted,recorded,,71,71,0,0,950224f5b69d2ee0,2026-11-12
@@ -1688,6 +1690,7 @@ render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,60,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,uncapped,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_vs_shader,edge,,199,199,0,0,7db46237e67ccfae,2026-11-13
+render_wait_register,edge,,442,442,0,0,6573ac11f48a18ec,2026-11-14
 render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,30,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,60,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
@@ -1696,3 +1699,4 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_initialize_interface,edge,,41,41,0,0,9f1e12fa6b66debb,2026-11-15
