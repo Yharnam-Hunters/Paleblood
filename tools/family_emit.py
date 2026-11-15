@@ -342,6 +342,20 @@ MATCHING_TEMPLATES = {
 }
 
 
+# The engine's deleting functions that hand an object back to the thread's allocator (a relative
+# family with the class size as its parameter; game/engine/thread_allocator_free.h).
+TEMPLATES['frees_object_through_thread_allocator'] = {
+    'header': ('// Every member of frees_object_through_thread_allocator (symbols/families.csv) is a copy\n'
+               '// of the same deleting function, reaching the same thread-local offset: it hands its\n'
+               '// object to the sized free of the thread\'s allocator with the object\'s allocation size,\n'
+               '// or its class size K when the object says size_default. One replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t class_size_{name} = {value};\n'
+                  'extern "C" uint64_t {symbol}(void *object)\n{{\n'
+                  '    return engine::thread_allocator_free::free_object(object, class_size_{name});\n}}\n'),
+}
+
+
 def matching_path(root: str, family: dict) -> str:
     return os.path.join(root, 'game', 'matching', family['system'], f"{family['family']}.c")
 

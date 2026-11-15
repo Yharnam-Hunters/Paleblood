@@ -74,9 +74,23 @@ class Shapes(unittest.TestCase):
         self.assertFalse(shape.matches(code(0x401000)[:-1], 0x401000))
         with self.assertRaises(fam.ShapeError):
             shape.value(code(0x401000))                                     # no address
-        for text in ('e8 {rel:0x402000+0} c3', 'e8 {rel:402000} c3', 'b8 {u32} {rel:0x402000}'):
+        for text in ('e8 {rel:0x402000+0} c3', 'e8 {rel:402000} c3', 'b8 {u32} {u8} {rel:0x402000}'):
             with self.assertRaises(fam.ShapeError):
                 fam.parse_shape(text)
+
+    def test_a_relative_shape_may_have_one_parameter(self):
+        shape = fam.parse_shape('48 03 05 {rel:0x00403000} ba {u32} c3')
+        self.assertEqual(shape.size, 13)
+
+        def code(address, value, target=0x403000):
+            return (b'\x48\x03\x05' + struct.pack('<i', target - (address + 7)) + b'\xba'
+                    + struct.pack('<I', value) + b'\xc3')
+
+        for address, value in ((0x401000, 0x10), (0x5f0000, 0x640)):
+            self.assertEqual(shape.value(code(address, value), address), value)
+        self.assertFalse(shape.matches(code(0x401000, 0x10), 0x401100))
+        self.assertFalse(shape.matches(code(0x401000, 0x10, target=0x403008), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, 0x10)[:-1] + b'\x90', 0x401000))
 
     def test_names(self):
         family = {'family': 'returns_constant', 'system': 'leaf'}
