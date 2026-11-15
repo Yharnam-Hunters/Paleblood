@@ -7,6 +7,7 @@
 #include "runtime/gcn.h"
 #include "runtime/render_calls.h"
 #include "runtime/tiling.h"
+#include "runtime/volume_tiling.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -30,24 +31,34 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "metal_rectangles.h"
 
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION = 4096,
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1,
-       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
+       PERSP_CENTER_ENA = 2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, PIXEL_BARYCENTRIC_VGPRS = 2,
+       VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
        DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
-struct MetalPixelResources {
+enum { SHADER_EARLY_Z_THEN_LATE_Z = 1u << 4, SHADER_KILL_ENABLE = 1u << 6 };
+struct MetalResourceBindings {
     unsigned image_count = 0, sampler_count = 0;
-    bool nondefault_lod = false;
     gcn_image_binding images[GCN_MAX_IMAGES]{};
     gcn_resource_origin samplers[GCN_MAX_SAMPLERS]{};
     id<MTLTexture> textures[GCN_MAX_IMAGES]{};
     id<MTLSamplerState> states[GCN_MAX_SAMPLERS]{};
 };
+struct MetalPixelResources : MetalResourceBindings { bool nondefault_lod = false; };
+struct MetalComputeResources : MetalResourceBindings {
+    rt_image_descriptor descriptors[GCN_MAX_IMAGES]{};
+    rt_tiling layouts[GCN_MAX_IMAGES]{};
+    rt_volume_tiling volumes[GCN_MAX_IMAGES]{};
+    unsigned access[GCN_MAX_IMAGES]{};
+};
 struct MetalImage {
     std::array<uint32_t,RT_IMAGE_DESCRIPTOR_WORDS> words{};
+    bool storage = false;
     id<MTLTexture> texture = nil, view = nil;
 };
 struct MetalSampler {
@@ -67,10 +78,11 @@ struct MetalVertexInstancing {
 };
 struct MetalShader {
     uint64_t code, callee;
-    unsigned user, output;
+    unsigned user, interface_control;
     unsigned required_parameters;
     uint32_t user_read;
-    bool vertex, flip_y;
+    bool vertex, flip_y, capture;
+    MetalRectangleShader rectangle;
     MetalVertexInstancing instancing;
     std::vector<uint32_t> program, fetch;
     std::vector<gcn_image_binding> images;
@@ -80,10 +92,11 @@ struct MetalShader {
 struct MetalComputePipeline {
     uint64_t code;
     uint32_t local_size[3];
-    unsigned user;
+    unsigned user, thread_id_components;
     bool workgroup_x;
     uint32_t user_read;
     std::vector<uint32_t> program;
+    std::vector<gcn_image_binding> images;
     id<MTLComputePipelineState> pipeline;
 };
 struct MetalTarget {
@@ -97,7 +110,7 @@ struct MetalTarget {
 struct MetalPipeline {
     id<MTLFunction> vertex, pixel;
     MTLPixelFormat format, depth_format, stencil_format;
-    bool write_color;
+    bool write_color, rasterize;
     id<MTLRenderPipelineState> pipeline;
 };
 struct MetalState {
@@ -237,15 +250,15 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
 /* Validate the supported state. A zero colour mask still executes shaders and their writes. */
 static int check_state(const MetalState &state, char *error, size_t size)
 {
-    if (state.primitive_set && state.primitive == DI_PT_RECTLIST)
-        return failed(error, size, "rectangle lists require a geometry expansion profile, which Metal does not implement");
     if (state.clip_control & DX_RASTERIZATION_KILL)
         return failed(error, size, "a draw with rasterization killed (PA_CL_CLIP_CNTL %#x): not drawn yet", state.clip_control);
-    if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_TRISTRIP)
-        return failed(error, size, "primitive type %u: only triangle lists and strips are drawn yet", state.primitive);
+    if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_TRISTRIP && state.primitive != DI_PT_RECTLIST)
+        return failed(error, size, "primitive type %u: only triangle lists, strips and rectangle lists are drawn yet", state.primitive);
     /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
     if ((state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
         return failed(error, size, "blending is not drawn yet");
+    if (state.primitive_set && state.primitive == DI_PT_RECTLIST && state.instances > 1)
+        return failed(error, size, "rectangle-list instancing is outside this Metal profile");
     if (state.color_control_set) {
         const uint32_t mode = (state.color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT;
         const uint32_t rop = (state.color_control & ROP3_MASK) >> ROP3_SHIFT;
@@ -280,8 +293,14 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (state.vertex.position_format != position_format)
         return failed(error, size, "SPI_SHADER_POS_FORMAT must declare float4 position and enabled clip vectors");
     if (!state.pixel.code) return 0;
-    if (state.pixel.input_enable != PERSP_CENTER_ENA || state.pixel.input_address != PERSP_CENTER_ENA)
-        return failed(error, size, "pixel-shader inputs beyond perspective-center barycentrics are not modeled");
+    const uint32_t inputs = state.pixel.input_address;
+    const uint32_t supported_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
+    if (state.pixel.input_enable != inputs || !(inputs & PERSP_CENTER_ENA) || (inputs & ~supported_inputs))
+        return failed(error, size, "pixel inputs enable %#x/address %#x: only matching perspective-center with optional window X/Y are modeled",
+            state.pixel.input_enable, inputs);
+    const unsigned incoming_vgprs = PIXEL_BARYCENTRIC_VGPRS + ((inputs & POS_X_FLOAT_ENA) != 0) + ((inputs & POS_Y_FLOAT_ENA) != 0);
+    if (state.pixel.vgprs < incoming_vgprs)
+        return failed(error, size, "pixel shader incoming inputs require %u VGPRs; allocation declares %u", incoming_vgprs, state.pixel.vgprs);
     if (state.pixel.depth_format) return failed(error, size, "pixel depth exports are not modeled");
     if (state.pixel.color_formats != SPI_SHADER_FP16_ABGR && state.pixel.color_formats != SPI_SHADER_32_ABGR)
         return failed(error, size, "SPI_SHADER_COL_FORMAT must select FP16_ABGR or 32_ABGR for target 0 only");
@@ -290,7 +309,15 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (state.pixel.interpolated > PARAMETER_LIMIT)
         return failed(error, size, "SPI_PS_IN_CONTROL exceeds the modeled parameter range");
     if (state.pixel.barycentric_control) return failed(error, size, "nonzero SPI_BARYC_CNTL is not modeled");
-    if (state.pixel.depth_control) return failed(error, size, "nonzero DB_SHADER_CONTROL is not modeled");
+    /* Z_ORDER=0/1 are unforced preferences with late fallback; KILL_ENABLE
+       declares possible killing, while the program's EXEC/VM exports implement it.
+       Ordinary fragment execution preserves storage effects and discard semantics.
+       No EarlyFragmentTests mode is inferred. DB_RENDER_OVERRIDE remains rejected
+       by register admission, so it cannot force this preference. */
+    const uint32_t supported_shader_control = SHADER_EARLY_Z_THEN_LATE_Z | SHADER_KILL_ENABLE;
+    if (state.pixel.depth_control & ~supported_shader_control)
+        return failed(error, size, "DB_SHADER_CONTROL %#x: only unforced late/early-then-late preferences and the kill declaration are modeled",
+            state.pixel.depth_control);
     return 0;
 }
 
@@ -441,10 +468,10 @@ static void store_target(rt_executor *x, const MetalTarget &target)
     rt_tiling_tile(&target.layout, x->target_rows.data(), tiled, target.width, target.height, 1);
 }
 
-/* Both stages use the same pointer ABI, push-constant binding and safe MSL math. */
-static id<MTLFunction> compile_msl(rt_executor *x, spirv_cross::CompilerMSL &compiler,
+/* All stages use the same pointer ABI, push-constant binding and safe MSL math. */
+static id<MTLFunction> compile_msl(rt_executor *x, MetalCompiler &compiler,
                                   spv::ExecutionModel stage, bool flip_y, char *error, size_t error_size,
-                                  const MetalPixelResources *resources = nullptr)
+                                  const MetalResourceBindings *resources = nullptr, MetalRectangleShader *rectangle = nullptr)
 {
     auto options = compiler.get_msl_options(); options.set_msl_version(2, 3); options.texture_1D_as_2D = true;
     compiler.set_msl_options(options);
@@ -467,7 +494,9 @@ static id<MTLFunction> compile_msl(rt_executor *x, spirv_cross::CompilerMSL &com
     const auto entries = compiler.get_entry_points_and_stages();
     if (entries.size() != 1 || entries[0].execution_model != stage)
         return failed(error, error_size, "translated shader entry point does not match its stage"), nil;
-    const std::string source = compiler.compile();
+    if (rectangle) rectangle_capture_options(compiler);
+    std::string source = compiler.compile();
+    if (rectangle) source += rectangle_raster_source(compiler,flip_y,*rectangle);
     const std::string entry = compiler.get_cleansed_entry_point_name(entries[0].name, stage);
     MTLCompileOptions *metal_options = [MTLCompileOptions new];
     metal_options.languageVersion = MTLLanguageVersion2_3;
@@ -479,6 +508,10 @@ static id<MTLFunction> compile_msl(rt_executor *x, spirv_cross::CompilerMSL &com
     if (!library) return failed(error, error_size, "MSL compilation: %s", failure.localizedDescription.UTF8String), nil;
     id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:entry.c_str()]];
     if (!function) return failed(error, error_size, "compiled MSL entry point is missing"), nil;
+    if (rectangle) {
+        rectangle->raster = [library newFunctionWithName:@"pb_rectangle_raster"];
+        if (!rectangle->raster) return failed(error,error_size,"rectangle raster entry point is missing"), nil;
+    }
     return function;
 }
 
@@ -527,43 +560,51 @@ static int vertex_callee(rt_executor *x, const MetalProgram &program, unsigned u
     return program_view(x, address, true, callee, error, size);
 }
 
-/* Native sampled images use the common descriptor origins and mip placement. Re-read both
-   descriptor words and texels on each draw: guest buffer stores and CPU writes share the pool. */
+/* Image bindings use common descriptor origins and mip placement. Re-read descriptors and
+   texels at each draw/dispatch: guest buffer stores and CPU writes share the pool. */
 static bool same_origin(const gcn_resource_origin &a, const gcn_resource_origin &b)
 {
     return a.from_memory == b.from_memory && a.sgpr == b.sgpr && a.pointer_sgpr == b.pointer_sgpr && a.offset == b.offset;
 }
+static bool same_images(const std::vector<gcn_image_binding> &stored, const gcn_image_binding *images, unsigned count)
+{
+    if (stored.size() != count) return false;
+    for (unsigned i = 0; i < count; ++i) {
+        const auto &a = stored[i], &b = images[i];
+        if (!same_origin(a.origin,b.origin) || a.dim != b.dim || a.arrayed != b.arrayed || a.type != b.type ||
+            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube || a.swizzle != b.swizzle ||
+            a.null_descriptor != b.null_descriptor || a.unmapped != b.unmapped) return false;
+    }
+    return true;
+}
 static bool same_pixel_resources(const MetalShader &shader, const MetalPixelResources *resources)
 {
     const unsigned images = resources ? resources->image_count : 0, samplers = resources ? resources->sampler_count : 0;
-    if (shader.images.size() != images || shader.samplers.size() != samplers) return false;
-    for (unsigned i = 0; i < images; ++i) {
-        const auto &a = shader.images[i], &b = resources->images[i];
-        if (!same_origin(a.origin, b.origin) || a.dim != b.dim || a.arrayed != b.arrayed || a.type != b.type ||
-            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube || a.swizzle != b.swizzle) return false;
-    }
-    for (unsigned i = 0; i < samplers; ++i) if (!same_origin(shader.samplers[i], resources->samplers[i])) return false;
+    if (!same_images(shader.images,resources ? resources->images : nullptr,images) || shader.samplers.size() != samplers) return false;
+    for (unsigned i = 0; i < samplers; ++i) if (!same_origin(shader.samplers[i],resources->samplers[i])) return false;
     return true;
 }
 
-static int descriptor_words(rt_executor *x, const gcn_resource_origin &origin, const MetalState &state,
+/* Resolve host-observed descriptors from the same declared, written SGPRs as the shader. */
+static int descriptor_words(rt_executor *x, const gcn_resource_origin &origin, const uint32_t *user,
+                            unsigned declared, uint32_t written, const char *stage,
                             uint32_t *words, unsigned count, char *error, size_t size)
 {
     const unsigned first = origin.from_memory ? origin.pointer_sgpr : origin.sgpr, width = origin.from_memory ? 2 : count;
-    if (first > state.pixel.user_sgprs || width > state.pixel.user_sgprs - first)
-        return failed(error, size, "pixel descriptor is outside its declared user data");
+    if (first > declared || width > declared - first)
+        return failed(error,size,"%s descriptor is outside its declared user data",stage);
     const uint32_t slots = ((1u << width) - 1) << first;
-    if (slots & ~state.user_set[1]) return failed(error, size, "pixel descriptor reads unset user data %#x", slots & ~state.user_set[1]);
+    if (slots & ~written) return failed(error,size,"%s descriptor reads unset user data %#x",stage,slots & ~written);
     if (!origin.from_memory) {
-        std::memcpy(words, state.user[1] + first, count * sizeof(uint32_t));
+        std::memcpy(words,user + first,count * sizeof(uint32_t));
         return 0;
     }
-    const uint64_t pointer = static_cast<uint64_t>(state.user[1][first + 1] & 0xffffu) << 32 | state.user[1][first];
+    const uint64_t pointer = static_cast<uint64_t>(user[first + 1] & 0xffffu) << 32 | user[first];
     const uint64_t address = pointer + origin.offset, bytes = count * sizeof(uint32_t);
     if (address % sizeof(uint32_t) || address < x->guest_base || address - x->guest_base > x->size ||
         bytes > x->size - (address - x->guest_base))
-        return failed(error, size, "pixel descriptor is outside the GPU-visible pool or unaligned");
-    std::memcpy(words, static_cast<const uint8_t *>(x->view) + address - x->guest_base, static_cast<size_t>(bytes));
+        return failed(error,size,"%s descriptor is outside the GPU-visible pool or unaligned",stage);
+    std::memcpy(words,static_cast<const uint8_t *>(x->view) + address - x->guest_base,static_cast<size_t>(bytes));
     return 0;
 }
 
@@ -596,52 +637,92 @@ static const MetalImageFormat *image_format(const rt_image_descriptor &d, char *
 }
 
 static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS],
-                                const rt_image_descriptor &d, const MetalImageFormat &format, char *error, size_t size)
+                                const rt_image_descriptor &d, const MetalImageFormat &format, bool storage, rt_tiling *storage_layout,
+                                rt_volume_tiling *storage_volume,
+                                char *error, size_t size)
 {
+    const char *stage = storage ? "compute" : "pixel";
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
-    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
-    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY)
-        return failed(error, size, "only 1D/2D pixel images and their arrays are modeled"), nil;
+    /* Bounded host policy: a window of one cube's faces is a flat 2D array.
+       The third unsampled coordinate is relative to that window, independently of DA.
+       Multi-cube packing and hardware base/view semantics are outside this policy. */
+    const bool cube = storage && d.type == RT_IMAGE_CUBE && d.data_format == 10 && d.num_format == 0 &&
+        d.depth == 1 && d.layers == 6 && d.width == d.height && !d.pow2_pad &&
+        d.base_array <= d.last_array && d.last_array < 6 && !d.base_level && !d.last_level &&
+        d.tiling_index == 13 && d.pitch % 8 == 0;
+    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube;
+    const bool volume = storage && d.type == RT_IMAGE_3D;
+    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY && !volume && !cube) {
+        if (storage) return failed(error,size,"compute image type %u is outside 1D/2D arrays and the selected 3D volume profile",d.type), nil;
+        return failed(error, size, "only 1D/2D %s images and their arrays are modeled",stage), nil;
+    }
     constexpr uint32_t image_dimension_limit = 16384, image_layer_limit = 2048; /* Metal feature-table limits. */
+    constexpr uint32_t volume_dimension_limit = 2048;
+    if (volume && (!d.depth || d.width > volume_dimension_limit || d.height > volume_dimension_limit || d.depth > volume_dimension_limit))
+        return failed(error,size,"compute volume dimensions exceed the 3D profile"), nil;
+    if (volume && (d.base_array || d.last_array))
+        return failed(error,size,"compute volume view requires zero array fields"), nil;
     const uint32_t height = one_d ? 1 : d.height;
     if (!d.width || !height || d.width > image_dimension_limit || height > image_dimension_limit ||
         !d.layers || d.layers > image_layer_limit || d.pitch < d.width || d.pitch % format.block)
-        return failed(error, size, "pixel image dimensions, layers or pitch exceed the Metal profile"), nil;
+        return failed(error, size, "%s image dimensions, layers or pitch exceed the Metal profile",stage), nil;
     unsigned max_levels = 1;
     for (uint32_t extent = std::max(d.width, height); extent > 1; extent >>= 1) ++max_levels;
     if (d.base_level > d.last_level || d.last_level >= max_levels ||
         (arrayed && (d.base_array > d.last_array || d.last_array >= d.layers)))
-        return failed(error, size, "pixel image mip or array view exceeds its allocation"), nil;
+        return failed(error, size, "%s image mip or array view exceeds its allocation",stage), nil;
     if (format.block > 1 && !x->device.supportsBCTextureCompression)
         return failed(error, size, "Metal device does not support BC textures"), nil;
     MTLTextureSwizzleChannels swizzle{};
     MTLTextureSwizzle *channels[] = {&swizzle.red,&swizzle.green,&swizzle.blue,&swizzle.alpha};
     const MTLTextureSwizzle components[] = {MTLTextureSwizzleRed,MTLTextureSwizzleGreen,MTLTextureSwizzleBlue,MTLTextureSwizzleAlpha};
+    uint32_t selected_components = 0;
     for (unsigned i = 0; i < 4; ++i) {
         const unsigned select = d.swizzle >> (3 * i) & 7;
-        if (select == 0) *channels[i] = MTLTextureSwizzleZero;
+        if (storage) {
+            if (format.components == 4 && !volume) {
+                if (select < 4 || (selected_components & (1u << (select - 4))))
+                    return failed(error,size,"compute image swizzle must preserve its stored components or permute all four"), nil;
+                selected_components |= 1u << (select - 4);
+            } else if (i < format.components && select != 4 + i)
+                return failed(error,size,"compute image swizzle must preserve its stored components"), nil;
+            /* The common translator maps storage channels; native views keep physical order. */
+            *channels[i] = components[i];
+        } else if (select == 0) *channels[i] = MTLTextureSwizzleZero;
         else if (select == 1) *channels[i] = MTLTextureSwizzleOne;
         else if (select >= 4 && select < 4 + format.components) *channels[i] = components[select - 4];
         else return failed(error, size, "pixel image component selector %u has no established component", select), nil;
     }
-    rt_tiling_level levels[RT_TILING_MAX_LEVELS]{}; char reason[256] = {};
-    if (rt_tiling_mip_chain(d.tiling_index,format.bytes,format.block,d.pow2_pad,d.pitch,height,d.width,height,
-                           d.last_level + 1,d.layers,levels,reason,sizeof reason))
-        return failed(error, size, "pixel image layout: %s", reason), nil;
-    const auto &last = levels[d.last_level];
-    const uint64_t span = last.offset + rt_tiling_size(&last.layout,d.layers);
+    rt_tiling_level levels[RT_TILING_MAX_LEVELS]{}; rt_volume_tiling volume_layout{}; char reason[256] = {};
+    uint64_t span = 0;
+    if (volume) {
+        if (rt_volume_layout(d.tiling_index,format.bytes,d.pitch,d.width,d.height,d.depth,d.pow2_pad,
+                             &volume_layout,reason,sizeof reason))
+            return failed(error,size,"compute volume layout: %s",reason), nil;
+        span = volume_layout.size_bytes;
+    } else {
+        if (rt_tiling_mip_chain(d.tiling_index,format.bytes,format.block,d.pow2_pad,d.pitch,height,d.width,height,
+                               d.last_level + 1,d.layers,levels,reason,sizeof reason))
+            return failed(error,size,"%s image layout: %s",stage,reason), nil;
+        const auto &last = levels[d.last_level];
+        span = last.offset + rt_tiling_size(&last.layout,d.layers);
+    }
     if (d.address < x->guest_base || d.address - x->guest_base > x->size || span > x->size - (d.address - x->guest_base))
-        return failed(error,size,"pixel image is outside the GPU-visible pool"), nil;
+        return failed(error,size,"%s image is outside the GPU-visible pool",stage), nil;
+    if (storage_layout && !volume) *storage_layout = levels[0].layout;
+    if (storage_volume && volume) *storage_volume = volume_layout;
     MetalImage *entry = nullptr;
     for (auto &image : x->images)
-        if (std::equal(image.words.begin(),image.words.end(),words)) { entry = &image; break; }
+        if (image.storage == storage && std::equal(image.words.begin(),image.words.end(),words)) { entry = &image; break; }
     if (!entry) {
-        if (x->images.size() == MAX_IMAGES) return failed(error,size,"pixel image cache is full"), nil;
+        if (x->images.size() == MAX_IMAGES) return failed(error,size,"%s image cache is full",stage), nil;
         MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-        descriptor.textureType = arrayed ? MTLTextureType2DArray : MTLTextureType2D; /* 1D is lowered as 2D by SPIRV-Cross. */
+        descriptor.textureType = volume ? MTLTextureType3D : arrayed ? MTLTextureType2DArray : MTLTextureType2D; /* 1D is lowered as 2D by SPIRV-Cross. */
         descriptor.pixelFormat = format.metal; descriptor.width = d.width; descriptor.height = height;
-        descriptor.mipmapLevelCount = d.last_level + 1; descriptor.arrayLength = d.layers;
+        descriptor.depth = volume ? d.depth : 1;
+        descriptor.mipmapLevelCount = d.last_level + 1; descriptor.arrayLength = volume ? 1 : d.layers;
         descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
+        if (storage) descriptor.usage |= MTLTextureUsageShaderWrite;
         descriptor.storageMode = MTLStorageModeShared;
         id<MTLTexture> texture = [x->device newTextureWithDescriptor:descriptor];
         if (!texture) return failed(error,size,"Metal image allocation failed"), nil;
@@ -650,18 +731,27 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
             levels:NSMakeRange(d.base_level,d.last_level - d.base_level + 1) slices:NSMakeRange(first,slices) swizzle:swizzle];
         if (!view) return failed(error,size,"Metal image view allocation failed"), nil;
         MetalImage image; std::copy(words,words + RT_IMAGE_DESCRIPTOR_WORDS,image.words.begin());
-        image.texture = texture; image.view = view; x->images.push_back(std::move(image)); entry = &x->images.back();
+        image.storage = storage; image.texture = texture; image.view = view; x->images.push_back(std::move(image)); entry = &x->images.back();
     }
     const auto *base = static_cast<const uint8_t *>(x->view) + d.address - x->guest_base;
+    if (volume) {
+        const size_t row_bytes = static_cast<size_t>(d.width) * format.bytes, image_bytes = row_bytes * d.height;
+        x->image_rows.resize(image_bytes * d.depth);
+        rt_volume_detile(&volume_layout,base,x->image_rows.data());
+        [entry->texture replaceRegion:MTLRegionMake3D(0,0,0,d.width,d.height,d.depth) mipmapLevel:0 slice:0
+            withBytes:x->image_rows.data() bytesPerRow:row_bytes bytesPerImage:image_bytes];
+        return entry->view;
+    }
     for (unsigned level = 0; level <= d.last_level; ++level) {
         const auto &layout = levels[level];
         const uint32_t width = std::max(1u,d.width >> level), rows = std::max(1u,height >> level);
         const size_t row_bytes = static_cast<size_t>(layout.columns) * format.bytes, slice_bytes = row_bytes * layout.rows;
+        const size_t transfer_row_bytes = cube && rows == 1 ? 0 : row_bytes;
         x->image_rows.resize(slice_bytes * d.layers);
         rt_tiling_detile(&layout.layout,base + layout.offset,x->image_rows.data(),layout.columns,layout.rows,d.layers);
         for (uint32_t slice = 0; slice < d.layers; ++slice)
             [entry->texture replaceRegion:MTLRegionMake2D(0,0,width,rows) mipmapLevel:level slice:slice
-                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:slice_bytes];
+                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:transfer_row_bytes bytesPerImage:0];
     }
     return entry->view;
 }
@@ -705,14 +795,14 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
     bool linear = false;
     for (unsigned i = 0; i < out.sampler_count; ++i) {
         uint32_t words[4];
-        if (descriptor_words(x,out.samplers[i],state,words,4,error,size)) return -1;
+        if (descriptor_words(x,out.samplers[i],state.user[1],state.pixel.user_sgprs,state.user_set[1],"pixel",words,4,error,size)) return -1;
         out.nondefault_lod |= (words[1] & 0xfffu) != 0 || (words[2] & 0x3fffu) != 0 || (words[2] >> 26 & 3) == 3;
         if (!(out.states[i] = sampler_for(x,words,linear,error,size))) return -1;
     }
     for (unsigned i = 0; i < out.image_count; ++i) {
         if (images[i].access & GCN_IMAGE_WRITE) return failed(error,size,"pixel image stores are not modeled");
         uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
-        if (descriptor_words(x,images[i].origin,state,words,RT_IMAGE_DESCRIPTOR_WORDS,error,size)) return -1;
+        if (descriptor_words(x,images[i].origin,state.user[1],state.pixel.user_sgprs,state.user_set[1],"pixel",words,RT_IMAGE_DESCRIPTOR_WORDS,error,size)) return -1;
         rt_image_descriptor descriptor{}; rt_image_descriptor_decode(words,&descriptor);
         const auto *format = image_format(descriptor,error,size); if (!format) return -1;
         if ((images[i].access & GCN_IMAGE_SAMPLE) && descriptor.last_level > descriptor.base_level && out.nondefault_lod)
@@ -725,21 +815,23 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
             descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
             descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0, 0}; /* DST_SEL: for the texel a load outside the image reads */
-        if (!(out.textures[i] = image_for(x,words,descriptor,*format,error,size))) return -1;
+        if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,nullptr,error,size))) return -1;
     }
     return 0;
 }
 
-static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
+/* interface_control is PA_CL_VS_OUT_CNTL for vertex shaders and SPI_PS_INPUT_ADDR
+   for pixel shaders. Both alter the translated interface, including on cache hits. */
+static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned interface_control,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
                                  const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
-                                 const MetalVertexInstancing &instancing = {})
+                                 MetalRectangleShader *rectangle = nullptr, const MetalVertexInstancing &instancing = {})
 {
     MetalProgram program, callee; uint32_t target_read = 0;
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
-        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
+        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.interface_control == interface_control && shader.flip_y == flip_y && shader.capture == (rectangle != nullptr) &&
             shader.instancing == instancing &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
             std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
@@ -747,6 +839,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
             if (shader.required_parameters > parameter_capacity)
                 return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
             user_read = shader.user_read;
+            if (rectangle) *rectangle = shader.rectangle;
             return shader.function;
         }
     if (x->shaders.size() + x->compute_pipelines.size() >= MAX_SHADERS) return failed(error, error_size, "shader cache is full"), nil;
@@ -754,7 +847,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     int result;
     if (vertex) {
         gcn_vertex_layout layout{};
-        layout.user_sgprs = user; layout.output_control = output;
+        layout.user_sgprs = user; layout.output_control = interface_control;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.callee = callee.words; layout.callee_dwords = callee.dwords; layout.code_address = code;
@@ -763,9 +856,13 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.step_rates_set = instancing.step_rates_set;
         result = gcn_translate_vertex(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     } else {
-        /* Only perspective-center barycentrics occupy VGPR0/1. Resources use the common origins. */
+        /* Perspective-center barycentrics occupy VGPR0/1. Enabled window X/Y values
+           follow densely; the common translator maps FragCoord without a fragment Y fixup. */
         gcn_pixel_layout layout{};
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
+        layout.position_enable = (interface_control & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+            (interface_control & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u);
+        layout.position_vgpr = PIXEL_BARYCENTRIC_VGPRS;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.images = pixel->images; layout.image_count = pixel->image_count;
@@ -776,7 +873,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     user_read |= target_read;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
-        spirv_cross::CompilerMSL compiler(spirv, count);
+        MetalCompiler compiler(spirv, count);
         /* Fragment image_sample gradients use native 2x2 quad broadcasts. Whole-quad mask
            expansion also writes wave-wide SCC; its GCN-wave behavior is still outside this profile. */
         for (size_t at = 5; at < count;) {
@@ -807,11 +904,11 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
                 (!compiler.has_decoration(color.id, spv::DecorationLocation) || compiler.get_decoration(color.id, spv::DecorationLocation) != 0))
                 return failed(error, error_size, "pixel outputs beyond target 0 are not modeled"), nil;
         id<MTLFunction> function = compile_msl(x, compiler,
-            vertex ? spv::ExecutionModelVertex : spv::ExecutionModelFragment, flip_y, error, error_size, pixel);
+            vertex ? spv::ExecutionModelVertex : spv::ExecutionModelFragment, flip_y, error, error_size, pixel, rectangle);
         if (!function) return nil;
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
-        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, instancing,
+        x->shaders.push_back({code, callee.address, user, interface_control, required_parameters, user_read, vertex, flip_y, rectangle != nullptr, rectangle ? *rectangle : MetalRectangleShader{}, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
             pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},function});
@@ -821,22 +918,22 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
 
 static id<MTLRenderPipelineState> pipeline_for(rt_executor *x, id<MTLFunction> vertex, id<MTLFunction> pixel,
                                              MTLPixelFormat format, MTLPixelFormat depth_format, MTLPixelFormat stencil_format,
-                                             bool write_color, char *error, size_t size)
+                                             bool write_color, char *error, size_t size, bool rasterize = true)
 {
     for (const auto &entry : x->pipelines)
         if (entry.vertex == vertex && entry.pixel == pixel && entry.format == format && entry.depth_format == depth_format &&
-            entry.stencil_format == stencil_format && entry.write_color == write_color)
+            entry.stencil_format == stencil_format && entry.write_color == write_color && entry.rasterize == rasterize)
             return entry.pipeline;
     if (x->pipelines.size() == MAX_PIPELINES) return failed(error, size, "draw pipeline cache is full"), nil;
     NSError *failure = nil;
     MTLRenderPipelineDescriptor *description = [MTLRenderPipelineDescriptor new];
-    description.vertexFunction = vertex; description.fragmentFunction = pixel;
+    description.vertexFunction = vertex; description.fragmentFunction = pixel; description.rasterizationEnabled = rasterize;
     description.colorAttachments[0].pixelFormat = format;
     description.depthAttachmentPixelFormat = depth_format; description.stencilAttachmentPixelFormat = stencil_format;
     description.colorAttachments[0].writeMask = write_color ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
     id<MTLRenderPipelineState> pipeline = [x->device newRenderPipelineStateWithDescriptor:description error:&failure];
     if (!pipeline) return failed(error, size, "Metal draw pipeline: %s", failure.localizedDescription.UTF8String), nil;
-    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, pipeline});
+    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, rasterize, pipeline});
     return pipeline;
 }
 
@@ -1051,27 +1148,118 @@ static int shader_runtime_stop(rt_executor *x, char *error, size_t size)
             stop & 7, stop & 0x80 ? "store" : "load", stop >> 8 & 15, stop >> 4 & 7, stop & 8 ? ", nonidentity swizzle" : "");
     if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
         return failed(error, size, "shader runtime stop: VCC lane mask is unknown after a scalar half write");
+    if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_WAVE_PC)
+        return failed(error, size, "shader runtime stop: logical wave invocations disagree on the program counter");
     if (stop) return failed(error, size, "shader runtime stop with unknown code %#x", stop);
     return 0;
 }
 
 /* Capabilities include subgroup votes even for programs that never use them. Inspect
    actual instructions: native simd_any cannot reconstruct inactive GCN mask bits. */
-static int lane_local_compute(const uint32_t *spirv, size_t count, char *error, size_t size)
+static int check_compute_subgroups(const uint32_t *spirv, size_t count, bool guarded_wave, char *error, size_t size)
 {
     if (count < 5 || spirv[0] != spv::MagicNumber)
         return failed(error, size, "invalid translated compute module");
     for (size_t at = 5; at < count;) {
         const uint32_t words = spirv[at] >> 16, opcode = spirv[at] & 0xffff;
         if (!words || words > count - at) return failed(error, size, "invalid translated compute instruction");
+        /* Partial waves have no uniform program-counter guard around the interpreter.
+           A source barrier may therefore be reached by different host iterations. */
+        if (opcode == spv::OpControlBarrier && !guarded_wave)
+            return failed(error, size, "partial Metal compute workgroups do not support workgroup barriers");
         if (opcode >= spv::OpGroupNonUniformElect && opcode <= spv::OpGroupNonUniformQuadSwap)
-            return failed(error, size, "wave-wide compute operations are outside the Metal lane-local profile");
+            return failed(error, size, "wave-wide compute operations require a complete 64-thread wave and supported operations (opcode %u)", opcode);
         at += words;
     }
     return 0;
 }
 
+/* Native read_write textures have a narrower format set than separate read/write accesses. */
+static int storage_read_write(rt_executor *x, MTLPixelFormat format, char *error, size_t size)
+{
+    MTLReadWriteTextureTier required = MTLReadWriteTextureTier2;
+    switch (format) {
+    case MTLPixelFormatR32Float: case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint:
+        required = MTLReadWriteTextureTier1; break;
+    case MTLPixelFormatR8Unorm: case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Uint: case MTLPixelFormatRGBA32Float:
+        break;
+    default: return failed(error,size,"this compute image format has no native read_write texture support");
+    }
+    return x->device.readWriteTextureSupport >= required ? 0 : failed(error,size,"Metal device lacks the required read_write texture tier");
+}
+
+static int compute_resources(rt_executor *x, const rt_compute_shader &shader, const uint32_t *code, size_t dwords,
+                             const uint32_t *user, uint32_t written, MetalComputeResources &out, char *error, size_t size)
+{
+    char reason[256] = {}; gcn_image_resource images[GCN_MAX_IMAGES]{};
+    if (gcn_image_resources(code,dwords,images,GCN_MAX_IMAGES,&out.image_count,reason,sizeof reason))
+        return failed(error,size,"compute resources: %s",reason);
+    for (unsigned i = 0; i < out.image_count; ++i) {
+        if (images[i].access & GCN_IMAGE_SAMPLE) return failed(error,size,"compute image sampling is not modeled");
+        uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
+        if (descriptor_words(x,images[i].origin,user,shader.user_sgprs,written,"compute",words,RT_IMAGE_DESCRIPTOR_WORDS,error,size)) return -1;
+        auto &d = out.descriptors[i]; rt_image_descriptor_decode(words,&d);
+        /* Match the Vulkan backend's explicit write-only sRGB compatibility policy:
+           native RGBA8 storage is UNORM. GFX7 does not establish sRGB image stores. */
+        const bool storage_1d2d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_2D ||
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
+        if (storage_1d2d && images[i].access == GCN_IMAGE_WRITE && d.data_format == 10 && d.num_format == 9)
+            d.num_format = 0;
+        const auto *format = image_format(d,error,size); if (!format) return -1;
+        if (format->block != 1 || d.num_format == 9)
+            return failed(error,size,"compressed and sRGB compute storage images are not modeled");
+        if (d.base_level || d.last_level) return failed(error,size,"compute storage images require relative and physical mip zero");
+        if ((images[i].access & (GCN_IMAGE_READ | GCN_IMAGE_WRITE)) == (GCN_IMAGE_READ | GCN_IMAGE_WRITE) &&
+            storage_read_write(x,format->metal,error,size)) return -1;
+        if (d.type == RT_IMAGE_CUBE && images[i].access != GCN_IMAGE_WRITE)
+            return failed(error,size,"compute cube storage requires write-only access");
+        out.images[i] = {images[i].origin,
+            d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : d.type == RT_IMAGE_3D ? GCN_IMAGE_3D : GCN_IMAGE_2D,
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || d.type == RT_IMAGE_CUBE,format->type,format->components,0,0,
+            format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0,0,0};
+        out.access[i] = images[i].access;
+        if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],&out.volumes[i],error,size))) return -1;
+        for (unsigned j = 0; j < i; ++j) {
+            const auto &other = out.descriptors[j];
+            if (((out.access[i] | out.access[j]) & GCN_IMAGE_WRITE) && out.textures[i] != out.textures[j] &&
+                d.address < other.address + (other.type == RT_IMAGE_3D ? out.volumes[j].size_bytes : rt_tiling_size(&out.layouts[j],other.layers)) &&
+                other.address < d.address + (d.type == RT_IMAGE_3D ? out.volumes[i].size_bytes : rt_tiling_size(&out.layouts[i],d.layers)))
+                return failed(error,size,"overlapping compute images require the same native view");
+        }
+    }
+    return 0;
+}
+
+/* Publish the exposed array slices or visible volume, preserving allocation padding. */
+static void store_compute_image(rt_executor *x, const MetalComputeResources &resources, unsigned i)
+{
+    const auto &d = resources.descriptors[i]; const auto &layout = resources.layouts[i];
+    if (d.type == RT_IMAGE_3D) {
+        const auto &volume = resources.volumes[i];
+        const size_t row_bytes = static_cast<size_t>(d.width) * volume.element_bytes, image_bytes = row_bytes * d.height;
+        x->image_rows.resize(image_bytes * d.depth);
+        [resources.textures[i] getBytes:x->image_rows.data() bytesPerRow:row_bytes bytesPerImage:image_bytes
+            fromRegion:MTLRegionMake3D(0,0,0,d.width,d.height,d.depth) mipmapLevel:0 slice:0];
+        auto *backing = static_cast<uint8_t *>(x->view) + d.address - x->guest_base;
+        rt_volume_tile(&volume,x->image_rows.data(),backing);
+        return;
+    }
+    const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
+    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || d.type == RT_IMAGE_CUBE;
+    const uint32_t height = one_d ? 1 : d.height, first = arrayed ? d.base_array : 0, last = arrayed ? d.last_array : 0;
+    const size_t row_bytes = static_cast<size_t>(d.width) * layout.element_bytes, slice_bytes = row_bytes * height;
+    const size_t transfer_row_bytes = d.type == RT_IMAGE_CUBE && height == 1 ? 0 : row_bytes;
+    x->image_rows.resize(slice_bytes * d.layers);
+    auto *backing = static_cast<uint8_t *>(x->view) + d.address - x->guest_base;
+    rt_tiling_detile(&layout,backing,x->image_rows.data(),d.width,height,d.layers);
+    for (uint32_t slice = first; slice <= last; ++slice)
+        [resources.textures[i] getBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:transfer_row_bytes bytesPerImage:0
+            fromRegion:MTLRegionMake2D(0,0,d.width,height) mipmapLevel:0 slice:slice - first];
+    rt_tiling_tile(&layout,x->image_rows.data(),backing,d.width,height,d.layers);
+}
+
 static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt_compute_shader &shader,
+                                                       const uint32_t *user, uint32_t written, MetalComputeResources &resources,
                                                        uint32_t &user_read, char *error, size_t size)
 {
     if (shader.code < x->guest_base || shader.code - x->guest_base >= x->size || shader.code % sizeof(uint32_t))
@@ -1082,10 +1270,13 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     if (length <= 0) return failed(error, size, "compute shader has no complete GFX7 program"), nil;
     const size_t dwords = static_cast<size_t>(length);
     const bool workgroup_x = (shader.workgroup_id_enables & 1u) != 0;
+    if (compute_resources(x,shader,code,dwords,user,written,resources,error,size)) return nil;
     for (const auto &entry : x->compute_pipelines)
-        if (entry.code == shader.code && entry.user == shader.user_sgprs && entry.workgroup_x == workgroup_x &&
+        if (entry.code == shader.code && entry.user == shader.user_sgprs && entry.thread_id_components == shader.thread_id_components &&
+            entry.workgroup_x == workgroup_x &&
             std::equal(entry.local_size, entry.local_size + 3, shader.threads) &&
-            entry.program.size() == dwords && std::equal(entry.program.begin(), entry.program.end(), code)) {
+            entry.program.size() == dwords && std::equal(entry.program.begin(), entry.program.end(), code) &&
+            same_images(entry.images,resources.images,resources.image_count)) {
             user_read = entry.user_read;
             return entry.pipeline;
         }
@@ -1094,23 +1285,27 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     gcn_compute_layout layout{};
     std::copy(shader.threads, shader.threads + 3, layout.local_size);
     layout.user_sgprs = shader.user_sgprs;
+    layout.thread_id_vgprs = shader.thread_id_components + 1;
+    layout.workgroup_wave_votes = static_cast<uint64_t>(shader.threads[0]) * shader.threads[1] * shader.threads[2] == GCN_WAVE_LANES;
     layout.workgroup_id_enables = workgroup_x ? 1u : 0u;
     layout.address_offset = x->address_offset;
     layout.error_address = x->stop.gpuAddress;
     layout.user_data_read = &user_read;
+    layout.images = resources.images; layout.image_count = resources.image_count;
     uint32_t *spirv = nullptr; size_t count = 0; char reason[256] = {};
     if (gcn_translate_compute(code, dwords, &layout, &spirv, &count, reason, sizeof reason))
         return failed(error, size, "compute shader translation: %s", reason), nil;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
-    if (lane_local_compute(spirv, count, error, size)) return nil;
-    spirv_cross::CompilerMSL compiler(spirv, count);
-    id<MTLFunction> function = compile_msl(x, compiler, spv::ExecutionModelGLCompute, false, error, size);
+    if (check_compute_subgroups(spirv, count, layout.workgroup_wave_votes != 0, error, size)) return nil;
+    MetalCompiler compiler(spirv, count);
+    id<MTLFunction> function = compile_msl(x, compiler, spv::ExecutionModelGLCompute, false, error, size, &resources);
     if (!function) return nil;
     NSError *failure = nil;
     id<MTLComputePipelineState> pipeline = [x->device newComputePipelineStateWithFunction:function error:&failure];
     if (!pipeline) return failed(error, size, "Metal compute pipeline: %s", failure.localizedDescription.UTF8String), nil;
     MetalComputePipeline entry{shader.code, {shader.threads[0], shader.threads[1], shader.threads[2]},
-        shader.user_sgprs, workgroup_x, user_read, std::vector<uint32_t>(code, code + dwords), pipeline};
+        shader.user_sgprs, shader.thread_id_components, workgroup_x, user_read, std::vector<uint32_t>(code,code + dwords),
+        std::vector<gcn_image_binding>(resources.images,resources.images + resources.image_count),pipeline};
     x->compute_pipelines.push_back(std::move(entry));
     return pipeline;
 }
@@ -1122,8 +1317,11 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
     const auto &shader = state.compute;
     if (shader.user_sgprs > GCN_USER_SGPR_MAX || shader.sgprs < shader.user_sgprs + (shader.workgroup_id_enables & 1u))
         return failed(error, size, "compute user SGPR count exceeds its modeled or declared allocation");
-    if (shader.thread_id_components != THREAD_ID_XYZ || shader.vgprs < 3)
-        return failed(error, size, "compute requires enabled X, Y and Z thread-id VGPRs");
+    if (shader.thread_id_components > THREAD_ID_XYZ)
+        return failed(error, size, "undefined compute thread-id encoding %u", shader.thread_id_components);
+    if (shader.vgprs < shader.thread_id_components + 1)
+        return failed(error, size, "compute thread-id profile %u exceeds declared VGPR allocation %u",
+                      shader.thread_id_components, shader.vgprs);
     if (shader.workgroup_id_enables & ~1u)
         return failed(error, size, "compute Y or Z workgroup-id SGPRs are not modeled");
     if (shader.workgroup_size_enabled) return failed(error, size, "packed compute workgroup size is not modeled");
@@ -1138,8 +1336,8 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
             return failed(error, size, "compute dispatch supports 1..65535 X workgroups and one Y/Z workgroup");
     }
     if (local_count > GCN_WAVE_LANES) return failed(error, size, "compute workgroups larger than one logical GCN wave are not modeled");
-    uint32_t user_read = 0;
-    id<MTLComputePipelineState> pipeline = compute_pipeline_for(x, shader, user_read, error, size);
+    uint32_t user_read = 0; MetalComputeResources resources;
+    id<MTLComputePipelineState> pipeline = compute_pipeline_for(x,shader,state.compute_user,state.compute_user_set,resources,user_read,error,size);
     if (!pipeline || check_user_data("compute", user_read, state.compute_user_set, error, size)) return -1;
     if (local_count > pipeline.maxTotalThreadsPerThreadgroup)
         return failed(error, size, "compute local size exceeds the compiled Metal pipeline limit");
@@ -1149,18 +1347,76 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
     if (!command || !encoder) return failed(error, size, "Metal compute encoder allocation failed");
     [encoder setComputePipelineState:pipeline];
     [encoder setBytes:state.compute_user length:sizeof state.compute_user atIndex:0];
+    for (unsigned i = 0; i < resources.image_count; ++i) [encoder setTexture:resources.textures[i] atIndex:i];
     [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-    [encoder useResource:x->stop usage:MTLResourceUsageWrite];
+    [encoder useResource:x->stop usage:MTLResourceUsageRead | MTLResourceUsageWrite];
     [encoder dispatchThreadgroups:MTLSizeMake(groups[0], groups[1], groups[2])
            threadsPerThreadgroup:MTLSizeMake(shader.threads[0], shader.threads[1], shader.threads[2])];
     [encoder endEncoding];
     if (complete_commands(x, command, error, size)) return -1;
+    for (unsigned i = 0; i < resources.image_count; ++i)
+        if (resources.access[i] & GCN_IMAGE_WRITE) store_compute_image(x,resources,i);
     return shader_runtime_stop(x, error, size);
+}
+
+/* Snapshot source IDs before the original VS can write guest memory. Capture by
+   source vertex ID, preserving the native indexed invocation/cache behavior. The
+   second pass only reads outputs; it never re-executes original shader effects. */
+struct MetalRectangleDraw {
+    id<MTLBuffer> outputs = nil, indices = nil;
+};
+static int capture_rectangle(rt_executor *x, const MetalState &state, uint32_t count, const MetalIndices *indices,
+                             id<MTLFunction> vertex, size_t stride, MetalRectangleDraw &out, char *error, size_t size)
+{
+    const uint64_t index_bytes = std::max<uint64_t>(count,1) * sizeof(uint32_t);
+    if (index_bytes > x->device.maxBufferLength) return failed(error,size,"rectangle source index snapshot exceeds the Metal buffer limit");
+    out.indices = [x->device newBufferWithLength:static_cast<NSUInteger>(index_bytes) options:MTLResourceStorageModeShared];
+    if (!out.indices) return failed(error,size,"rectangle source index allocation failed");
+    auto *ids = static_cast<uint32_t *>(out.indices.contents);
+    uint64_t span = 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t id = i;
+        if (indices) {
+            const size_t width = indices->type == MTLIndexTypeUInt16 ? 2 : 4;
+            id = 0; std::memcpy(&id,static_cast<const uint8_t *>(x->view) + indices->offset + size_t(i)*width,width);
+        }
+        ids[i] = id; span = std::max(span,uint64_t(id)+1);
+    }
+    if (!stride || span > x->device.maxBufferLength / stride)
+        return failed(error,size,"rectangle captured vertex span exceeds the Metal buffer limit");
+    out.outputs = [x->device newBufferWithLength:static_cast<NSUInteger>(span * stride) options:MTLResourceStorageModeShared];
+    if (!out.outputs) return failed(error,size,"rectangle vertex capture allocation failed");
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,vertex,nil,MTLPixelFormatInvalid,MTLPixelFormatInvalid,
+        MTLPixelFormatInvalid,false,error,size,false);
+    if (!pipeline) return -1;
+    auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.renderTargetWidth = pass.renderTargetHeight = 1; pass.defaultRasterSampleCount = 1;
+    auto command = [x->queue commandBuffer]; auto encoder = [command renderCommandEncoderWithDescriptor:pass];
+    if (!command || !encoder) return failed(error,size,"rectangle capture encoder allocation failed");
+    /* The pinned capture ABI uses this first word only for instancing; the modeled
+       profile has one instance. Sparse IDs still require the full span above. */
+    const uint32_t indirect[4] = {count,1,0,0};
+    *static_cast<volatile uint32_t *>(x->stop.contents) = 0;
+    [encoder setRenderPipelineState:pipeline];
+    [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
+    [encoder setVertexBuffer:out.outputs offset:0 atIndex:1];
+    [encoder setVertexBytes:indirect length:sizeof indirect atIndex:2];
+    [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite stages:MTLRenderStageVertex];
+    [encoder useResource:x->stop usage:MTLResourceUsageWrite stages:MTLRenderStageVertex];
+    if (indices) [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:count indexType:MTLIndexTypeUInt32
+        indexBuffer:out.indices indexBufferOffset:0];
+    else [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
+    [encoder endEncoding];
+    if (complete_commands(x,command,error,size)) return -1;
+    return shader_runtime_stop(x,error,size);
 }
 
 static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *error, size_t size,
                  const MetalIndices *indices = nullptr)
 {
+    const bool rectangle = state.primitive_set && state.primitive == DI_PT_RECTLIST;
+    if (rectangle && (count % 3 || count > UINT32_MAX / 2))
+        return failed(error,size,"rectangle lists require complete triples and a bounded expanded count");
     if (!state.color_enabled && !(state.depth_set && (state.depth & (Z_ENABLE | STENCIL_ENABLE | 8u))))
         return failed(error,size,"a draw has no color target or depth/stencil attachment");
     for (unsigned slot = 1; slot < RT_COLOR_TARGETS; ++slot)
@@ -1204,22 +1460,25 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (screen_scissor(state,width,height,scissor,error,size) || viewport_scissor(state,scissor,error,size)) return -1;
     MetalPixelResources resources;
     if (state.pixel.code && pixel_resources(x,state,resources,error,size)) return -1;
+    MetalRectangleShader rectangle_shader;
     uint32_t vertex_read = 0, pixel_read = 0;
     const MetalVertexInstancing instancing{state.vertex.vgpr_inputs,
         {state.step_rates[0], state.step_rates[1]}, state.step_rates_set};
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
-                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, instancing);
+                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, rectangle ? &rectangle_shader : nullptr, instancing);
     if (!vertex) return -1;
-    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
+    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, state.pixel.input_address,
                                              state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size) : nil;
     if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;
-    id<MTLRenderPipelineState> pipeline = pipeline_for(x,vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,rectangle ? rectangle_shader.raster : vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
         depth.z.texture ? depth.z.texture.pixelFormat : MTLPixelFormatInvalid,
         depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size);
     if (!pipeline) return -1;
+    MetalRectangleDraw captured;
+    if (rectangle && capture_rectangle(x,state,count,indices,vertex,rectangle_shader.stride,captured,error,size)) return -1;
     if (target) load_target(x,*target);
     load_depth_plane(x,depth.z); load_depth_plane(x,depth.stencil);
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1257,13 +1516,18 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     [encoder setScissorRect:scissor];
     [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
     [encoder setFragmentBytes:state.user length:sizeof state.user atIndex:0];
+    if (rectangle) {
+        [encoder setVertexBuffer:captured.outputs offset:0 atIndex:1];
+        [encoder setVertexBuffer:captured.indices offset:0 atIndex:2];
+    }
     for (unsigned i = 0; i < resources.image_count; ++i) [encoder setFragmentTexture:resources.textures[i] atIndex:i];
     for (unsigned i = 0; i < resources.sampler_count; ++i) [encoder setFragmentSamplerState:resources.states[i] atIndex:i];
     [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
     [encoder useResource:x->stop usage:MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
     const MTLPrimitiveType primitive = state.primitive_set && state.primitive == DI_PT_TRISTRIP
         ? MTLPrimitiveTypeTriangleStrip : MTLPrimitiveTypeTriangle;
-    if (indices)
+    if (rectangle) [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count * 2];
+    else if (indices)
         [encoder drawIndexedPrimitives:primitive indexCount:count indexType:indices->type
             indexBuffer:x->memory indexBufferOffset:indices->offset instanceCount:state.instances baseVertex:0 baseInstance:0];
     else [encoder drawPrimitives:primitive vertexStart:0 vertexCount:count instanceCount:state.instances baseInstance:0];
