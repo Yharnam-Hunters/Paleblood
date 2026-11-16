@@ -619,7 +619,7 @@ class Run:
                 data = struct.pack('<Q', self.guest(hexint(w['guest'])))
             else:
                 data = bytes.fromhex(w['bytes'])
-            address = args[int(w['arg'])] + int(w.get('offset', 0))
+            address = self.location(w['addr']) if 'addr' in w else args[int(w['arg'])] + int(w.get('offset', 0))
             self.check_memory(address, len(data), write=True, source="stub_write")
             ctypes.memmove(address, data, len(data))
         return self.value(entry.get('ret', 0))
