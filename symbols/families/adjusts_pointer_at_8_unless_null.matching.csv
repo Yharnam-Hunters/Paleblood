@@ -1,0 +1,16 @@
+address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_checked,source,source_sha256,date
+0x01d76a30,leaf_adjusts_pointer_at_8_unless_null_01d76a30,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76a50,leaf_adjusts_pointer_at_8_unless_null_01d76a50,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76aa0,leaf_adjusts_pointer_at_8_unless_null_01d76aa0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76ac0,leaf_adjusts_pointer_at_8_unless_null_01d76ac0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76b10,leaf_adjusts_pointer_at_8_unless_null_01d76b10,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76b30,leaf_adjusts_pointer_at_8_unless_null_01d76b30,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76b80,leaf_adjusts_pointer_at_8_unless_null_01d76b80,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76ba0,leaf_adjusts_pointer_at_8_unless_null_01d76ba0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76bf0,leaf_adjusts_pointer_at_8_unless_null_01d76bf0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76c10,leaf_adjusts_pointer_at_8_unless_null_01d76c10,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76c60,leaf_adjusts_pointer_at_8_unless_null_01d76c60,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76c80,leaf_adjusts_pointer_at_8_unless_null_01d76c80,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76cd0,leaf_adjusts_pointer_at_8_unless_null_01d76cd0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76cf0,leaf_adjusts_pointer_at_8_unless_null_01d76cf0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
+0x01d76d40,leaf_adjusts_pointer_at_8_unless_null_01d76d40,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/adjusts_pointer_at_8_unless_null.c,c845ee19eaa943d6,2026-11-16
