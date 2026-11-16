@@ -113,6 +113,11 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `far_field_address` | `48 8d 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
+| `reads_float_field` | `c5 fa 10 47 {d8} c3` | getters of a float field (all of xmm0: the load clears its upper bits) |
+| `writes_float_field` | `c5 fa 11 47 {d8} c3` | setters of a float field from xmm0 |
+| `writes_double_field` | `c5 fb 11 47 {d8} c3` | setters of a double field from xmm0 |
+| `reads_signed_word_field` | `0f bf 47 {d8} c3` | getters of a signed 16-bit field, sign-extended to 32 bits |
+| `reads_signed_byte_field` | `0f be 47 {d8} c3` | getters of a signed 8-bit field, sign-extended to 32 bits |
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |
 | `writes_far_qword_field` | `48 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
@@ -123,6 +128,16 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_far_byte_field` | `40 88 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_first_qword` | `48 89 37 c3` | setters of the 64-bit field at the start of the object |
 | `writes_first_dword` | `89 37 c3` | setters of the 32-bit field at the start of the object |
+| `stores_one_in_byte_field` | `c6 47 {d8} 01 c3` | constant setters: the byte field gets 1 (a flag set to true) |
+| `clears_byte_field` | `c6 47 {d8} 00 c3` | constant setters: the byte field gets 0 (a flag set to false) |
+| `clears_qword_field` | `48 c7 47 {d8} 00 00 00 00 c3` | constant setters: the qword field gets 0 (often a null pointer) |
+| `clears_dword_field` | `c7 47 {d8} 00 00 00 00 c3` | constant setters: the dword field gets 0 |
+| `stores_one_in_dword_field` | `c7 47 {d8} 01 00 00 00 c3` | constant setters: the dword field gets 1 |
+| `stores_all_bits_in_dword_field` | `c7 47 {d8} ff ff ff ff c3` | constant setters: the dword field gets all bits set (-1, often "none") |
+| `clears_first_qword` | `48 c7 07 00 00 00 00 c3` | constant setters: the qword field gets 0 |
+| `clears_first_dword` | `c7 07 00 00 00 00 c3` | constant setters: the dword field gets 0 |
+| `clears_first_byte` | `c6 07 00 c3` | constant setters: the byte field gets 0 |
+| `stores_one_in_first_byte` | `c6 07 01 c3` | constant setters: the byte field gets 1 |
 | `returns_first_argument` | `48 89 f8 c3` | identity functions: return the first argument |
 | `stores_constant_in_first_dword_returning_object` | `c7 07 {u32} 48 89 f8 c3` | store a constant (a type or kind tag) in the first dword and return the object |
 | `reads_dword_through_pointer_at_8` | `48 8b 47 08 8b 40 {d8} c3` | the dword K bytes into the object that the pointer at +8 points at |

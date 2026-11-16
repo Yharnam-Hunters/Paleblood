@@ -359,6 +359,49 @@ MATCHING_TEMPLATES = {
 }
 
 
+# Constant setters (symbols/families.csv): the field K bytes into the object, or the first field,
+# gets a fixed value instead of an argument. family: (width, C constant, instruction, value).
+CONSTANT_FIELD_FAMILIES = {
+    'stores_one_in_byte_field': ('byte', '1', 'mov byte [rdi+K], 1; ret', '1 (a flag set to true)'),
+    'clears_byte_field': ('byte', '0', 'mov byte [rdi+K], 0; ret', '0 (a flag set to false)'),
+    'clears_qword_field': ('qword', '0', 'mov qword [rdi+K], 0; ret', '0 (often a null pointer)'),
+    'clears_dword_field': ('dword', '0', 'mov dword [rdi+K], 0; ret', '0'),
+    'stores_one_in_dword_field': ('dword', '1', 'mov dword [rdi+K], 1; ret', '1'),
+    'stores_all_bits_in_dword_field': ('dword', 'UINT32_MAX', 'mov dword [rdi+K], -1; ret', 'all bits set (-1, often "none")'),
+}
+CONSTANT_FIRST_FAMILIES = {
+    'clears_first_qword': ('qword', '0', 'mov qword [rdi], 0; ret'),
+    'clears_first_dword': ('dword', '0', 'mov dword [rdi], 0; ret'),
+    'clears_first_byte': ('byte', '0', 'mov byte [rdi], 0; ret'),
+    'stores_one_in_first_byte': ('byte', '1', 'mov byte [rdi], 1; ret'),
+}
+for family, (width, constant, instruction, stored) in CONSTANT_FIELD_FAMILIES.items():
+    field_type = FIELD_TYPES[width]
+    TEMPLATES[family] = {
+        'header': (f'// Constant setters: every member of the {family} family (symbols/families.csv)\n'
+                   f'// is `{instruction}`: the field K bytes into the object gets {stored}.\n'
+                   '// rax is left as it was. One replacement per offset K.\n'),
+        'shared': '#include "object_field.h"\n',
+        'per_value': ('constexpr std::size_t offset_{name} = {value};\n'
+                      f'static_assert(field_is_at_offset<offset_{{name}}, {field_type}>);\n'
+                      f'extern "C" void {{symbol}}(ObjectWithFieldAt<offset_{{name}}, {field_type}> *object)\n'
+                      f'{{{{\n    object->field = {constant};\n}}}}\n'),
+    }
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// Constant setters: `{instruction}`. One function per offset K.\n',
+        'shared': STDINT,
+        'per_value': (field_struct(width)
+                      + f'void {{symbol}}(struct object_with_{width}_at_{{name}} *object)\n'
+                      f'{{{{\n    object->field = {constant};\n}}}}\n'),
+    }
+for family, (width, constant, instruction) in CONSTANT_FIRST_FAMILIES.items():
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// First-field constant setters: `{instruction}`.\n',
+        'shared': STDINT + '\n' + first_field(width),
+        'single': (f'void {{symbol}}(struct object_starting_with_{width} *object)\n'
+                   f'{{{{\n    object->first = {constant};\n}}}}\n'),
+    }
+
 # The far field families (symbols/families.csv, `{d32}`): the field getters and setters whose
 # field is 0x80 bytes or more into the object, so the instruction has a 32-bit displacement.
 # The bodies are the near family's; only the header differs.
@@ -614,6 +657,54 @@ def render(root: str, name: str) -> str:
     body = [template['per_value'].format(name=v, value=f'{v}u', symbol=fam.replacement(family, v)) for v in values]
     return '\n'.join(parts) + '\n' + '\n'.join(body)
 
+
+# Float, double and sign-extending field families (symbols/families.csv): the field K bytes into
+# the object. family: (C++ field type, C field type, getter or setter, instruction, what).
+TYPED_FIELD_FAMILIES = {
+    'reads_float_field': ('float', 'float', 'reader', 'vmovss xmm0, [rdi+K]; ret',
+                         'Getters of a float field (all of xmm0: the load clears its upper bits)'),
+    'writes_float_field': ('float', 'float', 'writer', 'vmovss [rdi+K], xmm0; ret',
+                          'Setters of a float field from xmm0'),
+    'writes_double_field': ('double', 'double', 'writer', 'vmovsd [rdi+K], xmm0; ret',
+                           'Setters of a double field from xmm0'),
+    'reads_signed_word_field': ('int16_t', 'int16_t', 'signed', 'movsx eax, word [rdi+K]; ret',
+                               'Getters of a signed 16-bit field, sign-extended to 32 bits'),
+    'reads_signed_byte_field': ('int8_t', 'int8_t', 'signed', 'movsx eax, byte [rdi+K]; ret',
+                               'Getters of a signed 8-bit field, sign-extended to 32 bits'),
+}
+TYPED_BODIES = {
+    'reader': ('{type}', 'const ', '', 'return object->field;'),
+    'writer': ('void', '', ', {type} value', 'object->field = value;'),
+    'signed': ('uint64_t', 'const ', '', 'return static_cast<uint32_t>(static_cast<int32_t>(object->field));'),
+}
+TYPED_MATCHING_BODIES = {
+    'reader': ('{type}', 'const ', '', 'return object->field;'),
+    'writer': ('void', '', ', {type} value', 'object->field = value;'),
+    'signed': ('int32_t', 'const ', '', 'return object->field;'),
+}
+for family, (cpp_type, c_type, kind, instruction, what) in TYPED_FIELD_FAMILIES.items():
+    returns, const, parameter, statement = (part.format(type=cpp_type) for part in TYPED_BODIES[kind])
+    TEMPLATES[family] = {
+        'header': (f'// {what}.\n// Every member of the {family} family (symbols/families.csv) is\n'
+                   f'// `{instruction}`. One replacement per offset K.\n'),
+        'shared': '#include "object_field.h"\n',
+        'per_value': ('constexpr std::size_t offset_{name} = {value};\n'
+                      f'static_assert(field_is_at_offset<offset_{{name}}, {cpp_type}>);\n'
+                      f'extern "C" {returns} {{symbol}}({const}ObjectWithFieldAt<offset_{{name}}, {cpp_type}> *object'
+                      f'{parameter})\n{{{{\n    {statement}\n}}}}\n'),
+    }
+    returns, const, parameter, statement = (part.format(type=c_type) for part in TYPED_MATCHING_BODIES[kind])
+    struct = (f'struct object_with_{c_type}_at_{{name}} {{{{\n'
+              '    uint8_t unknown_before_field[offset_{name}];\n'
+              f'    {c_type} field;\n'
+              '}} __attribute__((packed));\n')
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// {what}: `{instruction}`.\n// One function per offset K.\n',
+        'shared': STDINT,
+        'per_value': ('enum {{ offset_{name} = {value} }};\n' + struct
+                      + f'{returns} {{symbol}}({const}struct object_with_{c_type}_at_{{name}} *object'
+                      f'{parameter})\n{{{{\n    {statement}\n}}}}\n'),
+    }
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
