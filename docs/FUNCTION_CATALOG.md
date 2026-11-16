@@ -260,7 +260,7 @@ of the current table, in functions and bytes (generated):
 <!-- source-files:start -->
 | Library | Functions | Bytes | Direct | File range | Library range | Extent |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| engine | 84,129 | 20,843,315 | 682 | 3,297 | 80,150 | 0 |
+| engine | 84,270 | 20,849,096 | 682 | 3,297 | 80,291 | 0 |
 | havok | 21,098 | 8,391,800 | 325 | 596 | 20,177 | 0 |
 | scaleform | 20,188 | 4,470,137 | 0 | 0 | 0 | 20,188 |
 | fmod | 4,272 | 1,065,798 | 402 | 1,182 | 2,688 | 0 |
@@ -268,5 +268,5 @@ of the current table, in functions and bytes (generated):
 | havokscript | 1,278 | 469,776 | 188 | 405 | 685 | 0 |
 | sce-gnmx | 113 | 30,745 | 7 | 20 | 86 | 0 |
 | untagged | 24,496 | 6,392,706 | | | | |
-| all | 157,757 | 42,487,404 | | | | |
+| all | 157,898 | 42,493,185 | | | | |
 <!-- source-files:end -->
