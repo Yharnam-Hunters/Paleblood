@@ -26,9 +26,11 @@ address,size,name,system,status,notes
 0x00b68770,60,frame_timing_generator_buffer_size_00b68770,frame_timing,edge-verified,"Generator: the buffer size for a number of entries, from the generator's layout (0x00b685f0; its flag is not used)"
 0x00b69450,120,frame_timing_generator_fill_00b69450,frame_timing,edge-verified,"Generator: clears the pending flag of the kind-1 nodes each binding's group lists, then fills the buffer (0x00b694d0, same arguments)"
 0x00b6a030,216,frame_timing_generator_refresh_00b6a030,frame_timing,edge-verified,"Generator: hands each binding group's short records to their targets' slot 7 and long records to slot 5, with the data after each index"
+0x00fb4ac0,89,render_yebis_context_instantiate,render,edge-verified,YEBIS IPfxContext::Instantiate allocates a context; initializes its base; publishes its vtable then constructs the GNM shim; returns the allocation pointer
 0x00fb6d20,30,render_yebis_initialize_interface,render,edge-verified,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,83,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
+0x011183b0,98,audio_fmod_initialize_thread,audio,edge-verified,FMOD Thread initialization; publish the relocated vtable and clear selected fields; preserve all other bytes
 0x011185a0,269,audio_fmod_stop_thread,audio,edge-verified,FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status
 0x0111a620,129,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
@@ -51,6 +53,7 @@ address,size,name,system,status,notes
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b070,58,audio_fmod_copy_output_label,audio,edge-verified,Copy the fixed output label for a positive signed DWORD count; set the final NUL after the counted copy; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
+0x0111b1f0,64,audio_fmod_stop_output_threads,audio,edge-verified,FMOD output descriptor callback; stop AudioOut first and mixer only after success; return the Thread helper DWORD status
 0x011ab3a0,260,kernel_memory_pool_free_011ab3a0,kernel,verified,"Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool"
 0x011c4510,15,engine_store_word_product,engine,verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
 0x011c47f0,29,engine_string_length,engine,verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
