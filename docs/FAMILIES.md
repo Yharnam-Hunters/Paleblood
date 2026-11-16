@@ -33,7 +33,7 @@ tables (CI).
 extents in `symbols/ghidra_functions.csv`. A function is a member only when:
 
 - its bytes, from its start to its exported size, are exactly the family's shape (a shape is hex
-  bytes and at most one parameter field: `{u8}`, `{d8}` a positive displacement, `{u32}`);
+  bytes and at most one parameter field: `{u8}`, `{d8}` a positive displacement, `{u32}`, `{d32}` a positive 32-bit displacement);
 - every byte after it up to the next function is the compiler's NOP padding, and that extent is
   at least 14 bytes, so the hook's absolute jump overwrites only padding (QUIRKS.md: a hook is a
   14-byte jump; a member shorter than that is hooked across its own padding, never into the next
@@ -123,23 +123,52 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | Family | Shape | What the members are |
 |---|---|---|
 | `returns_nothing` | `c3` | empty functions: empty virtual methods and callbacks that do nothing |
+| `zeroes_record_and_stores_first_argument` | 126 exact bytes (`symbols/families.csv`) | record initializers: clear 15 words at the second argument, store the first after them, return 0 |
 | `returns_zero` | `31 c0 c3` | functions that return false, null or 0 (all of rax) |
 | `returns_constant` | `b8 {u32} c3` | functions that return a fixed number, zero-extended to rax |
+| `matches_sixteen_byte_key` | 45 exact bytes | key matches: the size argument is 16 and the key equals the 16 bytes at +0x18 |
+| `counts_list_nodes` | 28 exact bytes | the length of the singly linked list at +0x30 (next pointer at +0x10) |
+| `reads_nth_list_node_dword` | 34 exact bytes | the dword at +0x18 of the nth node of the list at +0x30, or 0 |
 | `reads_qword_field` | `48 8b 47 {d8} c3` | getters of a 64-bit field (often a pointer) K bytes into the object |
+| `reads_far_qword_field` | `48 8b 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_dword_field` | `8b 47 {d8} c3` | getters of a 32-bit field, zero-extended |
+| `reads_far_dword_field` | `8b 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_word_field` | `0f b7 47 {d8} c3` | getters of a 16-bit field, zero-extended |
+| `reads_far_word_field` | `0f b7 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_byte_field` | `0f b6 47 {d8} c3` | getters of an 8-bit field, zero-extended (`mov al, [rdi+K]` is excluded) |
+| `reads_far_byte_field` | `0f b6 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `field_address` | `48 8d 47 {d8} c3` | the address of a member or base-class part, K bytes into the object |
+| `far_field_address` | `48 8d 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |
+| `writes_far_qword_field` | `48 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
+| `writes_far_dword_field` | `89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_word_field` | `66 89 77 {d8} c3` | setters of a 16-bit field |
+| `writes_far_word_field` | `66 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |
+| `writes_far_byte_field` | `40 88 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_first_qword` | `48 89 37 c3` | setters of the 64-bit field at the start of the object |
 | `writes_first_dword` | `89 37 c3` | setters of the 32-bit field at the start of the object |
 | `returns_first_argument` | `48 89 f8 c3` | identity functions: return the first argument |
+| `stores_constant_in_first_dword_returning_object` | `c7 07 {u32} 48 89 f8 c3` | store a constant (a type or kind tag) in the first dword and return the object |
+| `reads_dword_through_pointer_at_8` | `48 8b 47 08 8b 40 {d8} c3` | the dword K bytes into the object that the pointer at +8 points at |
+| `reads_qword_through_pointer_at_8` | `48 8b 47 08 48 8b 40 {d8} c3` | the qword K bytes into the object that the pointer at +8 points at |
+| `address_through_pointer_at_8` | `48 8b 47 08 48 83 c0 {d8} c3` | the address K bytes into the object that the pointer at +8 points at |
+| `returns_all_bits` | 8 exact bytes | functions that return -1 (all 64 bits set) |
+| `resets_first_qword_returning_object` | 11 exact bytes | clear the first qword and return the object |
+| `adjusts_pointer_at_8_unless_null` | 22 exact bytes | the pointer at +8 plus 0xd0 (a part of the object it points at), or null |
+| `reads_wide_string_text_at_0x30` | 19 exact bytes | the text of the wide string the pointer at +0x30 points at (inline below capacity 8) |
+| `writes_top_four_bits_of_first_dword` | 15 exact bytes | set bits 28..31 of the first dword |
+| `writes_low_ten_bits_of_first_dword` | 18 exact bytes | set bits 0..9 of the first dword |
+| `packs_first_dword_from_two_bit_fields` | 14 exact bytes | set the first dword to two bit fields (bits 0..9 and 28..31), the rest clear |
 | `returns_second_argument` | `48 89 f0 c3` | return the second argument |
+| `atomically_increments_dword_at_8` | `b8 01 00 00 00 f0 0f c1 47 08 c3` | atomic increments of the 32-bit count 8 bytes into the object, returning the old count |
+| `reads_pointer_without_low_bit` | `48 8b 47 {d8} 48 83 e0 fe c3` | getters of a 64-bit field with its low bit (a tag) cleared |
+| `clears_first_two_qwords` | 16 exact bytes | clear the first 16 bytes of the object |
+| `clears_first_four_qwords` | 32 exact bytes | clear the first 32 bytes of the object |
+| `clears_two_qwords_and_a_dword` | 23 exact bytes | clear the first 20 bytes of the object (two qwords and a dword) |
 | `returns_float_zero` | `c5 f8 57 c0 c3` | functions that return 0.0f (all of xmm0 zero) |
 | `initialize_static_wide_string` | relative, 205 bytes (0x0217ffb0's) | copies of the guarded static initializer of one empty wide string (`engine/static_wide_string_init.cpp`) |
 | `thunk_minus_0x20_destroys_with_0x005696e0_then_frees` | 43 bytes, two `{rel:...}` | adjusting deleting entry: back 0x20 bytes, destroy, free through an allocator |
