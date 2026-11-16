@@ -197,4 +197,3 @@ uint8_t bb_mutant_kind_storage_set_count_after_kind(struct kind_storage *object,
     object->elements = storage + entries;
     return 1;
 }
-

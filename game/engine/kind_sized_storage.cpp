@@ -115,4 +115,3 @@ extern "C" bool bb_engine_sets_count_and_allocates_kind_sized_dword_storage_thro
     object->count = count;
     return allocate_storage(object);
 }
-
