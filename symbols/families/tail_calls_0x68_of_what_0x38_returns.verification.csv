@@ -1,0 +1,11 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+leaf_tail_calls_0x68_of_what_0x38_returns_02c88590,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02c885e0,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02c88630,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02c886d0,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02c88720,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02c88770,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02efaf30,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02efb4c0,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02efb6d0,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16
+leaf_tail_calls_0x68_of_what_0x38_returns_02efe040,edge,,2,2,0,0,1098ab22bbd2f6b3,2026-11-16

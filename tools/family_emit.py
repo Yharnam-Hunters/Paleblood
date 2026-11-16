@@ -412,6 +412,49 @@ TEMPLATES['allocates_from_thread_allocator'] = {
 }
 
 
+# Constant setters (symbols/families.csv): the field K bytes into the object, or the first field,
+# gets a fixed value instead of an argument. family: (width, C constant, instruction, value).
+CONSTANT_FIELD_FAMILIES = {
+    'stores_one_in_byte_field': ('byte', '1', 'mov byte [rdi+K], 1; ret', '1 (a flag set to true)'),
+    'clears_byte_field': ('byte', '0', 'mov byte [rdi+K], 0; ret', '0 (a flag set to false)'),
+    'clears_qword_field': ('qword', '0', 'mov qword [rdi+K], 0; ret', '0 (often a null pointer)'),
+    'clears_dword_field': ('dword', '0', 'mov dword [rdi+K], 0; ret', '0'),
+    'stores_one_in_dword_field': ('dword', '1', 'mov dword [rdi+K], 1; ret', '1'),
+    'stores_all_bits_in_dword_field': ('dword', 'UINT32_MAX', 'mov dword [rdi+K], -1; ret', 'all bits set (-1, often "none")'),
+}
+CONSTANT_FIRST_FAMILIES = {
+    'clears_first_qword': ('qword', '0', 'mov qword [rdi], 0; ret'),
+    'clears_first_dword': ('dword', '0', 'mov dword [rdi], 0; ret'),
+    'clears_first_byte': ('byte', '0', 'mov byte [rdi], 0; ret'),
+    'stores_one_in_first_byte': ('byte', '1', 'mov byte [rdi], 1; ret'),
+}
+for family, (width, constant, instruction, stored) in CONSTANT_FIELD_FAMILIES.items():
+    field_type = FIELD_TYPES[width]
+    TEMPLATES[family] = {
+        'header': (f'// Constant setters: every member of the {family} family (symbols/families.csv)\n'
+                   f'// is `{instruction}`: the field K bytes into the object gets {stored}.\n'
+                   '// rax is left as it was. One replacement per offset K.\n'),
+        'shared': '#include "object_field.h"\n',
+        'per_value': ('constexpr std::size_t offset_{name} = {value};\n'
+                      f'static_assert(field_is_at_offset<offset_{{name}}, {field_type}>);\n'
+                      f'extern "C" void {{symbol}}(ObjectWithFieldAt<offset_{{name}}, {field_type}> *object)\n'
+                      f'{{{{\n    object->field = {constant};\n}}}}\n'),
+    }
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// Constant setters: `{instruction}`. One function per offset K.\n',
+        'shared': STDINT,
+        'per_value': (field_struct(width)
+                      + f'void {{symbol}}(struct object_with_{width}_at_{{name}} *object)\n'
+                      f'{{{{\n    object->field = {constant};\n}}}}\n'),
+    }
+for family, (width, constant, instruction) in CONSTANT_FIRST_FAMILIES.items():
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// First-field constant setters: `{instruction}`.\n',
+        'shared': STDINT + '\n' + first_field(width),
+        'single': (f'void {{symbol}}(struct object_starting_with_{width} *object)\n'
+                   f'{{{{\n    object->first = {constant};\n}}}}\n'),
+    }
+
 # The far field families (symbols/families.csv, `{d32}`): the field getters and setters whose
 # field is 0x80 bytes or more into the object, so the instruction has a 32-bit displacement.
 # The bodies are the near family's; only the header differs.
@@ -667,6 +710,125 @@ def render(root: str, name: str) -> str:
     body = [template['per_value'].format(name=v, value=f'{v}u', symbol=fam.replacement(family, v)) for v in values]
     return '\n'.join(parts) + '\n' + '\n'.join(body)
 
+# Records that call virtual functions (symbols/families.csv; game/leaf/virtual_records.cpp).
+MATCHING_TEMPLATES['writes_wide_string_at_0x28_to_sink'] = {
+    'header': "// Records that call virtual functions: write the text of the wide string at +0x28 and the record's slot 0x60 value through the sink's slot 0x90.\n",
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { value_slot = 0x60, write_slot = 0x90 };\n\nstruct record {\n    uint8_t unknown_0x0[0x28];\n    struct wide_string string;\n};\n',
+    'single': 'uint64_t {symbol}(struct record *record, void *sink)\n{{\n    slot_function write = virtual_slot(sink, write_slot);\n    const uint16_t *text = record->string.capacity < heap_capacity ? record->string.text.inline_text\n                                                                    : record->string.text.heap_text;\n    return write(sink, text, virtual_slot(record, value_slot)(record));\n}}\n',
+}
+MATCHING_TEMPLATES['writes_wide_string_through_0x20_to_sink'] = {
+    'header': '// Records that call virtual functions: the same with the wide string the pointer at +0x20 points at.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { value_slot = 0x60, write_slot = 0x90 };\n\nstruct string_at_8 {\n    uint64_t unknown_0x0;\n    struct wide_string string;\n};\n\nstruct record {\n    uint8_t unknown_0x0[0x20];\n    struct string_at_8 *string;\n};\n',
+    'single': 'uint64_t {symbol}(struct record *record, void *sink)\n{{\n    slot_function write = virtual_slot(sink, write_slot);\n    struct wide_string *string = &record->string->string;\n    const uint16_t *text = string->capacity < heap_capacity ? string->text.inline_text : string->text.heap_text;\n    return write(sink, text, virtual_slot(record, value_slot)(record));\n}}\n',
+}
+MATCHING_TEMPLATES['writes_text_at_0x20_to_sink'] = {
+    'header': '// Records that call virtual functions: the same with the text pointer at +0x20.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { value_slot = 0x60, write_slot = 0x90 };\n\nstruct record {\n    uint8_t unknown_0x0[0x20];\n    const uint16_t *text;\n};\n',
+    'single': 'uint64_t {symbol}(struct record *record, void *sink)\n{{\n    slot_function write = virtual_slot(sink, write_slot);\n    const uint16_t *text = record->text;\n    return write(sink, text, virtual_slot(record, value_slot)(record));\n}}\n',
+}
+MATCHING_TEMPLATES['toggles_flag_at_8_through_first_virtual'] = {
+    'header': '// Records that call virtual functions: switch on (second argument not 0) or off through slot 0 and keep the state in the byte at +8.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { state_offset = 0x8, switch_slot = 0 };\n',
+    'single': 'uint64_t {symbol}(uint8_t *object, uint64_t on)\n{{\n    if (on != 0 && object[state_offset] != 0)\n        return 0;\n    uint64_t result = virtual_slot(object, switch_slot)(object, on);\n    if ((uint32_t)result != 0)\n        return result;\n    object[state_offset] = on != 0;\n    return 0;\n}}\n',
+}
+MATCHING_TEMPLATES['toggles_flag_at_0x20_through_first_virtual'] = {
+    'header': '// Records that call virtual functions: the same with the state in the byte at +0x20.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { state_offset = 0x20, switch_slot = 0 };\n',
+    'single': 'uint64_t {symbol}(uint8_t *object, uint64_t on)\n{{\n    if (on != 0 && object[state_offset] != 0)\n        return 0;\n    uint64_t result = virtual_slot(object, switch_slot)(object, on);\n    if ((uint32_t)result != 0)\n        return result;\n    object[state_offset] = on != 0;\n    return 0;\n}}\n',
+}
+MATCHING_TEMPLATES['resets_wide_string_at_8'] = {
+    'header': '// Records that call virtual functions: free the heap text of the wide string at +8 through its allocator and empty it.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { string_offset = 0x8, free_slot = 0x70 };\n\nstruct owned_wide_string {\n    struct wide_string string;\n    void *allocator;\n};\n',
+    'single': 'void {symbol}(uint8_t *object)\n{{\n    struct owned_wide_string *owned = (struct owned_wide_string *)(object + string_offset);\n    if (owned->string.capacity >= heap_capacity)\n        virtual_slot(owned->allocator, free_slot)(owned->allocator, owned->string.text.heap_text);\n    owned->string.capacity = inline_capacity;\n    owned->string.size = 0;\n    owned->string.text.inline_text[0] = 0;\n}}\n',
+}
+MATCHING_TEMPLATES['resets_wide_string_at_0x10'] = {
+    'header': '// Records that call virtual functions: the same with the wide string at +0x10.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { string_offset = 0x10, free_slot = 0x70 };\n\nstruct owned_wide_string {\n    struct wide_string string;\n    void *allocator;\n};\n',
+    'single': 'void {symbol}(uint8_t *object)\n{{\n    struct owned_wide_string *owned = (struct owned_wide_string *)(object + string_offset);\n    if (owned->string.capacity >= heap_capacity)\n        virtual_slot(owned->allocator, free_slot)(owned->allocator, owned->string.text.heap_text);\n    owned->string.capacity = inline_capacity;\n    owned->string.size = 0;\n    owned->string.text.inline_text[0] = 0;\n}}\n',
+}
+
+# More records that call virtual functions (game/leaf/virtual_records.cpp).
+MATCHING_TEMPLATES['tail_calls_slot_0_of_nth_node_at_0x30'] = {
+    'header': '// Records that call virtual functions: tail-call slot 0 of the nth node of the list at +0x30 (next pointers at +0x10), or return 0.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\ntypedef uint64_t (*six_argument_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct list_node {\n    uint8_t unknown_0x0[0x10];\n    struct list_node *next;\n};\n\nstruct object {\n    uint8_t unknown_0x0[0x30];\n    struct list_node *first;\n};\n',
+    'single': 'uint64_t {symbol}(struct object *object, uint64_t index, uint64_t third, uint64_t fourth, uint64_t fifth,\n                  uint64_t sixth)\n{{\n    struct list_node *node = object->first;\n    if (node == 0)\n        return 0;\n    for (uint32_t steps = (uint32_t)index; steps != 0; --steps) {{\n        node = node->next;\n        if (node == 0)\n            return 0;\n    }}\n    return ((six_argument_function)virtual_slot(node, 0))(node, 0, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['shifts_arguments_into_virtual_0x88'] = {
+    'header': '// Records that call virtual functions: tail-call slot 0x88 with the second argument dropped, the low byte of the sixth and 0.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\ntypedef uint64_t (*six_argument_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { shifted_slot = 0x88 };\n',
+    'single': 'uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth,\n                  uint64_t sixth)\n{{\n    (void)second;\n    six_argument_function shifted = (six_argument_function)virtual_slot(object, shifted_slot);\n    return shifted(object, third, fourth, fifth, (uint8_t)sixth, 0);\n}}\n',
+}
+MATCHING_TEMPLATES['calls_0x78_stores_dword_at_0x20_calls_0xa8'] = {
+    'header': '// Records that call virtual functions: call slot 0x78 with 0, store a dword at +0x20, call slot 0xa8, set the byte at +8.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { stop_slot = 0x78, start_slot = 0xa8 };\n\nstruct restartable {\n    uint64_t virtual_table;\n    uint8_t started;\n    uint8_t unknown_0x9[0x17];\n    uint32_t setting;\n};\n',
+    'single': 'uint64_t {symbol}(struct restartable *object, uint64_t setting)\n{{\n    virtual_slot(object, stop_slot)(object, (uint64_t)0);\n    object->setting = (uint32_t)setting;\n    uint64_t result = virtual_slot(object, start_slot)(object);\n    object->started = 1;\n    return result;\n}}\n',
+}
+MATCHING_TEMPLATES['flushes_pending_through_member_at_0x40'] = {
+    'header': '// Records that call virtual functions: when the object behind +0x40 has work and is not busy, call its slots 0x18 and 0x20 and clear its count.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { prepare_slot = 0x18, flush_slot = 0x20, has_work = 1, flushing = 2 };\n\nstruct pending {\n    uint64_t virtual_table;\n    uint32_t unknown_0x8;\n    uint8_t flags;\n    uint8_t unknown_0xd[3];\n    uint32_t count;\n};\n\nstruct holder {\n    uint8_t unknown_0x0[0x40];\n    struct pending **pending;\n};\n',
+    'single': 'void {symbol}(struct holder *object, uint64_t argument)\n{{\n    if (object->pending == 0)\n        return;\n    struct pending *pending = *object->pending;\n    if (pending == 0 || !(pending->flags & has_work) || pending->count == 0 || (pending->flags & flushing))\n        return;\n    pending->flags |= flushing;\n    virtual_slot(pending, prepare_slot)(pending, argument);\n    virtual_slot(pending, flush_slot)(pending, argument);\n    pending->flags &= (uint8_t)~flushing;\n    pending->count = 0;\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_0x68_of_what_0x38_returns'] = {
+    'header': '// Records that call virtual functions: call slot 0x38, then tail-call slot 0x68 of the object it returned with the second argument.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { inner_slot = 0x38, outer_slot = 0x68 };\n\ntypedef void *(*inner_function)(void *, uint64_t);\n',
+    'single': 'uint64_t {symbol}(void *object, uint64_t second)\n{{\n    void *inner = ((inner_function)virtual_slot(object, inner_slot))(object, second);\n    return virtual_slot(inner, outer_slot)(inner, second);\n}}\n',
+}
+
+# Tree erases (game/leaf/virtual_records.cpp).
+MATCHING_TEMPLATES['erases_subtree_with_wide_string_at_0x28'] = {
+    'header': '// Records that call virtual functions: the same, resetting the wide string at +0x28 of each node first.\n',
+    'shared': STDINT + '#include <stddef.h>\n\nenum { heap_capacity = 8, inline_capacity = 7 };\n\nstruct wide_string {\n    union {\n        uint16_t inline_text[heap_capacity];\n        uint16_t *heap_text;\n    } text;\n    uint64_t size;\n    uint64_t capacity;\n};\n\ntypedef uint64_t (*slot_function)(void *, ...);\n\nstatic slot_function virtual_slot(const void *object, size_t offset)\n{\n    return *(const slot_function *)(*(const uint8_t *const *)object + offset);\n}\n' + '\nenum { free_slot = 0x70 };\n\nstruct tree_node {\n    struct tree_node *left;\n    struct tree_node *parent;\n    struct tree_node *right;\n    uint8_t color;\n    uint8_t is_nil;\n    uint8_t unknown_0x1a[0xe];\n    struct wide_string string;\n    void *allocator;\n};\n\nstruct tree {\n    uint8_t unknown_0x0[0x18];\n    void *allocator;\n};\n',
+    'single': 'void {symbol}(struct tree *tree, struct tree_node *node)\n{{\n    while (!node->is_nil) {{\n        {symbol}(tree, node->right);\n        struct tree_node *left = node->left;\n        if (node->string.capacity >= heap_capacity)\n            virtual_slot(node->allocator, free_slot)(node->allocator, node->string.text.heap_text);\n        node->string.capacity = inline_capacity;\n        node->string.size = 0;\n        node->string.text.inline_text[0] = 0;\n        virtual_slot(tree->allocator, free_slot)(tree->allocator, node);\n        node = left;\n    }}\n}}\n',
+}
+
+
+# Float, double and sign-extending field families (symbols/families.csv): the field K bytes into
+# the object. family: (C++ field type, C field type, getter or setter, instruction, what).
+TYPED_FIELD_FAMILIES = {
+    'reads_float_field': ('float', 'float', 'reader', 'vmovss xmm0, [rdi+K]; ret',
+                         'Getters of a float field (all of xmm0: the load clears its upper bits)'),
+    'writes_float_field': ('float', 'float', 'writer', 'vmovss [rdi+K], xmm0; ret',
+                          'Setters of a float field from xmm0'),
+    'writes_double_field': ('double', 'double', 'writer', 'vmovsd [rdi+K], xmm0; ret',
+                           'Setters of a double field from xmm0'),
+    'reads_signed_word_field': ('int16_t', 'int16_t', 'signed', 'movsx eax, word [rdi+K]; ret',
+                               'Getters of a signed 16-bit field, sign-extended to 32 bits'),
+    'reads_signed_byte_field': ('int8_t', 'int8_t', 'signed', 'movsx eax, byte [rdi+K]; ret',
+                               'Getters of a signed 8-bit field, sign-extended to 32 bits'),
+}
+TYPED_BODIES = {
+    'reader': ('{type}', 'const ', '', 'return object->field;'),
+    'writer': ('void', '', ', {type} value', 'object->field = value;'),
+    'signed': ('uint64_t', 'const ', '', 'return static_cast<uint32_t>(static_cast<int32_t>(object->field));'),
+}
+TYPED_MATCHING_BODIES = {
+    'reader': ('{type}', 'const ', '', 'return object->field;'),
+    'writer': ('void', '', ', {type} value', 'object->field = value;'),
+    'signed': ('int32_t', 'const ', '', 'return object->field;'),
+}
+for family, (cpp_type, c_type, kind, instruction, what) in TYPED_FIELD_FAMILIES.items():
+    returns, const, parameter, statement = (part.format(type=cpp_type) for part in TYPED_BODIES[kind])
+    TEMPLATES[family] = {
+        'header': (f'// {what}.\n// Every member of the {family} family (symbols/families.csv) is\n'
+                   f'// `{instruction}`. One replacement per offset K.\n'),
+        'shared': '#include "object_field.h"\n',
+        'per_value': ('constexpr std::size_t offset_{name} = {value};\n'
+                      f'static_assert(field_is_at_offset<offset_{{name}}, {cpp_type}>);\n'
+                      f'extern "C" {returns} {{symbol}}({const}ObjectWithFieldAt<offset_{{name}}, {cpp_type}> *object'
+                      f'{parameter})\n{{{{\n    {statement}\n}}}}\n'),
+    }
+    returns, const, parameter, statement = (part.format(type=c_type) for part in TYPED_MATCHING_BODIES[kind])
+    struct = (f'struct object_with_{c_type}_at_{{name}} {{{{\n'
+              '    uint8_t unknown_before_field[offset_{name}];\n'
+              f'    {c_type} field;\n'
+              '}} __attribute__((packed));\n')
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// {what}: `{instruction}`.\n// One function per offset K.\n',
+        'shared': STDINT,
+        'per_value': ('enum {{ offset_{name} = {value} }};\n' + struct
+                      + f'{returns} {{symbol}}({const}struct object_with_{c_type}_at_{{name}} *object'
+                      f'{parameter})\n{{{{\n    {statement}\n}}}}\n'),
+    }
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])

@@ -144,7 +144,25 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `far_field_address` | `48 8d 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
+| `reads_float_field` | `c5 fa 10 47 {d8} c3` | getters of a float field (all of xmm0: the load clears its upper bits) |
+| `writes_float_field` | `c5 fa 11 47 {d8} c3` | setters of a float field from xmm0 |
+| `writes_double_field` | `c5 fb 11 47 {d8} c3` | setters of a double field from xmm0 |
+| `reads_signed_word_field` | `0f bf 47 {d8} c3` | getters of a signed 16-bit field, sign-extended to 32 bits |
+| `reads_signed_byte_field` | `0f be 47 {d8} c3` | getters of a signed 8-bit field, sign-extended to 32 bits |
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |
+| `writes_wide_string_at_0x28_to_sink` | 72 exact bytes | write the text of the wide string at +0x28 and the record's slot 0x60 value through the sink's slot 0x90 |
+| `writes_wide_string_through_0x20_to_sink` | 76 exact bytes | the same with the wide string the pointer at +0x20 points at |
+| `writes_text_at_0x20_to_sink` | 62 exact bytes | the same with the text pointer at +0x20 |
+| `toggles_flag_at_8_through_first_virtual` | 67 exact bytes | switch on (second argument not 0) or off through slot 0 and keep the state in the byte at +8 |
+| `toggles_flag_at_0x20_through_first_virtual` | 67 exact bytes | the same with the state in the byte at +0x20 |
+| `resets_wide_string_at_8` | 59 exact bytes | free the heap text of the wide string at +8 through its allocator and empty it |
+| `resets_wide_string_at_0x10` | 59 exact bytes | the same with the wide string at +0x10 |
+| `tail_calls_slot_0_of_nth_node_at_0x30` | 37 exact bytes | tail-call slot 0 of the nth node of the list at +0x30 (next pointers at +0x10), or return 0 |
+| `shifts_arguments_into_virtual_0x88` | 32 exact bytes | tail-call slot 0x88 with the second argument dropped, the low byte of the sixth and 0 |
+| `calls_0x78_stores_dword_at_0x20_calls_0xa8` | 46 exact bytes | call slot 0x78 with 0, store a dword at +0x20, call slot 0xa8, set the byte at +8 |
+| `flushes_pending_through_member_at_0x40` | 92 exact bytes | when the object behind +0x40 has work and is not busy, call its slots 0x18 and 0x20 and clear its count |
+| `tail_calls_0x68_of_what_0x38_returns` | 36 exact bytes | call slot 0x38, then tail-call slot 0x68 of the object it returned with the second argument |
+| `erases_subtree_with_wide_string_at_0x28` | 124 exact bytes | the same, resetting the wide string at +0x28 of each node first |
 | `writes_far_qword_field` | `48 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
 | `writes_far_dword_field` | `89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
@@ -154,6 +172,16 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_far_byte_field` | `40 88 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_first_qword` | `48 89 37 c3` | setters of the 64-bit field at the start of the object |
 | `writes_first_dword` | `89 37 c3` | setters of the 32-bit field at the start of the object |
+| `stores_one_in_byte_field` | `c6 47 {d8} 01 c3` | constant setters: the byte field gets 1 (a flag set to true) |
+| `clears_byte_field` | `c6 47 {d8} 00 c3` | constant setters: the byte field gets 0 (a flag set to false) |
+| `clears_qword_field` | `48 c7 47 {d8} 00 00 00 00 c3` | constant setters: the qword field gets 0 (often a null pointer) |
+| `clears_dword_field` | `c7 47 {d8} 00 00 00 00 c3` | constant setters: the dword field gets 0 |
+| `stores_one_in_dword_field` | `c7 47 {d8} 01 00 00 00 c3` | constant setters: the dword field gets 1 |
+| `stores_all_bits_in_dword_field` | `c7 47 {d8} ff ff ff ff c3` | constant setters: the dword field gets all bits set (-1, often "none") |
+| `clears_first_qword` | `48 c7 07 00 00 00 00 c3` | constant setters: the qword field gets 0 |
+| `clears_first_dword` | `c7 07 00 00 00 00 c3` | constant setters: the dword field gets 0 |
+| `clears_first_byte` | `c6 07 00 c3` | constant setters: the byte field gets 0 |
+| `stores_one_in_first_byte` | `c6 07 01 c3` | constant setters: the byte field gets 1 |
 | `returns_first_argument` | `48 89 f8 c3` | identity functions: return the first argument |
 | `stores_constant_in_first_dword_returning_object` | `c7 07 {u32} 48 89 f8 c3` | store a constant (a type or kind tag) in the first dword and return the object |
 | `reads_dword_through_pointer_at_8` | `48 8b 47 08 8b 40 {d8} c3` | the dword K bytes into the object that the pointer at +8 points at |
