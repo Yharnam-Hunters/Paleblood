@@ -57,6 +57,15 @@ void bb_mutant_virtual_0x28_never_deletes(uint8_t *object)
     (*(destructor *)(*(uint8_t **)object + 0x28))(object);
 }
 
+/* Slot 0x18 of the object at +8 called when there is one, but no vtable stored. */
+void bb_mutant_releases_member_at_8_only(uint8_t *object)
+{
+    typedef void (*release)(void *member);
+    uint8_t *member = *(uint8_t **)(object + 8);
+    if (member)
+        (*(release *)(*(uint8_t **)member + 0x18))(member);
+}
+
 /* Records that call virtual functions (game/leaf/virtual_records.cpp), each missing one rule. */
 typedef uint64_t (*bb_mutant_record_slot)(void *, ...);
 
