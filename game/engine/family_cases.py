@@ -38,13 +38,25 @@ def static_wide_string_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
-CASES = {'initialize_static_wide_string': static_wide_string_cases}
+_VARIANT_STRING_POOL = _load('variant_string_pool_family_cases')
+
+CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'sets_property_0x3ea_or_0x3eb_from_variant': _VARIANT_STRING_POOL.variant_property_cases,
+         'copies_wide_string_at_0x28_on_thread_heap': _VARIANT_STRING_POOL.wide_string_copy_cases,
+         'appends_blocks_to_pool_slot_5_or_16': _VARIANT_STRING_POOL.pool_append_cases,
+         'assigns_created_string_unless_exception': _VARIANT_STRING_POOL.string_thunk_cases}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
     # publishing the guard skips the allocator, the string and the registration on a clear guard,
     # and overwrites a set guard's other bytes.
     'initialize_static_wide_string': ['bb_mutant_does_nothing', 'bb_mutant_static_wide_string_guard_only'],
+    # variant_string_pool_family_cases.py: the generic wrong bodies, and control mutants that
+    # each move one read or step (game/engine/tests/family_mutants.c).
+    'sets_property_0x3ea_or_0x3eb_from_variant': ['bb_mutant_does_nothing', 'bb_mutant_variant_property_rounds', 'bb_mutant_variant_property_skips_reference'],
+    'copies_wide_string_at_0x28_on_thread_heap': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument', 'bb_mutant_wide_string_copy_reads_text_late', 'bb_mutant_wide_string_copy_reads_owns_early'],
+    'appends_blocks_to_pool_slot_5_or_16': ['bb_mutant_does_nothing', 'bb_mutant_returns_one', 'bb_mutant_pool_appends_keep_first_count', 'bb_mutant_pool_appends_used_from_snapshot', 'bb_mutant_pool_appends_second_read_early'],
+    'assigns_created_string_unless_exception': ['bb_mutant_does_nothing', 'bb_mutant_string_thunk_reads_exception_early', 'bb_mutant_string_thunk_drops_snapshot'],
 }
 
 
