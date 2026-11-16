@@ -14,7 +14,7 @@ symbols/families.csv               one row per family
   system     the game/ directory that holds the replacement and the case generator
   shape      the members' exact bytes: hex bytes and at most one parameter field, for example
              `b8 {u32} c3`. Fields: {u8} one byte, {d8} a positive signed 8-bit displacement,
-             {u32} four bytes little-endian. A member's bytes must match the shape exactly.
+             {u32} four bytes little-endian, {d32} a positive signed 32-bit displacement. A member's bytes must match the shape exactly.
   returns    the return class its replacement declares (game/hooks.csv's returns column)
   members    how many members the family has, written before the members are generated
   bytes      their total size in bytes, likewise (a member table that differs is refused)
@@ -54,8 +54,10 @@ FAMILIES_TABLE = os.path.join('symbols', 'families.csv')
 MEMBERS_DIR = os.path.join('symbols', 'families')
 HOOK_JUMP = 14
 FAMILY_NAME = re.compile(r'^[a-z][a-z0-9]*(_[a-z0-9]+)*$')
-FIELD = re.compile(r'\{(u8|d8|u32)\}')
-FIELD_WIDTH = {'u8': 1, 'd8': 1, 'u32': 4}
+FIELD = re.compile(r'\{(u8|d8|u32|d32)\}')
+FIELD_WIDTH = {'u8': 1, 'd8': 1, 'u32': 4, 'd32': 4}
+# The displacement fields hold positive offsets only: a negative one is not a field of the object.
+DISPLACEMENT_LIMIT = {'d8': 0x80, 'd32': 0x80000000}
 
 
 class ShapeError(ValueError):
@@ -83,8 +85,8 @@ class Shape:
             return None
         raw = code[len(self.prefix):len(self.prefix) + FIELD_WIDTH[self.field]]
         value = int.from_bytes(raw, 'little')
-        if self.field == 'd8' and not 0 < value < 0x80:
-            raise ShapeError(f'{code.hex()}: displacement {value:#x} is not a positive signed byte')
+        if self.field in DISPLACEMENT_LIMIT and not 0 < value < DISPLACEMENT_LIMIT[self.field]:
+            raise ShapeError(f'{code.hex()}: displacement {value:#x} is not a positive signed {{{self.field}}}')
         return value
 
     def matches(self, code: bytes) -> bool:

@@ -24,7 +24,10 @@ add_custom_command(
 
 add_library(bbgame SHARED ${GAME_SOURCES} ${HOOKS_C})
 target_link_libraries(bbgame PRIVATE bbrt)
-target_link_options(bbgame PRIVATE -Wl,--no-undefined)
+# Mach-O dylibs reject unresolved symbols by default; --no-undefined is an ELF linker option.
+if(NOT APPLE)
+    target_link_options(bbgame PRIVATE -Wl,--no-undefined)
+endif()
 # Replacements reproduce the original's floating-point operations one by one: no fused
 # multiply-add and none of the fast-math licences (reassociation, reciprocals, assuming no NaN);
 # -fno-fast-math also overrides one that comes in through CXXFLAGS. tools/check_float_flags.py

@@ -1,0 +1,5 @@
+address,size,extent,value,status
+0x010eaf40,8,16,0xdd,edge-verified
+0x01b8fa80,8,16,0x118,edge-verified
+0x01c157b0,8,16,0x90,edge-verified
+0x02be87c0,8,16,0x124,edge-verified
