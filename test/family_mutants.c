@@ -50,6 +50,13 @@ uint64_t bb_mutant_delegate_at_0x18_without_adjustment(uint8_t *owner, uint8_t *
     return call(object, argument, *(uint32_t *)(owner + 0x40));
 }
 
+/* Slot 0x28 of the object's table called, but the object never deleted. */
+void bb_mutant_virtual_0x28_never_deletes(uint8_t *object)
+{
+    typedef void (*destructor)(void *);
+    (*(destructor *)(*(uint8_t **)object + 0x28))(object);
+}
+
 /* Records that call virtual functions (game/leaf/virtual_records.cpp), each missing one rule. */
 typedef uint64_t (*bb_mutant_record_slot)(void *, ...);
 
