@@ -359,6 +359,59 @@ MATCHING_TEMPLATES = {
 }
 
 
+# The engine's deleting functions that hand an object back to the thread's allocator (a relative
+# family with the class size as its parameter; game/engine/thread_allocator_free.h).
+TEMPLATES['frees_object_through_thread_allocator'] = {
+    'header': ('// Every member of frees_object_through_thread_allocator (symbols/families.csv) is a copy\n'
+               '// of the same deleting function, reaching the same thread-local offset: it hands its\n'
+               '// object to the sized free of the thread\'s allocator with the object\'s allocation size,\n'
+               '// or its class size K when the object says size_default. One replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t class_size_{name} = {value};\n'
+                  'extern "C" uint64_t {symbol}(void *object)\n{{\n'
+                  '    return engine::thread_allocator_free::free_object(object, class_size_{name});\n}}\n'),
+}
+
+
+# Engine objects that post an event to their delegate (a relative family with the event kind as
+# its parameter; game/engine/delegate_event.h).
+TEMPLATES['posts_event_to_delegate_at_0x50'] = {
+    'header': ('// Every member of posts_event_to_delegate_at_0x50 (symbols/families.csv) is a copy of the\n'
+               '// same function reaching the same stack guard: when the delegate at +0x50 is set, it\n'
+               '// calls it with the event {K, a dword, a qword} and the delegate\'s context. One\n'
+               '// replacement per event kind K.\n'),
+    'shared': '#include "delegate_event.h"\n',
+    'per_value': ('constexpr uint32_t event_kind_{name} = {value};\n'
+                  'extern "C" void {symbol}(void *poster, uint64_t value, uint64_t data)\n{{\n'
+                  '    engine::delegate_event::post(poster, event_kind_{name}, value, data);\n}}\n'),
+}
+
+
+# The thread allocator's sized deletes (the size K is the parameter; nothing for a null pointer).
+TEMPLATES['deletes_sized_through_thread_allocator'] = {
+    'header': ('// Every member of deletes_sized_through_thread_allocator (symbols/families.csv) is a copy\n'
+               '// of the same sized delete, reaching the same thread-local offset: unless its pointer is\n'
+               '// null, it hands it to the sized free of the thread\'s allocator with the size K. One\n'
+               '// replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t size_{name} = {value};\n'
+                  'extern "C" void {symbol}(void *object)\n{{\n'
+                  '    engine::thread_allocator_free::delete_sized(object, size_{name});\n}}\n'),
+}
+
+
+# The thread allocator's allocations of a fixed size K.
+TEMPLATES['allocates_from_thread_allocator'] = {
+    'header': ('// Every member of allocates_from_thread_allocator (symbols/families.csv) is a copy of the\n'
+               '// same function, reaching the same thread-local offset: it allocates K bytes from the\n'
+               '// thread\'s allocator. One replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t size_{name} = {value};\n'
+                  'extern "C" void *{symbol}()\n{{\n'
+                  '    return engine::thread_allocator_free::allocate(size_{name});\n}}\n'),
+}
+
+
 # Constant setters (symbols/families.csv): the field K bytes into the object, or the first field,
 # gets a fixed value instead of an argument. family: (width, C constant, instruction, value).
 CONSTANT_FIELD_FAMILIES = {
