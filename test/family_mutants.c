@@ -5,10 +5,18 @@
    library. */
 #include <stdint.h>
 
-/* The harness runs a replacement library's bbgame_init first; these need no setup. */
-int bbgame_init(const void *host)
+#include "runtime/guest.h"
+#include "runtime/host.h"
+
+/* Where the loader mapped the guest image; game-specific mutants (game/<system>/tests/) reach
+   guest memory through rt_guest (runtime/guest.h), as replacements do. */
+unsigned char *rt_image;
+
+/* The harness runs a replacement library's bbgame_init first: record the image as
+   runtime/plugin.c does. The mutants install no hooks. */
+int bbgame_init(const rt_host *host)
 {
-    (void)host;
+    rt_image = host->image;
     return 0;
 }
 
@@ -27,6 +35,19 @@ void bb_mutant_writes_first_argument(uint8_t *first)
 uint64_t bb_mutant_returns_zero(void)
 {
     return 0;
+}
+
+/* The delegate at +0x18 called on its bound object without the adjustment (and, unset, slot 0x80
+ * of the argument given 0 for the address). */
+uint64_t bb_mutant_delegate_at_0x18_without_adjustment(uint8_t *owner, uint8_t *argument)
+{
+    typedef uint64_t (*handler)(void *, void *, uint64_t);
+    uintptr_t function = *(uintptr_t *)(owner + 0x30);
+    if (function == 0)
+        return (*(handler *)(*(uint8_t **)argument + 0x80))(argument, 0, 0);
+    uint8_t *object = *(uint8_t **)(owner + 0x18);
+    handler call = function & 1 ? *(handler *)(*(uint8_t **)object + function - 1) : (handler)function;
+    return call(object, argument, *(uint32_t *)(owner + 0x40));
 }
 
 /* Returns one. */

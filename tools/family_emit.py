@@ -359,6 +359,102 @@ MATCHING_TEMPLATES = {
 }
 
 
+# The engine's deleting functions that hand an object back to the thread's allocator (a relative
+# family with the class size as its parameter; game/engine/thread_allocator_free.h).
+TEMPLATES['frees_object_through_thread_allocator'] = {
+    'header': ('// Every member of frees_object_through_thread_allocator (symbols/families.csv) is a copy\n'
+               '// of the same deleting function, reaching the same thread-local offset: it hands its\n'
+               '// object to the sized free of the thread\'s allocator with the object\'s allocation size,\n'
+               '// or its class size K when the object says size_default. One replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t class_size_{name} = {value};\n'
+                  'extern "C" uint64_t {symbol}(void *object)\n{{\n'
+                  '    return engine::thread_allocator_free::free_object(object, class_size_{name});\n}}\n'),
+}
+
+
+# Engine objects that post an event to their delegate (a relative family with the event kind as
+# its parameter; game/engine/delegate_event.h).
+TEMPLATES['posts_event_to_delegate_at_0x50'] = {
+    'header': ('// Every member of posts_event_to_delegate_at_0x50 (symbols/families.csv) is a copy of the\n'
+               '// same function reaching the same stack guard: when the delegate at +0x50 is set, it\n'
+               '// calls it with the event {K, a dword, a qword} and the delegate\'s context. One\n'
+               '// replacement per event kind K.\n'),
+    'shared': '#include "delegate_event.h"\n',
+    'per_value': ('constexpr uint32_t event_kind_{name} = {value};\n'
+                  'extern "C" void {symbol}(void *poster, uint64_t value, uint64_t data)\n{{\n'
+                  '    engine::delegate_event::post(poster, event_kind_{name}, value, data);\n}}\n'),
+}
+
+
+# The thread allocator's sized deletes (the size K is the parameter; nothing for a null pointer).
+TEMPLATES['deletes_sized_through_thread_allocator'] = {
+    'header': ('// Every member of deletes_sized_through_thread_allocator (symbols/families.csv) is a copy\n'
+               '// of the same sized delete, reaching the same thread-local offset: unless its pointer is\n'
+               '// null, it hands it to the sized free of the thread\'s allocator with the size K. One\n'
+               '// replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t size_{name} = {value};\n'
+                  'extern "C" void {symbol}(void *object)\n{{\n'
+                  '    engine::thread_allocator_free::delete_sized(object, size_{name});\n}}\n'),
+}
+
+
+# The thread allocator's allocations of a fixed size K.
+TEMPLATES['allocates_from_thread_allocator'] = {
+    'header': ('// Every member of allocates_from_thread_allocator (symbols/families.csv) is a copy of the\n'
+               '// same function, reaching the same thread-local offset: it allocates K bytes from the\n'
+               '// thread\'s allocator. One replacement per K.\n'),
+    'shared': '#include "thread_allocator_free.h"\n',
+    'per_value': ('constexpr uint32_t size_{name} = {value};\n'
+                  'extern "C" void *{symbol}()\n{{\n'
+                  '    return engine::thread_allocator_free::allocate(size_{name});\n}}\n'),
+}
+
+
+# Relative families whose copies differ in one immediate (one replacement per value).
+TEMPLATES['calls_virtual_on_object_found_by_0x02c4f560'] = {
+    'header': ('// Every member of calls_virtual_on_object_found_by_0x02c4f560 (symbols/families.csv) is a\n'
+               '// copy of the same function reaching the same finder: it finds the object a handle names\n'
+               '// in the context and tail-calls the object\'s slot K. One replacement per slot offset K.\n'),
+    'shared': '#include "found_object_call.h"\n',
+    'per_value': ('constexpr uint32_t slot_offset_{name} = {value};\n'
+                  'extern "C" uint64_t {symbol}(const engine::found_object_call::Handle *handle, void *context)\n{{\n'
+                  '    return engine::found_object_call::call_virtual(handle, context, slot_offset_{name});\n}}\n'),
+}
+
+TEMPLATES['clears_hk_array_freeing_to_0x058018b0'] = {
+    'header': ('// Every member of clears_hk_array_freeing_to_0x058018b0 (symbols/families.csv) is a copy\n'
+               '// of Havok\'s array clear and deallocate reaching the same allocator, for elements of\n'
+               '// 1 << K bytes. One replacement per element shift K.\n'),
+    'shared': '#include "hk_array_clear.h"\n',
+    'per_value': ('constexpr uint32_t element_shift_{name} = {value};\n'
+                  'extern "C" void {symbol}(engine::HkArray<void> *array)\n{{\n'
+                  '    engine::hk_array_clear::clear_and_deallocate(array, element_shift_{name});\n}}\n'),
+}
+
+TEMPLATES['calls_0x005c9770_on_member_unless_self'] = {
+    'header': ('// Every member of calls_0x005c9770_on_member_unless_self (symbols/families.csv) is a copy\n'
+               '// of the same function: unless the third argument is the object, it dispatches to the\n'
+               '// listeners of the member at +K. One replacement per member offset K.\n'),
+    'shared': '#include "member_listener_dispatch.h"\n',
+    'per_value': ('constexpr uint32_t member_offset_{name} = {value};\n'
+                  'extern "C" bool {symbol}(void *object, void *first, void *second)\n{{\n'
+                  '    return engine::member_listener_dispatch::dispatch_unless_self(object, first, second, '
+                  'member_offset_{name});\n}}\n'),
+}
+
+TEMPLATES['allocates_page_into_table_from_0x02795780'] = {
+    'header': ('// Every member of allocates_page_into_table_from_0x02795780 (symbols/families.csv) is a\n'
+               '// copy of the same function reaching the same arena allocate: it stores a new page of K\n'
+               '// bytes in the table\'s slot, growing the slots first. One replacement per page size K.\n'),
+    'shared': '#include "arena_page_table.h"\n',
+    'per_value': ('constexpr uint32_t page_bytes_{name} = {value};\n'
+                  'extern "C" void {symbol}(engine::arena_page_table::PageTable *table, uint64_t index)\n{{\n'
+                  '    engine::arena_page_table::add_page(table, index, page_bytes_{name});\n}}\n'),
+}
+
+
 # The far field families (symbols/families.csv, `{d32}`): the field getters and setters whose
 # field is 0x80 bytes or more into the object, so the instruction has a 32-bit displacement.
 # The bodies are the near family's; only the header differs.
