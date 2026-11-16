@@ -482,6 +482,19 @@ CASES = {
     'reads_signed_word_field': signed_field_cases,
     'reads_signed_byte_field': signed_field_cases,
     'writes_qword_field': setter_cases,
+    'writes_wide_string_at_0x28_to_sink': lambda address, value: sink_cases(address, 'writes_wide_string_at_0x28_to_sink'),
+    'writes_wide_string_through_0x20_to_sink': lambda address, value: sink_cases(address, 'writes_wide_string_through_0x20_to_sink'),
+    'writes_text_at_0x20_to_sink': lambda address, value: sink_cases(address, 'writes_text_at_0x20_to_sink'),
+    'toggles_flag_at_8_through_first_virtual': lambda address, value: toggle_cases(address, 8),
+    'toggles_flag_at_0x20_through_first_virtual': lambda address, value: toggle_cases(address, 0x20),
+    'resets_wide_string_at_8': lambda address, value: reset_cases(address, 8),
+    'resets_wide_string_at_0x10': lambda address, value: reset_cases(address, 0x10),
+    'tail_calls_slot_0_of_nth_node_at_0x30': lambda address, value: nth_node_cases(address),
+    'shifts_arguments_into_virtual_0x88': lambda address, value: shifted_arguments_cases(address),
+    'calls_0x78_stores_dword_at_0x20_calls_0xa8': lambda address, value: restart_cases(address),
+    'flushes_pending_through_member_at_0x40': lambda address, value: flush_cases(address),
+    'tail_calls_0x68_of_what_0x38_returns': lambda address, value: returned_object_cases(address),
+    'erases_subtree_with_wide_string_at_0x28': lambda address, value: tree_cases(address, True),
     'writes_dword_field': setter_cases,
     'writes_word_field': setter_cases,
     'writes_byte_field': setter_cases,
@@ -564,6 +577,26 @@ MUTANTS = {
     # Setters: for the four {d8} families the neighbouring offset's replacement stores at the wrong
     # place; store-then-clear-eax shows a setter must leave rax.
     'writes_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    # Records that call virtual functions: no call, and the one rule each family keeps (the heap
+    # text, the value, the state check, the free) left out.
+    'writes_wide_string_at_0x28_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_at_0x28',
+        'bb_mutant_wide_string_at_0x28_write_read_after_value', 'bb_mutant_wide_string_at_0x28_text_read_after_value'],
+    'writes_wide_string_through_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_inline_text_through_0x20',
+        'bb_mutant_wide_string_through_0x20_write_read_after_value', 'bb_mutant_wide_string_through_0x20_text_read_after_value'],
+    'writes_text_at_0x20_to_sink': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_sink_gets_text_without_value',
+        'bb_mutant_text_at_0x20_write_read_after_value', 'bb_mutant_text_at_0x20_text_read_after_value'],
+    'toggles_flag_at_8_through_first_virtual': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_toggle_at_8_ignores_state'],
+    'toggles_flag_at_0x20_through_first_virtual': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_toggle_at_0x20_ignores_state'],
+    'resets_wide_string_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_resets_wide_string_at_8_without_free'],
+    'resets_wide_string_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_resets_wide_string_at_0x10_without_free'],
+    'tail_calls_slot_0_of_nth_node_at_0x30': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_calls_node_after_the_nth'],
+    'shifts_arguments_into_virtual_0x88': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_virtual_0x88_keeps_second_argument'],
+    'calls_0x78_stores_dword_at_0x20_calls_0xa8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_restarts_without_storing_dword'],
+    'flushes_pending_through_member_at_0x40': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_flushes_while_flushing',
+        'bb_mutant_flushes_through_table_read_before_prepare', 'bb_mutant_flushes_with_flags_read_before_calls'],
+    'tail_calls_0x68_of_what_0x38_returns': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_calls_0x68_of_object_itself'],
+    'erases_subtree_with_wide_string_at_0x28': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_erases_nodes_without_their_strings',
+        'bb_mutant_erases_left_spine_only'],
     'writes_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_word_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
@@ -603,6 +636,362 @@ MUTANTS = {
     'zeroes_record_and_stores_first_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_record_last_word_left',
                                                 'bb_mutant_record_owner_is_record', 'bb_mutant_record_returns_owner'],
 }
+
+
+# Records that call virtual functions (game/leaf/virtual_records.cpp): every slot of every fake
+# table is a stub at its own address returning its own value, so a call through the wrong slot or
+# the wrong object is a different call.
+RECORD_STUB_BASE = 0x00502000
+RECORD_TABLE_STRIDE = 0x400
+RECORD_TABLE_SLOTS = 0x20
+WIDE_HEAP_CAPACITY = 8
+WIDE_CAPACITIES = (7, 8, 1 << 63)   # inline, the smallest heap one, and one that is negative signed
+
+
+def record_stub(table: int, slot: int) -> str:
+    return f'0x{RECORD_STUB_BASE + RECORD_TABLE_STRIDE * table + 0x10 * slot:08x}'
+
+
+def stubbed_table(case: dict, name: str, table: int, seed: int, argc: dict[int, int],
+                  returns: dict[int, int] | None = None, attach: bool = True) -> None:
+    """Buffer NAME gets a table of stubs at +0: slot offset K's stub compares argc[K] arguments
+    (1 for the rest) and returns returns[K] (else its own value). Unattached, the table is only
+    buffer NAME_table, for a callback to store."""
+    case['buffers'][f'{name}_table'] = {'size': 8 * RECORD_TABLE_SLOTS}
+    if attach:
+        case['memory'].append({'addr': f'buf:{name}+0x0', 'pointer': f'{name}_table'})
+    for slot in range(RECORD_TABLE_SLOTS):
+        case['memory'].append({'addr': f'buf:{name}_table+0x{8 * slot:x}', 'guest': record_stub(table, slot)})
+        value = (returns or {}).get(8 * slot, seed << 32 | table << 8 | slot)
+        case['stubs'].append({'address': record_stub(table, slot), 'argc': argc.get(8 * slot, 1), 'ret': value})
+
+
+def wide_string_bytes(seed: int, capacity: int, size: int = 0x20) -> bytearray:
+    """SIZE probe bytes whose wide string at 0 has CAPACITY (its size distinct bytes)."""
+    pattern = bytearray.fromhex(probe_bytes(seed, size))
+    pattern[0x18:0x20] = capacity.to_bytes(8, 'little')
+    return pattern
+
+
+SINK_WRITE = 0x90
+RECORD_VALUE = 0x60
+
+
+def sink_case(address: str, family: str, case_id: str, seed: int, capacity: int) -> dict:
+    """A record and a sink, each with its own table of stubs: the record's slot 0x60 returns a
+    value, and the sink's slot 0x90 (compared: sink, text, value) returns the result. The text is
+    a wide string's (inline below capacity 8, else a heap buffer) or a plain pointer."""
+    case = base_case(address, case_id, 'i64')
+    record = bytearray.fromhex(probe_bytes(seed, 0x60))
+    case['buffers'] = {'sink': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)},
+                       'heap': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 2)}}
+    heap = capacity >= WIDE_HEAP_CAPACITY
+    if family == 'writes_wide_string_at_0x28_to_sink':
+        record[0x28:0x48] = wide_string_bytes(seed + 3, capacity)
+        if heap:
+            case['memory'].append({'addr': 'buf:record+0x28', 'pointer': 'heap'})
+    elif family == 'writes_wide_string_through_0x20_to_sink':
+        case['buffers']['string'] = {'size': 0x28, 'bytes': (bytes(8) + wide_string_bytes(seed + 3, capacity)).hex()}
+        case['memory'].append({'addr': 'buf:record+0x20', 'pointer': 'string'})
+        if heap:
+            case['memory'].append({'addr': 'buf:string+0x8', 'pointer': 'heap'})
+    else:
+        case['memory'].append({'addr': 'buf:record+0x20', 'pointer': 'heap'})
+    case['buffers']['record'] = {'size': 0x60, 'bytes': record.hex()}
+    stubbed_table(case, 'record', 0, seed, {RECORD_VALUE: 1})
+    stubbed_table(case, 'sink', 1, seed, {SINK_WRITE: 3})
+    for i, reg in enumerate(ARGUMENT_REGISTERS[2:]):
+        case['args'][reg] = hex((seed * 0x9e3779b97f4a7c15 + 0x0123456789abcdef * (i + 1)) & (2**64 - 1))
+    case['args'].update({'rdi': 'buf:record', 'rsi': 'buf:sink', 'rax': hex(RAX_SEED)})
+    return case
+
+
+def callback_rewrite_case(address: str, family: str, seed: int, capacity: int) -> dict:
+    """The record is its own sink, and its value callback (slot 0x60) swaps the record's table for
+    another and points the text somewhere else: the write function and the text read before the
+    call are the ones passed on, so a member that reads either again after the call differs."""
+    case = sink_case(address, family, f'callback_rewrites_{capacity:x}_{seed}', seed, capacity)
+    case['args']['rsi'] = 'buf:record'
+    del case['buffers']['sink'], case['buffers']['sink_table']
+    case['memory'] = [m for m in case['memory'] if not m['addr'].startswith('buf:sink')]
+    case['stubs'] = [s for s in case['stubs'] if int(s['address'], 16) < RECORD_STUB_BASE + RECORD_TABLE_STRIDE]
+    for stub in case['stubs']:
+        if stub['address'] == record_stub(0, SINK_WRITE // 8):
+            stub['argc'] = 3
+    stubbed_table(case, 'swapped', 2, seed, {RECORD_VALUE: 1, SINK_WRITE: 3}, attach=False)
+    case['buffers']['moved'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 5)}
+    writes = [{'arg': 0, 'offset': 0, 'pointer': 'swapped_table'}]
+    if family == 'writes_wide_string_through_0x20_to_sink':
+        case['buffers']['moved_string'] = {'size': 0x28, 'bytes': (bytes(8) + wide_string_bytes(seed + 6, capacity)).hex()}
+        case['memory'].append({'addr': 'buf:moved_string+0x8', 'pointer': 'moved'})
+        writes.append({'arg': 0, 'offset': 0x20, 'pointer': 'moved_string'})
+    else:
+        writes.append({'arg': 0, 'offset': 0x28 if family == 'writes_wide_string_at_0x28_to_sink' else 0x20,
+                       'pointer': 'moved'})
+    for stub in case['stubs']:
+        if stub['address'] == record_stub(0, RECORD_VALUE // 8):
+            stub['writes'] = writes
+    return case
+
+
+def sink_cases(address: str, family: str) -> list[dict]:
+    """Two seeds; the wide strings at each capacity of WIDE_CAPACITIES; and per seed a value
+    callback that rewrites the write function and the text (heap text, so its pointer is read)."""
+    rewrites = [callback_rewrite_case(address, family, seed, WIDE_HEAP_CAPACITY) for seed in (19, 113)]
+    if family == 'writes_text_at_0x20_to_sink':
+        return [sink_case(address, family, f'text_{seed}', seed, 0) for seed in (19, 113)] + rewrites
+    return [sink_case(address, family, f'capacity_{capacity:x}_{seed}', seed, capacity)
+            for seed in (19, 113) for capacity in WIDE_CAPACITIES] + rewrites
+
+
+def toggle_case(address: str, state_at: int, case_id: str, on: int, state: int, result: int) -> dict:
+    """Switch ON (the second argument) with the state byte STATE; slot 0 returns RESULT (compared:
+    the object and the second argument)."""
+    case = base_case(address, case_id, 'i64')
+    pattern = bytearray.fromhex(probe_bytes(29 + state_at))
+    pattern[state_at] = state
+    case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': pattern.hex()}}
+    stubbed_table(case, 'object', 0, 29, {0: 2}, {0: result})
+    case['args'] = {'rdi': 'buf:object', 'rsi': hex(on), 'rdx': '0x7fffffffffffffff', 'rax': hex(RAX_SEED)}
+    return case
+
+
+def toggle_cases(address: str, state_at: int) -> list[dict]:
+    """On from off (and with only upper bits in rsi: still on, passed whole), on when already on
+    (no call), on refused (a result with low bits: returned, state kept), a result with only upper
+    bits (success: 0), off from on and from off (off always calls), and off refused."""
+    return [toggle_case(address, state_at, 'on', 1, 0, 0),
+            toggle_case(address, state_at, 'on_upper_bits', 1 << 32, 0, 0),
+            toggle_case(address, state_at, 'already_on', 1, 1, 0),
+            toggle_case(address, state_at, 'on_refused', 1, 0, 0x500000005),
+            toggle_case(address, state_at, 'on_result_upper_bits', 1, 0, 0x500000000),
+            toggle_case(address, state_at, 'off', 0, 1, 0),
+            toggle_case(address, state_at, 'already_off', 0, 0, 0),
+            toggle_case(address, state_at, 'off_refused', 0, 1, 9)]
+
+
+FREE_SLOT = 0x70
+
+
+def reset_case(address: str, string_at: int, case_id: str, seed: int, capacity: int) -> dict:
+    """A wide string at STRING_AT with CAPACITY and its allocator after it (a table of stubs; slot
+    0x70 compares the allocator and the heap text). Compared as void: memory and the calls."""
+    case = base_case(address, case_id, 'void')
+    pattern = bytearray.fromhex(probe_bytes(seed, 0x60))
+    pattern[string_at:string_at + 0x20] = wide_string_bytes(seed + 1, capacity)
+    case['buffers'] = {'object': {'size': 0x60, 'bytes': pattern.hex()},
+                       'allocator': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 2)},
+                       'heap': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 3)}}
+    case['memory'].append({'addr': f'buf:object+0x{string_at + 0x20:x}', 'pointer': 'allocator'})
+    if capacity >= WIDE_HEAP_CAPACITY:
+        case['memory'].append({'addr': f'buf:object+0x{string_at:x}', 'pointer': 'heap'})
+    stubbed_table(case, 'allocator', 0, seed, {FREE_SLOT: 2})
+    case['args'] = {'rdi': 'buf:object', 'rax': hex(RAX_SEED)}
+    return case
+
+
+def reset_cases(address: str, string_at: int) -> list[dict]:
+    return [reset_case(address, string_at, f'capacity_{capacity:x}', 37, capacity) for capacity in WIDE_CAPACITIES]
+
+
+LIST_NODES = 3
+NODE_TABLE_SLOTS = 4     # a node's table: slot 0 and its neighbours (the harness takes 64 stubs)
+ARGUMENT_SEEDS = (0x0123456789abcdef, 0xfedcba9876543210, 0x00ff00ff00ff00ff, 0x8000000000000081)
+
+
+def seeded_arguments(case: dict, seed: int) -> None:
+    """rdx..r9 hold distinct integers."""
+    for i, reg in enumerate(ARGUMENT_REGISTERS[2:]):
+        case['args'][reg] = hex((seed * 0x9e3779b97f4a7c15 + ARGUMENT_SEEDS[i]) & (2**64 - 1))
+
+
+def nth_node_case(address: str, case_id: str, index: int, nodes: int = LIST_NODES) -> dict:
+    """A list of NODES nodes at +0x30 (each with its own small table of stubs comparing six
+    arguments, so the wrong node is a different call) and the index INDEX in rsi."""
+    case = base_case(address, case_id, 'i64')
+    case['buffers'] = {'object': {'size': 0x40, 'bytes': probe_bytes(41, 0x40)}}
+    for n in range(nodes):
+        case['buffers'][f'node{n}'] = {'size': 0x18, 'bytes': probe_bytes(43 + n, 0x18)}
+        case['memory'].append({'addr': 'buf:object+0x30' if n == 0 else f'buf:node{n - 1}+0x10',
+                               'pointer': f'node{n}'})
+        case['buffers'][f'node{n}_table'] = {'size': 8 * NODE_TABLE_SLOTS}
+        case['memory'].append({'addr': f'buf:node{n}+0x0', 'pointer': f'node{n}_table'})
+        for slot in range(NODE_TABLE_SLOTS):
+            case['memory'].append({'addr': f'buf:node{n}_table+0x{8 * slot:x}', 'guest': record_stub(n, slot)})
+            case['stubs'].append({'address': record_stub(n, slot), 'argc': 6, 'ret': 41 << 32 | n << 8 | slot})
+    if nodes:
+        case['memory'].append({'addr': f'buf:node{nodes - 1}+0x10', 'bytes': '00' * 8})
+    else:
+        case['memory'].append({'addr': 'buf:object+0x30', 'bytes': '00' * 8})
+    seeded_arguments(case, 41)
+    case['args'].update({'rdi': 'buf:object', 'rsi': hex(index), 'rax': hex(RAX_SEED)})
+    return case
+
+
+def nth_node_cases(address: str) -> list[dict]:
+    """Each node, one past the end and the largest index (0), only upper bits besides the index
+    (32 bits), and an empty list."""
+    return ([nth_node_case(address, f'node_{i}', i) for i in range(LIST_NODES + 1)]
+            + [nth_node_case(address, 'index_all_bits', 0xffffffff),
+               nth_node_case(address, 'index_upper_bits', 1 << 32 | 1),
+               nth_node_case(address, 'empty', 0, nodes=0)])
+
+
+def own_table_case(address: str, case_id: str, seed: int, argc: dict[int, int], returns: str = 'i64',
+                   size: int = 0x40) -> dict:
+    """An object with a table of stubs at +0 and seeded argument registers."""
+    case = base_case(address, case_id, returns)
+    case['buffers'] = {'object': {'size': size, 'bytes': probe_bytes(seed, size)}}
+    stubbed_table(case, 'object', 0, seed, argc)
+    seeded_arguments(case, seed)
+    case['args'].update({'rdi': 'buf:object', 'rsi': hex(seed * 0x1000193 | 1 << 40), 'rax': hex(RAX_SEED)})
+    return case
+
+
+def shifted_arguments_cases(address: str) -> list[dict]:
+    """Slot 0x88 compares all six arguments; r9 has more than its low byte set."""
+    return [own_table_case(address, f'seed_{seed}', seed, {0x88: 6}) for seed in (47, 149)]
+
+
+def restart_cases(address: str) -> list[dict]:
+    """Slots 0x78 (two arguments) and 0xa8 (one); the dword at +0x20 and the byte at +8 change."""
+    return [own_table_case(address, f'seed_{seed}', seed, {0x78: 2, 0xa8: 1}) for seed in (53, 157)]
+
+
+PENDING_HAS_WORK = 1
+PENDING_FLUSHING = 2
+
+
+def flush_case(address: str, case_id: str, flags: int = PENDING_HAS_WORK, count: int = 5,
+               holder: bool = True, pending: bool = True) -> dict:
+    """The object's +0x40 points at a holder whose first qword points at the pending object
+    (FLAGS at +0xc, COUNT at +0x10, a table of stubs: 0x18 and 0x20 compare two arguments)."""
+    case = base_case(address, case_id, 'void')
+    case['buffers'] = {'object': {'size': 0x48, 'bytes': probe_bytes(59, 0x48)},
+                       'holder': {'size': 8, 'bytes': probe_bytes(61, 8)}}
+    pattern = bytearray.fromhex(probe_bytes(67, 0x18))
+    pattern[0xc] = flags
+    pattern[0x10:0x14] = count.to_bytes(4, 'little')
+    case['buffers']['pending'] = {'size': 0x18, 'bytes': pattern.hex()}
+    stubbed_table(case, 'pending', 0, 59, {0x18: 2, 0x20: 2})
+    case['memory'].append({'addr': 'buf:object+0x40', 'pointer': 'holder'} if holder
+                          else {'addr': 'buf:object+0x40', 'bytes': '00' * 8})
+    case['memory'].append({'addr': 'buf:holder+0x0', 'pointer': 'pending'} if pending
+                          else {'addr': 'buf:holder+0x0', 'bytes': '00' * 8})
+    seeded_arguments(case, 59)
+    case['args'].update({'rdi': 'buf:object', 'rsi': '0x8877665544332211', 'rax': hex(RAX_SEED)})
+    return case
+
+
+PENDING_REWRITTEN_FLAGS = 0xb5      # bit 1 clear, others mixed
+
+
+def flush_rewrite_case(address: str, case_id: str, by_prepare: bool) -> dict:
+    """The prepare callback (slot 0x18) swaps the pending object's table, so flush (slot 0x20) is
+    the new table's; and the prepare or the flush callback rewrites the flags, which the member
+    reads again to clear bit 1. A member that keeps the table or the flags from before the calls
+    differs."""
+    case = flush_case(address, case_id)
+    stubbed_table(case, 'swapped', 1, 61, {0x18: 2, 0x20: 2}, attach=False)
+    flags = {'arg': 0, 'offset': 0xc, 'bytes': f'{PENDING_REWRITTEN_FLAGS:02x}'}
+    prepare, flush = record_stub(0, 0x18 // 8), record_stub(1, 0x20 // 8)
+    for stub in case['stubs']:
+        if stub['address'] == prepare:
+            stub['writes'] = [{'arg': 0, 'offset': 0, 'pointer': 'swapped_table'}] + ([flags] if by_prepare else [])
+        elif stub['address'] == flush and not by_prepare:
+            stub['writes'] = [flags]
+    return case
+
+
+def flush_cases(address: str) -> list[dict]:
+    """A flush (bit 0 alone, and every other flag bit but 1 set), and each reason not to: no
+    holder, no pending object, no work bit, count 0, already flushing; and callbacks that swap
+    the table and rewrite the flags (in the prepare, and in the flush)."""
+    return [flush_rewrite_case(address, 'prepare_rewrites', True),
+            flush_rewrite_case(address, 'flush_rewrites_flags', False),
+            flush_case(address, 'flush'),
+            flush_case(address, 'flush_other_flags', flags=0xfd, count=0x80000000),
+            flush_case(address, 'no_holder', holder=False),
+            flush_case(address, 'no_pending', pending=False),
+            flush_case(address, 'no_work', flags=0xfc),
+            flush_case(address, 'count_zero', count=0),
+            flush_case(address, 'already_flushing', flags=PENDING_HAS_WORK | PENDING_FLUSHING)]
+
+
+def returned_object_cases(address: str) -> list[dict]:
+    """Slot 0x38 of the object (two arguments) returns another object with its own table; its
+    slot 0x68 compares two arguments."""
+    out = []
+    for seed in (71, 163):
+        case = own_table_case(address, f'seed_{seed}', seed, {0x38: 2})
+        case['buffers']['inner'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}
+        stubbed_table(case, 'inner', 1, seed, {0x68: 2})
+        for stub in case['stubs']:
+            if stub['address'] == record_stub(0, 0x38 // 8):
+                stub['ret'] = 'buf:inner'
+        out.append(case)
+    return out
+
+
+# Tree erases: a tree of five nodes (n0 over n1 and n2, n1's right child n3, n2's left child n4)
+# and the nil node. The allocator's slot 0x70 compares the allocator and the node, so the order
+# of the frees shows.
+TREE_NODES = {'n0': ('n1', 'n2'), 'n1': ('nil', 'n3'), 'n2': ('n4', 'nil'), 'n3': ('nil', 'nil'),
+              'n4': ('nil', 'nil')}
+NODE_SIZE = 0x50
+NODE_IS_NIL = 0x19
+NODE_STRING = 0x28
+NODE_CAPACITIES = {'n0': 7, 'n1': 8, 'n2': 1 << 63, 'n3': 7, 'n4': 8}
+
+
+def tree_case(address: str, case_id: str, start: str, strings: bool) -> dict:
+    """Erase from node START; with STRINGS each node holds a wide string at +0x28 (capacities
+    from NODE_CAPACITIES, the heap ones pointing at their own text) with a second allocator
+    after it. Compared as void: the frees, in order."""
+    case = base_case(address, case_id, 'void')
+    case['buffers'] = {'tree': {'size': 0x20, 'bytes': probe_bytes(73, 0x20)},
+                       'alloc': {'size': PROBE_SIZE, 'bytes': probe_bytes(79)}}
+    nil = bytearray.fromhex(probe_bytes(83, NODE_SIZE))
+    nil[NODE_IS_NIL] = 1
+    case['buffers']['nil'] = {'size': NODE_SIZE, 'bytes': nil.hex()}
+    for i, (node, (left, right)) in enumerate(TREE_NODES.items()):
+        pattern = bytearray.fromhex(probe_bytes(89 + i, NODE_SIZE))
+        pattern[NODE_IS_NIL] = 0
+        if strings:
+            pattern[NODE_STRING:NODE_STRING + 0x20] = wide_string_bytes(97 + i, NODE_CAPACITIES[node])
+            if NODE_CAPACITIES[node] >= WIDE_HEAP_CAPACITY:
+                case['buffers'][f'{node}_text'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(101 + i)}
+                case['memory'].append({'addr': f'buf:{node}+0x{NODE_STRING:x}', 'pointer': f'{node}_text'})
+            case['memory'].append({'addr': f'buf:{node}+0x{NODE_STRING + 0x20:x}', 'pointer': 'strings'})
+        case['buffers'][node] = {'size': NODE_SIZE, 'bytes': pattern.hex()}
+        case['memory'] += [{'addr': f'buf:{node}+0x0', 'pointer': left},
+                           {'addr': f'buf:{node}+0x10', 'pointer': right}]
+    case['memory'].append({'addr': 'buf:tree+0x18', 'pointer': 'alloc'})
+    stubbed_table(case, 'alloc', 0, 73, {FREE_SLOT: 2})
+    if strings:
+        case['buffers']['strings'] = {'size': PROBE_SIZE, 'bytes': probe_bytes(107)}
+        stubbed_table(case, 'strings', 1, 73, {FREE_SLOT: 2})
+    # A stub entry scripts one call: slot 0x70 gets one entry per node freed (and per heap text).
+    freed = subtree(start)
+    frees = {record_stub(0, FREE_SLOT // 8): len(freed),
+             record_stub(1, FREE_SLOT // 8): sum(NODE_CAPACITIES[n] >= WIDE_HEAP_CAPACITY for n in freed)}
+    for stub in list(case['stubs']):
+        for _ in range(frees.get(stub['address'], 1) - 1):
+            case['stubs'].append(dict(stub))
+    case['args'] = {'rdi': 'buf:tree', 'rsi': f'buf:{start}', 'rax': hex(RAX_SEED)}
+    return case
+
+
+def subtree(node: str) -> list[str]:
+    if node == 'nil':
+        return []
+    left, right = TREE_NODES[node]
+    return [node] + subtree(left) + subtree(right)
+
+
+def tree_cases(address: str, strings: bool) -> list[dict]:
+    """The whole tree, a leaf, a node with only a left child, and the nil node (no free)."""
+    return [tree_case(address, f'from_{start}', start, strings) for start in ('n0', 'n3', 'n2', 'nil')]
 
 
 def cases(family: str, address: str, value: int | None) -> list[dict]:
