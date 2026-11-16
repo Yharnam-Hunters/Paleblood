@@ -1,0 +1,10 @@
+address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_checked,source,source_sha256,date
+0x027a3210,leaf_returns_all_bits_027a3210,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02e5d1e0,leaf_returns_all_bits_02e5d1e0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02e5d1f0,leaf_returns_all_bits_02e5d1f0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02e60f10,leaf_returns_all_bits_02e60f10,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02e60f20,leaf_returns_all_bits_02e60f20,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02e6f060,leaf_returns_all_bits_02e6f060,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02e6f070,leaf_returns_all_bits_02e6f070,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02f97db0,leaf_returns_all_bits_02f97db0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
+0x02f97dc0,leaf_returns_all_bits_02f97dc0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/returns_all_bits.c,8fce097e643d7fc1,2026-11-16
