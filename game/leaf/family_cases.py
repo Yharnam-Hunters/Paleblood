@@ -13,6 +13,8 @@ from the member's address and its shape parameter.
 """
 from __future__ import annotations
 
+import copy
+
 import hashlib
 
 ARGUMENT_REGISTERS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
@@ -399,6 +401,56 @@ def returns_float_zero(address: str, value: int | None) -> list[dict]:
     return [vector] + untouched_state_cases(address, 'i64')
 
 
+def float_field_cases(address: str, value: int | None) -> list[dict]:
+    """A float getter of the field at offset VALUE: each object of field_cases twice, once
+    returning i64 (rax is left) and once returning vec with xmm0 and xmm1 seeded, so all of xmm0
+    is compared (the load clears its upper 96 bits) and xmm1 must be left."""
+    out = []
+    for case in field_cases(address, value):
+        vector = copy.deepcopy(case)
+        vector['id'] += '_vector'
+        vector['returns'] = 'vec'
+        vector['args'].update({'xmm0': XMM0_SEED, 'xmm1': XMM1_SEED})
+        out += [case, vector]
+    return out
+
+
+def float_setter_cases(address: str, value: int | None) -> list[dict]:
+    """A float or double setter of the field at offset VALUE from xmm0: the objects of
+    setter_cases, with the low eight bytes of xmm0 the bitwise complement of the eight bytes at
+    the field, so a store of 4 or 8 bytes changes every byte it covers and the width shows. Each
+    runs returning i64 (rax is left) and vec (xmm0 and xmm1 are left)."""
+    out = []
+    for case in setter_cases(address, value):
+        pattern = bytes.fromhex(case['buffers']['object']['bytes'])
+        start = int(case['args']['rdi'].split('+')[1], 16) + (value or 0)
+        low = bytes(b ^ 0xff for b in pattern[start:start + 8])
+        case['args']['xmm0'] = (low + bytes.fromhex(XMM0_SEED)[8:]).hex()
+        case['args']['xmm1'] = XMM1_SEED
+        vector = copy.deepcopy(case)
+        vector['id'] += '_vector'
+        vector['returns'] = 'vec'
+        out += [case, vector]
+    return out
+
+
+NEGATIVE_FILL = 0xc3   # a field of these bytes is negative at any width
+POSITIVE_FILL = 0x3c   # and of these, positive
+
+
+def signed_field_cases(address: str, value: int | None) -> list[dict]:
+    """A sign-extending getter of the field at offset VALUE: the objects of field_cases, with the
+    eight bytes at the field all NEGATIVE_FILL in the first and all POSITIVE_FILL in the second,
+    so a getter that zero-extends, or sign-extends into all of rax, fails the first."""
+    out = field_cases(address, value)
+    for case, fill in zip(out, (NEGATIVE_FILL, POSITIVE_FILL)):
+        pattern = bytearray.fromhex(case['buffers']['object']['bytes'])
+        start = int(case['args']['rdi'].split('+')[1], 16) + (value or 0)
+        pattern[start:start + 8] = bytes([fill]) * 8
+        case['buffers']['object']['bytes'] = pattern.hex()
+    return out
+
+
 CASES = {
     'returns_nothing': returns_nothing,
     'returns_zero': returns_a_value,
@@ -424,6 +476,11 @@ CASES = {
     'field_address': field_cases,
     'reads_first_qword': field_cases,
     'reads_first_dword': field_cases,
+    'reads_float_field': float_field_cases,
+    'writes_float_field': float_setter_cases,
+    'writes_double_field': float_setter_cases,
+    'reads_signed_word_field': signed_field_cases,
+    'reads_signed_byte_field': signed_field_cases,
     'writes_qword_field': setter_cases,
     'writes_dword_field': setter_cases,
     'writes_word_field': setter_cases,
@@ -494,6 +551,16 @@ MUTANTS = {
                           'bb_mutant_reads_first_dword'],
     'reads_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
                           'bb_mutant_reads_first_qword'],
+    # Float and sign-extending field getters and setters: the neighbouring offset's replacement
+    # reads or stores at the wrong place.
+    'reads_float_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one',
+                          'bb_mutant_zeroes_low_float_only'],
+    'writes_float_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_writes_first_argument',
+                           'bb_mutant_zeroes_xmm0_and_xmm1'],
+    'writes_double_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_writes_first_argument',
+                           'bb_mutant_zeroes_xmm0_and_xmm1'],
+    'reads_signed_word_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'reads_signed_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
     # Setters: for the four {d8} families the neighbouring offset's replacement stores at the wrong
     # place; store-then-clear-eax shows a setter must leave rax.
     'writes_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],

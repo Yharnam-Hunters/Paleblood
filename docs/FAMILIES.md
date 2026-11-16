@@ -113,6 +113,11 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `far_field_address` | `48 8d 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
+| `reads_float_field` | `c5 fa 10 47 {d8} c3` | getters of a float field (all of xmm0: the load clears its upper bits) |
+| `writes_float_field` | `c5 fa 11 47 {d8} c3` | setters of a float field from xmm0 |
+| `writes_double_field` | `c5 fb 11 47 {d8} c3` | setters of a double field from xmm0 |
+| `reads_signed_word_field` | `0f bf 47 {d8} c3` | getters of a signed 16-bit field, sign-extended to 32 bits |
+| `reads_signed_byte_field` | `0f be 47 {d8} c3` | getters of a signed 8-bit field, sign-extended to 32 bits |
 | `writes_qword_field` | `48 89 77 {d8} c3` | setters of a 64-bit field from the second argument |
 | `writes_far_qword_field` | `48 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
