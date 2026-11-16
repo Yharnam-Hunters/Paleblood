@@ -1821,7 +1821,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x0277ac00,0x0277ac00,1,77,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/ExtendedHeader.cpp,direct,high
 0x0277ac50,0x0277aef0,10,527,engine,,range,low
 0x0277af40,0x0277af40,1,322,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/LoaderTemporaryData.cpp,direct,high
-0x02785580,0x028bf790,8241,1202147,scaleform,,extent,medium
+0x02785580,0x028bf790,8241,1202193,scaleform,,extent,medium
 0x028f3f50,0x028f3f50,1,1090,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high
 0x028f43a0,0x028f75c0,165,11167,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,range,medium
 0x028f75d0,0x028f75d0,1,304,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high
