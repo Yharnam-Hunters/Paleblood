@@ -320,11 +320,6 @@ void erase_subtree(TreeWithAllocator *tree, TreeNode *node)
 
 }  // namespace
 
-extern "C" void bb_leaf_erases_subtree_through_allocator_at_0x18(void *tree, void *node)
-{
-    erase_subtree<false>(static_cast<TreeWithAllocator *>(tree), static_cast<TreeNode *>(node));
-}
-
 extern "C" void bb_leaf_erases_subtree_with_wide_string_at_0x28(void *tree, void *node)
 {
     erase_subtree<true>(static_cast<TreeWithAllocator *>(tree), static_cast<TreeNode *>(node));
