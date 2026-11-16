@@ -5,10 +5,18 @@
    library. */
 #include <stdint.h>
 
-/* The harness runs a replacement library's bbgame_init first; these need no setup. */
-int bbgame_init(const void *host)
+#include "runtime/guest.h"
+#include "runtime/host.h"
+
+/* Where the loader mapped the guest image; game-specific mutants (game/<system>/tests/) reach
+   guest memory through rt_guest (runtime/guest.h), as replacements do. */
+unsigned char *rt_image;
+
+/* The harness runs a replacement library's bbgame_init first: record the image as
+   runtime/plugin.c does. The mutants install no hooks. */
+int bbgame_init(const rt_host *host)
 {
-    (void)host;
+    rt_image = host->image;
     return 0;
 }
 
