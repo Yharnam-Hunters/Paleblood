@@ -27,7 +27,8 @@ address,size,name,system,status,notes
 0x00b69450,120,frame_timing_generator_fill_00b69450,frame_timing,edge-verified,"Generator: clears the pending flag of the kind-1 nodes each binding's group lists, then fills the buffer (0x00b694d0, same arguments)"
 0x00b6a030,216,frame_timing_generator_refresh_00b6a030,frame_timing,edge-verified,"Generator: hands each binding group's short records to their targets' slot 7 and long records to slot 5, with the data after each index"
 0x00fb4ac0,89,render_yebis_context_instantiate,render,edge-verified,YEBIS IPfxContext::Instantiate allocates a context; initializes its base; publishes its vtable then constructs the GNM shim; returns the allocation pointer
-0x00fb6d20,30,render_yebis_initialize_interface,render,edge-verified,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
+0x00fb6c80,90,render_yebis_release_interface,render,replaced,Decrements the DWORD reference count; asserts and rereads zero input; cleans up and frees on zero; returns the cached count
+0x00fb6d20,30,render_yebis_initialize_interface,render,replaced,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,83,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
 0x011183b0,98,audio_fmod_initialize_thread,audio,edge-verified,FMOD Thread initialization; publish the relocated vtable and clear selected fields; preserve all other bytes
