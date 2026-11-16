@@ -12,6 +12,12 @@ the cases of game/engine/static_wide_string_init_cases.py at its own address: th
 clear, an allocator present or made by the factory, the heap info flags with and without the
 valid bit, the info, diagnostic and registration callbacks changing the allocator, the object or
 the guard, and registration results that are ignored.
+
+destroys_heap_buffer_owner_directly, destroys_heap_buffer_owner_through_base_at_0x38,
+destroys_heap_buffer_owner_through_base_at_0x48 and frees_to_global_heap: the copies of a
+destructor body entered at the owner or through one of two bases, and of a free to the heap the
+global at 0x057e7320 points at (heap_buffer_owner_families.cpp). Their cases are
+heap_buffer_owner_family_cases.py's, at each member's own address.
 """
 from __future__ import annotations
 
@@ -38,13 +44,27 @@ def static_wide_string_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
-CASES = {'initialize_static_wide_string': static_wide_string_cases}
+def _owner(name: str):
+    return getattr(_load('heap_buffer_owner_family_cases'), name)
+
+
+CASES = {'initialize_static_wide_string': static_wide_string_cases,
+         'destroys_heap_buffer_owner_directly': _owner('directly_cases'),
+         'destroys_heap_buffer_owner_through_base_at_0x38': _owner('through_base_at_0x38_cases'),
+         'destroys_heap_buffer_owner_through_base_at_0x48': _owner('through_base_at_0x48_cases'),
+         'frees_to_global_heap': _owner('free_cases')}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
     # publishing the guard skips the allocator, the string and the registration on a clear guard,
     # and overwrites a set guard's other bytes.
     'initialize_static_wide_string': ['bb_mutant_does_nothing', 'bb_mutant_static_wide_string_guard_only'],
+    # Doing nothing makes none of the writes or calls; each other mutant says in
+    # tests/family_mutants.c how it differs from the family it is listed for.
+    'destroys_heap_buffer_owner_directly': ['bb_mutant_does_nothing', 'bb_mutant_heap_buffer_owner_handle_snapshot_directly', 'bb_mutant_heap_buffer_owner_vtable_late_directly', 'bb_mutant_heap_buffer_owner_whole_state_directly', 'bb_mutant_heap_buffer_owner_no_release_directly'],
+    'destroys_heap_buffer_owner_through_base_at_0x38': ['bb_mutant_does_nothing', 'bb_mutant_heap_buffer_owner_handle_snapshot_base_0x38', 'bb_mutant_heap_buffer_owner_vtable_late_base_0x38', 'bb_mutant_heap_buffer_owner_whole_state_base_0x38', 'bb_mutant_heap_buffer_owner_no_release_base_0x38'],
+    'destroys_heap_buffer_owner_through_base_at_0x48': ['bb_mutant_does_nothing', 'bb_mutant_heap_buffer_owner_handle_snapshot_base_0x48', 'bb_mutant_heap_buffer_owner_vtable_late_base_0x48', 'bb_mutant_heap_buffer_owner_whole_state_base_0x48', 'bb_mutant_heap_buffer_owner_no_release_base_0x48'],
+    'frees_to_global_heap': ['bb_mutant_does_nothing', 'bb_mutant_global_heap_frees_null'],
 }
 
 
