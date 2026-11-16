@@ -359,6 +359,49 @@ MATCHING_TEMPLATES = {
 }
 
 
+# Constant setters (symbols/families.csv): the field K bytes into the object, or the first field,
+# gets a fixed value instead of an argument. family: (width, C constant, instruction, value).
+CONSTANT_FIELD_FAMILIES = {
+    'stores_one_in_byte_field': ('byte', '1', 'mov byte [rdi+K], 1; ret', '1 (a flag set to true)'),
+    'clears_byte_field': ('byte', '0', 'mov byte [rdi+K], 0; ret', '0 (a flag set to false)'),
+    'clears_qword_field': ('qword', '0', 'mov qword [rdi+K], 0; ret', '0 (often a null pointer)'),
+    'clears_dword_field': ('dword', '0', 'mov dword [rdi+K], 0; ret', '0'),
+    'stores_one_in_dword_field': ('dword', '1', 'mov dword [rdi+K], 1; ret', '1'),
+    'stores_all_bits_in_dword_field': ('dword', 'UINT32_MAX', 'mov dword [rdi+K], -1; ret', 'all bits set (-1, often "none")'),
+}
+CONSTANT_FIRST_FAMILIES = {
+    'clears_first_qword': ('qword', '0', 'mov qword [rdi], 0; ret'),
+    'clears_first_dword': ('dword', '0', 'mov dword [rdi], 0; ret'),
+    'clears_first_byte': ('byte', '0', 'mov byte [rdi], 0; ret'),
+    'stores_one_in_first_byte': ('byte', '1', 'mov byte [rdi], 1; ret'),
+}
+for family, (width, constant, instruction, stored) in CONSTANT_FIELD_FAMILIES.items():
+    field_type = FIELD_TYPES[width]
+    TEMPLATES[family] = {
+        'header': (f'// Constant setters: every member of the {family} family (symbols/families.csv)\n'
+                   f'// is `{instruction}`: the field K bytes into the object gets {stored}.\n'
+                   '// rax is left as it was. One replacement per offset K.\n'),
+        'shared': '#include "object_field.h"\n',
+        'per_value': ('constexpr std::size_t offset_{name} = {value};\n'
+                      f'static_assert(field_is_at_offset<offset_{{name}}, {field_type}>);\n'
+                      f'extern "C" void {{symbol}}(ObjectWithFieldAt<offset_{{name}}, {field_type}> *object)\n'
+                      f'{{{{\n    object->field = {constant};\n}}}}\n'),
+    }
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// Constant setters: `{instruction}`. One function per offset K.\n',
+        'shared': STDINT,
+        'per_value': (field_struct(width)
+                      + f'void {{symbol}}(struct object_with_{width}_at_{{name}} *object)\n'
+                      f'{{{{\n    object->field = {constant};\n}}}}\n'),
+    }
+for family, (width, constant, instruction) in CONSTANT_FIRST_FAMILIES.items():
+    MATCHING_TEMPLATES[family] = {
+        'header': f'// First-field constant setters: `{instruction}`.\n',
+        'shared': STDINT + '\n' + first_field(width),
+        'single': (f'void {{symbol}}(struct object_starting_with_{width} *object)\n'
+                   f'{{{{\n    object->first = {constant};\n}}}}\n'),
+    }
+
 # The far field families (symbols/families.csv, `{d32}`): the field getters and setters whose
 # field is 0x80 bytes or more into the object, so the instruction has a 32-bit displacement.
 # The bodies are the near family's; only the header differs.
