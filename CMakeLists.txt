@@ -30,6 +30,9 @@ endif()
 
 enable_testing()
 include(cmake/HostLockTests.cmake)
+if(APPLE)
+    add_subdirectory(test/fixed_tsc)
+endif()
 if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     if(CMAKE_OSX_ARCHITECTURES)
         set(PB_GUEST_TLS_ARCH "${CMAKE_OSX_ARCHITECTURES}")
@@ -277,3 +280,8 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 add_library(bbfamily_mutants SHARED test/family_mutants.c game/engine/tests/family_mutants.c)
 target_include_directories(bbfamily_mutants PRIVATE runtime/include)
 target_compile_options(bbfamily_mutants PRIVATE -ffp-contract=off -fno-fast-math)
+
+include(cmake/DarwinBootTests.cmake)
+include(cmake/BootArenaTests.cmake)
+
+include(cmake/GameBridgeTests.cmake)
