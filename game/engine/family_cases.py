@@ -491,6 +491,14 @@ def release_member_cases(address: str, value: int | None) -> list[dict]:
             out.append(c)
     return out
 
+
+
+
+
+def array64_reserve_cases(address: str, value: int | None) -> list[dict]:
+    """The cases of array64_reserve_cases.py (the hand-named copies) at this member's address."""
+    return _load('array64_reserve_cases').reserve_cases(address)
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
          'deletes_sized_through_thread_allocator': sized_delete_cases,
          'allocates_from_thread_allocator': allocate_cases,
@@ -521,7 +529,8 @@ CASES = {'initialize_static_wide_string': static_wide_string_cases,
          'releases_member_at_0xc0_then_destroys_base': member_release_cases,
          'releases_member_at_0xc0_then_destroys_and_frees': member_release_free_cases,
          **{name: static_vtable_cases(name) for name in STATIC_VTABLE_SETTERS},
-         'stores_vtable_0x05541b90_then_releases_member_at_8': release_member_cases}
+         'stores_vtable_0x05541b90_then_releases_member_at_8': release_member_cases,
+         'reallocates_array64': array64_reserve_cases}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
@@ -575,6 +584,8 @@ MUTANTS = {
     'sets_static_vtable_at_0x05ac59d0': ['bb_mutant_does_nothing'],
     # Nothing stored or called; or the member released but no vtable stored.
     'stores_vtable_0x05541b90_then_releases_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_releases_member_at_8_only'],
+
+    'reallocates_array64': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 
