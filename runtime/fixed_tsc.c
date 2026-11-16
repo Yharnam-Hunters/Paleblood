@@ -14,6 +14,7 @@
    Any other fault is not ours: the handler puts the default action back and returns, the
    instruction faults again and the process ends with SIGSEGV, as it did without this. */
 #define _GNU_SOURCE
+#if defined(__linux__) && defined(__x86_64__)
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
@@ -80,3 +81,22 @@ uint64_t rt_fixed_tsc_reads(void)
 {
     return reads;
 }
+
+#else
+#include <errno.h>
+#include <stdint.h>
+
+/* Refuse unsupported fixed sequences without changing ordinary counters or signal handlers. */
+int rt_fixed_tsc_install(uint64_t first, uint64_t step)
+{
+    (void)first;
+    (void)step;
+    errno = ENOTSUP;
+    return -1;
+}
+
+uint64_t rt_fixed_tsc_reads(void)
+{
+    return 0; /* No counter reads have been intercepted. */
+}
+#endif
