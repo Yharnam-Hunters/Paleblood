@@ -254,9 +254,9 @@ static void ordering(Fixture *f)
     scene(&c, 0, 15); draw(&c, AUTO); unchanged(f, "bank0/inverse-order-refusal", &c, RUN, "blending");
     rt_executor_reset(f->executor);
     c = (Calls){0}; scene(&c, 0, 15); success(f, "bank0/reset-default-recovery", &c, AUTO, 0, 0, RUN);
-    /* The unchanged stronger policy refuses enabled bank0 even when target0 is masked off. */
+    /* Masked target0 still executes fresh vertex stores with enabled bank0. */
     c = (Calls){0}; reg(&c, BLEND0, blend_enable); reg(&c, BLEND0 + 5, 0);
-    scene(&c, 1, 0); draw(&c, AUTO); unchanged(f, "bank0/zero-mask-refusal", &c, RUN, "blending");
+    scene(&c, 1, 0); success(f, "bank0/zero-mask-VS", &c, AUTO, 1, 1, RUN);
     c = (Calls){0}; reg(&c, BLEND0, 0); scene(&c, 1, 0);
     success(f, "bank0/zero-mask-VS-recovery", &c, AUTO, 1, 1, RUN);
 }
@@ -325,7 +325,7 @@ int main(void)
             success(f, warm ? "cache/warm-higher-enable" : "cache/new-executor-higher-enable", &c, AUTO, warm, 0, RUN);
         }
         higher_words(f); ordering(f); routes_and_guards(f);
-        CHECK(cases == 518); CHECK(data_draws == 497); CHECK(refusals == 18); CHECK(api_calls == 518); CHECK(pool_scans == 518);
+        CHECK(cases == 518); CHECK(data_draws == 498); CHECK(refusals == 17); CHECK(api_calls == 518); CHECK(pool_scans == 518);
         CHECK(readbacks == data_draws); CHECK(ticket_waits == 3); CHECK(explicit_submits == 1);
         const int finished = rt_executor_finish(f->executor, error, sizeof error);
         printf("blend-banks FINISH actual=%d\n", finished); CHECK(finished == 0); rt_executor_close(f->executor);
