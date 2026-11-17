@@ -413,8 +413,11 @@ static void image_programs(void)
 }
 
 /* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the
-   callee inlined and validates; a callee that branches or returns through another pair, and a call
-   through a pair written first, stop by name. */
+   callee inlined and validates, reporting the SGPRs its code reads (the inlined buffer loads read the
+   descriptors in s[4:11]; nothing reads s12); gcn_called_memory_reads lists the callee's two descriptor
+   loads from the caller's pointer s[2:3] and the buffer loads through those descriptors, as the
+   caller's SGPRs give them; a callee that branches or returns through another pair, and a call through
+   a pair written first, stop by name. */
 static void calls(void)
 {
     unsigned pair = 99;
@@ -426,11 +429,24 @@ static void calls(void)
     gcn_vertex_layout layout = vertex_layout;
     layout.callee = fetch_position_color, layout.callee_dwords = sizeof fetch_position_color / 4, layout.code_address = 0x1000;
     layout.error_address = 0x2000;
-    uint32_t *spirv = NULL;
+    uint32_t *spirv = NULL, read[GCN_SGPR_READ_WORDS] = {0};
     size_t words = 0;
+    layout.sgprs_read = read;
     const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
     if (translated) fprintf(stderr, "vertex_calling_fetch: %s\n", error);
     CHECK(translated == 0);
+    CHECK((read[0] >> 4 & 1) && (read[0] >> 8 & 1) && !(read[0] >> 12 & 1));
+    layout.sgprs_read = NULL;
+    gcn_memory_read reads[GCN_MAX_IMAGES];
+    unsigned read_count = 0;
+    int unknown = 1;
+    CHECK(gcn_called_memory_reads(PROGRAM(vertex_calling_fetch), fetch_position_color, sizeof fetch_position_color / 4, reads, GCN_MAX_IMAGES,
+                                  &read_count, &unknown, error, sizeof error) == 0);
+    CHECK(read_count == 4 && !unknown);
+    CHECK(reads[0].pointer == 1 && reads[0].origin.sgpr == 2 && reads[0].offset == 0 && reads[0].sgpr == 4 && reads[0].sgprs == 4);
+    CHECK(reads[1].pointer == 1 && reads[1].origin.sgpr == 2 && reads[1].offset == 16 && reads[1].sgpr == 8);
+    CHECK(!reads[2].pointer && reads[2].origin.from_memory && reads[2].origin.pointer_sgpr == 2 && reads[2].origin.offset == 0);
+    CHECK(!reads[3].pointer && reads[3].origin.from_memory && reads[3].origin.pointer_sgpr == 2 && reads[3].origin.offset == 16);
     if (spirv) {
         CHECK(validate(spirv, words, "vertex_calling_fetch") != 0);
         free(spirv);
@@ -518,8 +534,9 @@ static void store_resources(void)
 }
 
 /* What programs read (gcn_memory_reads): scale_add its user-data buffer s[0:3]; an s_load_dwordx4 at
-   dword 4 from the pointer in s[0:1] reads 16 bytes at 16, an s_buffer_load reads its descriptor
-   s[4:7]; a flat load may read anywhere (unknown). */
+   dword 4 from the pointer in s[0:1] reads 16 bytes at 16 into s[16:19], an s_buffer_load reads its
+   descriptor s[4:7]; an s_load at an SGPR offset is listed with its SGPRs as one whose address is not
+   known (pointer 2), not as unknown; a flat load may read anywhere (unknown). */
 static void memory_reads(void)
 {
     gcn_memory_read found[GCN_MAX_IMAGES];
@@ -535,8 +552,15 @@ static void memory_reads(void)
     };
     CHECK(gcn_memory_reads(PROGRAM(scalar), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 2 && !unknown);
-    CHECK(found[0].pointer && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(found[0].pointer == 1 && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(found[0].sgpr == 16 && found[0].sgprs == 4);
     CHECK(!found[1].pointer && found[1].origin.sgpr == 4);
+    static const uint32_t offset_in_sgpr[] = {
+        0xc0080002, /* s_load_dword s16, s[0:1], s2 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(offset_in_sgpr), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && found[0].pointer == 2 && found[0].sgpr == 16 && found[0].sgprs == 1);
     static const uint32_t flat[] = {0xdc300000, 0x01000002, /* flat_load_dword v1, v[2:3] */ 0xbf810000};
     CHECK(gcn_memory_reads(PROGRAM(flat), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(unknown);

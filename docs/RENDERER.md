@@ -611,7 +611,19 @@ Instead:
        (`RT_GPU_STEP_COPIES`) is recorded the same way (`rt_executor_copy`, a `vkCmdCopyBuffer`), on the
        same terms, and not while a deferred step not yet performed writes its source; the renderer
        performs one whose source and destination overlap in one buffer. A `WAIT_REG_MEM` whose compare
-       holds for any value (">= 0", the clinic's waits on labels it has just zeroed) is no step. An occlusion dump (`PIXEL_PIPE_STAT_DUMP`) is a deferrable step:
+       holds for any value (">= 0", the clinic's waits on labels it has just zeroed) is no step. A run
+       of the constant engine (its `DUMP_CONST_RAM`s into the descriptor ring the draws after it read)
+       is CPU work in stream order (`RT_GPU_STEP_CPU_ORDERED`), as on the console, where the command
+       processors run ahead of the shaders: the renderer performs it at once when no batch still to run
+       reads the dumped memory in place or may store there (`rt_executor_cpu_write_ready`). Each batch
+       notes what its work reads as the GPU runs it, within the memory such writes reach: a draw's
+       buffer descriptors' ranges, its index range, and the `s_load`s whose SGPRs the translated code
+       reads (the translator reports them, `sgprs_read`). An image or sampler descriptor loaded from
+       memory is read by the executor before it records the draw, so the shader's own load of it does
+       not count, and a later dump over it can land at once. A tessellated, geometry or indirect draw,
+       or work whose reads are not known, counts as reading all of it. The first dump to new memory
+       still waits for all the work (nothing noted reads there yet). `PB_CPU_ORDERED_STEPS=0` turns
+       this off for a same-binary A/B; `PB_STEP_COUNTS=1` prints how many went each way. An occlusion dump (`PIXEL_PIPE_STAT_DUMP`) is a deferrable step:
        only the CPU reads a query block. In Iosefka's Clinic every occlusion query's 128-byte zero fill
        and its two dumps, and a `WRITE_DATA` of 48 zero dwords the game repeats, had each waited for all
        the GPU's work. A submit returns only once the renderer's thread has taken a buffer

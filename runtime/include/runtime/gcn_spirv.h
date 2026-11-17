@@ -145,19 +145,26 @@ int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource
 
 /* The memory a program reads (not counting its images): each buffer descriptor its buffer and tbuffer
    loads, atomics and s_buffer_loads read through (pointer 0: the descriptor's range, found by origin as
-   above), and each s_load from a user-data pointer pair the program does not write, at an immediate or
-   literal offset (pointer 1: `bytes` from the pointer in s[origin.sgpr : origin.sgpr + 1] plus
-   `offset`; a descriptor loaded from memory is read this way too). A caller can then bound what a
-   dispatch reads, and write back only the render targets in that memory. *unknown is set when a load
-   has neither (or there are more than max reads, or the program reads memory some other way): it may
-   read any memory. 0, or -1 with the reason (code that does not decode). */
+   above), and each s_load (pointer 1 or 2, with the SGPRs it writes: sgprs from s[sgpr]). Pointer 1 is
+   one from a user-data pointer pair the program does not write, at an immediate or literal offset:
+   `bytes` from the pointer in s[origin.sgpr : origin.sgpr + 1] plus `offset`; a descriptor loaded from
+   memory is read this way too. Pointer 2 is any other s_load, whose address is not known before it runs
+   (an SGPR offset, a pointer loaded from memory): it may read any memory, unless nothing reads the SGPRs
+   it writes (SGPRs read, below). A caller can then bound what a dispatch reads, and write back only the
+   render targets in that memory. *unknown is set when a load is none of these (or there are more than
+   max reads, or the program reads memory some other way): it may read any memory. With a callee (a
+   vertex shader's fetch shader, gcn_call_sgpr), its reads count too, their origins as the caller's
+   SGPRs hold them at the call. 0, or -1 with the reason (code that does not decode). */
 typedef struct {
     int pointer;
     gcn_resource_origin origin;
     uint32_t offset, bytes;
+    unsigned sgpr, sgprs;
 } gcn_memory_read;
 int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, char *error,
                      size_t error_size);
+int gcn_called_memory_reads(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords, gcn_memory_read *reads,
+                            unsigned max, unsigned *count, int *unknown, char *error, size_t error_size);
 
 /* A table-driven copy: a compute program that loads its workgroup's entry of three 32-bit words (x, y,
    count) from a table buffer, indexed by its workgroup's x index, and in each thread (lane id v0, its
@@ -255,6 +262,7 @@ typedef struct {
     const gcn_image_binding *images;
     unsigned image_count;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
     gcn_lds lds;              /* the workgroup's LDS (above) */
     uint64_t gds_address;     /* the GDS's GPU address (above), or 0 */
 } gcn_compute_layout;
@@ -263,6 +271,14 @@ typedef struct {
    reads before it writes them, taking the instructions in program order (a read in one branch after a
    write in another counts as written). The caller can then refuse to run it on user data no call has
    set. */
+
+/* SGPRs read: a translation can also report every SGPR (s0 to s127, bit n % 32 of word n / 32) its
+   translated code reads, anywhere in the program, a callee's included. An SGPR an s_load writes and the
+   code never reads is a load whose value nothing uses: an image or sampler descriptor the caller binds
+   (images, samplers above) is such a load unless the code reads its words too (a sample's compare reads
+   its sampler's). A caller can then tell the memory the GPU reads as it runs (its pending reads) from
+   the descriptors it read itself before recording the work. */
+enum { GCN_SGPR_READ_WORDS = 4 };
 
 /* Translates the compute program at code (dwords long, through its s_endpgm). On success 0, and
    *spirv holds a SPIR-V module the caller frees; otherwise -1 and error says why. The push
@@ -297,6 +313,7 @@ typedef struct {
     unsigned image_count;
     unsigned first_binding;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
     /* a geometry shader's copy shader (Geometry shaders, below): its ring loads read the GSVS ring, here
        on the GPU; 0 for any other vertex shader */
     uint64_t gsvs_ring, gsvs_ring_bytes;
@@ -356,6 +373,7 @@ typedef struct {
     const uint32_t *input_controls; /* GCN_PIXEL_INPUTS SPI_PS_INPUT_CNTL words, or NULL (above) */
     uint32_t depth_export;    /* DB_SHADER_CONTROL's export enables (GCN_DEPTH_EXPORT_*), 0 when SPI_SHADER_Z_FORMAT exports nothing */
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
 } gcn_pixel_layout;
 
 /* DB_SHADER_CONTROL's export enables (AMD's gfx_7_2_sh_mask.h): Z_EXPORT_ENABLE bit 0,
