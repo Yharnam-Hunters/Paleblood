@@ -1385,6 +1385,11 @@ menu_tex_repository_require_02360d80,edge,,4,4,0,0,99d14ad81370e4cc,2026-11-14
 menu_text_input_close,edge,,18,18,0,0,95e2e1a30c7ff8eb,2026-11-14
 menu_text_input_destroy,edge,,8,8,0,0,95e2e1a30c7ff8eb,2026-11-14
 menu_text_input_open,edge,,12,12,0,0,95e2e1a30c7ff8eb,2026-11-14
+menu_text_input_step_open_02034c70,edge,,20,20,0,0,4603bd1d0071e083,2026-11-17
+menu_text_input_step_reload_fonts_02034e00,edge,,12,12,0,0,4603bd1d0071e083,2026-11-17
+menu_text_input_step_status_02034b50,edge,,37,37,0,0,4603bd1d0071e083,2026-11-17
+menu_text_input_step_take_text_02034990,edge,,10,10,0,0,4603bd1d0071e083,2026-11-17
+menu_text_input_step_wait_localize_02034f40,edge,,21,21,0,0,4603bd1d0071e083,2026-11-17
 menu_text_input_update,edge,,18,18,0,0,95e2e1a30c7ff8eb,2026-11-14
 menu_work_holder_destroy_02363c00,edge,,11,11,0,0,99d14ad81370e4cc,2026-11-14
 menu_work_holder_destroy_02363d20,edge,,11,11,0,0,99d14ad81370e4cc,2026-11-14
