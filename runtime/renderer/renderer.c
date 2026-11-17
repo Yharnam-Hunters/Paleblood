@@ -283,6 +283,7 @@ typedef struct {
 } recorded_write;
 static recorded_write recorded_writes[RECORDED_WRITES];
 static size_t recorded_write_count;
+static uint64_t last_write_ticket; /* the latest recorded write's, for rt_renderer_wait_idle (atomic) */
 
 /* Drops the recorded writes whose submissions have run (renderer lock held). */
 static void forget_writes_run(void)
@@ -328,6 +329,7 @@ static int write_on_gpu(const rt_gpu_step *step)
     if (taken == 0) {
         last_ticket = ticket; /* the deferred steps after it wait for it too */
         recorded_writes[recorded_write_count++] = (recorded_write){address, bytes, ticket};
+        __atomic_store_n(&last_write_ticket, ticket, __ATOMIC_RELEASE);
     }
     unlock_renderer();
     return taken == 0;
@@ -432,6 +434,9 @@ void rt_renderer_wait_idle(void)
     while (queue_head || running) pthread_cond_wait(&queue_changed, &queue_lock);
     pthread_mutex_unlock(&queue_lock);
     drain_deferred(); /* the last batch's deferred steps (its work: their tickets) */
+    const uint64_t written = __atomic_load_n(&last_write_ticket, __ATOMIC_ACQUIRE); /* the fills and copies the GPU makes in the steps' place */
+    char error[RENDER_ERROR_BYTES];
+    if (written && executor && rt_executor_wait_ticket(executor, written, error, sizeof error)) rt_fatal("the renderer (a wait for its work)", error);
 }
 
 void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,

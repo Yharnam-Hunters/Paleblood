@@ -239,14 +239,15 @@ INPUTS = [
     {"args": ["p33", 31, 16], "words": []},
 ]
 
-# Tile-table index 19 has MICRO_TILE_MODE_NEW=4. Cover every requested ARRAY_MODE.
+# Tile-table index 19 has MICRO_TILE_MODE_NEW=4. Cover every requested ARRAY_MODE, plus 14 and 15:
+# just past the 12-entry mapped table, which the bound check must refuse.
 INPUTS.extend(
     {
         "id": f"thick_category_array_mode_{requested}",
         "args": ["p33", 20 if requested == 3 else 19, requested],
         "words": [],
     }
-    for requested in range(2, 14)
+    for requested in range(2, 16)
 )
 
 
