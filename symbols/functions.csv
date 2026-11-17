@@ -254,6 +254,14 @@ address,size,name,system,status,notes
 0x016334b0,804,ai_debug_set_position_016334b0,ai,verified,"Debug display move: stays while a point-gated object is within 1e-4 of the reference; else target=object, point->previous, finds the point near the object (0x021c97d0) or in the world"
 0x01633ac0,734,ai_debug_flush_01633ac0,ai,edge-verified,"Marks (debug flag 2) the objects of the entities the display object links to (+0x150, 0x60 apart): ids copied to a temporary std::list from the default allocator first"
 0x0163bb50,626,ai_debug_end_0163bb50,ai,edge-verified,Debug view end of frame: draws its marks (and the world marks) when asked; then the subject bounding box (vtable +0x60) through 0x0135dca0 with the bounds render state
+0x01656fc0,118,ai_func_add_top_goal_0,ai,verified,"AI script binding AddTopGoal with 0 parameters: adds a goal under the think's root goal"
+0x01657040,114,ai_func_add_top_goal_1,ai,edge-verified,"AI script binding AddTopGoal with 1 parameter: adds a goal under the think's root goal"
+0x016570c0,110,ai_func_add_top_goal_2,ai,edge-verified,"AI script binding AddTopGoal with 2 parameters: adds a goal under the think's root goal"
+0x01657130,106,ai_func_add_top_goal_3,ai,edge-verified,"AI script binding AddTopGoal with 3 parameters: adds a goal under the think's root goal"
+0x016571a0,102,ai_func_add_top_goal_4,ai,edge-verified,"AI script binding AddTopGoal with 4 parameters: adds a goal under the think's root goal"
+0x01657210,98,ai_func_add_top_goal_5,ai,verified,"AI script binding AddTopGoal with 5 parameters: adds a goal under the think's root goal"
+0x01657280,94,ai_func_add_top_goal_6,ai,verified,"AI script binding AddTopGoal with 6 parameters: adds a goal under the think's root goal"
+0x016572e0,90,ai_func_add_top_goal_7,ai,edge-verified,"AI script binding AddTopGoal with 7 parameters: adds a goal under the think's root goal"
 0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
 0x01657b20,90,ai_func_get_random_int,ai,verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
 0x01657b80,19,ai_func_set_timer,ai,verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
@@ -273,10 +281,25 @@ address,size,name,system,status,notes
 0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
 0x0165bb90,18,ai_func_get_previous_target_state,ai,verified,AI script binding GetPrevTargetState: the perception's target state last frame
 0x0165ca50,130,ai_func_is_visible_target,ai,edge-verified,"IsVisibleTarget: stores the player's set entry; selectors -2,-1,20-22,24,25 and points 100-123 are visible, else the current target's visible flag"
-0x0167b6b0,93,ai_func_register_goal_no_update,ai,edge-verified,"REGISTER_GOAL_NO_UPDATE: sets the no-update option of a goal id's definition"
-0x0167b710,118,ai_func_register_goal_update_time,ai,edge-verified,"REGISTER_GOAL_UPDATE_TIME: sets the range of a goal id's script Update interval"
-0x0167b790,93,ai_func_register_goal_no_interrupt,ai,edge-verified,"REGISTER_GOAL_NO_INTERUPT: sets the no-interrupt option of a goal id's definition"
-0x0167b7f0,81,ai_func_enable_combo_attack_cancel,ai,edge-verified,"ENABLE_COMBO_ATK_CANCEL: enables combo attack cancel for a goal id"
+0x0167b6b0,93,ai_func_register_goal_no_update,ai,verified,"REGISTER_GOAL_NO_UPDATE: sets the no-update option of a goal id's definition"
+0x0167b710,118,ai_func_register_goal_update_time,ai,verified,"REGISTER_GOAL_UPDATE_TIME: sets the range of a goal id's script Update interval"
+0x0167b790,93,ai_func_register_goal_no_interrupt,ai,verified,"REGISTER_GOAL_NO_INTERUPT: sets the no-interrupt option of a goal id's definition"
+0x0167b7f0,81,ai_func_enable_combo_attack_cancel,ai,verified,"ENABLE_COMBO_ATK_CANCEL: enables combo attack cancel for a goal id"
+0x0167ec30,114,ai_goal_func_add_sub_goal_0,ai,edge-verified,AI goal script binding AddSubGoal with 0 parameters: queues a goal under the calling goal
+0x0167ecb0,110,ai_goal_func_add_sub_goal_1,ai,edge-verified,AI goal script binding AddSubGoal with 1 parameter: queues a goal under the calling goal
+0x0167ed20,106,ai_goal_func_add_sub_goal_2,ai,verified,AI goal script binding AddSubGoal with 2 parameters: queues a goal under the calling goal
+0x0167ed90,102,ai_goal_func_add_sub_goal_3,ai,edge-verified,AI goal script binding AddSubGoal with 3 parameters: queues a goal under the calling goal
+0x0167ee00,98,ai_goal_func_add_sub_goal_4,ai,verified,AI goal script binding AddSubGoal with 4 parameters: queues a goal under the calling goal
+0x0167ee70,94,ai_goal_func_add_sub_goal_5,ai,verified,AI goal script binding AddSubGoal with 5 parameters: queues a goal under the calling goal
+0x0167eed0,90,ai_goal_func_add_sub_goal_6,ai,edge-verified,AI goal script binding AddSubGoal with 6 parameters: queues a goal under the calling goal
+0x0167ef30,86,ai_goal_func_add_sub_goal_7,ai,edge-verified,AI goal script binding AddSubGoal with 7 parameters: queues a goal under the calling goal
+0x0167ef90,89,ai_goal_func_add_sub_goal_8,ai,edge-verified,AI goal script binding AddSubGoal with 8 parameters: queues a goal under the calling goal
+0x0167eff0,92,ai_goal_func_add_sub_goal_9,ai,edge-verified,AI goal script binding AddSubGoal with 9 parameters: queues a goal under the calling goal
+0x0167f050,95,ai_goal_func_add_sub_goal_10,ai,edge-verified,AI goal script binding AddSubGoal with 10 parameters: queues a goal under the calling goal
+0x0167f0b0,98,ai_goal_func_add_sub_goal_11,ai,edge-verified,AI goal script binding AddSubGoal with 11 parameters: queues a goal under the calling goal
+0x0167f120,101,ai_goal_func_add_sub_goal_12,ai,edge-verified,AI goal script binding AddSubGoal with 12 parameters: queues a goal under the calling goal
+0x0167f190,104,ai_goal_func_add_sub_goal_13,ai,edge-verified,AI goal script binding AddSubGoal with 13 parameters: queues a goal under the calling goal
+0x0167f200,102,ai_goal_func_add_sub_goal_front,ai,edge-verified,"AI goal script binding AddSubGoal_Front with 3 parameters: queues a goal at the front of the calling goal's sub-goals"
 0x0167f2a0,22,ai_goal_func_set_timer,ai,edge-verified,AI goal script binding SetTimer: goal timer 0..15 (index checked signed)
 0x0167f2d0,22,ai_goal_func_set_number,ai,edge-verified,AI goal script binding SetNumber: goal script number 0..63 (index checked unsigned)
 0x0167f820,26,ai_goal_func_get_timer,ai,edge-verified,"AI goal script binding GetTimer: goal timer 0..15, 0.0 above"
