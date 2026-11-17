@@ -3,6 +3,7 @@
    existing project contract; this is not independent evidence of PS4 geometry rules. */
 #ifndef PALEBLOOD_METAL_RECTANGLES_H
 #define PALEBLOOD_METAL_RECTANGLES_H
+#include "metal_fragment_quads.hpp"
 #include <sstream>
 #include <stdexcept>
 
@@ -10,8 +11,10 @@ struct MetalRectangleShader {
     id<MTLFunction> raster = nil;
     size_t stride = 0;
 };
-struct MetalCompiler : spirv_cross::CompilerMSL {
-    using CompilerMSL::CompilerMSL;
+struct MetalCompiler : pb::MetalFragmentQuadCompiler {
+    using pb::MetalFragmentQuadCompiler::MetalFragmentQuadCompiler;
+    MetalCompiler(const uint32_t *words, size_t count)
+        : pb::MetalFragmentQuadCompiler(words, count, 0) {}
     const spirv_cross::SPIRType &capture_type() { return get_stage_out_struct_type(); }
     std::string capture_name() { return type_to_glsl(get_stage_out_struct_type()); }
 };
