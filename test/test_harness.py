@@ -171,6 +171,10 @@ def boot_image(stacked_imports=False):
     # A second import is enabled only for the new cases; existing images keep their layout.
     code[0xc80:0xc86] = bytes.fromhex('ff25') + struct.pack('<i', 0x1000 - 0xc86)
     code[0xca0:0xca5] = b'\xe9' + struct.pack('<i', 0xef0 - 0xca5)
+    # Two time-stamp counter reads stored at [rdi] and [rdi+8], as the frame profiler stores its
+    # markers; then rdtscp stored at [rdi] (runtime/fixed_tsc.c).
+    code[0xc88:0xc98] = bytes.fromhex('0f31 8907 895704 0f31 894708 89570c c3')
+    code[0xc98:0xc9e] = bytes.fromhex('0f01f9 8907 c3')
     code[0xe10:0xe16] = bytes.fromhex('ff25') + struct.pack('<i', 0x1020 - 0xe16)
     # Three calls reach the same callback at distinct entry RSPs, then another variant
     # alternates between adjacent wrapper slots to catch overlapping native save areas.
@@ -651,6 +655,45 @@ class Harness(unittest.TestCase):
         for _ in range(2):
             result = self.side_case(self.case, address='0x00400c11')
             self.assertEqual(result['writes'], [{'addr': 'buf:out+0x0', 'bytes': fill.hex()}], result)
+
+    def test_time_stamp_counter_reads_the_fixed_sequence_on_every_run(self):
+        sys.path.insert(0, TOOLS)
+        import harness
+        first, step = harness.TSC_FIRST, harness.TSC_STEP
+        case = {'schema': 1, 'address': '0x00400c88', 'id': 'tsc', 'returns': 'void',
+                'args': {'rdi': 'buf:profile'}, 'buffers': {'profile': {'size': 16}},
+                'memory': [], 'imports': [], 'stubs': []}
+        Path(self.case).write_text(json.dumps(case))
+        # Only changed bytes are reported: the profile buffer starts zeroed.
+        expected = bytes(16)
+        sequence = struct.pack('<Q', first) + struct.pack('<Q', first + step)
+        runs = [self.side_case(self.case, address='0x00400c88') for _ in range(2)]
+        for result in runs:
+            self.assertNotIn('fault', result, result)
+            written = bytearray(expected)
+            for w in result['writes']:
+                offset = int(w['addr'].split('+')[1], 16)
+                data = bytes.fromhex(w['bytes'])
+                written[offset:offset + len(data)] = data
+            self.assertEqual(bytes(written).hex(), sequence.hex(), result)
+        self.assertEqual(runs[0]['writes'], runs[1]['writes'])
+        case['address'] = '0x00400c98'
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side_case(self.case, address='0x00400c98')
+        written = bytearray(16)
+        for w in result['writes']:
+            offset = int(w['addr'].split('+')[1], 16)
+            written[offset:offset + len(bytes.fromhex(w['bytes']))] = bytes.fromhex(w['bytes'])
+        self.assertEqual(bytes(written[:4]), struct.pack('<I', first & 0xffffffff), result)
+
+    def test_a_real_fault_still_ends_the_case_with_its_signal(self):
+        # The counter's fault handler leaves other faults alone: a store through a null pointer
+        # still ends the forked case with SIGSEGV.
+        case = {'schema': 1, 'address': '0x00400950', 'id': 'null', 'returns': 'void',
+                'args': {'rdi': '0x0', 'rsi': '0x0'}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side_case(self.case, address='0x00400950')
+        self.assertEqual(result.get('fault'), 'signal 11', result)
 
     def test_control_flow_coverage_reports_fixture_branch_paths(self):
         fixtures = [

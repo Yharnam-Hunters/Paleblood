@@ -213,6 +213,30 @@ bytes (a struct with the same unset field) writes the fill too and passes; one t
 value there (a zero-extended kind, say) fails, and its struct is corrected to leave the bytes
 unset, as the original's does. Nothing is excluded from the comparison and no case changes.
 
+### The time-stamp counter
+
+Game code reads the processor's time-stamp counter (`rdtsc`, `rdtscp`): the frame profiler
+stores `{label, rdtsc}` markers in a per-thread buffer from inside frame-timing tasks, the file
+task update and others. The original and the replacement of a case run in two processes, so
+each would read another value, and a replacement that is right would still differ in those bytes.
+The harness therefore makes the counter a clock both runs read alike (`runtime/fixed_tsc.c`): in
+each forked case the kernel makes `rdtsc`/`rdtscp` fault (`PR_SET_TSC`), and the n-th read
+returns `TSC_FIRST + n * TSC_STEP` (`tools/harness.py`; `rdtscp`'s `ecx` is 0). The bytes the
+code stores are compared like any others: a replacement that stores other values, at other
+places, or reads the counter another number of times fails. The recorder does not record the
+counter (a recorded value would make every case of a profiled function unique and defeat the
+library's duplicate check); a function that branches on the difference of two reads is checked
+on the path the fixed clock takes, which may not be the recorded one, so its review says so.
+Other faults are left alone: the case still ends with `signal 11`. `--trace-instructions` runs
+keep the real counter (the instruction tracer refuses `rdtsc` anyway).
+
+Fixed-sequence interception is supported only on Linux x86-64. On other platforms, the loader
+exports the same API but `rt_fixed_tsc_install` refuses with `-1` and `errno=ENOTSUP`, without
+installing a signal handler or changing counter behavior. `rt_fixed_tsc_reads` then reports zero
+intercepted reads; it does not supply a counter value. The harness currently requests a fixed
+sequence only on Linux. A macOS loader build or unsupported-API test does not validate the fixed
+sequence or deterministic counter-dependent comparisons.
+
 ## Limits
 
 - The function runs alone: whatever it calls inside the game runs too, as original code,
