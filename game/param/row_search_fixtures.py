@@ -88,6 +88,8 @@ def paired_cases(address, swapped):
         c('user_minus_7', -7, 3),   # ... and here EquipParamWeapon's
         c('user_most_negative', -0x80000000, 3) if swapped else c('user_minus_6', -6, 3),
         c('negative_id', 0, -1),
+        # Id 0 is a valid id: the search runs (`id >= 0`) and finds the table's row 0.
+        c('id_0_found', 1, 0, {first + 1: table_bytes([(0, 0), (2, 1)], offsets=[0x2000, 0x2100])}),
         c('most_negative_id', 1, -0x80000000),
         no_repository(address, 'void', 'negative_id_no_repository', args(0, -5)),
         no_repository(address, 'void', 'user_2_no_repository', args(2, 5)),
