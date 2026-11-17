@@ -165,7 +165,7 @@ Live system-call shader bindings are placed by their command-buffer write addres
 recorder joins them to the submitted buffer at their byte offsets. After a submission, the next
 ordinary record or placed binding starts a new use of that buffer, even if its offset increases.
 It supports viewport 0, vertex/pixel shaders and their separate user-data ranges, auto-index and
-16/32-bit indexed triangle lists, and one COLOR_8_8_8_8 render target (UNORM or sRGB, either
+16/32-bit indexed triangle and rectangle lists, and one COLOR_8_8_8_8 render target (UNORM or sRGB, either
 component order).
 Targets are limited to 4096 pixels per axis; viewport X/Y scales and translations must be
 finite and within ±4096, with a positive X scale and a nonzero Y scale.
@@ -194,8 +194,15 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
-and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
+depth export. Window-position X/Y inputs use the common translator's `FragCoord` mapping: enabled axes
+follow the two perspective-center VGPRs densely, so either axis alone occupies VGPR2 and
+both occupy VGPR2/3. Metal provides framebuffer coordinates with pixel-center values;
+viewport Y conversion affects geometry and does not add a fragment-coordinate Y flip.
+See [Apple's viewport and pixel coordinates](https://developer.apple.com/library/archive/documentation/Miscellaneous/Conceptual/MetalProgrammingGuide/Render-Ctx/Render-Ctx.html).
+Matching input-enable/address masks and enough incoming VGPRs are required, and the mask
+participates in shader-cache identity. Position-only pixel programs may declare zero ordinary
+interpolants. Other input modes and whole-quad mask expansion stop explicitly. Other color
+layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
 against slots explicitly written for that stage since reset; writing zero establishes a value,
@@ -290,10 +297,33 @@ index events. `INDEX_SIZE` is stored for logical offset calls; it does not add a
 bound to a raw packet's independent `MAX_SIZE`.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
-target reallocations return a named error. Blending, depth and unrecorded state remain outside
-this profile. Pixel image loads and fixed-LOD sampling use the bindings described below.
-Depth-target registers remain outside this profile. Rectangle lists need a geometry expansion
-path and are rejected.
+target reallocations return a named error. Blending and unrecorded state remain
+outside this profile. Pixel image loads and fixed-LOD sampling use the bindings described below.
+
+### Rectangle lists
+
+Rectangle draws capture the original vertex shader outputs in a rasterization-disabled pass,
+then a small vertex shader expands each triple into two triangles. The original program is
+not rerun for the generated vertices. Native indexed invocation/cache behavior is retained;
+source IDs are snapshotted before capture, and sparse IDs allocate through their maximum value.
+Incomplete triples, expanded-count overflow and buffers exceeding the device limit stop explicitly.
+Rectangle-list instance counts above one are refused before capture; ordinary triangles and strips
+retain their native instanced paths.
+
+The expansion follows the existing `rect_list.c` project contract: ordered clip-space XY
+comparisons select corner 1, then 2, otherwise 0. It emits the strip's two triangles with
+fourth output `(next + after) - corner` for the complete position float4, every parameter float4
+and every enabled clip scalar. Viewport Y conversion occurs once after expansion. Capture
+struct members are reflected, and MSL checks the allocation stride with `static_assert`.
+This establishes agreement with the project's canonical expansion; it does not independently
+establish PS4 hardware rules for varying W, competing predicates or non-rectangular inputs.
+
+A completed capture is checked for shader runtime stops before rasterization. Earlier vertex
+buffer writes survive such a stop; the target and depth/stencil planes are not published by
+that raster pass. Allocation or encoder failure after capture also does not roll back those
+vertex writes. Each pass waits for completion, so this first implementation adds a submission
+and synchronization per rectangle draw. Device loss and hardware timeouts are not induced by
+owned tests.
 
 ## Vertex fetch calls
 
@@ -445,7 +475,7 @@ recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bi
 formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logical index-size
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, missing image/sampler descriptor guards, descriptors loaded from memory, fetch rendering through live target and
-program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip guards, depth/stencil admission, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
+program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip guards, depth/stencil admission, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and incomplete-rectangle refusals, readback bounds and mapping lifetime.
 `test_metal_depth` additionally checks depth/stencil comparisons, operations and masks, both face
 orientations and viewport signs, native read-only behavior through overlapping triangles,
 scissored writes, padded selected slices, mixed attachment extents, null-pixel draws, retained
@@ -453,7 +483,14 @@ state, required-register presence and canonical-memory updates. Stencil-only met
 use literal S8/BGRA results and complete pool comparisons to preserve the inactive Z plane,
 metadata bytes, padding and other slices; active metadata-dependent aspects retain prework
 refusals.
-It fails if no suitable GPU exists.
+`test_metal_rectangles` compares explicit ordinary-triangle references with rectangle draws,
+including permutations, both viewport signs, varying W, clip outputs, two parameters, sparse
+indices, offset draws, multiple rectangles, vertex counters and capture-stop publication.
+`test_metal_rectangle_values` separately checks the compiled expansion helper with labelled
+corner/tie/fallback cases, ordered NaNs, signed zero, arithmetic order, sparse parameter location
+31 and all eight negative fourth-clip cases. These helper checks do not execute a source vertex
+shader or establish rasterization behavior.
+The tests fail if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
 offscreen test establishes neither window presentation nor execution of a game on macOS.
 Setting the Metal debug environment did not activate a debug device wrapper on the tested host;
