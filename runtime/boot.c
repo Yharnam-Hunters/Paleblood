@@ -23,10 +23,9 @@
    OFFSET and SIZE the function's place and length in its image (C notation), NAME its name, which
    may hold colons. BYTES are the function's first bytes as the mapped and relocated module holds
    them, in lowercase hex: at least the five the jump replaces, at most 16 and at most SIZE. A
-   module that holds other bytes there is
-   refused before any guest code runs, so offsets taken from another build fail loudly instead of
-   patching the middle of some other function. The range must lie in one executable segment and
-   not overlap another hook's.
+   module that holds other bytes there is refused before any guest code runs, so offsets taken
+   from another build fail loudly instead of patching the middle of some other function. The range
+   must lie in one executable segment and not overlap another hook's.
    ACTION "return" makes the function return at once and write nothing (registers included);
    "stop" ends the run there and reports NAME and the caller, as an unimplemented import does, on
    any guest thread. The function's first five bytes become a relative jump to a stub in a page
