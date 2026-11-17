@@ -80,6 +80,8 @@ jobs:
         run: python3 tools/check_no_game_data.py --tracked
       - name: Validate functions.csv, ghidra_functions.csv, hooks.csv
         run: python3 tools/validate_functions.py
+      - name: Function list is well formed and leaves no room for another function
+        run: python3 tools/function_bounds.py --check
       - name: Game-agnostic runtime
         run: python3 tools/check_agnostic.py
       - name: Readable game code (STYLE.md); the allowlist only shrinks
