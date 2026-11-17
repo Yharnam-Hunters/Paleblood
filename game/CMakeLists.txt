@@ -24,7 +24,10 @@ add_custom_command(
 
 add_library(bbgame SHARED ${GAME_SOURCES} ${HOOKS_C})
 target_link_libraries(bbgame PRIVATE bbrt)
-target_link_options(bbgame PRIVATE -Wl,--no-undefined)
+# Mach-O dylibs reject unresolved symbols by default; --no-undefined is an ELF linker option.
+if(NOT APPLE)
+    target_link_options(bbgame PRIVATE -Wl,--no-undefined)
+endif()
 # Replacements reproduce the original's floating-point operations one by one: no fused
 # multiply-add and none of the fast-math licences (reassociation, reciprocals, assuming no NaN);
 # -fno-fast-math also overrides one that comes in through CXXFLAGS. tools/check_float_flags.py
@@ -110,6 +113,30 @@ target_compile_options(test_esgs_ring_itemsize_observer_failure PRIVATE -ffp-con
 target_link_libraries(test_esgs_ring_itemsize_observer_failure PRIVATE ${CMAKE_DL_LIBS} pthread)
 set_target_properties(test_esgs_ring_itemsize_observer_failure PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME esgs_ring_itemsize_observer_failure COMMAND test_esgs_ring_itemsize_observer_failure)
+
+# GS ring sizes: actual writer integration, absent exports and explicit helper boundaries.
+add_executable(test_gs_ring_sizes_observer render/tests/gs_ring_sizes_observer.cpp render/set_gs_ring_sizes.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_link_libraries(test_gs_ring_sizes_observer PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_compile_options(test_gs_ring_sizes_observer PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_gs_ring_sizes_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME gs_ring_sizes_observer COMMAND test_gs_ring_sizes_observer)
+
+add_executable(test_gs_ring_sizes_observer_absent render/tests/gs_ring_sizes_observer.cpp render/set_gs_ring_sizes.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_gs_ring_sizes_observer_absent PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_definitions(test_gs_ring_sizes_observer_absent PRIVATE PB_GS_RING_OBSERVER_ABSENT=1)
+target_compile_options(test_gs_ring_sizes_observer_absent PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_gs_ring_sizes_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
+add_test(NAME gs_ring_sizes_observer_absent COMMAND test_gs_ring_sizes_observer_absent)
+
+add_executable(test_gs_ring_sizes_observer_failure render/tests/gs_ring_sizes_observer_failure.cpp render/set_gs_ring_sizes.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_gs_ring_sizes_observer_failure PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_options(test_gs_ring_sizes_observer_failure PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_gs_ring_sizes_observer_failure PRIVATE ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_gs_ring_sizes_observer_failure PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME gs_ring_sizes_observer_failure COMMAND test_gs_ring_sizes_observer_failure)
 
 # The camera fixture generator and verifier contracts are checked beside their game-owned inputs.
 add_test(NAME camera_update_cases

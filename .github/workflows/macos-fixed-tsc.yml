@@ -1,0 +1,40 @@
+name: macos-fixed-tsc
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-fixed-tsc.yml'
+      - 'CMakeLists.txt'
+      - 'runtime/fixed_tsc.c'
+      - 'test/fixed_tsc/**'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-fixed-tsc.yml'
+      - 'CMakeLists.txt'
+      - 'runtime/fixed_tsc.c'
+      - 'test/fixed_tsc/**'
+
+permissions:
+  contents: read
+
+jobs:
+  unsupported:
+    name: Fixed-counter refusal (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15, arch: arm64}
+          - {runner: macos-15-intel, arch: x86_64}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the standalone CPU fixture
+        run: >-
+          cmake -S test/fixed_tsc -B build-fixed-tsc -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+      - name: Compile the actual fixed-counter provider
+        run: cmake --build build-fixed-tsc --target test_fixed_tsc_unsupported --parallel 2
+      - name: Check explicit refusal and preserved signal handler
+        run: ctest --test-dir build-fixed-tsc --output-on-failure --no-tests=error -R '^fixed_tsc_unsupported$'
