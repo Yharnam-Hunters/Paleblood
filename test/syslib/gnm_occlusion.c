@@ -2,13 +2,18 @@
 /* Occlusion events (runtime/syslib/gnm.c): a query block zeroed by DMA_DATA, then PIXEL_PIPE_STAT_CONTROL
    (writes nothing) and PIXEL_PIPE_STAT_DUMP into its begin and end halves, as the game's queries do. Each
    dump stores a count with bit 63 (valid) in all 8 depth blocks' pairs, later dumps larger, so the query
-   reads visible; another event with an address stops by name. */
+   reads visible; another event with an address stops by name. Both dumps are deferrable steps (only the
+   CPU reads a query block); the zero fill, as any DMA_DATA fill of memory, is a fill step (the renderer
+   may have the GPU make it, ahead of the dumps). */
 #include "../syslib_test.h"
 
 #include <stdint.h>
 #include <string.h>
 
 typedef int32_t (*submit_fn)(uint32_t, void **, uint32_t *, void **, uint32_t *);
+
+size_t rt_renderer_none_step_flags(uint32_t *flags, size_t capacity); /* runtime/renderer/renderer_none.c */
+enum { STEP_DEFERRABLE = 1, STEP_FILLS = 4 }; /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_FILLS */
 
 enum {
     EVENT_WRITE = 0xc0024600u, /* PM4 type 3, opcode 0x46, four dwords: control, address low, address high */
@@ -54,5 +59,14 @@ SYSLIB_TEST(gnm_occlusion)
         passed += (end & ~VALID) - (begin & ~VALID);
     }
     CHECK(passed > 0);
+    uint32_t flags[4] = {0};
+    CHECK(rt_renderer_none_step_flags(flags, 4) == 3);
+    CHECK(flags[0] == STEP_FILLS && flags[1] == STEP_DEFERRABLE && flags[2] == STEP_DEFERRABLE);
+    static _Alignas(16) uint32_t other[BLOCK_BYTES / 4]; /* a fill of another value: every dword gets it */
+    const uint64_t other_at = (uint64_t)(uintptr_t)other;
+    uint32_t fill_only[] = {DMA_DATA, FROM_DATA, 0x5a5a1234u, 0, (uint32_t)other_at, (uint32_t)(other_at >> 32), BLOCK_BYTES};
+    submit_packets(fill_only, sizeof fill_only);
+    CHECK(rt_renderer_none_step_flags(flags, 4) == 1 && flags[0] == STEP_FILLS);
+    CHECK(other[0] == 0x5a5a1234u && other[BLOCK_BYTES / 4 - 1] == 0x5a5a1234u);
     CHECK(died_in_fatal(zpass_done_with_address));
 }
