@@ -1216,8 +1216,9 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
+    /* The blend guard uses AMD SRC_COLOR factor2, outside the ADD alpha profile. */
     const struct { uint32_t address, value; const char *reason; } unsupported_registers[] = {
-        {0xa1e0, 0x40000000, "blending"}, {0xa200, 2, "depth or stencil"},
+        {0xa1e0, 0x40000002, "blending"}, {0xa200, 2, "depth or stencil"},
         {0xa202, 0x20, "colour mode"}, {0xa08e, 7, "write mask"},
         {0xc242, 5, "primitive type"}, {0xa001, 0, "does not interpret"},
         {0xc242, 7, "primitive type"}, {0xa018, 0, "does not interpret"},
@@ -1622,8 +1623,8 @@ int main(void)
     }
     size = record_setup(331, at(0xc00000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_register(331, size, 0xc242, 17, error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_draw_auto(331, size, 3, error, sizeof error) == 0); size += 0x10;
-    expect_error(x, 331, size, "rectangle lists require a geometry expansion profile");
+    CHECK(rt_render_record_draw_auto(331, size, 2, error, sizeof error) == 0); size += 0x10;
+    expect_error(x, 331, size, "rectangle lists require complete triples");
     uint32_t unattached = 0xdeadbeef;
     CHECK(rt_executor_read_target(x, at(0xc00000), &unattached, 1, 1, error, sizeof error) == -1);
     CHECK(unattached == 0xdeadbeef);
