@@ -622,8 +622,8 @@ engine_hk_array_reserve_more_00819100,edge,,19,19,0,0,ce7618cb8871ec1d,2026-11-1
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
 engine_linear_heap_allocate_02485100,edge,,8,8,0,0,b9dafbeebf252424,2026-11-12
-engine_linear_heap_allocate_aligned_02485120,edge,,12,12,0,0,b9dafbeebf252424,2026-11-12
-engine_linear_heap_allocate_aligned_top_024851d0,edge,,10,10,0,0,b9dafbeebf252424,2026-11-12
+engine_linear_heap_allocate_aligned_02485120,edge,,12,12,0,0,b9dafbeebf252424,2026-11-17
+engine_linear_heap_allocate_aligned_top_024851d0,edge,,10,10,0,0,b9dafbeebf252424,2026-11-17
 engine_linear_heap_allocate_top_02485190,edge,,9,9,0,0,b9dafbeebf252424,2026-11-12
 engine_linear_heap_check_owned_02485160,edge,,8,8,0,0,9e4e9d179edbb6de,2026-11-12
 engine_linear_heap_contains_02485330,edge,,8,8,0,0,9e4e9d179edbb6de,2026-11-12
@@ -710,7 +710,7 @@ engine_scaleform_heap_allocate_aligned_0233ca70,edge,,22,22,0,0,810aa8bb1d5cd139
 engine_scaleform_heap_allocate_large_0233c660,recorded,,82,82,0,0,a933c8a1519d8f01,2026-11-14
 engine_scaleform_heap_allocate_large_0233c660,edge,,39,39,0,0,a933c8a1519d8f01,2026-11-13
 engine_scaleform_heap_bin_allocate_0233a7f0,edge,,24,24,0,0,631ace2145451f96,2026-11-14
-engine_scaleform_heap_bin_allocate_aligned_0233ae40,edge,,15,15,0,0,da56f7d1072ce505,2026-11-14
+engine_scaleform_heap_bin_allocate_aligned_0233ae40,edge,,18,18,0,0,da56f7d1072ce505,2026-11-17
 engine_scaleform_heap_bin_free_0233ab20,recorded,,1130,1130,0,0,08e599541ac84d53,2026-11-14
 engine_scaleform_heap_bin_free_0233ab20,edge,,19,19,0,0,08e599541ac84d53,2026-11-14
 engine_scaleform_heap_bin_reallocate_0233b2f0,edge,,29,29,0,0,07a4afff14a8c149,2026-11-14
@@ -754,8 +754,8 @@ engine_string_append_counted,edge,,48,48,0,0,f7f96f0ac221364a,2026-11-05
 engine_string_length,recorded,,70,70,0,0,dbb33699bb2cc030,2026-11-12
 engine_string_length,edge,,30,30,0,0,dbb33699bb2cc030,2026-11-12
 engine_temporary_heap_allocate_0247d4b0,edge,,8,8,0,0,9579e710cd20648e,2026-11-12
-engine_temporary_heap_allocate_aligned_0247d510,edge,,12,12,0,0,9579e710cd20648e,2026-11-12
-engine_temporary_heap_allocate_aligned_top_0247dde0,edge,,10,10,0,0,9579e710cd20648e,2026-11-12
+engine_temporary_heap_allocate_aligned_0247d510,edge,,12,12,0,0,9579e710cd20648e,2026-11-17
+engine_temporary_heap_allocate_aligned_top_0247dde0,edge,,10,10,0,0,9579e710cd20648e,2026-11-17
 engine_temporary_heap_allocate_top_0247dd60,edge,,9,9,0,0,9579e710cd20648e,2026-11-12
 engine_temporary_heap_allocator_0247d470,edge,,2,2,0,0,9579e710cd20648e,2026-11-12
 engine_temporary_heap_create_for_thread_0247d250,edge,,13,13,0,0,3dffa56191c36447,2026-11-12
@@ -1358,8 +1358,8 @@ param_find_row_action_button,recorded,,160,160,0,0,80e146de909c868f,2026-11-14
 param_find_row_action_button,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_ai_sound,recorded,,36,36,0,0,80e146de909c868f,2026-11-14
 param_find_row_ai_sound,edge,,50,50,0,0,80e146de909c868f,2026-11-12
-param_find_row_atk_param,edge,,21,21,0,0,81240509ea85581e,2026-11-12
-param_find_row_behavior_param,edge,,21,21,0,0,81240509ea85581e,2026-11-12
+param_find_row_atk_param,edge,,22,22,0,0,81240509ea85581e,2026-11-17
+param_find_row_behavior_param,edge,,22,22,0,0,81240509ea85581e,2026-11-17
 param_find_row_bullet,recorded,,100,100,0,0,80e146de909c868f,2026-11-14
 param_find_row_bullet,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_calc_correct_graph,recorded,,123,123,0,0,80e146de909c868f,2026-11-14
