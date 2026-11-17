@@ -227,7 +227,7 @@ address,size,name,system,status,notes
 0x0149c660,486,render_record_geometry_resolve_parameter_index,render,edge-verified,Resolve the packed parameter-table index with the original validation order and wrapping scale operations.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
 0x0149cb30,204,render_record_apply_mapping,render,edge-verified,Map derived normalization code to original layout-helper tuple; unsupported code preserves output.
-0x0149cc60,350,render_convert_record_descriptor_classification,render,edge-verified,Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes.
+0x0149cc60,350,render_convert_record_descriptor_classification,render,verified,Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes.
 0x0149ce10,5124,render_record_geometry,render,edge-verified,"Calculate record dimensions and alignment; preserving staged output on failure and live reads when descriptor and result overlap."
 0x0149e2d0,295,render_record_constructor_optional_first,render,edge-verified,"Align paired components; retain the pre-increment product and 55-bit quantity; then publish optional outputs in order."
 0x0149e400,358,render_record_constructor_optional_second,render,edge-verified,Calculate geometry and publish zeroed or partial auxiliary outputs even when a helper reports an error.
@@ -521,8 +521,8 @@ address,size,name,system,status,notes
 0x02312520,390,param_list_row_ids_equip_param_accessory,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamAccessory (type 2) row id in file order; returns the count
 0x023128a0,284,param_find_row_action_button,param,verified,SoloParamRepository row lookup for ActionButtonParam (type 39): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02312b60,283,param_find_row_ai_sound,param,verified,SoloParamRepository row lookup for AiSoundParam (type 48): binary search of the loader index by id; writes id and row data pointer (null if none)
-0x02312fd0,310,param_find_row_atk_param,param,edge-verified,SoloParamRepository AtkParam row lookup (user 0: AtkParam_Npc type 7; 1: AtkParam_Pc type 8; args out/user/id); stores the user beside the result
-0x023133c0,310,param_find_row_behavior_param,param,edge-verified,SoloParamRepository BehaviorParam row lookup (user 0: BehaviorParam type 12; 1: BehaviorParam_PC type 13; args out/id/user; a negative user gives no row)
+0x02312fd0,310,param_find_row_atk_param,param,verified,SoloParamRepository AtkParam row lookup (user 0: AtkParam_Npc type 7; 1: AtkParam_Pc type 8; args out/user/id); stores the user beside the result
+0x023133c0,310,param_find_row_behavior_param,param,verified,SoloParamRepository BehaviorParam row lookup (user 0: BehaviorParam type 12; 1: BehaviorParam_PC type 13; args out/id/user; a negative user gives no row)
 0x02314860,283,param_find_row_bullet,param,verified,SoloParamRepository row lookup for Bullet (type 11): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02314b60,283,param_find_row_calc_correct_graph,param,verified,SoloParamRepository row lookup for CalcCorrectGraph (type 32): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02314e20,283,param_find_row_chara_init,param,verified,SoloParamRepository row lookup for CharaInitParam (type 21): binary search of the loader index by id; writes id and row data pointer (null if none)
@@ -717,7 +717,7 @@ address,size,name,system,status,notes
 0x0246e3d0,573,loading_disk_file_device_locate_0246e3d0,loading,verified,"Where a path is found: resolves a copy of its mount prefixes (rounds or roots only), asks the named device (slot 0x20) or each unnamed one until not 2; under the device lock"
 0x0246e630,467,loading_disk_device_find_named_device_0246e630,loading,verified,Ps4DiskFileDevice: device registered under the path mount name (token at ":"; wcslen+wcsncmp); under the device lock
 0x0246e810,390,loading_disk_device_open_on_device_0246e810,loading,edge-verified,Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy
-0x0246e9a0,714,loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,edge-verified,Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock
+0x0246e9a0,714,loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,verified,Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock
 0x024708f0,218,engine_array64_push_back_024708f0,engine,verified,"Engine array push_back, 8-byte elements: inside check first; full grows to 1.5x count via 0x02471310, inside item re-read at its index; stores unless no buffer; end += 8"
 0x024709d0,218,engine_array64_push_back_024709d0,engine,edge-verified,"Engine array push_back, 8-byte elements: inside check first; full grows to 1.5x count via 0x02471410, inside item re-read at its index; stores unless no buffer; end += 8"
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
@@ -736,13 +736,13 @@ address,size,name,system,status,notes
 0x0247d430,34,engine_temporary_heap_set_size_0247d430,engine,edge-verified,DLTemporaryHeap size setting for the thread (0 -> 0x20000)
 0x0247d470,58,engine_temporary_heap_allocator_0247d470,engine,edge-verified,"DLTemporaryHeap allocator interface of the thread's heap (+0x20), creating the heap first"
 0x0247d4b0,86,engine_temporary_heap_allocate_0247d4b0,engine,edge-verified,DLTemporaryHeap bottom allocation on the thread's heap (linear heap step)
-0x0247d510,121,engine_temporary_heap_allocate_aligned_0247d510,engine,edge-verified,DLTemporaryHeap aligned bottom allocation on the thread's heap (linear heap step)
+0x0247d510,121,engine_temporary_heap_allocate_aligned_0247d510,engine,verified,DLTemporaryHeap aligned bottom allocation on the thread's heap (linear heap step)
 0x0247d590,31,engine_temporary_heap_ensure_0247d590,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing
 0x0247d5b0,58,engine_temporary_heap_mark_0247d5b0,engine,edge-verified,DLTemporaryHeap mark: the thread heap's bottom
 0x0247d5f0,110,engine_temporary_heap_free_until_0247d5f0,engine,edge-verified,DLTemporaryHeap FreeUntil on the thread's heap: rewinds the bottom; a mark outside the range reported
 0x0247dd30,31,engine_temporary_heap_ensure_0247dd30,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing (identical copy)
 0x0247dd60,127,engine_temporary_heap_allocate_top_0247dd60,engine,edge-verified,DLTemporaryHeap 8-aligned top allocation on the thread's heap (linear heap step)
-0x0247dde0,156,engine_temporary_heap_allocate_aligned_top_0247dde0,engine,edge-verified,DLTemporaryHeap aligned top allocation on the thread's heap (linear heap step)
+0x0247dde0,156,engine_temporary_heap_allocate_aligned_top_0247dde0,engine,verified,DLTemporaryHeap aligned top allocation on the thread's heap (linear heap step)
 0x0247e1a0,161,engine_temporary_heap_free_0247e1a0,engine,edge-verified,DLTemporaryHeap top block free on the thread's heap (linear heap step)
 0x0247e400,18,engine_condition_signal_construct_0247e400,engine,edge-verified,"DLConditionSignal constructor: vtable, flags cleared"
 0x0247e420,201,engine_condition_signal_delete_0247e420,engine,edge-verified,"DLConditionSignal deleting destructor: when created, mutex then condition destroyed (busy stops; errors reported); freed"

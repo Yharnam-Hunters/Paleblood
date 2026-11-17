@@ -754,7 +754,9 @@ engine_string_append_counted,edge,,48,48,0,0,f7f96f0ac221364a,2026-11-05
 engine_string_length,recorded,,70,70,0,0,dbb33699bb2cc030,2026-11-12
 engine_string_length,edge,,30,30,0,0,dbb33699bb2cc030,2026-11-12
 engine_temporary_heap_allocate_0247d4b0,edge,,8,8,0,0,9579e710cd20648e,2026-11-12
+engine_temporary_heap_allocate_aligned_0247d510,recorded,,175,175,0,0,9579e710cd20648e,2026-11-17
 engine_temporary_heap_allocate_aligned_0247d510,edge,,12,12,0,0,9579e710cd20648e,2026-11-17
+engine_temporary_heap_allocate_aligned_top_0247dde0,recorded,,400,400,0,0,9579e710cd20648e,2026-11-17
 engine_temporary_heap_allocate_aligned_top_0247dde0,edge,,10,10,0,0,9579e710cd20648e,2026-11-17
 engine_temporary_heap_allocate_top_0247dd60,edge,,9,9,0,0,9579e710cd20648e,2026-11-12
 engine_temporary_heap_allocator_0247d470,edge,,2,2,0,0,9579e710cd20648e,2026-11-12
@@ -1181,6 +1183,7 @@ loading_disk_device_find_named_device_0246e630,recorded,,146,146,0,0,7caf1e5fbd0
 loading_disk_device_find_named_device_0246e630,edge,,19,19,0,0,7caf1e5fbd051bde,2026-11-12
 loading_disk_device_open_0246d550,edge,,19,19,0,0,7caf1e5fbd051bde,2026-11-12
 loading_disk_device_open_on_device_0246e810,edge,,11,11,0,0,7caf1e5fbd051bde,2026-11-12
+loading_disk_device_open_on_unnamed_devices_0246e9a0,recorded,,37,37,0,0,7caf1e5fbd051bde,2026-11-17
 loading_disk_device_open_on_unnamed_devices_0246e9a0,edge,,14,14,0,0,7caf1e5fbd051bde,2026-11-17
 loading_disk_device_resolve_alias_0246d180,recorded,,41,41,0,0,03b21b886c54a231,2026-11-12
 loading_disk_device_resolve_alias_0246d180,edge,,23,23,0,0,03b21b886c54a231,2026-11-12
@@ -1358,7 +1361,9 @@ param_find_row_action_button,recorded,,160,160,0,0,80e146de909c868f,2026-11-14
 param_find_row_action_button,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_ai_sound,recorded,,36,36,0,0,80e146de909c868f,2026-11-14
 param_find_row_ai_sound,edge,,50,50,0,0,80e146de909c868f,2026-11-12
+param_find_row_atk_param,recorded,,14,14,0,0,81240509ea85581e,2026-11-17
 param_find_row_atk_param,edge,,22,22,0,0,81240509ea85581e,2026-11-17
+param_find_row_behavior_param,recorded,,16,16,0,0,81240509ea85581e,2026-11-17
 param_find_row_behavior_param,edge,,22,22,0,0,81240509ea85581e,2026-11-17
 param_find_row_bullet,recorded,,100,100,0,0,80e146de909c868f,2026-11-14
 param_find_row_bullet,edge,,50,50,0,0,80e146de909c868f,2026-11-12
@@ -1545,6 +1550,7 @@ render_configure_viewport,edge,,11,11,0,0,3d87385231a22e92,2026-11-12
 render_configure_viewport_and_guard_band,recorded,,47,47,0,0,67cbc6eee27c8769,2026-11-12
 render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-11-12
 render_convert_constructor_record,edge,,98,98,0,0,8bd5968199c5fb5d,2026-11-10
+render_convert_record_descriptor_classification,recorded,,202,202,0,0,a130fb1ef6469c41,2026-11-17
 render_convert_record_descriptor_classification,edge,,238,238,0,0,a130fb1ef6469c41,2026-11-17
 render_copy_initial_level_014a3410,edge,,38,38,0,0,154139170a78885f,2026-11-14
 render_emit_draw_index_auto,recorded,,124,124,0,0,50ed9bfb91c60359,2026-11-12
