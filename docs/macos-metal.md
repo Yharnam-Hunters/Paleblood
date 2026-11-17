@@ -355,19 +355,32 @@ for active-lane reductions, helper invocations and discard behavior.
 
 Ordinary numeric-only quad reads require one inlined, straight-line guest block. A separate
 fragment-control pass admits a finite forward chain of guest blocks when every live wave-wide
-vote can be removed by proof. It removes unread, nonvolatile, alias-free function state and
+vote can be removed by proof. It also admits one three-case forward diamond: the first case
+chooses whether to visit a single block of scalar local math before a shared terminal case.
+All quad operations must execute in the common prefix. The optional block has no external
+reads, writes or termination; its extended math is limited to scalar GLSL Log2/Exp2. The
+terminal case has no quad, derivative, image or extended operations. The original Boolean
+SSA decision and its branch orientation are preserved without assuming that its value is
+uniform. It removes unread, nonvolatile, alias-free function state and assignments with no
+reachable read before overwrite or function exit. Paths that cycle without an overwrite remain
+unproved. It
 only elides an EXECZ skip when always visiting its body with empty EXEC preserves all live state
 and external effects. It then removes the artificial dispatcher, exposing the actual physical
 control flow to the quad-read checks. Observable wave results, real loops, escaping locals,
-atomics, volatile or coherent memory decorations, extension instructions and unproved control
+atomics, volatile or coherent memory decorations, unknown extension instructions and unproved control
 remain explicit refusals. This does not
 emulate a GCN wave with the native SIMD-group width.
 
-Removing an unused physical descriptor read additionally requires an exact typed address proof:
-an unchanged entry user-SGPR pair, the backend address offset and a bounded constant byte offset.
-Every removed read must fit a descriptor span already validated by the host. Descriptor origins
-are part of the shader cache key; their live pointers and complete spans are checked again before
-every draw, including cache hits. Uncovered or volatile reads are not silently discarded.
+Removing an unused physical read additionally requires an exact typed address proof: an entry
+user-SGPR pair, the backend address offset and a bounded constant byte offset. A later local
+assignment is harmless only if actual CFG edges prove it cannot reach that particular capture
+load. An unproved read is retained during control preparation; the final removal pass remains
+strict. The preparation API can use an independently supplied coverage callback, and the pure
+pool-range helper checks declared and written words, pointer alignment, overflow and guest/native
+span containment. The current executor supplies only its already validated descriptor spans;
+it has no cached removed-read requirement vector or general current-draw pool fallback.
+Descriptor origins remain part of its shader cache key. Uncovered or volatile reads are not
+silently discarded.
 
 Boolean quad swaps acquire all four participation bits and Boolean values in one `uint2 quad_or`
 reduction, then select the XOR peer from the acquired bits. The call is materialized before later
@@ -383,8 +396,11 @@ missing-source fault. `metal_fragment_control` checks independently owned prepar
 refusals. `metal_boolean_quads` checks all Boolean truth tables, swap directions and incomplete
 participation. `metal_fragment_runtime` exercises an independently assembled GFX7 shader through
 the public executor, comparing masked EXEC and whole-quad expansion with a mathematical pixel
-oracle across user-data changes, retained state, resets and cached shaders. Device qualification
-establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
+oracle across user-data changes, retained state, resets and cached shaders.
+`metal_fragment_diamonds_cpu` checks independently assembled control, address, liveness, pure
+pool-range helper and transactional-refusal cases. `metal_fragment_diamonds` checks the original decision, both branch
+orientations, conditional local math, exact quad data and Boolean packets under full and tiny
+raster coverage. Device qualification establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
 comparison.
 
 The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling
