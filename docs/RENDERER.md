@@ -94,13 +94,18 @@ Instead:
        AMD's sizes (2 VGPRs per barycentric pair, 3 for the pull model, 1 for the rest), as AMD's
        register documentation and LLVM's AMDGPU backend have it.
      - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
-       data format is its descriptor's). The executor owns a 32-bit stop word for each translated
-       shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
+       data format is its descriptor's). The executor owns 8,192 32-bit stop words; a translated
+       shader's GPU address of one is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
-       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shaders
+       kept that write that word. Which word a shader writes follows from its kind and code address
+       (`stop_index`), never from the order the executor met it: numbered by order, the same shader
+       translated to different SPIR-V from one run to the next, so the driver's pipeline cache, which
+       knows a pipeline by its SPIR-V, missed, and every boot compiled its pipelines again (in
+       Iosefka's Clinic, minutes of compiles on the renderer's thread in each boot, November 2026).
        The words live in host-cached memory where the device has it: every finished batch reads
-       all 1,600 of them, and from write-combined memory each read crossed the bus (in Iosefka's
-       Clinic that scan was the renderer thread's largest single cost, 13 November 2026).
+       all of them, and from write-combined memory each read crossed the bus (in Iosefka's Clinic
+       that scan was the renderer thread's largest single cost, 13 November 2026).
      - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
        shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
        base plus its offsets) is first checked against the imported pool. An access outside goes to
@@ -1190,6 +1195,24 @@ post-processing passes, go through it, and without it the clinic's tone map, gla
 depth of field never reached the renderer (the scene behind the HUD stayed one flat
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
+
+## Pipeline compiles
+
+Every pipeline the executor makes goes through the driver's shader compiler, a few thousand by
+Iosefka's Clinic, and in the clinic they took minutes on the renderer's thread in every boot. Two
+things keep that to the first run:
+
+- **The same SPIR-V in every run.** Nothing in a translation depends on the order the executor
+  meets shaders in: a shader's run-time stop word follows from its own code address
+  (`stop_index`). The driver knows a cached pipeline by its SPIR-V.
+- **A pipeline cache file of the executor's own.** The driver keeps a cache on disk, but only up
+  to its size limit (NVIDIA's is 1 GB by default, shared by every program; once it is full nothing
+  new is kept). The executor fills its Vulkan pipeline cache from a file when it opens and writes
+  the file back while pipelines are being made (every 20 seconds after new ones, from a thread of
+  its own) and when it closes. The file is `BB_PIPELINE_CACHE` (empty: none), else
+  `$XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin`, else `~/.cache/paleblood/vulkan-pipelines.bin`.
+  A file written for another device or driver, or larger than 512 MB, is not used and is replaced.
+  The unit tests set it empty unless a test asks for one.
 
 ## Measuring frame rate
 

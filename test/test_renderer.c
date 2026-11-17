@@ -175,6 +175,7 @@ static int stops(uint64_t buffer, uint32_t size)
 
 int main(void)
 {
+    setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
     guest_fd = map_guest_memory();
     if (guest_fd < 0) {
         fprintf(stderr, "cannot map the guest memory at %#llx\n", GUEST_BASE);
