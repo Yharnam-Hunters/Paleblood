@@ -7,9 +7,19 @@
 
 namespace yebis {
 
+struct InterfaceStorage;
+
+// The observed derived tables use a non-deleting cleanup at this slot.
+struct InterfaceVtablePrefix {
+    void *unknown_slots[3];
+    void (*cleanup)(InterfaceStorage *);
+};
+static_assert(offsetof(InterfaceVtablePrefix, cleanup) == 0x18);
+static_assert(sizeof(InterfaceVtablePrefix) == 0x20);
+
 // This is the initialized prefix; derived objects have different storage sizes.
 struct InterfaceStorage {
-    const void *vtable;
+    const InterfaceVtablePrefix *vtable;
     uint32_t reference_count;
     std::byte unknown_0x000c[4];
     void *instance;

@@ -26,6 +26,7 @@ address,replacement,system,returns
 0x00b69450,bb_frame_timing_generator_fill_00b69450,frame_timing,void
 0x00b6a030,bb_frame_timing_generator_refresh_00b6a030,frame_timing,void
 0x00fb4ac0,bb_render_yebis_context_instantiate,render,i64
+0x00fb6c80,bb_render_yebis_release_interface,render,i32
 0x00fb6d20,bb_render_yebis_initialize_interface,render,void
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
