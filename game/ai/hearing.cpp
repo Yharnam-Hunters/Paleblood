@@ -29,7 +29,7 @@
 //   adds the sound's height to the ear's) must lie within the remaining range, and the sphere
 //   the ear's shape is asked about is the part of the range left at that point.
 // - A heard sound is remembered: its position (unless the enemy already remembers a position
-//   closer than this sound's gap) and, always, its AiSound id.
+//   not farther than this sound's gap) and, always, its AiSound id.
 //
 // The ear's shape: the ear is a shape around the listener's position, with its height angle from
 // the enemy's NpcThinkParam row (ear_angX, whole degrees). Without a row the angle is 90 degrees,
@@ -167,15 +167,18 @@ static_assert(offsetof(Sound, uses_hit_team_table_b) == 0x35);
 
 constexpr float at_the_ear = 0.0001f;          // closer than this is always heard
 constexpr float flat_length_epsilon = 0.00001f;  // a shorter ground direction is no direction
-constexpr uint32_t right_angle_bits = 0x3fc90fdb;  // pi / 2, the height angle without a row
+// pi / 2: the height angle without a row, and the least ear_angX that hears at every height.
+constexpr uint32_t right_angle_bits = 0x3fc90fdb;
 
 float length3(Vec4 value) { return refined_length(squared_length3(value)).x(); }
+
+float radians(uint8_t degrees) { return engine::multiply(static_cast<float>(degrees), degrees_to_radians); }
 
 float ear_height_angle(const Listener *listener)
 {
     const ThinkParamHearing *row = listener->think_params->row;
     if (!row) return std::bit_cast<float>(right_angle_bits);
-    return engine::multiply(static_cast<float>(row->ear_ang_x), degrees_to_radians);
+    return radians(row->ear_ang_x);
 }
 
 // The ground direction from the listener towards the point, of length one; zero when the point
@@ -201,7 +204,8 @@ Vec4 from_closest_point(Vec4 offset, Vec4 edge)
 extern "C" bool bb_ai_hearing_in_ear_range(const Listener *listener, const Vec4 *listener_position, float reach,
                                            Vec4 point, float radius);
 
-// True when the sphere of `radius` around `point` reaches the ear at *listener_position.
+// True when the sphere of `radius` around `point` reaches the ear at *listener_position. The
+// hearing test below is its only caller.
 extern "C" bool bb_ai_hearing_in_ear_range(const Listener *listener, const Vec4 *listener_position, float reach,
                                            Vec4 point, float radius)
 {
@@ -236,10 +240,7 @@ extern "C" bool bb_ai_hearing_in_ear_range(const Listener *listener, const Vec4 
 namespace {
 
 constexpr float ear_dist_divisor = 100.0f;      // ear_dist is in hundredths
-constexpr uint32_t half_pi_bits = 0x3fc90fdb;   // ear_angX at least this: every height
 constexpr float one_side = 1.0f, other_side = -1.0f;
-
-float radians(uint8_t degrees) { return engine::multiply(static_cast<float>(degrees), degrees_to_radians); }
 
 // The distance from `from` to `to`, by the refined root.
 float distance_between(Vec4 from, Vec4 to) { return length3(vec::subtract(to, from)); }
@@ -313,7 +314,7 @@ bool heard_beside_edge(const Hearing &h)
 bool heard_by_ear(const Hearing &h, const ThinkParamHearing *row)
 {
     if (!row) return vec::ordered_greater(engine::add(h.reach, h.range), h.gap);
-    const bool every_height = !(radians(row->ear_ang_x) < std::bit_cast<float>(half_pi_bits));
+    const bool every_height = !(radians(row->ear_ang_x) < std::bit_cast<float>(right_angle_bits));
     const float width_angle = radians(row->ear_ang_y);
     if (vec::ordered_at_least(width_angle, std::bit_cast<float>(pi_bits))) {
         if (every_height) return vec::ordered_greater(engine::add(h.reach, h.range), h.gap);
@@ -335,8 +336,8 @@ float gap_to(HearingOwner *owner, Vec4 ear, Vec4 sound_position, float source_si
     return engine::subtract(engine::subtract(distance, owner->vtable->size(owner)), source_size);
 }
 
-// Remembers a heard sound: its position, unless a remembered position is closer than this
-// sound's gap; always its AiSound id.
+// Remembers a heard sound: its position, unless a remembered position is not farther than this
+// sound's gap (a tie keeps the old position); always its AiSound id.
 void remember(Listener *listener, const Sound *sound, float source_size)
 {
     bool replace = true;
@@ -357,7 +358,8 @@ void remember(Listener *listener, const Sound *sound, float source_size)
 }  // namespace
 
 // The hearing test: whether the enemy hears `sound` (the caller has checked that the sound can be
-// heard from where the enemy is: `audible`), remembering it when it does. `source_size` is the
+// heard from where the enemy is: `audible`), remembering it when it does. The sound check below
+// is its only caller. `source_size` is the
 // size of the character that made the sound (0 for others).
 extern "C" void bb_ai_hearing_test(Listener *listener, const Sound *sound, bool audible, float source_size)
 {

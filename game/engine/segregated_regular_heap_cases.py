@@ -173,6 +173,10 @@ def aligned_cases():
         # The worst case's own range class may hold blocks too small for it: skipped.
         c('worst_case_class_itself_skipped', [(0x10, 'u'), (0x400, 'f'), (0x10, 'u'), (0x800, 'f'), (0x10, 'u')],
           0x100, 0x400, spares=[0, 1]),
+        # 0x200 at 0x200: the worst case (0x3ff) is in the 0x200 range class, so the next class up
+        # (0x400 to 0x7ff) is taken, although an aligned 0x200 block below would fit exactly.
+        c('worst_case_size_plus_alignment_power_of_two', [(0x200, 'u'), (0x200, 'f'), (0x10, 'u'), (0x400, 'f'),
+                                                         (0x10, 'u')], 0x200, 0x200, spares=[0, 1]),
         c('no_classes', [(0x30, 'u')], 0x40, 0x40),
         c('not_enough_available', [(0x100, 'f')], 0x110, 0x40),
         c('request_zero', [(0x10, 'u'), (0x100, 'f')], 0, 0x40, spares=[0, 1]),
