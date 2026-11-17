@@ -15,6 +15,7 @@
 
 #include "../engine/msvc_tree.h"
 #include "int_map.h"
+#include "key_mapper.h"
 #include "runtime/original.h"
 
 namespace {
@@ -67,21 +68,13 @@ struct InputState {
 };
 static_assert(offsetof(InputState, analog_values) == 0x28 && offsetof(InputState, pressed_bits) == 0x58);
 
-// The set of held inputs that 0x013994a0 searches: a std::set whose tree it reaches at +0x18.
-struct HeldInputSet {
-    uint8_t unknown_0x00[0x18];
-    void *tree;
-};
-
 struct InputSource {
     uint8_t unknown_0x00[0x8];
     const InputState *state;
     uint8_t unknown_0x10[0x28];
-    HeldInputSet held_inputs;
+    input::HeldInputSet held_inputs;
 };
 static_assert(offsetof(InputSource, held_inputs) == 0x38);
-
-struct KeyMapper;
 
 // One way of holding a key that the held query (0x01391c60) accepts: up to four logical keys,
 // each with the test its state must pass. A part whose key is unused_part always passes.
@@ -104,7 +97,7 @@ struct KeyAssign {
     uint8_t unknown_0x18[0x8];
     uint8_t enabled;   // any nonzero value counts
     uint8_t unknown_0x21[0x7];
-    KeyMapper *mapper;
+    input::KeyMapper *mapper;
     uint8_t unknown_0x30[0x8];
     input::IntMap<KeyCombination> *combinations;   // a multimap: a key may have several
     const KeyStateMap *key_states;
@@ -114,14 +107,8 @@ static_assert(offsetof(KeyAssign, mapper) == 0x28 && offsetof(KeyAssign, combina
 static_assert(offsetof(KeyAssign, key_states) == 0x40);
 static_assert(offsetof(input::IntMapNode<KeyCombination>, value) == 0x20);
 
-constexpr int32_t no_index = -1;
+using input::no_index;
 
-// The input's button index assigned to `key`, or no_index.
-RT_ORIGINAL(0x01390ba0, mapper_button_index, int32_t(KeyMapper *mapper, uint32_t key));
-// The second input a button index is assigned to (another device's), or no_index.
-RT_ORIGINAL(0x0138d060, mapper_alternate_input, int32_t(KeyMapper *mapper, int32_t button));
-// Whether `input` is in the set (std::set::find != end), in the low byte of the result.
-RT_ORIGINAL(0x013994a0, input_set_contains, uint8_t(HeldInputSet *set, int32_t input));
 // The pressed and analog queries below, called through their addresses as the held query does.
 RT_ORIGINAL(0x01391e30, key_assign_pressed, uint8_t(KeyAssign *keys, int32_t key));
 RT_ORIGINAL(0x01391f60, key_assign_analog_value, float(KeyAssign *keys, int32_t key));
@@ -147,17 +134,17 @@ extern "C" uint8_t bb_input_key_assign_pressed_01391e30(KeyAssign *keys, uint32_
 {
     if (keys->mapper == nullptr)
         return false;
-    const int32_t button = mapper_button_index(keys->mapper, key);
+    const int32_t button = input::key_mapper_button_index(keys->mapper, key);
     if (button == no_index || keys->enabled == 0 || !key_readable(keys, key))
         return false;
     // The bit is picked from the 32-bit word with the index's low five bits.
     const uint32_t index = static_cast<uint32_t>(button);
     if ((keys->input->state->pressed_bits[index / bits_per_word] >> (index % bits_per_word)) & 1)
         return true;
-    const int32_t alternate = mapper_alternate_input(keys->mapper, button);
+    const int32_t alternate = input::key_mapper_alternate_input(keys->mapper, button);
     if (alternate == no_index)
         return false;
-    return input_set_contains(&keys->input->held_inputs, alternate);
+    return input::held_set_contains(&keys->input->held_inputs, alternate);
 }
 
 // The analog value of logical key `key` (a stick axis or a pressure), 0 when the key has no
@@ -165,7 +152,7 @@ extern "C" uint8_t bb_input_key_assign_pressed_01391e30(KeyAssign *keys, uint32_
 // does not check for a mapper first.
 extern "C" float bb_input_key_assign_analog_value_01391f60(KeyAssign *keys, uint32_t key)
 {
-    const int32_t button = mapper_button_index(keys->mapper, key);
+    const int32_t button = input::key_mapper_button_index(keys->mapper, key);
     if (button == no_index || keys->enabled == 0 || !key_readable(keys, key))
         return 0.0f;
     return keys->input->state->analog_values[button];
