@@ -218,8 +218,10 @@ validate every instruction against its declared SGPR/VGPR allocation.
 Readback is tightly packed BGRA, matching the display API. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
-The generic register events validate this backend's supported opaque-triangle profile: blending,
-non-copy colour operations and partial colour masks stop with a reason.
+The generic register events validate this backend's supported opaque-triangle profile: blending
+that can write colour, non-copy colour operations and partial colour masks stop with a reason.
+An enabled blend flag has no effect when target 0 is unbound, its channel mask is zero or the
+colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.

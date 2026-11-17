@@ -245,6 +245,12 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     }
 }
 
+static bool color_writes(const MetalState &state)
+{
+    return state.color_enabled && (!state.target_mask_set || (state.target_mask & TARGET0_MASK)) &&
+        (!state.color_control_set || (state.color_control & COLOR_MODE_MASK) != 0);
+}
+
 /* Validate the supported state. A zero colour mask still executes shaders and their writes. */
 static int check_state(const MetalState &state, char *error, size_t size)
 {
@@ -255,7 +261,7 @@ static int check_state(const MetalState &state, char *error, size_t size)
     if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_TRISTRIP)
         return failed(error, size, "primitive type %u: only triangle lists and strips are drawn yet", state.primitive);
     /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
-    if ((state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
+    if (color_writes(state) && (state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
         return failed(error, size, "blending is not drawn yet");
     if (state.depth_set && (state.depth & DEPTH_BOUNDS_ENABLE))
         return failed(error, size, "depth bounds testing (DB_DEPTH_CONTROL.DEPTH_BOUNDS_ENABLE) is not drawn yet");
@@ -1305,8 +1311,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (depth_attachments(x,state,depth,error,size)) return -1;
     const bool has_depth = depth.z.texture || depth.stencil.texture;
     if (!state.color_enabled && !has_depth) return failed(error,size,"a draw has no color target or depth/stencil attachment");
-    const bool write_color = state.color_enabled && (!state.target_mask_set || (state.target_mask & TARGET0_MASK)) &&
-        (!state.color_control_set || (state.color_control & COLOR_MODE_MASK) != 0);
+    const bool write_color = color_writes(state);
     if (!state.pixel.code && (write_color || !has_depth))
         return failed(error,size,"a draw with no pixel shader requires depth/stencil and no color writes");
     MetalTarget *target = state.color_enabled ? target_for(x,state.color,error,size) : nullptr;
