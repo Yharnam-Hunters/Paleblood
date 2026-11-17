@@ -323,9 +323,11 @@ def device_cases():
     ]
 
 
-def unnamed_case(cid, devices, named_flags, results, present=True, flags=VALID, long_copy=False, path_owns=1):
+def unnamed_case(cid, devices, named_flags, results, present=True, flags=VALID, long_copy=False, path_owns=1,
+                 copy_owns=None):
     """devices: count; named_flags: which of them are registered under a name; results: per
-    unnamed device tried, in order, until one opens."""
+    unnamed device tried, in order, until one opens; copy_owns: the owns byte each device's open
+    writes into the working copy."""
     c = Case('unnamed', cid)
     c.raw['file'] = bytearray(8)
     for i in range(devices):
@@ -348,7 +350,7 @@ def unnamed_case(cid, devices, named_flags, results, present=True, flags=VALID, 
             continue
         result = results[tried]
         tried += 1
-        try_open(c, result, long_copy)
+        try_open(c, result, long_copy, copy_owns)
         if result != '0x0':
             break
     c.unlock()
@@ -371,6 +373,8 @@ def unnamed_cases():
         unnamed_case('long_copy_freed', 2, (), ['0x0', 'buf:file'], long_copy=True),
         unnamed_case('long_copy_none_opens', 2, (0,), ['0x0'], long_copy=True),
         unnamed_case('owns_from_path', 2, (), ['0x0', 'buf:file'], path_owns=0),
+        unnamed_case('device_changes_owns', 2, (), ['0x0', 'buf:file'], copy_owns=0x7f),
+        unnamed_case('device_changes_owns_none_opens', 2, (), ['0x0', '0x0'], copy_owns=0x7f),
     ]
 
 

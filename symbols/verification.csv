@@ -1174,7 +1174,7 @@ loading_disk_device_find_named_device_0246e630,recorded,,146,146,0,0,7caf1e5fbd0
 loading_disk_device_find_named_device_0246e630,edge,,19,19,0,0,7caf1e5fbd051bde,2026-11-12
 loading_disk_device_open_0246d550,edge,,19,19,0,0,7caf1e5fbd051bde,2026-11-12
 loading_disk_device_open_on_device_0246e810,edge,,11,11,0,0,7caf1e5fbd051bde,2026-11-12
-loading_disk_device_open_on_unnamed_devices_0246e9a0,edge,,12,12,0,0,7caf1e5fbd051bde,2026-11-12
+loading_disk_device_open_on_unnamed_devices_0246e9a0,edge,,14,14,0,0,7caf1e5fbd051bde,2026-11-17
 loading_disk_device_resolve_alias_0246d180,recorded,,41,41,0,0,03b21b886c54a231,2026-11-12
 loading_disk_device_resolve_alias_0246d180,edge,,23,23,0,0,03b21b886c54a231,2026-11-12
 loading_disk_device_resolve_root_0246cf50,recorded,,55,55,0,0,03b21b886c54a231,2026-11-12
@@ -1530,7 +1530,7 @@ render_compose_record_encoding_fields,recorded,,19,19,0,0,c6bfe3dc4c1e12ad,2026-
 render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-12
 render_configure_record_shader,recorded,,382,382,0,0,f676035c0f6f2a49,2026-11-12
 render_configure_record_shader,edge,,18,18,0,0,f676035c0f6f2a49,2026-11-12
-render_configure_record_shader_secondary,edge,,191,191,0,0,5e297be297985947,2026-11-10
+render_configure_record_shader_secondary,edge,,195,195,0,0,5e297be297985947,2026-11-17
 render_configure_screen_scissor,recorded,,78,78,0,0,26090706b37974bd,2026-11-12
 render_configure_screen_scissor,edge,,13,13,0,0,26090706b37974bd,2026-11-12
 render_configure_viewport,recorded,,134,134,0,0,3d87385231a22e92,2026-11-12
@@ -1538,7 +1538,7 @@ render_configure_viewport,edge,,11,11,0,0,3d87385231a22e92,2026-11-12
 render_configure_viewport_and_guard_band,recorded,,47,47,0,0,67cbc6eee27c8769,2026-11-12
 render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-11-12
 render_convert_constructor_record,edge,,98,98,0,0,8bd5968199c5fb5d,2026-11-10
-render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
+render_convert_record_descriptor_classification,edge,,238,238,0,0,a130fb1ef6469c41,2026-11-17
 render_copy_initial_level_014a3410,edge,,38,38,0,0,154139170a78885f,2026-11-14
 render_emit_draw_index_auto,recorded,,124,124,0,0,50ed9bfb91c60359,2026-11-12
 render_emit_draw_index_auto,edge,,14,14,0,0,50ed9bfb91c60359,2026-11-12
