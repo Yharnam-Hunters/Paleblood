@@ -24,17 +24,17 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,404 |
-| Replaced | 1,368 (0.87%) | 384,290 (0.90%) |
-| Edge-verified (includes verified) | 1,368 (0.87%) | 384,290 (0.90%) |
+| Replaced | 1,369 (0.87%) | 384,388 (0.90%) |
+| Edge-verified (includes verified) | 1,369 (0.87%) | 384,388 (0.90%) |
 | Verified | 285 (0.18%) | 70,459 (0.17%) |
 
 Counts are cumulative: verified functions are included in edge-verified and replaced totals.
 
 | With function families | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
-| Members of 48 function families | 19,669 (12.47%) | 141,663 (0.33%) |
-| Replaced, with family members | 21,037 (13.34%) | 525,953 (1.24%) |
-| Edge-verified, with family members | 21,037 (13.34%) | 525,953 (1.24%) |
+| Members of 156 function families | 27,733 (17.58%) | 651,051 (1.53%) |
+| Replaced, with family members | 29,102 (18.45%) | 1,035,439 (2.44%) |
+| Edge-verified, with family members | 29,102 (18.45%) | 1,035,439 (2.44%) |
 | Verified, with family members | 18,304 (11.60%) | 132,885 (0.31%) |
 
 Family members are tiny functions (one to a few bytes each) that share one replacement per family: they add far more to the function count than to the bytes.
@@ -44,7 +44,7 @@ Matching tier: 127 functions compile byte for byte to the original from their ow
 | System | Tracked | Replaced | Edge-verified (includes verified) | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|---:|
 | ai | 59 | 59 | 59 | 31 | 19,421 |
-| audio | 8 | 8 | 8 | 2 | 804 |
+| audio | 9 | 9 | 9 | 2 | 902 |
 | camera | 8 | 8 | 8 | 0 | 21,151 |
 | character | 12 | 12 | 12 | 6 | 3,823 |
 | engine | 659 | 658 | 658 | 76 | 155,086 |
