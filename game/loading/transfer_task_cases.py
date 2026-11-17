@@ -198,13 +198,26 @@ def check_close_cases():
                                 c.stub(FINISH, 1)
                                 c.stub(RELEASE, 1)
                         out.append(c)
+    # Only close status 4 closes: 0, 3 and 5 finish like 1 does.
+    for close in (0, 3, 5):
+        c = task_case('check_close', f'readd_obj1_close{close}_cancel0_res0', state=7, read_status=0xd,
+                      close_status=close, cancel=0, result=0x100, read_object=True)
+        c.stub(ALLOCATOR_OF, 1, ret='buf:alloc')
+        c.stub(DESTROY, 1)
+        c.stub(FREE, 2)
+        c.stub(FINISH, 1)
+        c.stub(RELEASE, 1)
+        out.append(c)
     return out
 
 
 def tail_variants():
     return [dict(read_object=False, chunk_flags=8, close_status=1), dict(read_object=True, chunk_flags=0, close_status=1),
             dict(read_object=True, chunk_flags=8, close_status=4), dict(read_object=True, chunk_flags=0xfff7, close_status=4),
-            dict(read_object=True, chunk_flags=8, close_status=1)]
+            dict(read_object=True, chunk_flags=8, close_status=1),
+            # Close statuses other than 1 and 4 (only 4 counts as closed).
+            dict(read_object=True, chunk_flags=8, close_status=0), dict(read_object=True, chunk_flags=8, close_status=3),
+            dict(read_object=True, chunk_flags=8, close_status=5)]
 
 
 def file_check_read_cases():
