@@ -464,20 +464,114 @@ static void colorless_cases(rt_executor *x,uint8_t *pool)
     const float white[3][4]={{1,1,1,1},{1,1,1,1},{1,1,1,1}};memcpy(pool+COLORS,white,sizeof white);
     free(before);free(wanted);free(writable);
 }
+/* Blend state matters only when target 0 can receive color. Each owned row uses
+   literal LINEAR slice1 offsets; the full pool also observes refused draws. */
+static void inactive_blend_cases(rt_executor *x,uint8_t *pool)
+{
+    static const struct {
+        const char *id;
+        unsigned bound,target_set,target_mask,color_set,color_control,blend,refusal;
+    } cases[]={
+        {"unbound-normal",0,1,0xf,1,0x00cc0010,0x40000504,0},
+        {"unbound-mode-zero",0,1,0xf,1,0x00cc0000,0x40000504,0},
+        {"bound-mask-zero",1,1,0,1,0x00cc0010,0x40000504,0},
+        {"bound-mask-high-only",1,1,0xfffffff0,1,0x00cc0010,0x40000504,0},
+        {"bound-mode-zero",1,1,0xf,1,0x00cc0000,0x40000504,0},
+        {"active-full-writes",1,1,0xf,1,0x00cc0010,0x40000504,1},
+        {"active-default-target-mask",1,0,0,1,0x00cc0010,0x40000504,1},
+        {"active-default-color-control",1,1,0xf,0,0,0x40000504,1},
+        {"blend-disabled-recovery",1,1,0xf,1,0x00cc0010,0x00000504,0},
+    };
+    enum { Z_BYTES=SLICES*W*H*4+64,S_BYTES=SLICES*W*H+64 };
+    const float white[3][4]={{1,1,1,1},{1,1,1,1},{1,1,1,1}};
+    uint8_t *before=malloc(POOL),*wanted=malloc(POOL),*writable=malloc(POOL);
+    CHECK(before!=NULL && wanted!=NULL && writable!=NULL);
+    if(!before || !wanted || !writable){free(before);free(wanted);free(writable);return;}
+    for(unsigned mode=0;mode<sizeof cases/sizeof *cases;++mode){
+        const unsigned bound=cases[mode].bound,z=bound,refusal=cases[mode].refusal,expected_color_write=mode==8;
+        Scene s=scene();s.stencil=1|STENCIL_NO_METADATA;s.slice=1;s.color=bound;
+        s.control=z?DEPTH_AND_STENCIL_ALWAYS:STENCIL_ALWAYS;s.ops=3u<<4;
+        setup(x,pool,&s);memcpy(pool+COLORS,white,sizeof white);
+        CHECK(s.span[0]==Z_BYTES);CHECK(s.span[1]==S_BYTES);
+        if(!z)omit_z_bases();
+        if(cases[mode].target_set)reg(0xa08e,cases[mode].target_mask);
+        if(cases[mode].color_set)reg(0xa202,cases[mode].color_control);
+        reg(0xa1e0,cases[mode].blend);
+        unsigned z_bases=0,target_regs=0,color_regs=0,blend_regs=0;
+        for(size_t i=0;i<count;++i)if(calls[i].kind==RT_CALL_REGISTER){
+            const unsigned address=calls[i].u.reg.address;
+            z_bases+=address==0xa012 || address==0xa014;
+            target_regs+=address==0xa08e;color_regs+=address==0xa202;blend_regs+=address==0xa1e0;
+        }
+        CHECK(z_bases==(z?2u:0u));CHECK(target_regs==cases[mode].target_set);
+        CHECK(color_regs==cases[mode].color_set);CHECK(blend_regs==1);
+        memcpy(before,pool,POOL);memcpy(wanted,before,POOL);memset(writable,0,POOL);
+        if(!refusal){
+            const uint32_t depth=0x3e800000;
+            const uint8_t stencil=0x17,color[4]={255,255,255,255};
+            /* Geometry0, 128-pixel slice stride: S8 offset128 and D32 offset512.
+               These literal offsets form the oracle independently of rt_tiling. */
+            for(unsigned pixel=0;pixel<W*H;++pixel){
+                colorless_write(wanted,writable,S_BASE+128+pixel,&stencil,1);
+                if(z)colorless_write(wanted,writable,Z_BASE+512+pixel*4,&depth,4);
+                if(expected_color_write)colorless_write(wanted,writable,COLOR_BASE+pixel*4,color,sizeof color);
+            }
+        }
+        char error[1024]="";rt_render_call *draw=event(RT_CALL_DRAW_AUTO);draw->u.draw_auto.index_count=3;
+        const int rc=rt_executor_run_calls(x,calls,count,error,sizeof error);
+        const unsigned reason_match=refusal?(rc==-1 && strstr(error,"blending is not drawn yet")!=NULL):(rc==0 && error[0]=='\0');
+        size_t changed=0,want_changed=0,mismatches=0,guard_bad=0,guard_bytes=0;
+        for(size_t i=0;i<POOL;++i){
+            changed+=pool[i]!=before[i];want_changed+=wanted[i]!=before[i];mismatches+=pool[i]!=wanted[i];
+            if(!writable[i]){++guard_bytes;guard_bad+=pool[i]!=before[i];}
+        }
+        unsigned stencil_matches=0,depth_matches=0,color_matches=0;
+        for(unsigned pixel=0;pixel<W*H;++pixel){
+            stencil_matches+=pool[S_BASE+128+pixel]==wanted[S_BASE+128+pixel];
+            depth_matches+=memcmp(pool+Z_BASE+512+pixel*4,wanted+Z_BASE+512+pixel*4,4)==0;
+            color_matches+=memcmp(pool+COLOR_BASE+pixel*4,wanted+COLOR_BASE+pixel*4,4)==0;
+        }
+        size_t inactive_z_bad=0,padding_bad=0,padding_bytes=0;
+        for(unsigned i=0;i<Z_BYTES;++i){
+            if(!z)inactive_z_bad+=pool[Z_BASE+i]!=before[Z_BASE+i];
+            if(i<512 || i>=1024){++padding_bytes;padding_bad+=pool[Z_BASE+i]!=before[Z_BASE+i];}
+        }
+        for(unsigned i=0;i<S_BYTES;++i)if(i<128 || i>=256){
+            ++padding_bytes;padding_bad+=pool[S_BASE+i]!=before[S_BASE+i];
+        }
+        CHECK(reason_match);CHECK(mismatches==0);CHECK(changed==want_changed);CHECK(guard_bad==0);
+        CHECK(inactive_z_bad==0);CHECK(padding_bad==0);CHECK(stencil_matches==W*H);
+        CHECK(depth_matches==W*H);CHECK(color_matches==W*H);
+        printf("depth inactive blend id=%s rc=%d reason_match=%u color_bound=%u expected_color_write=%u z_enabled=%u z_bases=%u "
+            "target_mask_regs=%u target_mask=0x%08x color_control_regs=%u color_control=0x%08x blend_regs=%u blend_control=0x%08x "
+            "pool_compared=%u pool_changed=%zu want_changed=%zu pool_mismatches=%zu guard_bytes=%zu guard_bad=%zu "
+            "inactive_z_bad=%zu padding_bytes=%zu padding_bad=%zu stencil_matches=%u depth_matches=%u color_matches=%u reason=%s\n",
+            cases[mode].id,rc,reason_match,bound,expected_color_write,z,z_bases,target_regs,cases[mode].target_mask,
+            color_regs,cases[mode].color_control,blend_regs,cases[mode].blend,(unsigned)POOL,changed,want_changed,mismatches,
+            guard_bytes,guard_bad,inactive_z_bad,padding_bytes,padding_bad,stencil_matches,depth_matches,color_matches,error);
+        ++scenarios;
+        for(unsigned plane=0;plane<2;++plane)
+            if(s.expected[plane])memcpy(s.expected[plane],wanted+(plane?S_BASE:Z_BASE),s.span[plane]);
+        finish(pool,&s);
+    }
+    free(before);free(wanted);free(writable);
+}
 int main(int argc,char **argv)
 {
     const int aspect_only=argc==2&&strcmp(argv[1],"--aspect-only")==0;
     const int colorless_only=argc==2&&strcmp(argv[1],"--colorless-only")==0;
-    if(argc!=1&&!aspect_only&&!colorless_only){fprintf(stderr,"usage: %s [--aspect-only|--colorless-only]\n",argv[0]);return 2;}
+    const int inactive_blend_only=argc==2&&strcmp(argv[1],"--inactive-blend-only")==0;
+    if(argc!=1&&!aspect_only&&!colorless_only&&!inactive_blend_only){fprintf(stderr,"usage: %s [--aspect-only|--colorless-only|--inactive-blend-only]\n",argv[0]);return 2;}
     char path[]="/tmp/paleblood-metal-depth-XXXXXX",error[512]="";int fd=mkstemp(path);CHECK(fd>=0);if(fd<0)return 1;unlink(path);
     CHECK(ftruncate(fd,POOL)==0);uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);CHECK(pool!=MAP_FAILED);if(pool==MAP_FAILED)return 1;
     memcpy(pool+VS,vertex_position_color,sizeof vertex_position_color);memcpy(pool+PS,pixel_color,sizeof pixel_color);
     const float colors[3][4]={{1,1,1,1},{1,1,1,1},{1,1,1,1}};memcpy(pool+COLORS,colors,sizeof colors);
     rt_executor *x=NULL;const rt_executor_memory memory={.fd=fd,.size=POOL,.guest_base=base};
     int rc=rt_executor_open(&memory,&x,error,sizeof error);if(rc)fprintf(stderr,"open: %s\n",error);CHECK(rc==0);if(rc)return 1;
-    if(!aspect_only&&!colorless_only){depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);}
-    if(!colorless_only)aspect_metadata_cases(x,pool);
-    if(!aspect_only)colorless_cases(x,pool);
+    if(!aspect_only&&!colorless_only&&!inactive_blend_only){depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);}
+    if(!colorless_only&&!inactive_blend_only)aspect_metadata_cases(x,pool);
+    if(!aspect_only&&!inactive_blend_only)colorless_cases(x,pool);
+    if(!aspect_only&&!colorless_only)inactive_blend_cases(x,pool);
     rt_executor_close(x);munmap(pool,POOL);close(fd);
     printf("metal depth: %u scenarios, %u checks, %u failures\n",scenarios,checks,failures);return failures?1:0;
 }
