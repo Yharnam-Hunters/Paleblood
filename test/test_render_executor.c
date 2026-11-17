@@ -3112,6 +3112,19 @@ static void guarded_targets(int fd, rt_executor *shared)
     CHECK(guarded.guards == 1 && guarded.address == at(TILED_TARGET) && guarded.length >= rt_tiling_size(&layout, 1) && !guarded.unguards);
     CHECK(record_tiled_draw(x, error, sizeof error) == 0); /* drawn again: still guarded, not again */
     CHECK(guarded.guards == 1 && tiled_memory_zero());
+    /* rt_executor_fill: recorded into the open batch, the memory filled once it has run; declined (1) over
+       the drawn target's memory, for bytes that are not whole aligned dwords and outside the memory */
+    enum { FILLED = 0xef8000, FILL_WORDS = 16, FILL_WORD = 0x5eed5eedu };
+    uint32_t *filled = (uint32_t *)(uintptr_t)at(FILLED);
+    memset(filled, 0, FILL_WORDS * 4);
+    uint64_t ticket = 0;
+    CHECK(rt_executor_fill(x, at(FILLED), FILL_WORDS * 4, FILL_WORD, &ticket, error, sizeof error) == 0 && ticket > 0);
+    CHECK(filled[0] == 0); /* not yet: the batch is open */
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0 && filled[0] == FILL_WORD && filled[FILL_WORDS - 1] == FILL_WORD);
+    CHECK(rt_executor_fill(x, at(TILED_TARGET) + 64, 64, 0, &ticket, error, sizeof error) == 1 && tiled_memory_zero());
+    CHECK(rt_executor_fill(x, at(FILLED) + 2, 64, 0, &ticket, error, sizeof error) == 1);
+    CHECK(rt_executor_fill(x, at(FILLED), 6, 0, &ticket, error, sizeof error) == 1);
+    CHECK(rt_executor_fill(x, GUEST_BASE + GUEST_SIZE, 64, 0, &ticket, error, sizeof error) == 1);
     CHECK(rt_executor_resolve(x, at(TILED_TARGET) + 64, 4, error, sizeof error) == 0);
     CHECK(!tiled_memory_zero() && guarded.unguards == 1 && guarded.unguarded == at(TILED_TARGET));
     uint32_t image[8];

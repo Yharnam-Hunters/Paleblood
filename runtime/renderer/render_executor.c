@@ -6112,6 +6112,34 @@ int rt_executor_resolve(rt_executor *x, uint64_t address, uint64_t length, char 
     return 0;
 }
 
+/* Whether `size` bytes of guest memory at `address` hold part of a render or depth target, or their
+   CMASK or HTILE: memory whose state the executor keeps apart from it (images, guards, metadata). */
+static int target_memory_over(const rt_executor *x, uint64_t address, uint64_t size)
+{
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *t = &x->targets[i];
+        if (t->address < address + size && address < t->address + target_span(t)) return 1;
+        if (t->cmask.bytes && t->cmask.address < address + size && address < t->cmask.address + t->cmask.bytes) return 1;
+    }
+    for (size_t i = 0; i < x->depth_count; i++) {
+        const depth_entry *z = &x->depths[i];
+        if (z->z_address < address + size && address < z->z_address + depth_span(z)) return 1;
+        if (z->htile.bytes && z->htile.address < address + size && address < z->htile.address + z->htile.bytes) return 1;
+    }
+    return 0;
+}
+
+int rt_executor_fill(rt_executor *x, uint64_t address, uint64_t bytes, uint32_t word, uint64_t *ticket, char *error, size_t error_size)
+{
+    if (!bytes || address % 4 || bytes % 4 || address < x->guest_base || address - x->guest_base > x->size ||
+        bytes > x->size - (address - x->guest_base) || target_memory_over(x, address, bytes))
+        return 1;
+    if (fill_guest_memory(x, address, bytes, word, error, error_size)) return -1;
+    changed_outside(x, address, bytes); /* as a CPU write the write watch reports */
+    *ticket = x->submitted + 1;         /* the open batch's */
+    return 0;
+}
+
 int rt_executor_submit(rt_executor *x, char *error, size_t error_size) { return batch_submit(x, error, error_size); }
 
 /* A ticket may still be the open batch's, which the recording thread hands to the GPU later (the
@@ -6120,6 +6148,12 @@ int rt_executor_submit(rt_executor *x, char *error, size_t error_size) { return 
    slowed down past the limit (a loaded machine, a long run of new pipelines) failed the wait with
    "a batch of 0 draws and dispatches", the GPU having been given nothing. The recording thread hands
    its open batch over whenever it runs out of work, so this wait ends. */
+uint64_t rt_executor_done_ticket(rt_executor *x)
+{
+    uint64_t done = 0;
+    return vkGetSemaphoreCounterValue(x->device, x->timeline, &done) == VK_SUCCESS ? done : 0;
+}
+
 int rt_executor_wait_ticket(rt_executor *x, uint64_t ticket, char *error, size_t error_size)
 {
     pthread_mutex_lock(&x->named_lock);
