@@ -416,12 +416,14 @@ the headers they include from `game/` and `runtime/include/`):
 - each file is split into top-level declarations (a function with its body, a struct with its
   members, a variable with its initializer, a typedef, a macro definition), with comments removed
   and white space reduced to "a space or none";
-- from `bb_NAME`, every identifier in a declaration it holds, and in that declaration's macro
-  expansion (token pasting included), brings in every declaration and macro definition of that
-  name, until nothing new is reached; matching is by name alone, so every overload, forward
+- from `bb_NAME`, every identifier in a declaration it holds (directive lines inside it, such as
+  an `#if` in a function body, included), and in that declaration's macro expansion (rescanned
+  with what follows, token pasting included), brings in every declaration and macro definition of
+  that name, until nothing new is reached; matching is by name alone, so every overload, forward
   declaration and out-of-line member (filed under its class's name too) comes along;
-- free operator overloads, using-directives and using-declarations, `#pragma` lines and includes
-  whose content is not in the repository (system headers) are always in;
+- free operator overloads, using-directives and using-declarations, `#pragma` lines, declarations
+  holding a `_Pragma` or a `#pragma`, includes whose content is not in the repository (system
+  headers) and a second include of a header without a guard are always in;
 - the hash covers each reached declaration's file, the `#if`/`#elif`/`#else` lines around it, the
   namespaces it is in and its text, in translation-unit order.
 
@@ -434,7 +436,8 @@ lists what a function's fingerprint covers.
 
 Where the reading cannot be trusted the row gets the **legacy hash** instead (16 hex digits: the
 defining files and every header they include, whole): a file that does not split cleanly
-(unbalanced braces, an unterminated comment or string, a brace opened in one `#if` branch only), a
+(unbalanced braces, an unterminated comment or string, a brace opened in one `#if` branch only, a
+digraph such as `%:` or `<%`), a
 definition that is not found, an `#include` inside a declaration, a token-pasting macro that
 cannot be expanded, or a closure that reaches `__LINE__`, `__COUNTER__`, `__DATE__`, `__TIME__` or
 `__TIMESTAMP__`. `tools/fingerprint.py --stats` lists those functions.
@@ -455,14 +458,17 @@ part of its class, which comes in by name; an operator overload is always in). T
 every declaration of every such name, so any edit that changes one of them changes the
 fingerprint, and so does moving them relative to one another or adding a declaration with one of
 those names. What the closure leaves out is code no name in the function leads to, which cannot
-reach its compiled code. Static assertions are left out too: they can stop a build but never
-change the code it makes. The places where a name-based reading could miss something (positional
+reach its compiled code. Static assertions without a template argument list are left out too:
+they can stop a build but never change the code it makes. The places where a name-based reading could miss something (positional
 macros, unreadable files, unexpandable pasting) use the legacy hash, so they are exactly as strict
 as before. Neither rule looks outside the legacy file set (system headers' contents, compiler
 flags), so nothing the legacy hash caught falls outside the fingerprint's files.
 `test/test_fingerprint.py` holds both sides: unrelated edits that leave a fingerprint alone, and
 edits to the function, a used helper, a used struct's layout, a used macro, a pasted name, an
-overload, the order and the includes that change it.
+overload, the order and the includes that change it, plus the cases an independent review of the
+reading found and that are now covered (an `#if` inside a body or struct, object-like pasting,
+pasting through an alias, a repeated unguarded include, attributed and parenthesized declarators,
+a declarator named like a macro, digraphs, `_Pragma`).
 
 ## Community patches and hooks
 

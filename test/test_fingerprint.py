@@ -255,6 +255,67 @@ class FingerprintTest(unittest.TestCase):
         self.assertNotEqual(verification.source_fingerprint(self.tree.root, 'sys_fam', family=True), before)
 
 
+# Edits that change bb_sys_target's compiled code and that an independent review found the first
+# reading missed: each must change the fingerprint (or fall back to the legacy hash, which changes).
+HOLES = {
+    'if inside a function body': (
+        {'cfg.h': '#define USE_FAST 1\nint unrelated_cfg = 3;\n',
+         'x.cpp': '#include "cfg.h"\nextern "C" int bb_sys_target(int a) {\n#if USE_FAST\n    return a * 2;\n'
+                  '#else\n    return a + 2;\n#endif\n}\n'},
+        ('cfg.h', '#define USE_FAST 1', '#define USE_FAST 0')),
+    'ifdef inside a struct': (
+        {'cfg.h': '#define WIDE 1\n',
+         'x.cpp': '#include "cfg.h"\nstruct Rec {\n    int a;\n#ifdef WIDE\n    int pad;\n#endif\n    int b;\n};\n'
+                  'extern "C" int bb_sys_target(Rec *r) { return r->b; }\n'},
+        ('cfg.h', '#define WIDE 1', '')),
+    'object-like macro pasting': (
+        {'x.cpp': 'static int helper() { return 1; }\n#define HELPER help ## er\n'
+                  'extern "C" int bb_sys_target() { return HELPER(); }\n'},
+        ('x.cpp', 'return 1;', 'return 2;')),
+    'pasting reached through an alias': (
+        {'x.cpp': 'static int helper_a() { return 1; }\n#define CALL(x) helper_##x\n#define PICK CALL\n'
+                  'extern "C" int bb_sys_target() { return PICK(a)(); }\n'},
+        ('x.cpp', 'return 1;', 'return 2;')),
+    'unguarded header included again': (
+        {'a.h': '#undef VAL\n#define VAL 2\n',
+         'x.cpp': '#include "a.h"\n#undef VAL\n#define VAL 7\n#include "a.h"\n'
+                  'extern "C" int bb_sys_target() { return VAL; }\n'},
+        ('x.cpp', '#define VAL 7\n#include "a.h"\n', '#define VAL 7\n')),
+    'declarator followed by an attribute': (
+        {'x.cpp': 'static const int other = 1, g __attribute__((aligned(8))) = 5;\n'
+                  'extern "C" int bb_sys_target() { return g; }\n'},
+        ('x.cpp', '= 5;', '= 6;')),
+    'parenthesized declarator': (
+        {'x.cpp': 'static const int other = 1, (g) = 5;\nextern "C" int bb_sys_target() { return g; }\n'},
+        ('x.cpp', '= 5;', '= 6;')),
+    'declarator named like a function-like macro': (
+        {'x.cpp': '#define limit(x) ((x) < 10 ? (x) : 10)\nstatic const struct Cfg { int a; } limit = { 5 };\n'
+                  'extern "C" int bb_sys_target() { return limit.a; }\n'},
+        ('x.cpp', '{ 5 }', '{ 6 }')),
+    'digraph directive': (
+        {'x.cpp': '%:define K 5\nint other = 1;\nextern "C" int bb_sys_target() { return K; }\n'},
+        ('x.cpp', 'K 5', 'K 6')),
+    'pragma operator': (
+        {'x.cpp': '_Pragma("pack(push, 1)")\nstruct Other { int z; };\nstruct S { char c; int i; };\n'
+                  '_Pragma("pack(pop)")\nstruct Other2 { int y; };\n'
+                  'extern "C" int bb_sys_target(S *s) { return s->i; }\n'},
+        ('x.cpp', 'push, 1', 'push, 4')),
+}
+
+
+class ReviewFindingsTest(unittest.TestCase):
+    def test_each_edit_changes_what_the_row_is_for(self):
+        for label, (files, (rel, old, new)) in HOLES.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as root:
+                tree = Tree.__new__(Tree)
+                tree.root = root
+                for name, text in files.items():
+                    tree.write(f'game/sys/{name}', text)
+                before = tree.fp()
+                tree.edit(f'game/sys/{rel}', old, new)
+                self.assertNotEqual(tree.fp(), before)
+
+
 class CurrencyTest(unittest.TestCase):
     """Both kinds of value stay valid, each judged by its own rule, and migration converts only
     rows that are current."""

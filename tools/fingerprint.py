@@ -17,12 +17,14 @@ covers the same files, but only the parts of them the function can reach:
    are removed and the whitespace between tokens is reduced to "some" or "none".
 2. The translation unit is put back together in include order, so each declaration has its place.
 3. Starting from the replacement's definition (bb_NAME), the closure takes, for every identifier in
-   a declaration it holds (and in that declaration's macro expansion), every declaration of that
+   a declaration it holds (directive lines inside it included, and in its macro expansion,
+   rescanned with what follows), every declaration of that
    name in the translation unit and every macro definition of it, until nothing new is reached.
    Matching is by name only: every overload, every forward declaration, every member defined out of
    line under its class's name. Some declarations are always in the closure: free operator
-   overloads, using-directives and using-declarations, #pragma lines, includes whose content is not
-   in the repository (system headers), and anything whose declared names could not be read.
+   overloads, using-directives and using-declarations, #pragma lines and declarations holding a
+   _Pragma or #pragma, includes whose content is not in the repository (system headers), a second
+   include of a header without a guard, and anything whose declared names could not be read.
 4. The fingerprint hashes the closure in translation-unit order: each declaration's file, the
    conditional-compilation lines around it, the namespaces it is in, and its text.
 
@@ -33,7 +35,8 @@ overload, or an added system include does.
 
 Where the reading cannot be trusted, the fingerprint is the legacy hash itself (the old rule, no
 narrower): a file that does not split cleanly (unbalanced braces, an unterminated comment or
-string, a conditional that opens a brace in one branch only), a replacement whose definition is
+string, a conditional that opens a brace in one branch only, a digraph), a replacement whose
+definition is
 not found, an #include inside a declaration, a token-pasting macro that cannot be expanded, or a
 closure that reaches __LINE__, __COUNTER__, __DATE__, __TIME__ or __TIMESTAMP__ (their values
 depend on where the code sits, not on what it says). docs/VERIFY.md, "Source fingerprints", has
@@ -46,6 +49,7 @@ for the code now.
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import os
 import re
@@ -89,6 +93,7 @@ TOKEN = re.compile(r'''
   | (?P<ustr>(?:u8|u|U|L)?["'])
   | (?P<num>\.?\d(?:'?[\w]|[eEpP][+-]|\.)*)
   | (?P<id>[A-Za-z_]\w*)
+  | (?P<digraph><%|%>|%:|:>|<:(?!:(?![:>])))
   | (?P<punct>::|->|\#\#|\.\.\.|[^\s\w])
 ''', re.S | re.X)
 
@@ -140,6 +145,8 @@ def lex(text: str) -> list[tuple[bool, list[Tok]]]:
             raise ParseError('unterminated comment')
         if kind == 'ustr':
             raise ParseError('unterminated string or character literal')
+        if kind == 'digraph':
+            raise ParseError(f'digraph {m.group()!r}')
         if kind == 'nl':
             if in_directive:
                 out.append((True, cur))
@@ -373,42 +380,59 @@ class ExpansionError(Exception):
 def expand(tokens: list[Tok], macros: dict[str, list[Macro]], hide: frozenset = frozenset(),
            depth: int = 0, budget: list | None = None) -> list[Tok]:
     """Expands every macro the translation unit defines, with every definition it has (their
-    expansions follow each other: what matters here is which names appear, not valid code)."""
+    expansions follow each other: what matters here is which names appear, not valid code). An
+    expansion is rescanned together with the tokens after it, as the preprocessor does, so an
+    object-like macro that expands to a function-like macro's name takes the arguments that follow."""
     budget = budget if budget is not None else [0]
     if depth > MAX_EXPANSION_DEPTH:
         raise ExpansionError('macro expansion too deep')
+    pending = collections.deque((t, hide) for t in tokens)
     out: list[Tok] = []
-    i = 0
-    while i < len(tokens):
-        t = tokens[i]
-        defs = macros.get(t.text) if t.kind == 'id' and t.text not in hide else None
+    while pending:
+        t, h = pending.popleft()
+        defs = macros.get(t.text) if t.kind == 'id' and t.text not in h else None
         if not defs:
             out.append(t)
-            i += 1
             continue
         args = None
-        end = i + 1
-        if any(m.params is not None for m in defs) and end < len(tokens) and tokens[end].text == '(':
-            args, end = _arguments(tokens, end)
-        produced = False
+        invocation: list[Tok] = []
+        if any(m.params is not None for m in defs) and pending and pending[0][0].text == '(':
+            args, invocation = _take_arguments(pending)
+        produced: list[Tok] = []
+        expanded_any = False
         for m in defs:
             if m.params is None:
-                body = m.body
-            elif args is None:
-                continue
+                produced.extend(_join(m.body))
+                produced.extend(invocation)       # an object-like alternative leaves the parentheses
+            elif args is not None:
+                produced.extend(_substitute(m, args, macros, h | {m.name}, depth, budget))
             else:
-                body = _substitute(m, args, macros, hide | {m.name}, depth, budget)
-            out.extend(expand(body, macros, hide | {m.name}, depth + 1, budget))
-            produced = True
-        if not produced:
+                continue
+            expanded_any = True
+        if not expanded_any:
             out.append(t)
-            i += 1
+            pending.extendleft((x, h) for x in reversed(invocation))
             continue
-        budget[0] += end - i
-        if budget[0] > MAX_EXPANSION_TOKENS or len(out) > MAX_EXPANSION_TOKENS:
+        budget[0] += len(produced) + 1
+        if budget[0] > MAX_EXPANSION_TOKENS:
             raise ExpansionError('macro expansion too large')
-        i = end if args is not None else i + 1
+        pending.extendleft((x, h | {t.text}) for x in reversed(produced))
     return out
+
+
+def _take_arguments(pending) -> tuple[list[list[Tok]], list[Tok]]:
+    """Pops a parenthesized argument list off the front of `pending`: (arguments, its tokens)."""
+    taken: list[Tok] = []
+    while pending:
+        taken.append(pending.popleft()[0])
+        if taken[0].text != '(':
+            break
+        try:
+            args, end = _arguments(taken, 0)
+        except ExpansionError:
+            continue
+        return args, taken
+    raise ExpansionError('unterminated macro invocation')
 
 
 def _arguments(tokens: list[Tok], at: int) -> tuple[list[list[Tok]], int]:
@@ -466,7 +490,11 @@ def _substitute(m: Macro, args: list[list[Tok]], macros, hide, depth, budget) ->
             continue
         out.append(t)
         i += 1
-    # ## joins its neighbours into one token
+    return _join(out)
+
+
+def _join(out: list[Tok]) -> list[Tok]:
+    """## joins its neighbours into one token."""
     joined: list[Tok] = []
     i = 0
     while i < len(out):
@@ -485,8 +513,21 @@ def _substitute(m: Macro, args: list[list[Tok]], macros, hide, depth, budget) ->
     return joined
 
 
+IDENTIFIER = re.compile(r'[A-Za-z_]\w*')
+
+
 def identifiers(tokens: list[Tok]) -> set[str]:
-    return {t.text for t in tokens if t.kind == 'id'}
+    """The identifiers of the tokens, those of directive lines inside a declaration included (an
+    #if inside a function body or struct names the macros it depends on)."""
+    out = {t.text for t in tokens if t.kind == 'id'}
+    for t in tokens:
+        if t.kind == 'pp':
+            out.update(IDENTIFIER.findall(_without_strings(t.text)))
+    return out
+
+
+def _without_strings(text: str) -> str:
+    return re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', ' ', text)
 
 
 # ---- declared names -------------------------------------------------------------------------
@@ -498,8 +539,14 @@ def declared_names(tokens: list[Tok], macros: dict[str, list[Macro]]) -> tuple[s
         return set(), False
     first = _skip_prefix(tokens)
     lead = tokens[first].text if first < len(tokens) else ''
-    if lead == 'static_assert' and tokens[-1].text == ';' and _single_call(tokens, first):
-        return set(), False         # a compile-time check: it cannot change generated code
+    if any(t.text in ('_Pragma', '__pragma') or (t.kind == 'pp' and re.match(r'\s*#\s*pragma\b', t.text))
+           for t in tokens):
+        return set(), True          # a pragma (pack, optimize) acts on the declarations after it
+    if (lead == 'static_assert' and tokens[-1].text == ';' and _single_call(tokens, first)
+            and not any(t.text == '<' for t in tokens)):
+        # a compile-time check without a template in it: it cannot change generated code (one
+        # with a template argument list is kept: instantiating it could, in principle)
+        return set(), False
     if lead == 'using' and not any(t.text == '=' for t in tokens):
         return set(), True          # using namespace / using-declaration: changes name lookup
     try:
@@ -621,11 +668,13 @@ def _names(tokens: list[Tok], macros) -> tuple[set[str], bool]:
         if bracket:
             continue
         if paren == 0:
-            follower = nxt
+            follower = _follower(tokens, i + 1)
             if follower == '<':
-                follower = _after_template_args(tokens, i + 1)
-            # a macro's own name is found through its definition, not as a declared name
-            if follower in DECLARATOR_FOLLOWERS and x not in macros:
+                follower = _after_template_args(tokens, _skip_attributes(tokens, i + 1))
+            # a function-like macro's invocation is found through its definition, not as a declared
+            # name; the same name used any other way is an ordinary declarator
+            invoked = nxt == '(' and any(m.params is not None for m in macros.get(x, ()))
+            if follower in DECLARATOR_FOLLOWERS and not invoked:
                 names.add(x)
                 names |= _qualifiers(tokens, i)
             # an unknown macro invocation in capitals at the top level may declare its arguments
@@ -640,11 +689,57 @@ def _names(tokens: list[Tok], macros) -> tuple[set[str], bool]:
                         names.add(ids[0].text)
                     if x not in macros:
                         names |= {y.text for y in ids}
-        elif (paren == 1 and i >= 2 and tokens[i - 1].text in ('*', '&', '&&', '^') and nxt == ')'
-              and _opens_declarator(tokens, i - 2) and i + 2 < n and tokens[i + 2].text in ('(', '[')):
-            names.add(x)                          # (*name)(...): a pointer to a function or array
+        elif _parenthesized_declarator(tokens, i):
+            names.add(x)                          # (name), (*name)(...), (&name)[N]
             names |= _qualifiers(tokens, i)
     return names, False
+
+
+ATTRIBUTE_WORDS = frozenset({'__attribute__', '__declspec', 'alignas', '__asm__', '__asm', 'asm'})
+
+
+def _skip_attributes(tokens: list[Tok], j: int) -> int:
+    """The index after any attributes starting at j (__attribute__((...)), [[...]], alignas(...),
+    __declspec(...), asm("label"))."""
+    n = len(tokens)
+    while j < n:
+        if tokens[j].text in ATTRIBUTE_WORDS and j + 1 < n and tokens[j + 1].text == '(':
+            try:
+                _, j = _arguments(tokens, j + 1)
+            except ExpansionError:
+                return n
+        elif tokens[j].text == '[' and j + 1 < n and tokens[j + 1].text == '[':
+            depth = 0
+            while j < n:
+                depth += {'[': 1, ']': -1}.get(tokens[j].text, 0)
+                j += 1
+                if depth == 0:
+                    break
+        else:
+            return j
+    return j
+
+
+def _follower(tokens: list[Tok], j: int) -> str:
+    j = _skip_attributes(tokens, j)
+    return tokens[j].text if j < len(tokens) else ''
+
+
+def _parenthesized_declarator(tokens: list[Tok], i: int) -> bool:
+    """Whether tokens[i] is the name of a parenthesized declarator: `(name)`, `(*name)(...)`,
+    `(Class::*name)`, `(&name)[N]`, followed by what follows a declarator."""
+    j = i - 1
+    while j >= 0 and tokens[j].text in ('*', '&', '&&', '^', 'const', 'volatile'):
+        j -= 1
+    if not _opens_declarator(tokens, j):
+        return False
+    k = _skip_attributes(tokens, i + 1)
+    if k >= len(tokens) or tokens[k].text != ')':
+        return False
+    while k < len(tokens) and tokens[k].text == ')':
+        k += 1
+    after = _follower(tokens, k)
+    return after in DECLARATOR_FOLLOWERS or after == ''
 
 
 def _opens_declarator(tokens: list[Tok], j: int) -> bool:
@@ -763,6 +858,21 @@ def resolve(root: str, including: str, target: str) -> str | None:
     return None
 
 
+def guarded(decls: list[Decl]) -> bool:
+    """Whether a header's content is read once however often it is included: #pragma once, or
+    everything inside one #ifndef G whose first line is #define G."""
+    if any(d.kind == 'pragma' and re.search(r'\bonce\b', d.text) for d in decls):
+        return True
+    if not decls:
+        return True
+    first = decls[0]
+    if first.kind != 'macro' or not first.conds:
+        return False
+    guard = first.conds[0]
+    m = re.match(r'#\s*ifndef\s+(\w+)$', guard) or re.match(r'#\s*if\s+!\s*defined\s*\(?\s*(\w+)\s*\)?$', guard)
+    return bool(m and m.group(1) == first.name and all(d.conds[:1] == (guard,) for d in decls))
+
+
 def unit(root: str, defining: str) -> list[Entry]:
     """The translation unit of one defining file, in include order (each header once)."""
     entries: list[Entry] = []
@@ -779,6 +889,12 @@ def unit(root: str, defining: str) -> list[Entry]:
             if d.kind == 'include' and d.include and d.include[0] == 'quote':
                 target = resolve(root, path, d.include[1])
                 if target is not None:
+                    if os.path.normpath(target) in seen and not guarded(parsed(target)):
+                        # A header without a guard included again runs its directives again (its
+                        # #undef/#define, an X-macro list): where that happens is part of the code.
+                        marker = Decl('include', d.tokens, d.conds, d.scope, include=d.include, always=True)
+                        entries.append(Entry(marker, rel, c, s, len(entries)))
+                        continue
                     walk(target, c, s)
                     continue
             entries.append(Entry(d, rel, c, s, len(entries)))
