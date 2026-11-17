@@ -90,6 +90,38 @@ static int held_by_eleven(const rt_gpu_step *step, const rt_gpu_step *pending)
     return pending && pending->words[0] == 11;
 }
 
+/* A deferrable step that notes whether the 32-bit word at words[1] already holds words[2]: what a
+   step after a fill sees. */
+static int step_saw_fill;
+static void fill_seen_step(const rt_gpu_step *step)
+{
+    step_saw_fill = *(const volatile uint32_t *)(uintptr_t)step->words[1] == (uint32_t)step->words[2];
+    note_step(step);
+}
+
+/* A fill step's own perform (RT_GPU_STEP_FILLS): notes that the renderer performed it on the CPU,
+   and fills memory as gnm.c's does. */
+static void cpu_fill_step(const rt_gpu_step *step)
+{
+    for (uint64_t at = 0; at < step->memory[1]; at += 4) *(uint32_t *)(uintptr_t)(step->memory[0] + at) = (uint32_t)step->words[0];
+    note_step(step);
+}
+
+/* A wait that holds already and is performed at once (before the open batch goes to the GPU): it gives
+   the completion thread up to 300 ms to perform a deferred step, then notes its own words[0]. A
+   deferred step waiting for the open batch's fill is not performed meanwhile. */
+static void pause_step(const rt_gpu_step *step)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_nsec += 300 * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) deadline.tv_sec++, deadline.tv_nsec -= 1000000000L;
+    pthread_mutex_lock(&step_lock);
+    while (step_count == 0 && pthread_cond_timedwait(&step_changed, &step_lock, &deadline) == 0) {}
+    pthread_mutex_unlock(&step_lock);
+    note_step(step);
+}
+
 static int steps_seen(void)
 {
     pthread_mutex_lock(&step_lock);
@@ -198,7 +230,7 @@ int main(void)
 
     /* Off: the submit draws nothing and performs its steps at once; the flip's frame is left as it was. */
     rt_renderer_configure(0);
-    const rt_gpu_step at_once = {note_step, "sceGnmSubmitCommandBuffers", 0, {7}, 0, NULL};
+    const rt_gpu_step at_once = {note_step, "sceGnmSubmitCommandBuffers", 0, {7}, 0, NULL, {0, 0}};
     rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)BUFFER, size, &at_once, 1);
     CHECK(steps_seen() == 1 && step_order[0] == 7);
     step_count = 0;
@@ -226,9 +258,9 @@ int main(void)
        drawn buffer's calls sees what they drew (the calls ran before it). */
     {
         const uint64_t GATED = at(0x3f50000);
-        const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {9}, 0, NULL};
-        const rt_gpu_step after = {note_step, "sceGnmSubmitCommandBuffers", 0, {1}, 0, NULL};
-        const rt_gpu_step drawn = {frame_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {2, at(TARGET)}, 0, NULL};
+        const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {9}, 0, NULL, {0, 0}};
+        const rt_gpu_step after = {note_step, "sceGnmSubmitCommandBuffers", 0, {1}, 0, NULL, {0, 0}};
+        const rt_gpu_step drawn = {frame_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {2, at(TARGET)}, 0, NULL, {0, 0}};
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)GATED, 0x100, &gate, 1);
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(GATED + 0x1000), 0x100, &after, 1);
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)BUFFER, size, &drawn, 1);
@@ -244,8 +276,8 @@ int main(void)
            it): the frame there is not drawn yet; a step after all of them sees it drawn. */
         const uint64_t FRESH = at(0x3f60000);
         const uint32_t fresh_size = record_draw(FRESH, at(OTHER_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
-        const rt_gpu_step around[] = {{frame_step, "sceGnmSubmitCommandBuffers", 0, {3, at(OTHER_TARGET)}, 0, NULL},
-                                      {note_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {4}, 0, NULL}};
+        const rt_gpu_step around[] = {{frame_step, "sceGnmSubmitCommandBuffers", 0, {3, at(OTHER_TARGET)}, 0, NULL, {0, 0}},
+                                      {note_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {4}, 0, NULL, {0, 0}}};
         step_saw_triangle = 1;
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)FRESH, fresh_size, around, 2);
         rt_renderer_wait_idle();
@@ -263,13 +295,13 @@ int main(void)
         step_count = 0, step_saw_triangle = 0;
         gate_open = 0;
         const uint32_t deferred_size = record_draw(DEFERRED, at(THIRD_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
-        const rt_gpu_step seen = {frame_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {5, at(THIRD_TARGET)}, RT_GPU_STEP_DEFERRABLE, NULL};
+        const rt_gpu_step seen = {frame_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {5, at(THIRD_TARGET)}, RT_GPU_STEP_DEFERRABLE, NULL, {0, 0}};
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &seen, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 1 && step_order[0] == 5 && step_saw_triangle);
-        const rt_gpu_step held = {gate_step, "sceGnmSubmitCommandBuffers", 0, {8}, RT_GPU_STEP_DEFERRABLE, NULL};
-        const rt_gpu_step waiting = {note_step, "sceGnmSubmitCommandBuffers", 0, {6}, 0, NULL};
-        const rt_gpu_step later = {note_step, "sceGnmSubmitCommandBuffers", 0, {7}, RT_GPU_STEP_DEFERRABLE, NULL};
+        const rt_gpu_step held = {gate_step, "sceGnmSubmitCommandBuffers", 0, {8}, RT_GPU_STEP_DEFERRABLE, NULL, {0, 0}};
+        const rt_gpu_step waiting = {note_step, "sceGnmSubmitCommandBuffers", 0, {6}, 0, NULL, {0, 0}};
+        const rt_gpu_step later = {note_step, "sceGnmSubmitCommandBuffers", 0, {7}, RT_GPU_STEP_DEFERRABLE, NULL, {0, 0}};
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &held, 1);
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &waiting, 1);
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x2000), 0x100, &later, 1);
@@ -283,7 +315,7 @@ int main(void)
         /* A wait that holds already (its holds says so) is performed at once, ahead of a deferrable step
            still held: the GPU would pass it, so nothing waits for the work or the steps before it. */
         gate_open = 0;
-        const rt_gpu_step passing = {note_step, "sceGnmSubmitCommandBuffers", 0, {10}, 0, already_holds};
+        const rt_gpu_step passing = {note_step, "sceGnmSubmitCommandBuffers", 0, {10}, 0, already_holds, {0, 0}};
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &held, 1);
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &passing, 1);
         for (int tries = 0; tries < 2000 && steps_seen() < 5; tries++) usleep(1000);
@@ -297,9 +329,9 @@ int main(void)
         /* A wait that a still-held deferrable step (11) will satisfy is passed: a step after it (12) is
            not held up by the gate; the wait itself is never performed. */
         step_count = 0, gate_open = 0;
-        const rt_gpu_step eleven = {gate_step, "sceGnmSubmitCommandBuffers", 0, {11}, RT_GPU_STEP_DEFERRABLE, NULL};
-        const rt_gpu_step satisfied = {note_step, "sceGnmSubmitCommandBuffers", 0, {13}, 0, held_by_eleven};
-        const rt_gpu_step twelve = {note_step, "sceGnmSubmitCommandBuffers", 0, {12}, 0, already_holds};
+        const rt_gpu_step eleven = {gate_step, "sceGnmSubmitCommandBuffers", 0, {11}, RT_GPU_STEP_DEFERRABLE, NULL, {0, 0}};
+        const rt_gpu_step satisfied = {note_step, "sceGnmSubmitCommandBuffers", 0, {13}, 0, held_by_eleven, {0, 0}};
+        const rt_gpu_step twelve = {note_step, "sceGnmSubmitCommandBuffers", 0, {12}, 0, already_holds, {0, 0}};
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)DEFERRED, deferred_size, &eleven, 1);
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &satisfied, 1);
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(DEFERRED + 0x2000), 0x100, &twelve, 1);
@@ -323,13 +355,13 @@ int main(void)
         step_count = 0, step_saw_triangle = 0;
         const uint32_t flipped_size = record_draw(FLIPPED, at(FOURTH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const rt_gpu_step flip = {frame_step, "sceGnmSubmitAndFlipCommandBuffers", RT_GPU_STEP_AFTER_ALL,
-                                  {14, at(FOURTH_TARGET), 0, 0, at(FOURTH_TARGET), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL};
+                                  {14, at(FOURTH_TARGET), 0, 0, at(FOURTH_TARGET), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL, {0, 0}};
         rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)FLIPPED, flipped_size, &flip, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 1 && step_order[0] == 14 && step_saw_triangle);
         step_saw_triangle = 1;
         const rt_gpu_step blank = {frame_step, "sceGnmSubmitAndFlipCommandBuffers", RT_GPU_STEP_AFTER_ALL,
-                                   {15, at(NEVER_DRAWN), 0, 0, at(NEVER_DRAWN), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL};
+                                   {15, at(NEVER_DRAWN), 0, 0, at(NEVER_DRAWN), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL, {0, 0}};
         rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(FLIPPED + 0x1000), 0x100, &blank, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 2 && step_order[1] == 15 && !step_saw_triangle);
@@ -343,7 +375,7 @@ int main(void)
        further submits still ends. */
     {
         step_count = 0, gate_open = 0, lag_returned = 0, lag_flag = 0;
-        const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {30}, 0, NULL};
+        const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {30}, 0, NULL, {0, 0}};
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(LAG_BUFFER - 0x1000), 0x100, &gate, 1);
         int count = LAG_LIMIT + 2;
         pthread_t thread;
@@ -361,7 +393,7 @@ int main(void)
         CHECK(steps_seen() == 1 && step_order[0] == 30);
 
         step_count = 0, lag_returned = 0, lag_flag = 0;
-        const rt_gpu_step waiting = {wait_for_flag, "sceGnmSubmitCommandBuffers", 0, {31}, 0, flag_set};
+        const rt_gpu_step waiting = {wait_for_flag, "sceGnmSubmitCommandBuffers", 0, {31}, 0, flag_set, {0, 0}};
         rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(LAG_BUFFER - 0x2000), 0x100, &waiting, 1);
         count = 2 * LAG_LIMIT;
         CHECK(pthread_create(&thread, NULL, submit_ahead, &count) == 0);
@@ -395,7 +427,7 @@ int main(void)
         CHECK(rt_render_record_user_data(QUEUE_BUFFER, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
         CHECK(rt_render_record_dispatch(QUEUE_BUFFER, 0x30, one, error, sizeof error) == 0);
         step_count = 0;
-        const rt_gpu_step done = {note_step, "sceGnmDingDong", 0x40, {21}, 0, NULL};
+        const rt_gpu_step done = {note_step, "sceGnmDingDong", 0x40, {21}, 0, NULL, {0, 0}};
         rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)QUEUE_BUFFER, QUEUE_BYTES, &done, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 1 && step_order[0] == 21);
@@ -433,7 +465,7 @@ int main(void)
         for (unsigned i = 0; i < 2 * LANES; i++) other[i] = -1;
         const uint32_t one[3] = {1, 1, 1};
         CHECK(rt_render_record_dispatch(at(AGAIN), 0x10, one, error, sizeof error) == 0);
-        const rt_gpu_step done = {note_step, "sceGnmDingDong", 0x20, {22}, 0, NULL}; /* performed once the dispatch has run */
+        const rt_gpu_step done = {note_step, "sceGnmDingDong", 0x20, {22}, 0, NULL, {0, 0}}; /* performed once the dispatch has run */
         rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)at(AGAIN), BYTES, &done, 1);
         rt_renderer_wait_idle();
         int right = 1, untouched = 1;
@@ -448,6 +480,71 @@ int main(void)
         untouched = 1;
         for (unsigned i = 0; i < LANES; i++) untouched &= output[i] == -1;
         CHECK(untouched && other[LANES + 2] == 0.5f && other[LANES + 4] == 0.25f); /* v_rcp_f32 of 2 and 4 */
+    }
+
+    /* A fill (RT_GPU_STEP_FILLS) is recorded into the GPU's work in its place, not performed by the
+       renderer's thread: after the compute queue's dispatch above (scale_add from INPUT to OUTPUT), a
+       fill of OUTPUT before the dispatch of a buffer feeds nothing (the dispatch overwrites it), one of
+       INPUT does (out = 2.0 * 2.5 + 1), and one of OUTPUT after the dispatch replaces its results; a
+       deferrable step right after a fill waits for it (a wait performed at once, while the batch is
+       still open, comes first) and sees it made; neither fill's own perform runs. */
+    {
+        enum { FILLED = 0x34000, BYTES = 0x100, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64, COMPUTE_QUEUE_ID = 3 };
+        enum { TWO = 0x40000000u, LATE = 0x12345678u };
+        char error[256] = "";
+        float *output = (float *)(uintptr_t)at(OUTPUT);
+        for (unsigned i = 0; i < LANES; i++) output[i] = -1;
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(at(FILLED), 0x20, one, error, sizeof error) == 0);
+        step_count = 0, step_saw_fill = 0;
+        const rt_gpu_step steps[] = {
+            {cpu_fill_step, "sceGnmDingDong", 0x10, {TWO}, RT_GPU_STEP_FILLS, NULL, {at(INPUT), LANES * 4}},
+            {fill_seen_step, "sceGnmDingDong", 0x10, {40, at(INPUT), TWO}, RT_GPU_STEP_DEFERRABLE, NULL, {0, 0}},
+            {pause_step, "sceGnmDingDong", 0x10, {46}, 0, already_holds, {0, 0}},
+            {cpu_fill_step, "sceGnmDingDong", 0x30, {LATE}, RT_GPU_STEP_FILLS, NULL, {at(OUTPUT) + 4 * 8, 4 * 8}},
+        };
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)at(FILLED), BYTES, steps, 4);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 2 && step_order[0] == 46 && step_order[1] == 40 && step_saw_fill);
+        int right = 1;
+        for (unsigned i = 0; i < 8; i++) right &= output[i] == 6.0f;
+        for (unsigned i = 8; i < 16; i++) right &= ((const uint32_t *)output)[i] == LATE;
+        for (unsigned i = 16; i < LANES; i++) right &= output[i] == 6.0f;
+        CHECK(right);
+
+        /* A fill the GPU does not take (memory outside the GPU-visible memory) is performed on the
+           renderer's thread, as before. So is one while a deferrable step not yet performed writes
+           that memory (held: the gate), after it. */
+        static uint32_t host_words[16];
+        step_count = 0;
+        const rt_gpu_step outside = {cpu_fill_step, "sceGnmDingDong", 0, {41}, RT_GPU_STEP_FILLS, NULL, {(uintptr_t)host_words, sizeof host_words}};
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x1000), BYTES, &outside, 1);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 1 && step_order[0] == 41 && host_words[15] == 41);
+        step_count = 0, gate_open = 0;
+        const rt_gpu_step writer = {gate_step, "sceGnmDingDong", 0, {42}, RT_GPU_STEP_DEFERRABLE, NULL, {at(OUTPUT), 4}};
+        const rt_gpu_step over = {cpu_fill_step, "sceGnmDingDong", 0, {43}, RT_GPU_STEP_FILLS, NULL, {at(OUTPUT), 16}};
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x2000), BYTES, &writer, 1);
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x3000), BYTES, &over, 1);
+        pthread_mutex_lock(&step_lock);
+        gate_open = 1;
+        pthread_cond_broadcast(&step_changed);
+        pthread_mutex_unlock(&step_lock);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 2 && step_order[0] == 42 && step_order[1] == 43);
+
+        /* A wait on memory a recorded fill writes is not taken to hold before the fill has run: it is
+           performed once the GPU's work has, and sees the fill (here at once it would see the old word,
+           the batch not even handed over). */
+        *(uint32_t *)(uintptr_t)at(OUTPUT) = 0;
+        step_count = 0, step_saw_fill = 0;
+        const rt_gpu_step fill_then_wait[] = {
+            {cpu_fill_step, "sceGnmDingDong", 0, {44}, RT_GPU_STEP_FILLS, NULL, {at(OUTPUT), 4}},
+            {fill_seen_step, "sceGnmDingDong", 0, {45, at(OUTPUT), 44}, 0, already_holds, {at(OUTPUT), 4}},
+        };
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x4000), BYTES, fill_then_wait, 2);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 1 && step_order[0] == 45 && step_saw_fill);
     }
 
     rt_render_forget();

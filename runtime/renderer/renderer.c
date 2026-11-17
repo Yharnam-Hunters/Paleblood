@@ -201,6 +201,23 @@ static int deferred_satisfies(const rt_gpu_step *wait)
     return satisfied;
 }
 
+/* Whether a step's memory (rt_gpu_step) meets `bytes` of guest memory at `address`. */
+static int step_memory_over(const rt_gpu_step *step, uint64_t address, uint64_t bytes)
+{
+    if (step->memory[1] == RT_GPU_STEP_ANY_MEMORY) return 1;
+    return step->memory[1] && step->memory[0] < address + bytes && address < step->memory[0] + step->memory[1];
+}
+
+/* Whether a deferred step not yet performed writes memory there. */
+static int deferred_writes_over(uint64_t address, uint64_t bytes)
+{
+    pthread_mutex_lock(&deferred_lock);
+    int over = deferred_running && step_memory_over(&deferred_running->step, address, bytes);
+    for (const deferred *d = deferred_head; d && !over; d = d->next) over = step_memory_over(&d->step, address, bytes);
+    pthread_mutex_unlock(&deferred_lock);
+    return over;
+}
+
 /* Waits until every deferred step so far has been performed. */
 static void drain_deferred(void)
 {
@@ -255,6 +272,63 @@ static void show_later(const rt_gpu_step *step)
     defer_step(step, copied ? snapshot.ticket : last_ticket, copied ? &snapshot : NULL);
 }
 
+/* The fills recorded into the GPU's work that may not have run yet (fill_on_gpu), with their tickets: a
+   wait on memory one of them writes is not taken to hold, nor to be satisfied by a deferred step,
+   before it has run. Those whose submissions have run are dropped as the list fills; while it is
+   still full, a fill is performed here instead (RECORDED_FILLS of them pending is far more than a
+   buffer's few). */
+enum { RECORDED_FILLS = 64 };
+typedef struct {
+    uint64_t address, bytes, ticket;
+} recorded_fill;
+static recorded_fill recorded_fills[RECORDED_FILLS];
+static size_t recorded_fill_count;
+
+/* Drops the recorded fills whose submissions have run (renderer lock held). */
+static void forget_fills_run(void)
+{
+    const uint64_t done = executor ? rt_executor_done_ticket(executor) : 0;
+    size_t kept = 0;
+    for (size_t i = 0; i < recorded_fill_count; i++)
+        if (recorded_fills[i].ticket > done) recorded_fills[kept++] = recorded_fills[i];
+    recorded_fill_count = kept;
+}
+
+static int recorded_fill_over(const rt_gpu_step *wait)
+{
+    if (!recorded_fill_count) return 0;
+    lock_renderer();
+    forget_fills_run();
+    int over = 0;
+    for (size_t i = 0; i < recorded_fill_count && !over; i++) over = step_memory_over(wait, recorded_fills[i].address, recorded_fills[i].bytes);
+    unlock_renderer();
+    return over;
+}
+
+/* A fill (RT_GPU_STEP_FILLS) recorded into the executor's open batch in the step's place, after the work
+   before it and before the work after it, instead of performed here once all that work has run: 1 when
+   recorded. Not while a deferred step not yet performed writes that memory (the GPU may make the fill
+   before the completion thread performs it), nor before the executor is open or for memory it declines. */
+static int fill_on_gpu(const rt_gpu_step *step)
+{
+    const uint64_t address = step->memory[0], bytes = step->memory[1];
+    if (deferred_writes_over(address, bytes)) return 0;
+    lock_renderer();
+    if (recorded_fill_count == RECORDED_FILLS) forget_fills_run();
+    char error[RENDER_ERROR_BYTES];
+    uint64_t ticket = 0;
+    const int taken = !executor || recorded_fill_count == RECORDED_FILLS
+                          ? 1
+                          : rt_executor_fill(executor, address, bytes, (uint32_t)step->words[0], &ticket, error, sizeof error);
+    if (taken < 0) rt_fatal(step->function, error);
+    if (taken == 0) {
+        last_ticket = ticket; /* the deferred steps after it wait for the fill too */
+        recorded_fills[recorded_fill_count++] = (recorded_fill){address, bytes, ticket};
+    }
+    unlock_renderer();
+    return taken == 0;
+}
+
 /* Each step once the calls before its offset have run, and before the calls after it: a deferrable
    step is handed to the completion thread with the ticket of the work before it; a wait that holds
    already is performed at once, and one that a deferred step will satisfy is passed (the GPU runs the
@@ -297,16 +371,19 @@ static void run_batch(batch *b)
             show_later(&b->steps[i]);
             continue;
         }
-        if (b->steps[i].holds && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
+        if ((b->steps[i].flags & RT_GPU_STEP_FILLS) && fill_on_gpu(&b->steps[i])) continue;
+        const int early = b->steps[i].holds && !recorded_fill_over(&b->steps[i]); /* a recorded fill may change what it reads */
+        if (early && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
             perform_step(&b->steps[i]);
             continue;
         }
-        if (b->steps[i].holds && deferred_satisfies(&b->steps[i])) continue; /* the work ahead of it on the GPU writes what it waits for */
+        if (early && deferred_satisfies(&b->steps[i])) continue; /* the work ahead of it on the GPU writes what it waits for */
         submit_open(b->steps[i].function); /* the deferred steps may wait for the open batch */
         drain_deferred();
         lock_renderer();
         char error[RENDER_ERROR_BYTES];
         if (executor && rt_executor_finish(executor, error, sizeof error)) rt_fatal(b->steps[i].function, error);
+        recorded_fill_count = 0; /* every fill has run */
         unlock_renderer();
         perform_step(&b->steps[i]);
     }

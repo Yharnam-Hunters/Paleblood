@@ -45,15 +45,28 @@ void rt_renderer_configure(int enabled);
    the renderer copies that target's image in order with the work (rt_executor_snapshot_target) and
    performs the step later from the other thread, as a deferrable one, once the copy has run;
    rt_renderer_frame called from the step reads the copy. The work after it goes on meanwhile, as the
-   PS4's GPU goes on with the commands after a flip. */
-enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1, RT_GPU_STEP_SHOWS_TARGET = 2 };
+   PS4's GPU goes on with the commands after a flip.
+
+   A step flagged RT_GPU_STEP_FILLS only fills memory[1] bytes of guest memory at memory[0] with the
+   32-bit word words[0] (a DMA_DATA fill, a WRITE_DATA of one repeated dword): the renderer may record
+   the fill into the GPU's work in its place (rt_executor_fill) instead of performing it once all that
+   work is done, so nothing waits. It performs it itself, as any other step, when the GPU cannot take
+   it, or while an earlier deferrable step not yet performed writes that memory (it would land after
+   the fill).
+
+   memory is the guest memory a step writes (a deferrable step, a fill) or reads (a wait): its address
+   and bytes, 0 bytes for none, RT_GPU_STEP_ANY_MEMORY bytes when not known. The renderer orders
+   recorded fills against it. */
+enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1, RT_GPU_STEP_SHOWS_TARGET = 2, RT_GPU_STEP_FILLS = 4 };
+#define RT_GPU_STEP_ANY_MEMORY UINT64_MAX
 typedef struct rt_gpu_step {
     void (*perform)(const struct rt_gpu_step *step);
     const char *function; /* the submitting call, for stops by name */
     uint32_t offset;
     uint64_t words[6];
-    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_SHOWS_TARGET, or 0 */
+    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_SHOWS_TARGET, RT_GPU_STEP_FILLS, or 0 */
     int (*holds)(const struct rt_gpu_step *step, const struct rt_gpu_step *pending); /* a wait on memory (above); NULL for other steps */
+    uint64_t memory[2];   /* the guest memory it writes or reads: address, bytes (above) */
 } rt_gpu_step;
 
 /* A command buffer the title submitted: its address and size in bytes, and the steps the GPU takes
