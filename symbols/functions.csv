@@ -33,6 +33,7 @@ address,size,name,system,status,notes
 0x011183b0,98,audio_fmod_initialize_thread,audio,edge-verified,FMOD Thread initialization; publish the relocated vtable and clear selected fields; preserve all other bytes
 0x01118420,377,audio_fmod_start_thread,audio,edge-verified,FMOD Thread startup; initialize parameters and semaphores; create the native thread and wait; clean up saved semaphore handles on failure
 0x011185a0,269,audio_fmod_stop_thread,audio,edge-verified,FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status
+0x011186c0,24,audio_fmod_wake_thread,audio,replaced,Signal the optional FMOD Thread wakeup semaphore; absent handles return zero; otherwise preserve the helper DWORD status
 0x0111a620,129,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
 0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads
