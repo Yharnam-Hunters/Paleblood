@@ -427,6 +427,14 @@ the headers they include from `game/` and `runtime/include/`):
   of such an entity in the unit and compiles the function differently because of them (a static
   nobody writes folds to a constant, a static function called once is inlined, a class nobody
   derives from is devirtualized);
+- an out-of-line member of such a class, a `static` spelled through a macro, and (where the unit
+  has a `mutable` member) a namespace-scope `const` object count as internal too, and for an
+  internal class the users of every member its body declares come in;
+- every class whose base clause names a reached class comes in (a virtual call can be devirtualized
+  speculatively to a derived class's override, whatever the base is spelled through);
+- functions the language calls without naming them (`begin`, `end`, `get`, `tuple_size`,
+  `tuple_element`, `swap`) and declarations in `namespace std` or specializing a `std::` template
+  are always in;
 - free operator overloads, using-directives and using-declarations, `#pragma` lines, declarations
   holding a `_Pragma` or a `#pragma`, includes whose content is not in the repository (system
   headers), a second include of a header without a guard and every include of a header that is
@@ -445,7 +453,8 @@ lists what a function's fingerprint covers.
 Where the reading cannot be trusted the row gets the **legacy hash** instead (16 hex digits: the
 defining files and every header they include, whole): a file that does not split cleanly
 (unbalanced braces, an unterminated comment or string, a brace opened in one `#if` branch only, a
-digraph such as `%:` or `<%`), a
+digraph such as `%:` or `<%`, a declaration starting with a brace as a K&R definition's does, a
+token-pasting macro in an `#if` line), a
 definition that is not found, an `#include` inside a declaration, a token-pasting macro that
 cannot be expanded, a header guard `#undef`'d elsewhere while the header is included again, or a
 closure that reaches a value that depends on where code sits (`__LINE__`, `__COUNTER__`, `__DATE__`,
@@ -485,7 +494,10 @@ declarations swallowing a following namespace, functions returning function poin
 function pointers, structured bindings, includes under `#if 0`, re-entrant guards, `assert` and
 `__builtin_LINE`, `alias` attributes), and a third's (writers and second callers of internal
 entities, struct heads with attributes or `decltype` bases, a real `#ifndef` matching a guard,
-splices in raw strings, an empty `__VA_OPT__` argument).
+splices in raw strings, an empty `__VA_OPT__` argument), and a fourth's (pasting in `#if` lines,
+`static` through a macro, `const` objects with `mutable` members, out-of-line members of
+anonymous-namespace classes, range-for and structured-binding calls, devirtualization through a
+templated base, K&R definitions).
 
 This is a reading of the source, not a compiler: its safety rests on conservative choices (match
 by name, keep everything a name could mean, fall back where unsure) and on those reviews and tests.
@@ -500,24 +512,34 @@ current but whose legacy hash is not (so the old rule would call it stale and on
 keeps it), it compiles the function's defining game sources on the code the row stands for and on
 the code now, with the game library's compiler and flags (`CC`/`CXX`, `-O3 -DNDEBUG -fPIC
 -ffp-contract=off -fno-fast-math`, plus a section per function and variable and no debug data),
-and compares everything `bb_NAME` reaches in the object: its code and its compiler clones, every
-section a relocation in a reached section leads to (called and address-taken functions, jump
-tables, constants, string pools, variables with their initial values, vtables), the static
-initializers, and the names of what it reaches outside the object. Bytes, sizes, flags and
-relocations must be identical. A difference, a source that does not compile, or an object without
-the replacement fails validation: the row is stale and is run again (`tools/verify.py run --record`
+and compares everything `bb_NAME` reaches: its code and its compiler clones, every section a
+relocation in a reached section leads to (called and address-taken functions, jump tables,
+constants, string pools, variables with their initial values, vtables), and the static
+initializers of every object it enters. Where a header of the function's file set changed, what
+other sources make of it matters too (a runtime function the replacement calls, a constant another
+game source defines from a header macro, a virtual function defined elsewhere): then every source
+of the Linux build (the game library and every `.c`/`.cpp` under `runtime/` but the macOS-only
+`*_darwin.c`) is compiled, those that include a changed header on both trees, and references to
+symbols another object defines are followed into it, transitively. Bytes, sizes, flags,
+alignments and relocations must be identical, under **every compiler of the CI build matrix** (gcc
+and clang). A difference, a source that does not compile, an object without the replacement, or a
+changed line under a condition on a platform the backstop does not compile for (`__APPLE__`,
+`_WIN32`, an architecture macro and the like) fails validation: the row is stale and is run again (`tools/verify.py run --record`
 writes the code's current legacy hash, which settles it). The code a row stands for is the base's,
 for a row the base already has with the same value (the base accepted it, so each step from the
 recording to now has been compared), or, for a row the branch adds or changes, the commit whose
-legacy hash is the row's; a row recorded on code that no commit has is stale.
+legacy hash is the row's; a row recorded on code that no commit has is stale. The induction
+relies on every commit reaching main through the protected path (the merge queue's CI on the
+merged tree, or CI on main); rows record runs of the Linux build, which is what is compared.
 
 So a fingerprint row is current only where the old rule says so, or where the compiled code of
 everything the function reaches is identical to the code it was recorded on: never weaker than the
 legacy rule for a change of behaviour, whatever the reading misses. Old rows are judged by the old
 rule; new rows by the fingerprint and the backstop. `test/test_fingerprint_backstop.py` plants a
 hole (a fingerprint that never changes) and checks that a changed helper, a changed string, a moved
-field, a source that stops compiling and a record of uncommitted code are caught, while unrelated
-edits pass.
+field, a header macro used only by a runtime source the function calls, a header constant defined
+in another game source, a change only clang sees, a change under `#ifdef __APPLE__`, a source that
+stops compiling and a record of uncommitted code are caught, while unrelated edits pass.
 
 ## Community patches and hooks
 

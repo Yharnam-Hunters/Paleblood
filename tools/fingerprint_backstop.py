@@ -3,7 +3,7 @@
 """The compiled-code backstop of source fingerprints: a fingerprint row stays current only where
 the compiled code agrees.
 
-usage: fingerprint_backstop.py [--base REV] [--root DIR] [--jobs N]
+usage: fingerprint_backstop.py [--base REV] [--root DIR] [--jobs N] [--compilers CC:CXX,...]
 
 A fingerprint row (symbols/verification.csv and symbols/families/*.verification.csv, source
 `f1:<fingerprint>:<legacy hash>`) carries the legacy hash of the code it was recorded on. Where that
@@ -17,11 +17,15 @@ function's code can reach in each object:
   every section of the replacement bb_NAME (and its compiler clones, bb_NAME.part.0 and so on),
   every section a relocation in a reached section points to (functions it calls or takes the
   address of, jump tables, constants, string pools, variables and their initial values, vtables),
-  the static initializers (.init_array), and the names of the symbols it reaches outside the object.
+  the static initializers of every object it enters, and, where a header of its file set changed,
+  the code other sources of the Linux build define for the symbols it reaches outside its object
+  (every source that includes a changed header is compiled on both trees, every other one once,
+  and references are followed from object to object).
 
-Bytes, sizes, flags and relocations (by symbol name outside the object, by place in this walk inside
-it) must be identical. Any difference, a file that does not compile, or an object without the
-replacement makes the row stale, with a message. The code the row stands for is found as follows:
+Bytes, sizes, flags, alignments and relocations (by place in this walk, and by name where nothing
+compiled defines the symbol) must be identical under every compiler of the CI build matrix (gcc and
+clang). Any difference, a source that does not compile, an object without the replacement, or a
+changed line under a condition on a platform not compiled here makes the row stale, with a message. The code the row stands for is found as follows:
 
   - a row the base revision already has, with the same value, was accepted there (by this backstop,
     in the pull request or merge that brought it): it is compared with the base's code, where the
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import difflib
 import hashlib
 import io
 import os
@@ -61,8 +66,17 @@ LIBRARY_SOURCE = re.compile(r'game/[^/]+/[^/]+\.(c|cpp)')
 # make the object comparable: a section per function and variable, no debug or unwind data.
 GAME_FLAGS = ['-O3', '-DNDEBUG', '-fPIC', '-ffp-contract=off', '-fno-fast-math']
 COMPARE_FLAGS = ['-ffunction-sections', '-fdata-sections', '-fno-asynchronous-unwind-tables', '-g0', '-w']
+# runtime/syslib/audio_ajm.c includes the vendored decoder's header (CMakeLists.txt, atrac9)
+ATRAC9 = 'third_party/libatrac9/src'
+# Sources only the macOS build compiles. Rows record runs of the Linux build, which is what is compared.
+NOT_LINUX = re.compile(r'.*_darwin\.(c|cpp)')
 SEARCH_LIMIT = 300          # commits of the branch searched for a row's recorded code
-STARTUP_SECTIONS = ('.init_array', '.preinit_array', '.ctors')
+STARTUP_SECTIONS = ('.init_array', '.preinit_array', '.ctors', '.fini_array', '.dtors')
+# Every compiler of the CI build matrix: equal code under one says nothing about another.
+DEFAULT_COMPILERS = 'gcc:g++,clang:clang++'
+# Conditions on a platform the backstop does not compile for: a changed line under one is stale.
+PLATFORM = re.compile(r'__APPLE__|__MACH__|TARGET_OS_|_WIN32|_WIN64|_MSC_VER|__aarch64__|__arm64__|__arm__|'
+                      r'__FreeBSD__|__ANDROID__|__linux__|__unix__|__x86_64__|__i386__|__SSE|__AVX|__ELF__')
 
 
 # ---- reading an ELF64 relocatable object --------------------------------------------------------
@@ -76,8 +90,8 @@ FLAG_MASK = 0x1 | 0x2 | 0x4 | 0x10 | 0x20 | 0x400
 
 
 class Section:
-    def __init__(self, index, name, kind, flags, data, size, link, info, entsize):
-        self.index, self.name, self.kind, self.flags = index, name, kind, flags
+    def __init__(self, index, name, kind, flags, data, size, link, info, align, entsize):
+        self.index, self.name, self.kind, self.flags, self.align = index, name, kind, flags, align
         self.data, self.size, self.link, self.info, self.entsize = data, size, link, info, entsize
         self.relocations: list[tuple] = []
 
@@ -105,9 +119,9 @@ class ObjectFile:
         names = headers[shstrndx]
         strtab = data[names[4]:names[4] + names[5]]
         self.sections = []
-        for i, (name, kind, flags, _, offset, size, link, info, _, entsize) in enumerate(headers):
+        for i, (name, kind, flags, _, offset, size, link, info, align, entsize) in enumerate(headers):
             body = b'' if kind == SHT_NOBITS else data[offset:offset + size]
-            self.sections.append(Section(i, cstring(strtab, name), kind, flags, body, size, link, info, entsize))
+            self.sections.append(Section(i, cstring(strtab, name), kind, flags, body, size, link, info, align, entsize))
         self.symbols: list[Symbol] = []
         symtab = next((s for s in self.sections if s.kind == SHT_SYMTAB), None)
         if symtab is not None:
@@ -131,69 +145,86 @@ def cstring(table: bytes, offset: int) -> str:
     return table[offset:end if end >= 0 else len(table)].decode('utf-8', 'replace')
 
 
-def reached_code(obj: ObjectFile, is_root) -> bytes | None:
-    """A canonical description of everything the replacement's code reaches in the object, or None
-    where the object does not define it."""
-    roots = sorted((s for s in obj.symbols
+def reached_code(objs: dict, starts: list[str], is_root) -> bytes | None:
+    """A canonical description of everything the replacement's code reaches, starting in the start
+    objects and following references to symbols the other objects define, or None where no start
+    object defines the replacement."""
+    defined: dict[str, tuple] = {}      # global name -> (rel, symbol): a strong definition first
+    for rel in sorted(objs):
+        for sym in objs[rel].symbols:
+            if sym.binding in (1, 2) and sym.shndx not in (SHN_UNDEF, SHN_ABS, SHN_COMMON):
+                if sym.name not in defined or (defined[sym.name][1].binding == 2 and sym.binding == 1):
+                    defined[sym.name] = (rel, sym)
+    roots = sorted(((rel, s) for rel in starts for s in objs[rel].symbols
                     if s.type == STT_FUNC and s.shndx not in (SHN_UNDEF, SHN_ABS, SHN_COMMON)
-                    and is_root(s.name.split('.', 1)[0])), key=lambda s: s.name)
+                    and is_root(s.name.split('.', 1)[0])), key=lambda p: (p[1].name, p[0]))
     if not roots:
         return None
-    order: dict[int, int] = {}
-    queue: list[int] = []
-
-    def visit(index: int) -> int:
-        if index not in order:
-            order[index] = len(order)
-            queue.append(index)
-        return order[index]
-
+    order: dict[tuple, int] = {}
+    queue: list[tuple] = []
+    entered: set[str] = set()
     out = io.BytesIO()
-    for sym in roots:
-        out.write(f'root {sym.name} {visit(sym.shndx)} {sym.value} {sym.size}\n'.encode())
-    for s in obj.sections:
-        if s.name in STARTUP_SECTIONS or s.name.startswith(tuple(n + '.' for n in STARTUP_SECTIONS)):
-            out.write(f'startup {visit(s.index)}\n'.encode())
+
+    def visit(rel: str, index: int) -> int:
+        if rel not in entered:
+            # an object's static initializers run before anything in it is used
+            entered.add(rel)
+            for s in objs[rel].sections:
+                if s.name.startswith(STARTUP_SECTIONS):
+                    out.write(f'startup {s.name} {visit(rel, s.index)}\n'.encode())
+        if (rel, index) not in order:
+            order[(rel, index)] = len(order)
+            queue.append((rel, index))
+        return order[(rel, index)]
+
+    def target(rel: str, index: int) -> str:
+        obj = objs[rel]
+        sym = obj.symbols[index] if index < len(obj.symbols) else None
+        if sym is None:
+            return 'none'
+        if sym.shndx in (SHN_UNDEF, SHN_COMMON):
+            where = defined.get(sym.name)
+            if where is None:
+                return f'external {sym.name} {sym.size if sym.shndx == SHN_COMMON else ""}'
+            other, osym = where
+            return f'external {sym.name} at {visit(other, osym.shndx)} {osym.value} {osym.size}'
+        if sym.shndx == SHN_ABS:
+            return f'absolute {sym.value}'
+        place = visit(rel, sym.shndx)
+        if sym.type == STT_SECTION:
+            return f'section {place}'
+        # a symbol other objects can name keeps its name; a local one is known by its place
+        name = sym.name if sym.binding != 0 else ''
+        return f'symbol {place} {sym.value} {sym.size} {name}'
+
+    for rel, sym in roots:
+        out.write(f'root {sym.name} {visit(rel, sym.shndx)} {sym.value} {sym.size}\n'.encode())
     done = 0
     while done < len(queue):
-        s = obj.sections[queue[done]]
+        rel, index = queue[done]
+        s = objs[rel].sections[index]
         done += 1
-        out.write(f'section {order[s.index]} {s.kind} {s.flags & FLAG_MASK} {s.size} {s.entsize}\n'.encode())
+        out.write(f'section {order[(rel, index)]} {s.kind} {s.flags & FLAG_MASK} {s.size} {s.entsize} '
+                  f'{s.align}\n'.encode())
         out.write(hashlib.sha256(s.data).digest())
-        for offset, kind, index, addend in sorted(s.relocations):
-            out.write(f'reloc {offset} {kind} {addend} {target(obj, index, visit)}\n'.encode())
+        for offset, kind, sym_index, addend in sorted(s.relocations):
+            out.write(f'reloc {offset} {kind} {addend} {target(rel, sym_index)}\n'.encode())
     return out.getvalue()
-
-
-def target(obj: ObjectFile, index: int, visit) -> str:
-    sym = obj.symbols[index] if index < len(obj.symbols) else None
-    if sym is None:
-        return 'none'
-    if sym.shndx == SHN_UNDEF:
-        return f'external {sym.name}'
-    if sym.shndx == SHN_ABS:
-        return f'absolute {sym.value}'
-    if sym.shndx == SHN_COMMON:
-        return f'common {sym.name} {sym.size}'
-    place = visit(sym.shndx)
-    if sym.type == STT_SECTION:
-        return f'section {place}'
-    # a symbol other objects can name keeps its name; a local one is known by its place
-    name = sym.name if sym.binding != 0 else ''
-    return f'symbol {place} {sym.value} {sym.size} {name}'
 
 
 # ---- compiling a tree ----------------------------------------------------------------------------
 
-def compiler(cxx: bool) -> list[str]:
-    return shlex.split(os.environ.get('CXX' if cxx else 'CC') or ('c++' if cxx else 'cc'))
+def compilers(spec: str | None = None) -> list[tuple[str, str]]:
+    """(C compiler, C++ compiler) pairs to compare under: every compiler the CI build matrix uses."""
+    spec = spec or os.environ.get('BB_BACKSTOP_COMPILERS') or DEFAULT_COMPILERS
+    return [tuple(pair.split(':', 1)) for pair in spec.split(',') if pair]
 
 
-def compile_object(tree: str, rel: str, out: str) -> str | None:
-    """Compiles one game source of the tree to out; None on success, else the compiler's complaint."""
+def compile_object(tree: str, rel: str, out: str, pair: tuple[str, str] = ('cc', 'c++')) -> str | None:
+    """Compiles one source of the tree to out; None on success, else the compiler's complaint."""
     cxx = rel.endswith('.cpp')
-    cmd = compiler(cxx) + ['-c', '-std=gnu++20' if cxx else '-std=gnu11'] + GAME_FLAGS + COMPARE_FLAGS + [
-        '-I', 'runtime/include', rel, '-o', out]
+    cmd = shlex.split(pair[1] if cxx else pair[0]) + ['-c', '-std=gnu++20' if cxx else '-std=gnu11'] + \
+        GAME_FLAGS + COMPARE_FLAGS + ['-I', 'runtime/include', '-I', ATRAC9, rel, '-o', out]
     env = dict(os.environ, SOURCE_DATE_EPOCH='0', LC_ALL='C')
     try:
         r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True, env=env, timeout=600)
@@ -205,25 +236,25 @@ def compile_object(tree: str, rel: str, out: str) -> str | None:
 
 
 class Objects:
-    """Compiled game sources per tree, each compiled once."""
+    """Compiled sources per compiler and tree, each compiled once."""
 
     def __init__(self, scratch: str, jobs: int):
         self.scratch = scratch
         self.jobs = jobs
-        self.done: dict[tuple, tuple] = {}     # (tree, rel) -> (ObjectFile | None, error)
+        self.done: dict[tuple, tuple] = {}     # (compiler pair, tree, rel) -> (ObjectFile | None, error)
 
-    def compile_all(self, pairs: set[tuple]) -> None:
-        todo = sorted(p for p in pairs if p not in self.done)
+    def compile_all(self, keys: set[tuple]) -> None:
+        todo = sorted(k for k in keys if k not in self.done)
         with concurrent.futures.ThreadPoolExecutor(max(1, self.jobs)) as pool:
-            for pair, result in zip(todo, pool.map(self._compile, todo)):
-                self.done[pair] = result
+            for key, result in zip(todo, pool.map(self._compile, todo)):
+                self.done[key] = result
 
-    def _compile(self, pair: tuple) -> tuple:
-        tree, rel = pair
-        out = os.path.join(self.scratch, hashlib.sha256(f'{tree}\0{rel}'.encode()).hexdigest()[:24] + '.o')
-        error = compile_object(tree, rel, out)
+    def _compile(self, key: tuple) -> tuple:
+        pair, tree, rel = key
+        out = os.path.join(self.scratch, hashlib.sha256(repr(key).encode()).hexdigest()[:24] + '.o')
+        error = compile_object(tree, rel, out, pair)
         if error:
-            return None, f'{rel} does not compile: {error}'
+            return None, f'{rel} does not compile with {pair[1] if rel.endswith(".cpp") else pair[0]}: {error}'
         try:
             with open(out, 'rb') as f:
                 return ObjectFile(f.read()), ''
@@ -233,30 +264,144 @@ class Objects:
             if os.path.exists(out):
                 os.unlink(out)
 
-    def get(self, tree: str, rel: str) -> tuple:
-        if (tree, rel) not in self.done:
-            self.compile_all({(tree, rel)})
-        return self.done[(tree, rel)]
+    def get(self, key: tuple) -> tuple:
+        if key not in self.done:
+            self.compile_all({key})
+        return self.done[key]
 
 
 def library_files(tree: str, name: str, family: bool) -> list[str]:
     return [rel for rel in verification.defining_files(tree, name, family) if LIBRARY_SOURCE.fullmatch(rel)]
 
 
-def compiled_signature(objects: Objects, tree: str, name: str, family: bool) -> tuple[str | None, str]:
-    """(digest of what bb_NAME reaches in each library object that defines it, '') or (None, why)."""
-    is_root = fingerprint.root_matcher(name, family)
-    parts = []
-    for rel in library_files(tree, name, family):
-        obj, error = objects.get(tree, rel)
-        if obj is None:
-            return None, error
-        code = reached_code(obj, is_root)
-        if code is not None:
-            parts.append(hashlib.sha256(code).hexdigest())
-    if not parts:
-        return None, f'no game library source defines bb_{name}'
-    return hashlib.sha256('\n'.join(sorted(parts)).encode()).hexdigest(), ''
+_universe: dict[str, list[str]] = {}
+
+
+def universe(tree: str) -> list[str]:
+    """Every source the replacement's calls can reach in the Linux build: the game library's and
+    every .c and .cpp under runtime/ (the runtime library, the system libraries, the host). A source
+    of it that does not compile makes a cross-object comparison fail: its calls cannot be followed."""
+    if tree not in _universe:
+        out = []
+        for top in ('game', 'runtime'):
+            for dp, _, fns in os.walk(os.path.join(tree, top)):
+                for fn in fns:
+                    rel = os.path.relpath(os.path.join(dp, fn), tree).replace(os.sep, '/')
+                    if LIBRARY_SOURCE.fullmatch(rel) or (top == 'runtime' and fn.endswith(('.c', '.cpp'))
+                                                         and not NOT_LINUX.fullmatch(rel)):
+                        out.append(rel)
+        _universe[tree] = sorted(out)
+    return _universe[tree]
+
+
+_includes: dict[tuple, frozenset] = {}
+
+
+def includes(tree: str, rel: str) -> frozenset:
+    """Every header rel includes from game/ or runtime/include/, transitively (as the legacy hash
+    resolves them)."""
+    key = (tree, rel)
+    if key not in _includes:
+        search = [os.path.join(tree, 'game'), os.path.join(tree, 'runtime', 'include')]
+        seen: set[str] = set()
+        todo = [os.path.join(tree, rel)]
+        while todo:
+            path = os.path.normpath(todo.pop())
+            if path in seen or not os.path.isfile(path):
+                continue
+            seen.add(path)
+            with open(path, errors='replace') as f:
+                text = f.read()
+            for inc in verification.INCLUDE.findall(text):
+                for base in [os.path.dirname(path)] + search:
+                    candidate = os.path.normpath(os.path.join(base, inc))
+                    if os.path.isfile(candidate):
+                        todo.append(candidate)
+                        break
+        _includes[key] = frozenset(os.path.relpath(p, tree).replace(os.sep, '/') for p in seen) - {rel}
+    return _includes[key]
+
+
+def read(tree: str, rel: str) -> str | None:
+    path = os.path.join(tree, rel)
+    if not os.path.isfile(path):
+        return None
+    with open(path, errors='replace') as f:
+        return f.read()
+
+
+def conditions(lines: list[str]) -> list[tuple]:
+    """For each line, the #if/#elif/#else lines it sits under."""
+    stack: list[list[str]] = []
+    out = []
+    for line in lines:
+        m = re.match(r'\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)', line)
+        if m and m.group(1).startswith('if'):
+            stack.append([line])
+        elif m and m.group(1) in ('elif', 'else') and stack:
+            stack[-1].append(line)
+        out.append(tuple(c for frame in stack for c in frame) + ((line,) if m else ()))
+        if m and m.group(1) == 'endif' and stack:
+            stack.pop()
+    return out
+
+
+def platform_change(then: str | None, now: str | None) -> bool:
+    """Whether a changed line of the file sits under (or is) a condition on a platform this
+    backstop does not compile for (the compilers are compared here; the platforms are not)."""
+    a, b = (then or '').splitlines(), (now or '').splitlines()
+    ca, cb = conditions(a), conditions(b)
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == 'equal':
+            continue
+        spots = ca[max(0, i1 - 1):max(i2, i1 + 1)] + cb[max(0, j1 - 1):max(j2, j1 + 1)]
+        if any(PLATFORM.search(c) for spot in spots for c in spot):
+            return True
+    return False
+
+
+def compare(objects: Objects, then_tree: str, now_tree: str, name: str, family: bool) -> str:
+    """'' when everything bb_NAME reaches compiles to the same code on both trees under every
+    compiler, else why not."""
+    files = set(verification.source_files(then_tree, name, family)) | set(verification.source_files(now_tree, name, family))
+    changed = {rel for rel in files if read(then_tree, rel) != read(now_tree, rel)}
+    for rel in sorted(changed):
+        if platform_change(read(then_tree, rel), read(now_tree, rel)):
+            return f'{rel} changed under a platform condition the backstop does not compile for'
+    then_defining, now_defining = library_files(then_tree, name, family), library_files(now_tree, name, family)
+    if not now_defining:
+        return f'no game library source defines bb_{name}'
+    # what else the code calls or reads may change where a changed header is used: every source that
+    # includes one is compiled on both trees, every other source once, so calls can be followed
+    headers = {rel for rel in changed if not LIBRARY_SOURCE.fullmatch(rel)}
+    then_objects = {rel: then_tree for rel in then_defining}
+    now_objects = {rel: now_tree for rel in now_defining}
+    if headers:
+        for rel in sorted(set(universe(then_tree)) | set(universe(now_tree))):
+            then_has = os.path.isfile(os.path.join(then_tree, rel))
+            now_has = os.path.isfile(os.path.join(now_tree, rel))
+            affected = (then_has and includes(then_tree, rel) & headers) or (now_has and includes(now_tree, rel) & headers)
+            if rel not in then_objects:
+                then_objects[rel] = then_tree if (affected and then_has) or not now_has else now_tree
+            if rel not in now_objects:
+                now_objects[rel] = now_tree if now_has else then_tree
+    for pair in compilers():
+        objects.compile_all({(pair, t, rel) for side in (then_objects, now_objects) for rel, t in side.items()})
+        digests = []
+        for side, starts in ((then_objects, then_defining), (now_objects, now_defining)):
+            objs = {}
+            for rel, t in side.items():
+                obj, error = objects.get((pair, t, rel))
+                if obj is None:
+                    return error
+                objs[rel] = obj
+            code = reached_code(objs, starts, fingerprint.root_matcher(name, family))
+            if code is None:
+                return f'no game library source defines bb_{name}'
+            digests.append(hashlib.sha256(code).hexdigest())
+        if digests[0] != digests[1]:
+            return f'differs with {pair[0]}/{pair[1]}'
+    return ''
 
 
 # ---- revisions -------------------------------------------------------------------------------------
@@ -266,8 +411,8 @@ def git(root: str, *args: str) -> str:
 
 
 def extract(root: str, rev: str, dest: str) -> None:
-    """The game/ and runtime/include/ trees of rev, written under dest."""
-    paths = [p for p in ('game', 'runtime/include')
+    """The game/, runtime/ and decoder header trees of rev, written under dest."""
+    paths = [p for p in ('game', 'runtime', ATRAC9)
              if subprocess.run(['git', '-C', root, 'cat-file', '-e', f'{rev}:{p}'], capture_output=True).returncode == 0]
     os.makedirs(dest)
     if not paths:
@@ -309,6 +454,8 @@ def rows_of(text: str | None, rel: str) -> list[dict]:
 
 def check(root: str, base: str, jobs: int = os.cpu_count() or 1, log=print) -> list[str]:
     """Errors for fingerprint rows the compiled code does not back."""
+    _universe.clear()
+    _includes.clear()
     head_tree = os.path.abspath(root)
 
     def read_head(rel):
@@ -364,20 +511,8 @@ def check(root: str, base: str, jobs: int = os.cpu_count() or 1, log=print) -> l
                                       f'{base}..HEAD').split()
             rev = next((c for c in branch if legacy_at(c, name, family) == recorded), None)
             comparisons.append((r, name, family, rev))
-        pairs = set()
-        for r, name, family, rev in comparisons:
-            if rev is not None:
-                for t in (tree(rev), head_tree):
-                    pairs |= {(t, rel) for rel in library_files(t, name, family)}
-        log(f'fingerprint backstop: {len(comparisons)} row(s) to compare, {len(pairs)} object(s) to compile')
-        objects.compile_all(pairs)
-        signatures: dict[tuple, tuple] = {}
-
-        def signature(t, name, family):
-            if (t, name, family) not in signatures:
-                signatures[(t, name, family)] = compiled_signature(objects, t, name, family)
-            return signatures[(t, name, family)]
-
+        log(f'fingerprint backstop: {len(comparisons)} row(s) to compare')
+        verdicts: dict[tuple, str] = {}
         for r, name, family, rev in comparisons:
             where = f"{r['_table']}:{r['_line']}"
             label = r['cases'] + (f" with {r['option']}" if r['option'] else '')
@@ -388,16 +523,18 @@ def check(root: str, base: str, jobs: int = os.cpu_count() or 1, log=print) -> l
                             f"hash is not the code's now, and no commit since {base[:12]} has that code "
                             f"(tools/fingerprint_backstop.py): {run_again}")
                 continue
-            then, why_then = signature(tree(rev), name, family)
-            now, why_now = signature(head_tree, name, family)
-            if then is None or now is None:
-                errs.append(f"{where}: the {label} result of {r['function']} is treated as stale: the "
-                            f"backstop cannot compare its compiled code ({why_then or why_now}) "
-                            f"(tools/fingerprint_backstop.py): {run_again}")
-            elif then != now:
+            key = (rev, name, family)
+            if key not in verdicts:
+                verdicts[key] = compare(objects, tree(rev), head_tree, name, family)
+            why = verdicts[key]
+            if why.startswith('differs'):
                 errs.append(f"{where}: the {label} result of {r['function']} is for other code: its "
                             f"fingerprint is unchanged, but the compiled code of bb_{name} or of what it "
-                            f"reaches differs from {rev[:12]} (tools/fingerprint_backstop.py): {run_again}")
+                            f"reaches {why} from {rev[:12]} (tools/fingerprint_backstop.py): {run_again}")
+            elif why:
+                errs.append(f"{where}: the {label} result of {r['function']} is treated as stale: the "
+                            f"backstop cannot show its compiled code unchanged ({why}) "
+                            f"(tools/fingerprint_backstop.py): {run_again}")
     return errs
 
 
@@ -414,7 +551,10 @@ def main() -> int:
     ap.add_argument('--base', help='the revision the branch starts from (default: merge base with origin/main)')
     ap.add_argument('--root', default=ROOT)
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 1)
+    ap.add_argument('--compilers', help=f'C:C++ compiler pairs to compare under (default {DEFAULT_COMPILERS})')
     a = ap.parse_args()
+    if a.compilers:
+        os.environ['BB_BACKSTOP_COMPILERS'] = a.compilers
     if a.base:
         r = subprocess.run(['git', '-C', a.root, 'merge-base', a.base, 'HEAD'], capture_output=True, text=True)
         if r.returncode != 0:

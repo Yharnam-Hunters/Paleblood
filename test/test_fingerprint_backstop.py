@@ -206,6 +206,54 @@ class BackstopTest(unittest.TestCase):
                                                   verification.read_csv(os.path.join(self.root, 'symbols', 'verification.csv'),
                                                                         verification.VERIFICATION_HEADER)[0]['source']))
 
+    def test_header_change_used_by_a_runtime_source_is_caught(self):
+        """bb_sys_target calls rt_clamp, defined in runtime/rt.c; only rt.c uses RT_MAX."""
+        self.write('runtime/include/rt.h', '#pragma once\n#define RT_MAX 4\n#ifdef __cplusplus\nextern "C"\n#endif\n'
+                   'int rt_clamp(int v);\n')
+        self.write('runtime/rt.c', '#include "rt.h"\nint rt_clamp(int v) { return v > RT_MAX ? RT_MAX : v; }\n')
+        self.edit('game/sys/target.cpp', '#include "sys.h"', '#include "sys.h"\n#include "rt.h"')
+        self.edit('game/sys/target.cpp', 'return scaled(t) +', 'return rt_clamp(t->count) + scaled(t) +')
+        self.record()
+        base = self.commit('record')
+        self.edit('runtime/include/rt.h', 'RT_MAX 4', 'RT_MAX 8')
+        self.commit('changes what rt_clamp returns')
+        errs = self.check(base)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn('compiled code', errs[0])
+
+    def test_header_constant_defined_in_another_game_source_is_caught(self):
+        self.edit('game/sys/sys.h', 'struct Thing {', '#define SCALE 3\nextern const int32_t g_scale;\n\nstruct Thing {')
+        self.write('game/sys/scale.cpp', '#include "sys.h"\nextern const int32_t g_scale = SCALE;\n')
+        self.edit('game/sys/target.cpp', 'return scaled(t) +', 'return g_scale + scaled(t) +')
+        self.record()
+        base = self.commit('record')
+        self.edit('game/sys/sys.h', 'SCALE 3', 'SCALE 5')
+        self.commit('changes the constant')
+        self.assertEqual(len(self.check(base)), 1)
+
+    @unittest.skipUnless(shutil.which('clang++') and shutil.which('g++'), 'needs both compilers')
+    def test_code_only_one_compiler_sees_is_caught(self):
+        self.edit('game/sys/target.cpp', 'return scaled(t) +', 'return SYS_BONUS + scaled(t) +')
+        self.edit('game/sys/sys.h', 'struct Thing {', '#ifdef __clang__\n#define SYS_BONUS 2\n#else\n'
+                  '#define SYS_BONUS 1\n#endif\n\nstruct Thing {')
+        self.record()
+        base = self.commit('record')
+        self.edit('game/sys/sys.h', 'SYS_BONUS 2', 'SYS_BONUS 3')
+        self.commit('changes the clang build only')
+        errs = self.check(base)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn('clang', errs[0])
+
+    def test_change_under_a_platform_condition_is_stale(self):
+        self.edit('game/sys/sys.h', 'struct Thing {', '#ifdef __APPLE__\n#define SYS_SHIFT 1\n#endif\n\nstruct Thing {')
+        self.record()
+        base = self.commit('record')
+        self.edit('game/sys/sys.h', 'SYS_SHIFT 1', 'SYS_SHIFT 2')
+        self.commit('changes the macOS build only')
+        errs = self.check(base)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn('platform condition', errs[0])
+
     def test_a_fingerprint_without_its_legacy_hash_is_never_current(self):
         self.assertFalse(verification.row_current(self.root, 'sys_target', BLIND))
 
@@ -225,7 +273,7 @@ class ObjectReadingTest(unittest.TestCase):
                 self.assertIsNone(fingerprint_backstop.compile_object(root, 'game/sys/a.c', out))
                 with open(out, 'rb') as f:
                     obj = fingerprint_backstop.ObjectFile(f.read())
-                return fingerprint_backstop.reached_code(obj, lambda n: n == 'bb_sys_a')
+                return fingerprint_backstop.reached_code({'a': obj}, ['a'], lambda n: n == 'bb_sys_a')
 
             first = code(1, 2)
             self.assertIsNotNone(first)

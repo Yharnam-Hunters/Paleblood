@@ -1100,6 +1100,8 @@ class Index:
         self._ids: dict[int, set[str]] = {}
         self._users: dict[str, list[int]] | None = None
         self.entries = entries
+        self.derived: dict[str, list[int]] = {}     # a name in a base clause -> the classes there
+        self.mutable = any(t.text == 'mutable' for e in entries for t in e.decl.tokens)
         for k, e in enumerate(entries):
             d = e.decl
             names: set[str] = set()
@@ -1109,12 +1111,19 @@ class Index:
                 if d.always or d.kind == 'include':
                     self.always.append(k)
             else:
+                if d.tokens and d.tokens[0].text == '{':
+                    # a body without its head: a K&R definition's parameter declarations split it off
+                    raise ParseError(f'{e.file}: a declaration starts with a brace')
                 names, always = declared_names(d.tokens, self.macros)
-                if always:
+                if always or names & IMPLICIT_CALLS or _specializes_outside(d.tokens, e.scope):
                     self.always.append(k)
+                for base in _base_clause_names(d.tokens):
+                    self.derived.setdefault(base, []).append(k)
             self.names.append(names)
             for name in names:
                 self.by_name.setdefault(name, []).append(k)
+        self._internal: dict[int, bool] = {}
+        self._internal_classes: set[str] | None = None
 
     def ids(self, k: int) -> set[str]:
         """The identifiers entry k names: in its text, its macro expansion and the conditional and
@@ -1128,21 +1137,62 @@ class Index:
             except ExpansionError:
                 if any(m.pastes for name in ids for m in self.macros.get(name, ())):
                     raise ParseError(f'{e.file}: a token-pasting macro could not be expanded')
+            directive_ids: set[str] = set()
             for c in e.conds + e.scope:
-                ids |= set(re.findall(r'[A-Za-z_]\w*', c))
+                directive_ids |= set(re.findall(r'[A-Za-z_]\w*', c))
+            for t in toks:
+                if t.kind == 'pp':
+                    directive_ids |= set(IDENTIFIER.findall(_without_strings(t.text)))
+            if any(m.pastes for name in directive_ids for m in self.macros.get(name, ())):
+                # a pasting macro in an #if line names macros that are not written there
+                raise ParseError(f'{e.file}: a token-pasting macro in a conditional line')
+            ids |= directive_ids
             ids |= _symbol_strings(toks)
             self._ids[k] = ids
         return self._ids[k]
 
     def internal(self, k: int) -> bool:
-        """Whether entry k declares something with internal linkage: in an anonymous namespace, or
-        `static` at namespace scope."""
+        """Whether entry k declares something with internal linkage: in an anonymous namespace,
+        `static` at namespace scope (also when a macro spells it), a member of such a class defined
+        out of line, or, where the unit has a `mutable` member, a namespace-scope const object that
+        is not extern (it is internal in C++, and a mutable member of it can still be written)."""
+        if k not in self._internal:
+            self._internal[k] = self._plainly_internal(k) or self._member_of_internal(k)
+        return self._internal[k]
+
+    def _plainly_internal(self, k: int) -> bool:
         e = self.entries[k]
         if e.decl.kind != 'code':
             return False
         if any(re.fullmatch(r'(?:inline\s+)?namespace', h.strip()) for h in e.scope):
             return True
-        return 'static' in _top_words(e.decl.tokens[:_head_length(e.decl.tokens)])
+        head = e.decl.tokens[:_head_length(e.decl.tokens)]
+        words = _top_words(head)
+        try:
+            words |= {t.text for t in expand(head, self.macros)}
+        except ExpansionError:
+            words |= identifiers(head)
+        if 'static' in words:
+            return True
+        return self.mutable and bool(words & {'const', 'constexpr'}) and 'extern' not in words
+
+    def _member_of_internal(self, k: int) -> bool:
+        if self._internal_classes is None:
+            self._internal_classes = set()
+            for j in range(len(self.entries)):
+                if self._plainly_internal(j) and _class_head(self.entries[j].decl.tokens):
+                    self._internal_classes |= self.names[j]
+        toks = self.entries[k].decl.tokens
+        return any(t.text in self._internal_classes and n.text == '::' for t, n in zip(toks, toks[1:]))
+
+    def reverse_names(self, k: int) -> set[str]:
+        """The names whose users come in when entry k is internal: what it declares, and for a
+        class, what its body declares (a member reached through a pointer never spells the class)."""
+        names = set(self.names[k])
+        toks = self.entries[k].decl.tokens
+        if _class_head(toks):
+            names |= _member_names(toks[_head_length(toks):])
+        return names
 
     def users(self, name: str) -> list[int]:
         """Every entry whose identifiers include `name`."""
@@ -1152,6 +1202,46 @@ class Index:
                 for n in self.ids(k):
                     self._users.setdefault(n, []).append(k)
         return self._users.get(name, [])
+
+
+# Functions the language calls without their name in the source: a range-based for calls begin and
+# end, a structured binding get, tuple_size and tuple_element; library algorithms call swap.
+IMPLICIT_CALLS = frozenset({'begin', 'end', 'get', 'tuple_size', 'tuple_element', 'swap'})
+
+
+def _specializes_outside(tokens: list[Tok], scope: tuple) -> bool:
+    """A declaration in namespace std, or a template naming std:: in its head (a specialization of
+    a library template, which library code instantiates where no name in the repository shows)."""
+    if any(re.fullmatch(r'(?:inline\s+)?namespace\s+std\b.*', h.strip()) for h in scope):
+        return True
+    head = tokens[:_head_length(tokens)]
+    if not head or head[0].text != 'template':
+        return False
+    return any(t.text == 'std' and n.text == '::' for t, n in zip(head, head[1:]))
+
+
+def _class_head(tokens: list[Tok]) -> bool:
+    head = tokens[:_head_length(tokens)]
+    return len(head) < len(tokens) and any(t.text in ('struct', 'class', 'union') for t in head)
+
+
+def _base_clause_names(tokens: list[Tok]) -> set[str]:
+    """The identifiers of a class definition's base clause (`struct D final : Wrap<B> {`)."""
+    if not _class_head(tokens):
+        return set()
+    head = tokens[:_head_length(tokens)]
+    for i, t in enumerate(head):
+        if t.text == ':' and (i == 0 or head[i - 1].text != ':') and (i + 1 == len(head) or head[i + 1].text != ':'):
+            return {x.text for x in head[i + 1:] if x.kind == 'id'} - KEYWORDS
+    return set()
+
+
+MEMBER_FOLLOWERS = frozenset({';', '=', '[', '(', ',', '{', ':'})
+
+
+def _member_names(body: list[Tok]) -> set[str]:
+    """Identifiers in a class body written where a member is declared (followed by ; = [ ( , { or :)."""
+    return {t.text for t, n in zip(body, body[1:]) if t.kind == 'id' and n.text in MEMBER_FOLLOWERS} - KEYWORDS
 
 
 _index_cache: dict[tuple, Index] = {}
@@ -1189,12 +1279,16 @@ def closure(entries: list[Entry], is_root) -> Closure:
         for name in ids - done_names:
             done_names.add(name)
             queue.extend(ix.by_name.get(name, ()))
+        # Classes derived from a reached class: a virtual call may be devirtualized speculatively
+        # to a derived class's override, whatever the base is spelled through.
+        for name in ix.names[k]:
+            queue.extend(ix.derived.get(name, ()))
         # Internal linkage: the compiler sees every use of a static or anonymous-namespace entity
         # in this unit, and how it compiles the function can depend on them (a static never
         # written folds to a constant; a static function called once is inlined; a class nobody
         # derives from is devirtualized). So every declaration that names one comes in too.
         if ix.internal(k):
-            for name in ix.names[k]:
+            for name in ix.reverse_names(k):
                 if name not in reverse_done:
                     reverse_done.add(name)
                     queue.extend(ix.users(name))
