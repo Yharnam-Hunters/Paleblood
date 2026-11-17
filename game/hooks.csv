@@ -328,6 +328,7 @@ address,replacement,system,returns
 0x017d5790,bb_engine_list64_push_back_017d5790,engine,void
 0x017dc0f0,bb_engine_list32_push_back_017dc0f0,engine,void
 0x017dd280,bb_engine_tree_free_subtree_017dd280,engine,void
+0x0181fb10,bb_loading_tpfbnd_resource_construct_0181fb10,loading,i64
 0x0182fd80,bb_engine_list64_push_back_0182fd80,engine,void
 0x0183ac60,bb_camera_update_follow,camera,void
 0x0183fad0,bb_camera_follow_pitch,camera,f32
