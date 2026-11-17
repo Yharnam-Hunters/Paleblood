@@ -2,13 +2,13 @@
 
 # Kernel
 
-The engine's core library: thin wrappers around the PS4 kernel for threads, mutexes and condition variables, which report every unexpected result through one fatal error function.
+The engine's core library: thin wrappers around the PS4 kernel for threads, mutexes, read-write locks and condition variables, which report every unexpected result through one fatal error function.
 
 **At a glance**
 
 - **Scope:** Dantelion2's kernel layer ("ClassLibrary/Core/Kernel" in its source paths), and the kernel and `libc` calls the executable imports.
-- **Verified:** `kernel_condition_wait` (`0x02483e80`), the condition-variable wait the frame-rate patches edit.
-- **Open:** Which objects the condition waits made each frame belong to.
+- **Verified:** `kernel_condition_wait` (`0x02483e80`), the condition-variable wait the frame-rate patches edit, and since 15 November most of the engine's mutex, light mutex and read-write lock wrappers and its memory pool free. A few members without recordings stay edge-verified (the function table gives each one's status).
+- **Open:** Which objects the condition waits made each frame belong to; the error paths of the lock wrappers are covered only by constructed cases.
 
 ## Summary
 
@@ -59,11 +59,46 @@ approved it.
 
 `DLLightMutex` wraps one system mutex (at `+0x08`) with an "initialized" flag (at `+0x10`). Eight of
 its members (`0x0247ecb0`–`0x0247f070`: constructor, destructors, initialize, finalize, lock, try
-lock, unlock) were replaced by contributor [@FFwLo](https://github.com/FFwLo) and are edge-verified
+lock, unlock) were replaced by contributor [@FFwLo](https://github.com/FFwLo)
 ([#748](https://github.com/Yharnam-Hunters/Paleblood/pull/748)). Every member asks whether the mutex is initialized through the object's third virtual
 function (`0x0247ee80`), which is only four bytes long, too short to hook, so it stays original. A
 destructor leaves the flag set when the system says the mutex is busy (`EBUSY`), and reports any
-other failure through the engine's error report.
+other failure through the engine's error report. Seven of the eight are now verified on
+recordings from the game ([#1119](https://github.com/Yharnam-Hunters/Paleblood/pull/1119)); the
+deleting destructor, which has no recordings, stays edge-verified.
+
+### The engine's own mutex and read-write lock
+
+Below the light mutex sit the engine's plain mutex wrappers (its `PthreadMutex.cpp`) and its
+read-write lock, `DLReadWriteLock`. Both were replaced by [@FFwLo](https://github.com/FFwLo), and
+they follow the same pattern: a few expected results come back as small numbers, and anything else
+goes to the engine's error report.
+
+- **The mutex** ([#740](https://github.com/Yharnam-Hunters/Paleblood/pull/740)): initialize,
+  destroy, lock, try lock and unlock (`0x02483fe0`–`0x02484290`). The mutex is recursive. Lock
+  waits forever when the timeout is -1 and otherwise makes a timed wait; a time-out gives -3, a
+  busy mutex -2, and running out of memory or mutexes at initialization -1. Unlock accepts quietly
+  a mutex the thread does not own (`EPERM`). For some errors the original reports a chain of
+  messages that falls through from one to the next, and the replacement keeps that chain.
+- **The read-write lock** ([#745](https://github.com/Yharnam-Hunters/Paleblood/pull/745)): eleven
+  members (`0x0247f180`–`0x0247f710`). Like the light mutex it holds the system lock at `+0x08`
+  and an "initialized" flag at `+0x10`, and asks for the flag through a four-byte virtual function
+  that stays original. Read and write locks wait forever or with a time limit, a try write lock
+  gives -2 when busy, and the unlock (the same code three times in the executable) gives -4 for a
+  lock the thread does not hold. A lock that is not initialized is reported and then used anyway,
+  as in the original. The resource loader (see [Loading](loading.md)) takes these locks.
+- **The memory pool free** ([#889](https://github.com/Yharnam-Hunters/Paleblood/pull/889)):
+  `0x011ab3a0`, the release the kernel layer's mutex destroy uses. It creates the pool's own lock on
+  first use, takes the block's size off the pool's counters (from a header in front of the block,
+  the block's first word, or the backing heap), then hands the block to the pool's free callback,
+  releases its pages, or frees it on the backing heap.
+
+Most of these are verified on recordings from the game, approved by an independent review
+([#1119](https://github.com/Yharnam-Hunters/Paleblood/pull/1119)). The recordings exercise only
+the success paths; the error paths are covered by constructed edge cases. The members without
+recordings (the mutex's destroy and try lock, the lock's deleting destructor and try write lock)
+stay edge-verified. Every edge-verified function also carries a current recorded edge result
+([#912](https://github.com/Yharnam-Hunters/Paleblood/pull/912)).
 
 ### How a condition wait works
 
