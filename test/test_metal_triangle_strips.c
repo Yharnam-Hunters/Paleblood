@@ -371,7 +371,7 @@ static void preserved_guards(Fixture *f)
     }
     for (unsigned guard = 0; guard < 7; ++guard) {
         geometry(f, SQUARE4); Calls c = {0}; scene(&c, 0, guard == 6 ? 7 : 15); reg(&c, PRIMITIVE, 6);
-        if (guard == 0) reg(&c, 0xa1e0, 1u<<30);
+        if (guard == 0) reg(&c, 0xa1e0, (1u<<30)|2u); /* unsupported SRC_COLOR */
         else if (guard < 4) reg(&c, 0xa200, guard == 3 ? 8u : 1u<<(guard-1));
         else if (guard == 4) color_target(&c, 1, 1);
         else if (guard == 5) c.call[3].u.pixel_shader.color_mask = 0xff;
