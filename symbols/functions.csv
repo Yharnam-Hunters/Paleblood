@@ -31,6 +31,7 @@ address,size,name,system,status,notes
 0x00fb6d20,30,render_yebis_initialize_interface,render,edge-verified,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,84,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
+0x01118300,149,audio_fmod_thread_entry,audio,edge-verified,FMOD Thread entry: sets running; signals startup; waits and dispatches the routine or virtual slot zero; re-reads fields after calls; applies callback delay; signals exit and returns null
 0x011183b0,98,audio_fmod_initialize_thread,audio,edge-verified,FMOD Thread initialization; publish the relocated vtable and clear selected fields; preserve all other bytes
 0x01118420,377,audio_fmod_start_thread,audio,edge-verified,FMOD Thread startup; initialize parameters and semaphores; create the native thread and wait; clean up saved semaphore handles on failure
 0x011185a0,269,audio_fmod_stop_thread,audio,edge-verified,FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status
