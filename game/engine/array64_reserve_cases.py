@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Edge cases for the engine array reallocation copies for 8-byte elements
-(game/engine/array64_reserve.cpp), for tools/verify.py run.
+(game/engine/array64_reserve.cpp and
+array64_reserve_more.cpp), for tools/verify.py run.
 
 usage: array64_reserve_cases.py OUT_DIR ADDRESS   (one of the copies in COPIES)
 
@@ -32,15 +33,18 @@ COPIES = {
     '0x016e1490',
     '0x0179c3b0',
     '0x0179fd90',
+    '0x017db000',
     '0x0187df30',
     '0x0189a350',
     '0x0189e790',
     '0x018bf2c0',
     '0x01904bb0',
+    '0x01922130',
     '0x0193ed60',
     '0x01c42780',
     '0x01c62b70',
     '0x01ceb6a0',
+    '0x020b71c0',
     '0x0215f2f0',
     '0x02255b50',
     '0x02266eb0',
@@ -51,10 +55,13 @@ COPIES = {
     '0x02463540',
     '0x02471310',
     '0x02471410',
+    '0x024bcdd0',
+    '0x024c3160',
     '0x024fa650',
     '0x024fa750',
     '0x02559480',
     '0x025c4630',
+    '0x025c7e80',
     '0x0260fdf0',
     '0x0265c6a0',
     '0x0265e210',
@@ -68,6 +75,7 @@ COPIES = {
     '0x02707280',
     '0x027077a0',
     '0x02a46410',
+    '0x02a6b420',
     '0x02a6e960',
     '0x02a6f3d0',
     '0x02a76a30',
