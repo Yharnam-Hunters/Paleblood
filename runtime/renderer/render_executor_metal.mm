@@ -11,7 +11,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <dispatch/dispatch.h>
-#include "spirv_msl.hpp"
+#include "metal_fragment_quads.hpp"
+#include <cstddef>
 
 #include <algorithm>
 #include <array>
@@ -159,6 +160,11 @@ struct MetalQueueState {
     uint32_t compute_user[GCN_USER_SGPR_MAX] = {};
     uint32_t compute_user_set = 0;
 };
+/* The translator's ordinary stop word and the fragment adapter's atomic word must not alias. */
+struct MetalShaderStops { uint32_t translated, fragment_quad; };
+static_assert(offsetof(MetalShaderStops, fragment_quad) == sizeof(uint32_t));
+static_assert(sizeof(MetalShaderStops) == 2 * sizeof(uint32_t));
+
 struct rt_executor {
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
@@ -436,9 +442,9 @@ extern "C" int rt_executor_open(const rt_executor_memory *memory, rt_executor **
             next->size = memory->size; next->guest_base = memory->guest_base;
             if (!next->memory.gpuAddress) return failed(error, error_size, "the device did not expose the pool's GPU address");
             next->address_offset = next->memory.gpuAddress - memory->guest_base;
-            next->stop = [next->device newBufferWithLength:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+            next->stop = [next->device newBufferWithLength:sizeof(MetalShaderStops) options:MTLResourceStorageModeShared];
             if (!next->stop || !next->stop.gpuAddress) return failed(error, error_size, "Metal runtime stop-word allocation failed");
-            *static_cast<volatile uint32_t *>(next->stop.contents) = 0;
+            std::memset(next->stop.contents, 0, sizeof(MetalShaderStops));
             *out = next.release();
             return 0;
         } @catch (NSException *exception) { return failed(error, error_size, "%s", exception.reason.UTF8String); }
@@ -872,7 +878,8 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     user_read |= target_read;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
-        MetalCompiler compiler(spirv, count);
+        MetalCompiler compiler(spirv, count,
+            x->stop.gpuAddress + offsetof(MetalShaderStops, fragment_quad));
         auto options = compiler.get_msl_options();
         /* A nonrasterizing Metal vertex entry returns void. Keep guest buffer stores
            without the rectangle capture ABI or an unused stage-output buffer. */
@@ -1151,6 +1158,16 @@ static void store_depth_plane(rt_executor *x, const MetalDepthPlane &p)
     const auto *rows = static_cast<const uint8_t *>(p.staging.contents); const auto &t = p.layout.tiles;
     for (uint32_t y = 0; y < p.layout.height; ++y) for (uint32_t col = 0; col < p.layout.width; ++col)
         std::memcpy(guest + rt_tiling_offset(&t,col,y,p.slice),rows + y * p.row + col * t.element_bytes,t.element_bytes);
+}
+
+static int fragment_quad_runtime_stop(rt_executor *x, char *error, size_t size)
+{
+    const auto *stops = static_cast<const volatile MetalShaderStops *>(x->stop.contents);
+    if (!stops->fragment_quad) return 0;
+    /* Other fragments may already have written buffers. Fail terminally before publishing
+       target/depth readbacks; this is a post-execution failure, not a rollback. */
+    x->failed = true;
+    return failed(error, size, "shader runtime stop: fragment quad source invocation is inactive");
 }
 
 static int shader_runtime_stop(rt_executor *x, char *error, size_t size)
@@ -1490,7 +1507,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         pass.stencilAttachment.texture = depth.stencil.texture;
         pass.stencilAttachment.loadAction = MTLLoadActionLoad; pass.stencilAttachment.storeAction = MTLStoreActionStore;
     }
-    *static_cast<volatile uint32_t *>(x->stop.contents) = 0;
+    std::memset(x->stop.contents, 0, sizeof(MetalShaderStops));
     /* Keep native index offsets within one host page, without a CPU index copy.
        The command also retains x->memory through useResource below, so its mapping
        remains alive while this page-aligned alias is bound, including failed waits. */
@@ -1534,7 +1551,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     for (unsigned i = 0; i < resources.image_count; ++i) [encoder setFragmentTexture:resources.textures[i] atIndex:i];
     for (unsigned i = 0; i < resources.sampler_count; ++i) [encoder setFragmentSamplerState:resources.states[i] atIndex:i];
     [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
-    [encoder useResource:x->stop usage:MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
+    [encoder useResource:x->stop usage:MTLResourceUsageRead | MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
     const MTLPrimitiveType primitive = state.primitive_set && state.primitive == DI_PT_TRISTRIP
         ? MTLPrimitiveTypeTriangleStrip : MTLPrimitiveTypeTriangle;
     if (raster_rectangle) [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count * 2];
@@ -1549,6 +1566,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         copy_depth_plane(blit,depth.z,false); copy_depth_plane(blit,depth.stencil,false); [blit endEncoding];
     }
     if (complete_commands(x,command,error,size)) return -1;
+    if (fragment_quad_runtime_stop(x,error,size)) return -1;
     if (target) { if (write_color) store_target(x,*target); target->initialized = true; }
     store_depth_plane(x,depth.z); store_depth_plane(x,depth.stencil);
     return shader_runtime_stop(x, error, size);
