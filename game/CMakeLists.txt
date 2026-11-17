@@ -143,6 +143,10 @@ add_test(NAME camera_update_cases
          COMMAND ${Python3_EXECUTABLE}
                  "${CMAKE_CURRENT_SOURCE_DIR}/camera/tests/test_update_cases.py")
 
+add_test(NAME loading_tpfbnd_resource_cases
+         COMMAND ${Python3_EXECUTABLE}
+                 "${CMAKE_CURRENT_SOURCE_DIR}/loading/tests/test_tpfbnd_resource_cases.py")
+
 # The compute command buffer's user-data observers, against stubs of the record.
 add_executable(test_compute_user_data_observer render/tests/compute_user_data_observer.c render/observe_gpu_library.c)
 target_include_directories(test_compute_user_data_observer PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
