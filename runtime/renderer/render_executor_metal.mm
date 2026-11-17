@@ -13,6 +13,7 @@
 #include <dispatch/dispatch.h>
 #include "metal_fragment_quads.hpp"
 #include <cstddef>
+#include <set>
 
 #include <algorithm>
 #include <array>
@@ -748,6 +749,48 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
     return 0;
 }
 
+/* Ordinary numeric-quad shaders retain their existing profile. Wave-dependent fragments
+   require the checked normalizer; its descriptor-read proof uses resources validated above. */
+static bool fragment_control_needed(const uint32_t *words, size_t count)
+{
+    if (count < 5) throw std::runtime_error("fragment control has no SPIR-V header");
+    std::set<uint32_t> literal_booleans;
+    bool broadcast = false, multiple_cases = false;
+    for (size_t at = 5; at < count;) {
+        const size_t extent = words[at] >> 16;
+        if (!extent || extent > count - at)
+            throw std::runtime_error("fragment control has an invalid instruction extent");
+        const auto opcode = static_cast<spv::Op>(words[at] & 0xffffu);
+        if ((opcode == spv::OpConstantTrue || opcode == spv::OpConstantFalse) && extent == 3)
+            literal_booleans.insert(words[at + 2]);
+        broadcast |= opcode == spv::OpGroupNonUniformQuadBroadcast;
+        multiple_cases |= opcode == spv::OpSwitch && extent > 5;
+        at += extent;
+    }
+    for (size_t at = 5; at < count; at += words[at] >> 16) {
+        const size_t extent = words[at] >> 16;
+        const auto opcode = static_cast<spv::Op>(words[at] & 0xffffu);
+        if (opcode >= spv::OpGroupNonUniformElect && opcode <= spv::OpGroupNonUniformQuadSwap &&
+            opcode != spv::OpGroupNonUniformQuadBroadcast) {
+            if (opcode != spv::OpGroupNonUniformAny || extent != 5 || !literal_booleans.count(words[at + 4]))
+                return true;
+        }
+        uint32_t builtin = spv::BuiltInMax;
+        if (opcode == spv::OpDecorate && extent >= 4 && words[at + 2] == spv::DecorationBuiltIn)
+            builtin = words[at + 3];
+        if (opcode == spv::OpMemberDecorate && extent >= 5 && words[at + 3] == spv::DecorationBuiltIn)
+            builtin = words[at + 4];
+        switch (builtin) {
+        case spv::BuiltInSubgroupSize: case spv::BuiltInNumSubgroups: case spv::BuiltInSubgroupId:
+        case spv::BuiltInSubgroupLocalInvocationId: case spv::BuiltInSubgroupEqMask:
+        case spv::BuiltInSubgroupGeMask: case spv::BuiltInSubgroupGtMask:
+        case spv::BuiltInSubgroupLeMask: case spv::BuiltInSubgroupLtMask: return true;
+        default: break;
+        }
+    }
+    return broadcast && multiple_cases;
+}
+
 static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
                                  const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
@@ -794,20 +837,38 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     user_read |= target_read;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
-        pb::MetalFragmentQuadCompiler compiler(spirv, count,
-            x->stop.gpuAddress + offsetof(MetalShaderStops, fragment_quad));
+        const bool controlled = !vertex && fragment_control_needed(spirv,count);
+        const uint64_t fault_address = x->stop.gpuAddress + offsetof(MetalShaderStops, fragment_quad);
+        std::unique_ptr<spirv_cross::CompilerMSL> compiler_owner;
+        if (controlled) {
+            std::vector<pb::MetalDescriptorSpan> spans;
+            const auto append = [&](const gcn_resource_origin &origin, unsigned words) {
+                if (origin.from_memory)
+                    spans.push_back({origin.pointer_sgpr,origin.offset,
+                        words * static_cast<uint32_t>(sizeof(uint32_t)),true});
+            };
+            for (unsigned i = 0; i < pixel->image_count; ++i)
+                append(pixel->images[i].origin,RT_IMAGE_DESCRIPTOR_WORDS);
+            for (unsigned i = 0; i < pixel->sampler_count; ++i) append(pixel->samplers[i],4);
+            /* pixel_resources already checked every span on this draw. Cache equality keeps
+               these origins fixed, while subsequent draws revalidate their actual pointers. */
+            const auto prepared = pb::prepare_metal_fragment(spirv,count,spans,x->address_offset,USER_BYTES);
+            compiler_owner = std::make_unique<pb::MetalFragmentQuadCompiler>(prepared,fault_address);
+        } else compiler_owner = std::make_unique<pb::MetalFragmentQuadCompiler>(spirv,count,fault_address);
+        auto &compiler = *compiler_owner;
         if (!vertex) {
             auto options = compiler.get_msl_options();
             options.enable_frag_output_mask = color_output ? 1u : 0u;
             compiler.set_msl_options(options);
         }
-        /* Fragment image_sample gradients use native 2x2 quad broadcasts. Whole-quad mask
-           expansion also writes wave-wide SCC; its GCN-wave behavior is still outside this profile. */
+        /* Vertex quad operations remain outside their profile. Prepared pixel control has
+           no native wave vote or dispatcher; its Boolean quad reads are checked separately. */
         for (size_t at = 5; at < count;) {
             const uint32_t words = spirv[at] >> 16, opcode = spirv[at] & 0xffffu;
             if (!words || words > count - at)
                 return failed(error, error_size, "translated draw SPIR-V has an invalid instruction extent"), nil;
-            if (opcode == spv::OpGroupNonUniformQuadSwap || (vertex && opcode == spv::OpGroupNonUniformQuadBroadcast))
+            if ((opcode == spv::OpGroupNonUniformQuadSwap && !controlled) ||
+                (vertex && opcode == spv::OpGroupNonUniformQuadBroadcast))
                 return failed(error, error_size, "whole-quad shader operations are outside the Metal draw profile"), nil;
             at += words;
         }
