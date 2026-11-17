@@ -283,6 +283,7 @@ typedef struct {
 } recorded_fill;
 static recorded_fill recorded_fills[RECORDED_FILLS];
 static size_t recorded_fill_count;
+static uint64_t last_fill_ticket; /* the latest recorded fill's, for rt_renderer_wait_idle (atomic) */
 
 /* Drops the recorded fills whose submissions have run (renderer lock held). */
 static void forget_fills_run(void)
@@ -324,6 +325,7 @@ static int fill_on_gpu(const rt_gpu_step *step)
     if (taken == 0) {
         last_ticket = ticket; /* the deferred steps after it wait for the fill too */
         recorded_fills[recorded_fill_count++] = (recorded_fill){address, bytes, ticket};
+        __atomic_store_n(&last_fill_ticket, ticket, __ATOMIC_RELEASE);
     }
     unlock_renderer();
     return taken == 0;
@@ -428,6 +430,9 @@ void rt_renderer_wait_idle(void)
     while (queue_head || running) pthread_cond_wait(&queue_changed, &queue_lock);
     pthread_mutex_unlock(&queue_lock);
     drain_deferred(); /* the last batch's deferred steps (its work: their tickets) */
+    const uint64_t filled = __atomic_load_n(&last_fill_ticket, __ATOMIC_ACQUIRE); /* the fills the GPU makes in the steps' place */
+    char error[RENDER_ERROR_BYTES];
+    if (filled && executor && rt_executor_wait_ticket(executor, filled, error, sizeof error)) rt_fatal("the renderer (a wait for its work)", error);
 }
 
 void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,

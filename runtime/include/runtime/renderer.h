@@ -81,8 +81,9 @@ enum { RT_RENDERER_GRAPHICS_QUEUE = 0 };
 void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,
                         size_t step_count);
 
-/* Waits until every submission so far has run and its steps have been performed (at once when the
-   display is off, and on the renderer's own threads, which are always caught up with themselves). */
+/* Waits until every submission so far has run and its steps have been performed, the fills the GPU
+   makes in their place included (at once when the display is off, and on the renderer's own threads,
+   which are always caught up with themselves). */
 void rt_renderer_wait_idle(void);
 
 /* A vertex, pixel or compute shader the title bound (sceGnmSetVsShader, sceGnmSetPsShader and their

@@ -512,6 +512,14 @@ int main(void)
         for (unsigned i = 16; i < LANES; i++) right &= output[i] == 6.0f;
         CHECK(right);
 
+        /* rt_renderer_wait_idle waits for a recorded fill too: a buffer of only a fill has made it. */
+        enum { ALONE = 0x7777u };
+        step_count = 0;
+        const rt_gpu_step alone = {cpu_fill_step, "sceGnmDingDong", 0, {ALONE}, RT_GPU_STEP_FILLS, NULL, {at(OUTPUT) + 0x400, 64}};
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x5000), BYTES, &alone, 1);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 0 && ((const uint32_t *)output)[0x400 / 4] == ALONE && ((const uint32_t *)output)[0x43c / 4] == ALONE);
+
         /* A fill the GPU does not take (memory outside the GPU-visible memory) is performed on the
            renderer's thread, as before. So is one while a deferrable step not yet performed writes
            that memory (held: the gate), after it. */
@@ -526,6 +534,8 @@ int main(void)
         const rt_gpu_step over = {cpu_fill_step, "sceGnmDingDong", 0, {43}, RT_GPU_STEP_FILLS, NULL, {at(OUTPUT), 16}};
         rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x2000), BYTES, &writer, 1);
         rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x3000), BYTES, &over, 1);
+        const struct timespec reach = {1, 0}; /* the renderer's thread meets the fill while the gate still holds */
+        nanosleep(&reach, NULL);
         pthread_mutex_lock(&step_lock);
         gate_open = 1;
         pthread_cond_broadcast(&step_changed);
