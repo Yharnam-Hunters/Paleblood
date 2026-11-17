@@ -250,7 +250,7 @@ def source_hash(root: str, family: dict) -> str:
     """The value new verification rows carry: the source fingerprint of the family's replacements
     (tools/fingerprint.py), or the legacy hash of their sources and headers where it cannot be read."""
     import verification
-    return verification.source_fingerprint(root, f"{family['system']}_{family['family']}", family=True)
+    return verification.record_value(root, f"{family['system']}_{family['family']}", family=True)
 
 
 def source_current(root: str, family: dict, value: str) -> bool:

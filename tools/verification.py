@@ -11,13 +11,16 @@ symbols/verification.csv   one row per function, case set and option: the latest
   total, passed, failed, quarantined
                failed counts failing cases that are not quarantined; quarantined counts failing
                cases that are (a quarantined case that passes counts as passed)
-  source       which code the result is for: the replacement's source fingerprint
-               (`f1:` and 16 hex digits, tools/fingerprint.py: its own code and every
-               declaration it reaches by name), or, where the fingerprint cannot be read and for
-               rows recorded before it existed, the legacy hash (16 hex digits: its defining files
-               and every header they include from game/ and runtime/include/, whole). A row is
-               current when its value equals what its own rule computes now (row_current);
-               results for other code are stale
+  source       which code the result is for: `f1:`, the replacement's source fingerprint
+               (16 hex digits, tools/fingerprint.py: its own code and every declaration it
+               reaches by name), `:` and the legacy hash of the same code when it was recorded;
+               or, where the fingerprint cannot be read and for rows recorded before it existed,
+               the legacy hash alone (16 hex digits: its defining files and every header they
+               include from game/ and runtime/include/, whole). A legacy row is current when it
+               equals the legacy hash now; a fingerprint row when its fingerprint equals the
+               fingerprint now (row_current) and, where its legacy hash no longer does, the
+               compiled code is unchanged (tools/fingerprint_backstop.py, run by CI and the
+               pre-push gate). Results for other code are stale
   date         the day of the run
 
 symbols/quarantine.csv     cases that cannot be used, each with the reason.
@@ -119,11 +122,35 @@ def source_hash(root: str, name: str, family: bool = False) -> str:
 
 
 def source_fingerprint(root: str, name: str, family: bool = False) -> str:
-    """What a new row records: the fingerprint (tools/fingerprint.py), or the legacy hash where the
-    fingerprint cannot be read (the legacy rule, no narrower)."""
+    """The fingerprint (tools/fingerprint.py), or the legacy hash where the fingerprint cannot be
+    read (the legacy rule, no narrower)."""
     import fingerprint
     fp = fingerprint.fingerprint(root, defining_files(root, name, family), fingerprint.root_matcher(name, family))
     return fp or source_hash(root, name, family)
+
+
+def record_value(root: str, name: str, family: bool = False) -> str:
+    """What a new row records: `fingerprint:legacy hash` (the legacy hash of the same code is what
+    tools/fingerprint_backstop.py compares the compiled code from), or the legacy hash alone where
+    the fingerprint cannot be read."""
+    fp = source_fingerprint(root, name, family)
+    if not is_fingerprint(fp):
+        return fp
+    return f'{fp}:{source_hash(root, name, family)}'
+
+
+FINGERPRINT_ROW = re.compile(r'(f1:[0-9a-f]{16}):([0-9a-f]{16})')
+
+
+def is_fingerprint(value: str) -> bool:
+    import fingerprint
+    return value.startswith(fingerprint.PREFIX)
+
+
+def split_value(value: str) -> tuple[str, str] | None:
+    """(fingerprint, legacy hash at recording) of a fingerprint row's value; None for any other value."""
+    m = FINGERPRINT_ROW.fullmatch(value)
+    return (m.group(1), m.group(2)) if m else None
 
 
 class Currency:
@@ -148,12 +175,18 @@ class Currency:
         return self._legacy[key]
 
     def current(self, name: str, value: str, family: bool = False) -> bool:
-        """A fingerprint row is current when it equals the fingerprint now; a legacy row (no
-        prefix) when it equals the legacy hash now, exactly the rule before fingerprints."""
-        import fingerprint
-        if value.startswith(fingerprint.PREFIX):
-            return value == self.fingerprint(name, family)
+        """A fingerprint row is current when its fingerprint equals the fingerprint now (and, where
+        its legacy hash differs from the one now, tools/fingerprint_backstop.py finds the compiled
+        code unchanged); a legacy row (no prefix) when it equals the legacy hash now, exactly the
+        rule before fingerprints. A fingerprint value without its legacy hash is never current."""
+        if is_fingerprint(value):
+            parts = split_value(value)
+            return parts is not None and parts[0] == self.fingerprint(name, family)
         return value == self.legacy(name, family)
+
+    def record_value(self, name: str, family: bool = False) -> str:
+        fp = self.fingerprint(name, family)
+        return f'{fp}:{self.legacy(name, family)}' if is_fingerprint(fp) else fp
 
 
 def row_current(root: str, name: str, value: str, family: bool = False) -> bool:
@@ -163,19 +196,18 @@ def row_current(root: str, name: str, value: str, family: bool = False) -> bool:
 def migrate(root: str, path: str, name_of=lambda r: r['function'], family: bool = False) -> int:
     """Rewrites legacy values that are current to the fingerprint of the same code; leaves every
     other row (fingerprint rows, stale legacy rows) as it is. Returns how many rows changed."""
-    import fingerprint
     rows = read_csv(path, VERIFICATION_HEADER)
     cur = Currency(root)
     changed = 0
     for r in rows:
         value = r['source']
-        if not value or value.startswith(fingerprint.PREFIX):
+        if not value or is_fingerprint(value):
             continue
         name = name_of(r)
         if value == cur.legacy(name, family):
-            fp = cur.fingerprint(name, family)
-            if fp.startswith(fingerprint.PREFIX) and fp != value:
-                r['source'] = fp
+            new = cur.record_value(name, family)
+            if is_fingerprint(new):
+                r['source'] = new
                 changed += 1
     if changed:
         write_csv(path, VERIFICATION_HEADER, rows)
@@ -217,7 +249,7 @@ def record(root: str, function: str, cases: str, option: str, case_names: list[s
     failed = [c for c in failing if c not in q]
     row = {'function': function, 'cases': cases, 'option': option, 'total': str(len(case_names)),
            'passed': str(len(case_names) - len(failing)), 'failed': str(len(failed)),
-           'quarantined': str(len(failing) - len(failed)), 'source': source_fingerprint(root, function),
+           'quarantined': str(len(failing) - len(failed)), 'source': record_value(root, function),
            'date': datetime.date.today().isoformat()}
     path = os.path.join(root, 'symbols', 'verification.csv')
     # Runs may record at the same time (one per function): read, update and write under a lock.

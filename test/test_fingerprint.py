@@ -405,7 +405,7 @@ class CurrencyTest(unittest.TestCase):
         self.assertFalse(verification.row_current(self.root, 'sys_target', legacy))
 
     def test_fingerprint_rows(self):
-        fp = verification.source_fingerprint(self.root, 'sys_target')
+        fp = verification.record_value(self.root, 'sys_target')
         self.assertTrue(verification.row_current(self.root, 'sys_target', fp))
         self.tree.edit('game/sys/target.cpp', 'return v - 1;', 'return v - 2;')
         self.assertTrue(verification.row_current(self.root, 'sys_target', fp))
@@ -413,7 +413,7 @@ class CurrencyTest(unittest.TestCase):
         self.assertFalse(verification.row_current(self.root, 'sys_target', fp))
 
     def test_fingerprint_row_is_stale_when_the_function_falls_back(self):
-        fp = verification.source_fingerprint(self.root, 'sys_target')
+        fp = verification.record_value(self.root, 'sys_target')
         self.tree.edit('game/sys/target.cpp', 'overload(3);', 'overload(__LINE__);')
         self.assertFalse(verification.row_current(self.root, 'sys_target', fp))
         self.assertFalse(verification.row_current(self.root, 'sys_target', ''))
@@ -429,7 +429,7 @@ class CurrencyTest(unittest.TestCase):
                     f'sys_target,edge,,5,5,0,0,{legacy},2026-11-01\n')
         self.assertEqual(verification.migrate(self.root, path), 2)
         rows = verification.read_csv(path, verification.VERIFICATION_HEADER)
-        fp = verification.source_fingerprint(self.root, 'sys_target')
+        fp = verification.record_value(self.root, 'sys_target')
         self.assertEqual([r['source'] for r in rows], ['0123456789abcdef', fp, fp])
         self.assertEqual(verification.migrate(self.root, path), 0)
 

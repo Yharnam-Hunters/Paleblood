@@ -408,8 +408,9 @@ result for other code counts for nothing, and a verified function still needs cu
 ### Source fingerprints
 
 The `source` value of a row says which code the result is for. `tools/verify.py run --record`
-(and `tools/family_verify.py`) write the replacement's **source fingerprint**, `f1:` and 16 hex
-digits (`tools/fingerprint.py`). It covers the replacement's own definition and every declaration
+(and `tools/family_verify.py`) write `f1:`, the replacement's **source fingerprint** (16 hex
+digits, `tools/fingerprint.py`), `:` and the legacy hash of the same code (below), which the
+compiled-code backstop starts from. The fingerprint covers the replacement's own definition and every declaration
 it reaches by name, transitively, in the files the legacy hash covered (its defining files and
 the headers they include from `game/` and `runtime/include/`):
 
@@ -450,9 +451,11 @@ cannot be expanded, a header guard `#undef`'d elsewhere while the header is incl
 closure that reaches a value that depends on where code sits (`__LINE__`, `__COUNTER__`, `__DATE__`,
 `__TIME__`, `__TIMESTAMP__`, `__builtin_LINE` and its relatives, `std::source_location`, `assert`). `tools/fingerprint.py --stats` lists those functions.
 
-Both kinds of value are valid. A row is current when its value equals what its own rule computes
-for the code now: a fingerprint row against the fingerprint, a legacy row against the legacy hash.
-Rows recorded before fingerprints keep the legacy rule exactly. `tools/fingerprint.py --migrate`
+Both kinds of value are valid. A legacy row is current when it equals the legacy hash now:
+rows recorded before fingerprints keep the legacy rule exactly. A fingerprint row is current when
+its fingerprint equals the fingerprint now and, where its legacy hash no longer equals the legacy
+hash now, the compiled-code backstop below finds the compiled code unchanged; a fingerprint value
+without its legacy hash is never current. `tools/fingerprint.py --migrate`
 rewrites a legacy value that is current to the fingerprint of the same code (and leaves every
 stale row stale); it is run once, on main, when no recording pull request is waiting on it.
 
@@ -487,7 +490,34 @@ splices in raw strings, an empty `__VA_OPT__` argument).
 This is a reading of the source, not a compiler: its safety rests on conservative choices (match
 by name, keep everything a name could mean, fall back where unsure) and on those reviews and tests.
 Over the last week of merges on main, every function it would have kept current had identical
-compiled code before and after (object code of the function and everything it reaches).
+compiled code before and after (object code of the function and everything it reaches). Because a
+reading can still have a hole nobody has found, it is not trusted alone:
+
+**The compiled-code backstop.** `tools/fingerprint_backstop.py` runs in CI (the policy job, against
+the pull request's base, the merge queue's base, or main's previous commit) and in the pre-push
+gate (against the merge base with `origin/main`). For every fingerprint row whose fingerprint is
+current but whose legacy hash is not (so the old rule would call it stale and only the fingerprint
+keeps it), it compiles the function's defining game sources on the code the row stands for and on
+the code now, with the game library's compiler and flags (`CC`/`CXX`, `-O3 -DNDEBUG -fPIC
+-ffp-contract=off -fno-fast-math`, plus a section per function and variable and no debug data),
+and compares everything `bb_NAME` reaches in the object: its code and its compiler clones, every
+section a relocation in a reached section leads to (called and address-taken functions, jump
+tables, constants, string pools, variables with their initial values, vtables), the static
+initializers, and the names of what it reaches outside the object. Bytes, sizes, flags and
+relocations must be identical. A difference, a source that does not compile, or an object without
+the replacement fails validation: the row is stale and is run again (`tools/verify.py run --record`
+writes the code's current legacy hash, which settles it). The code a row stands for is the base's,
+for a row the base already has with the same value (the base accepted it, so each step from the
+recording to now has been compared), or, for a row the branch adds or changes, the commit whose
+legacy hash is the row's; a row recorded on code that no commit has is stale.
+
+So a fingerprint row is current only where the old rule says so, or where the compiled code of
+everything the function reaches is identical to the code it was recorded on: never weaker than the
+legacy rule for a change of behaviour, whatever the reading misses. Old rows are judged by the old
+rule; new rows by the fingerprint and the backstop. `test/test_fingerprint_backstop.py` plants a
+hole (a fingerprint that never changes) and checks that a changed helper, a changed string, a moved
+field, a source that stops compiling and a record of uncommitted code are caught, while unrelated
+edits pass.
 
 ## Community patches and hooks
 

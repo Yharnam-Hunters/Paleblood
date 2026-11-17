@@ -41,6 +41,7 @@ done < <(git config --get-all bb.refuseMessage || true)
 if [ "$refused" = 0 ]; then echo "ok   commit messages (bb.refuseMessage)"; else echo "FAIL $refused line(s) in unpushed commit messages match bb.refuseMessage"; fail=1; fi
 if [ -z "$(git status --porcelain)" ]; then echo "ok   clean working tree"; else echo "FAIL uncommitted changes"; fail=1; fi
 check "audit" tools/end_session.sh --audit
+check "fingerprint backstop" python3 tools/fingerprint_backstop.py
 check "hook tests" tools/test_hooks.sh
 if [ -d test ]; then check "unit tests" python3 -m unittest discover -s test -p 'test_*.py'; fi
 

@@ -44,9 +44,11 @@ closure that reaches __LINE__, __COUNTER__, __DATE__, __TIME__ or __TIMESTAMP__ 
 depend on where the code sits, not on what it says). docs/VERIFY.md, "Source fingerprints", has
 the argument for why this is never weaker than the legacy rule for a change of behaviour.
 
-Fingerprints are written `f1:` and 16 hex digits; legacy hashes are 16 hex digits. Both stay valid
-in symbols/verification.csv: a row is current when its value equals what its own rule computes
-for the code now.
+Fingerprints are written `f1:` and 16 hex digits; a row records `f1:<fingerprint>:<legacy hash>`
+(verification.record_value), legacy hashes alone are 16 hex digits. Both stay valid in
+symbols/verification.csv: a legacy row is current when it equals the legacy hash now, a fingerprint
+row when its fingerprint equals the fingerprint now and, where its legacy hash moved, the compiled
+code agrees (tools/fingerprint_backstop.py, run by CI and the pre-push gate).
 """
 from __future__ import annotations
 
