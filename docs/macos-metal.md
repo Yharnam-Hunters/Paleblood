@@ -375,12 +375,14 @@ Removing an unused physical read additionally requires an exact typed address pr
 user-SGPR pair, the backend address offset and a bounded constant byte offset. A later local
 assignment is harmless only if actual CFG edges prove it cannot reach that particular capture
 load. An unproved read is retained during control preparation; the final removal pass remains
-strict. The preparation API can use an independently supplied coverage callback, and the pure
-pool-range helper checks declared and written words, pointer alignment, overflow and guest/native
-span containment. The current executor supplies only its already validated descriptor spans;
-it has no cached removed-read requirement vector or general current-draw pool fallback.
-Descriptor origins remain part of its shader cache key. Uncovered or volatile reads are not
-silently discarded.
+strict. Every removed read must fit a descriptor span already validated by the host or pass an
+independent current-draw pool check. That check requires both declared and written SGPR words,
+an aligned 48-bit pointer, checked offset arithmetic and the complete guest and native GPU spans.
+The translation anchor can use ordinary unsigned subtraction wrap. Descriptor origins remain
+part of the shader cache key. All removed-read requirements from both passes are stored with
+the compiled shader and checked against current draw state on every cache hit, including after
+reset. No callback or borrowed user-data pointer is retained. Uncovered or volatile reads are
+not silently discarded.
 
 Boolean quad swaps acquire all four participation bits and Boolean values in one `uint2 quad_or`
 reduction, then select the XOR peer from the acquired bits. The call is materialized before later
@@ -397,10 +399,13 @@ refusals. `metal_boolean_quads` checks all Boolean truth tables, swap directions
 participation. `metal_fragment_runtime` exercises an independently assembled GFX7 shader through
 the public executor, comparing masked EXEC and whole-quad expansion with a mathematical pixel
 oracle across user-data changes, retained state, resets and cached shaders.
-`metal_fragment_diamonds_cpu` checks independently assembled control, address, liveness, pure
-pool-range helper and transactional-refusal cases. `metal_fragment_diamonds` checks the original decision, both branch
+`metal_fragment_diamonds_cpu` checks independently assembled control, address, liveness and
+transactional-refusal cases. `metal_fragment_diamonds` checks the original decision, both branch
 orientations, conditional local math, exact quad data and Boolean packets under full and tiny
-raster coverage. Device qualification establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
+raster coverage. `metal_fragment_ranges` uses owned GFX7 shaders through the public executor,
+checking current pointer bounds on cache misses, cache hits and retained caches after reset,
+with complete pool guards, vertex-store markers and retained presentation data on refusal.
+Device qualification establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
 comparison.
 
 The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling
