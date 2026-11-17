@@ -226,6 +226,10 @@ def bin_allocate_aligned_cases():
     return [
         c('aligned_exact', 0x40, 0x40, low=[(4, 'f'), (1, 'u')]),
         c('aligned_rest', 0x40, 0x40, low=[(10, 'f'), (1, 'u')]),
+        # Tails of one and two units after the request go back to the bins too.
+        c('rest_one_unit', 0x40, 0x40, low=[(5, 'f'), (1, 'u')]),
+        c('rest_two_units', 0x40, 0x40, low=[(6, 'f'), (1, 'u')]),
+        c('front_three_rest_one', 0x40, 0x40, low=[(1, 'u'), (8, 'f'), (1, 'u')]),
         c('front_only', 0x40, 0x40, low=[(2, 'u'), (6, 'f'), (1, 'u')]),
         c('front_and_rest', 0x40, 0x40, low=[(1, 'u'), (20, 'f'), (1, 'u')]),
         c('front_one_unit', 0x20, 0x20, low=[(1, 'u'), (3, 'f'), (1, 'u')]),

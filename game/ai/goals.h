@@ -56,4 +56,39 @@ RT_GLOBAL(0x04d35687, world_ai_manager_name, const char);
 // The definition registered for a goal id, or null.
 RT_ORIGINAL(0x016dda50, goal_definition_find, GoalDefinition *(WorldAiManager *, int32_t goal_id));
 
+// A goal: one slot of a think's goal pool (32 slots of 0x3e8 bytes; a free slot's id is -1). It
+// keeps its owner, the queue of sub-goals it runs one after another, its life, its parameters
+// and its script timers and numbers (GoalContext in ai_think.h views the same object). Not
+// modelled yet: the bindings only pass goals on.
+struct Goal;
+// What the scripts hold for a goal: the object 0x18 bytes into it, which the goal-adding
+// functions return.
+struct GoalScriptObject;
+
+// The goal side of a character's think: its goal pool and the root goal that AddTopGoal adds
+// under. This is the same object as AiThink (ai_think.h); its goal fields are named here, next
+// to the goal code, so that the think's other users keep their header unchanged.
+struct ThinkGoals {
+    uint8_t unknown_0x00[0x50];
+    Goal *pool;           // 32 goals
+    uint8_t unknown_0x58[0x8];
+    Goal *root_goal;
+};
+static_assert(offsetof(ThinkGoals, pool) == 0x50 && offsetof(ThinkGoals, root_goal) == 0x60);
+
+// A goal takes up to 15 float parameters; the scripts read them back with GetParam.
+constexpr int goal_parameter_count = 15;
+
+// The goal-adding core: takes the first free slot of the owner's think's goal pool for
+// `goal_id`, sets its life (seconds; -1: no limit) and parameters, and queues it at the back of
+// `owner`'s sub-goals (goal_add_front: at the front, so it runs next). Returns the new goal's
+// script object, or null when the id is negative or the pool is full. Parameters 1..5 are kept
+// as they are; 6..15 go into a list as long as the last one that is not zero.
+RT_ORIGINAL(0x0164cc60, goal_add,
+            GoalScriptObject *(Goal *owner, int32_t goal_id, float life, float, float, float, float, float, float,
+                               float, float, float, float, float, float, float, float, float));
+RT_ORIGINAL(0x0164d4f0, goal_add_front,
+            GoalScriptObject *(Goal *owner, int32_t goal_id, float life, float, float, float, float, float, float,
+                               float, float, float, float, float, float, float, float, float));
+
 }  // namespace ai
