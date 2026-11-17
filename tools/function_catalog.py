@@ -20,10 +20,10 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-from verification import source_hash as replacement_source_hash
+from verification import Currency, source_fingerprint, source_hash as replacement_source_hash
 
 SCHEMA_VERSION = 1
-TOOL_VERSION = "1.1.1"
+TOOL_VERSION = "1.2.0"
 EDGE_FIELDS = ("caller", "callee", "kind", "reference", "source", "confidence")
 METRIC_FIELDS = ("address", "instruction_count", "complexity", "fixture_difficulty",
                  "data_references", "boundary_confidence", "analysis_complete", "source")
@@ -215,12 +215,14 @@ def build_rows(root: Path, executable_sha256: str | None = None,
         verify_rows = verification.get(named["name"], []) if named else []
         verification_summary = None
         if verify_rows:
-            current_source = replacement_source_hash(str(root), named["name"]) if named else ""
+            current_source = source_fingerprint(str(root), named["name"]) if named else ""
+            currency = Currency(str(root))
             verification_summary = {
                 "records": [{"cases": v["cases"], "option": v["option"], "total": int(v["total"]),
                              "passed": int(v["passed"]), "failed": int(v["failed"]),
                              "quarantined": int(v["quarantined"]), "source": v["source"],
-                             "date": v["date"], "current": bool(current_source and v["source"] == current_source)}
+                             "date": v["date"],
+                             "current": bool(named and currency.current(named["name"], v["source"]))}
                             for v in verify_rows],
                 "status": named.get("status") if named else None,
                 "current_source": current_source or None,

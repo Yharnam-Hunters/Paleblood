@@ -247,9 +247,16 @@ def function_rows(root: str) -> list[dict]:
 
 
 def source_hash(root: str, family: dict) -> str:
-    """The hash verification rows carry: the family's replacement sources and their headers."""
+    """The value new verification rows carry: the source fingerprint of the family's replacements
+    (tools/fingerprint.py), or the legacy hash of their sources and headers where it cannot be read."""
     import verification
-    return verification.source_hash(root, f"{family['system']}_{family['family']}", family=True)
+    return verification.source_fingerprint(root, f"{family['system']}_{family['family']}", family=True)
+
+
+def source_current(root: str, family: dict, value: str) -> bool:
+    """Whether a family row's source value is for the code as it is now (verification.Currency)."""
+    import verification
+    return verification.row_current(root, f"{family['system']}_{family['family']}", value, family=True)
 
 
 def case_module(root: str, system: str):

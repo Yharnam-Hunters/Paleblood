@@ -1619,11 +1619,18 @@ class VerificationRecord(unittest.TestCase):
     def test_changed_header_makes_the_record_stale(self):
         self.v.record(self.root, 'x_f', 'recorded', '', ['a'], [])
         self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
-        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
-            f.write('// changed\n')
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'w') as f:
+            f.write('inline int helper() { return 2; }\n')      # the helper bb_x_f calls
         errs = self.v.check(self.root, self.funcs)
         self.assertTrue(any('is for other code' in e for e in errs))
         self.assertTrue(any('current recorded result' in e for e in errs))
+
+    def test_unrelated_header_edit_leaves_the_record_current(self):
+        self.v.record(self.root, 'x_f', 'recorded', '', ['a'], [])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
+            f.write('// a comment\ninline int unrelated() { return 3; }\n')
+        self.assertEqual(self.v.check(self.root, self.funcs), [])
 
     def test_edge_verified_needs_only_a_current_edge_result(self):
         funcs = [dict(self.funcs[0], status='edge-verified')]
@@ -1648,8 +1655,8 @@ class VerificationRecord(unittest.TestCase):
         funcs = [dict(self.funcs[0], status='edge-verified')]
         self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
         self.assertEqual(self.v.check(self.root, funcs), [])
-        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
-            f.write('// changed\n')
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'w') as f:
+            f.write('inline int helper() { return 2; }\n')      # the helper bb_x_f calls
         errs = self.v.check(self.root, funcs)
         self.assertEqual(len(errs), 2)
         self.assertIn('the edge result of x_f is for other code', errs[0])

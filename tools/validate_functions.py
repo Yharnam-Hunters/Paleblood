@@ -186,13 +186,22 @@ def replacement_definitions(root: str, system: str) -> dict[str, str]:
 FAMILY_TABLE_SUFFIXES = ('.csv', '.verification.csv', '.matching.csv', '.reviews.csv')
 
 
-def passing_results(results: list[dict], current: str) -> tuple[set[str], set[str]]:
-    """Members with a current, passing edge result and with a current, passing recorded result."""
+def passing_results(results: list[dict], current) -> tuple[set[str], set[str]]:
+    """Members with a current, passing edge result and with a current, passing recorded result.
+    `current` tells whether a row's source value is for the code as it is now."""
     def ok(r: dict, cases: str) -> bool:
-        return (r['cases'] == cases and r['option'] == '' and r['source'] == current and r['total'].isdigit()
+        return (r['cases'] == cases and r['option'] == '' and current(r['source']) and r['total'].isdigit()
                 and int(r['total']) > 0 and r['failed'] == '0' and (cases != 'edge' or r['passed'] == r['total']))
     return ({r['function'] for r in results if ok(r, 'edge')},
             {r['function'] for r in results if ok(r, 'recorded')})
+
+
+def family_currency(root: str, family: dict):
+    """A test of whether a family row's source value is current, computing the family's
+    fingerprint and legacy hash once."""
+    cur = verification.Currency(root)
+    name = f"{family['system']}_{family['family']}"
+    return lambda value: cur.current(name, value, family=True)
 
 
 def family_evidence(root: str, family: dict, members: list[dict]) -> dict[str, set[str]]:
@@ -200,7 +209,7 @@ def family_evidence(root: str, family: dict, members: list[dict]) -> dict[str, s
     results), 'matched' (a current byte-exact row) and 'approved' (an approved review, in the family's
     review table or symbols/reviews.csv). tools/promote.py --families promotes on these."""
     results = fam.read_table(fam.verification_path(root, family['family']), verification.VERIFICATION_HEADER)
-    edge_ok, recorded_ok = passing_results(results, fam.source_hash(root, family))
+    edge_ok, recorded_ok = passing_results(results, family_currency(root, family))
     family_reviews, _ = read_family_reviews(root, family, members)
     shared = {}
     path = os.path.join(root, 'symbols', 'reviews.csv')
@@ -324,7 +333,7 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
         except ValueError as e:
             errs.append(str(e))
             results = []
-        current = fam.source_hash(root, family)
+        current = family_currency(root, family)
         seen_results: set[tuple] = set()
         for r in results:
             key = (r['function'], r['cases'], r['option'])

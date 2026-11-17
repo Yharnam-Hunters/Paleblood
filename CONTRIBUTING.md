@@ -171,7 +171,8 @@ inputs itself: `tools/capture_loop.py` boots every scene it reaches with recordi
 `tools/validate_functions.py` refuses `edge-verified` (and `verified`) for a function without a
 current, passing `edge` row without an option in `symbols/verification.csv`: run its edge cases
 with `tools/verify.py run --record edge` in the pull request that sets the status, and again in
-any pull request that changes its source or a header it includes.
+any pull request that changes its code or anything it uses (its source fingerprint,
+[docs/VERIFY.md](docs/VERIFY.md), "Source fingerprints").
 
 ### Generated progress and merging main
 

@@ -222,8 +222,15 @@ class Tables(unittest.TestCase):
                   ['function', 'cases', 'option', 'total', 'passed', 'failed', 'quarantined', 'source', 'date'],
                   [['leaf_returns_zero_00401000', 'edge', '', '3', '3', '0', '0', source, '2026-11-10']])
         self.assertEqual(self.errors(), [])
+        # a comment is not code: the source fingerprint (docs/VERIFY.md) leaves the row current
         with open(os.path.join(self.d, 'game', 'leaf', 'returns_zero.cpp'), 'a') as f:
             f.write('// changed\n')
+        self.assertEqual(self.errors(), [])
+        path = os.path.join(self.d, 'game', 'leaf', 'returns_zero.cpp')
+        with open(path) as f:
+            text = f.read()
+        with open(path, 'w') as f:
+            f.write(text.replace('return 0;', 'return 0 * 2;'))
         self.assertTrue(any('without a current, passing edge result' in e for e in self.errors()))
 
     def test_duplicate_results_and_source_named_members_are_refused(self):

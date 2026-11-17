@@ -11,9 +11,13 @@ symbols/verification.csv   one row per function, case set and option: the latest
   total, passed, failed, quarantined
                failed counts failing cases that are not quarantined; quarantined counts failing
                cases that are (a quarantined case that passes counts as passed)
-  source       a hash of the replacement's source (its defining files and every header they
-               include from game/ and runtime/include/, recursively): results for other code
-               are stale
+  source       which code the result is for: the replacement's source fingerprint
+               (`f1:` and 16 hex digits, tools/fingerprint.py: its own code and every
+               declaration it reaches by name), or, where the fingerprint cannot be read and for
+               rows recorded before it existed, the legacy hash (16 hex digits: its defining files
+               and every header they include from game/ and runtime/include/, whole). A row is
+               current when its value equals what its own rule computes now (row_current);
+               results for other code are stale
   date         the day of the run
 
 symbols/quarantine.csv     cases that cannot be used, each with the reason.
@@ -44,19 +48,40 @@ SOURCE_HASH_LENGTH = 16
 INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
 
 
+_game_sources: dict[str, tuple] = {}
+
+
+def game_sources(root: str) -> list[tuple[str, str]]:
+    """(path, text) of every .c, .cc and .cpp file under game/, read once while none changes."""
+    stamp = []
+    for dp, _, fns in os.walk(os.path.join(root, 'game')):
+        for fn in sorted(fns):
+            if fn.endswith(('.c', '.cc', '.cpp')):
+                path = os.path.join(dp, fn)
+                st = os.stat(path)
+                stamp.append((path, st.st_mtime_ns, st.st_size))
+    key = os.path.abspath(root)
+    cached = _game_sources.get(key)
+    if cached is None or cached[0] != stamp:
+        texts = []
+        for path, _, _ in stamp:
+            with open(path, errors='replace') as f:
+                texts.append((path, f.read()))
+        cached = (stamp, texts)
+        _game_sources[key] = cached
+    return cached[1]
+
+
 def defining_files(root: str, name: str, family: bool = False) -> list[str]:
     """Files under game/ that define the replacement bb_<name> (with family, also the
     bb_<name>_<value> replacements of a parameterized family)."""
     out = []
     suffix = r'(?:_\w+)?' if family else ''
     pattern = re.compile(rf'\bbb_{re.escape(name)}{suffix}\s*\(')
-    for dp, _, fns in os.walk(os.path.join(root, 'game')):
-        for fn in sorted(fns):
-            if fn.endswith(('.c', '.cc', '.cpp')):
-                path = os.path.join(dp, fn)
-                with open(path, errors='replace') as f:
-                    if pattern.search(f.read()):
-                        out.append(os.path.relpath(path, root).replace(os.sep, '/'))
+    needle = f'bb_{name}'
+    for path, text in game_sources(root):
+        if needle in text and pattern.search(text):
+            out.append(os.path.relpath(path, root).replace(os.sep, '/'))
     return sorted(out)
 
 
@@ -91,6 +116,70 @@ def source_hash(root: str, name: str, family: bool = False) -> str:
         with open(os.path.join(root, rel), 'rb') as f:
             h.update(f.read() + b'\0')
     return h.hexdigest()[:SOURCE_HASH_LENGTH]
+
+
+def source_fingerprint(root: str, name: str, family: bool = False) -> str:
+    """What a new row records: the fingerprint (tools/fingerprint.py), or the legacy hash where the
+    fingerprint cannot be read (the legacy rule, no narrower)."""
+    import fingerprint
+    fp = fingerprint.fingerprint(root, defining_files(root, name, family), fingerprint.root_matcher(name, family))
+    return fp or source_hash(root, name, family)
+
+
+class Currency:
+    """Whether recorded source values are for the code as it is now. Computes each function's
+    fingerprint and legacy hash once."""
+
+    def __init__(self, root: str):
+        self.root = root
+        self._fingerprint: dict[tuple, str] = {}
+        self._legacy: dict[tuple, str] = {}
+
+    def fingerprint(self, name: str, family: bool = False) -> str:
+        key = (name, family)
+        if key not in self._fingerprint:
+            self._fingerprint[key] = source_fingerprint(self.root, name, family)
+        return self._fingerprint[key]
+
+    def legacy(self, name: str, family: bool = False) -> str:
+        key = (name, family)
+        if key not in self._legacy:
+            self._legacy[key] = source_hash(self.root, name, family)
+        return self._legacy[key]
+
+    def current(self, name: str, value: str, family: bool = False) -> bool:
+        """A fingerprint row is current when it equals the fingerprint now; a legacy row (no
+        prefix) when it equals the legacy hash now, exactly the rule before fingerprints."""
+        import fingerprint
+        if value.startswith(fingerprint.PREFIX):
+            return value == self.fingerprint(name, family)
+        return value == self.legacy(name, family)
+
+
+def row_current(root: str, name: str, value: str, family: bool = False) -> bool:
+    return Currency(root).current(name, value, family)
+
+
+def migrate(root: str, path: str, name_of=lambda r: r['function'], family: bool = False) -> int:
+    """Rewrites legacy values that are current to the fingerprint of the same code; leaves every
+    other row (fingerprint rows, stale legacy rows) as it is. Returns how many rows changed."""
+    import fingerprint
+    rows = read_csv(path, VERIFICATION_HEADER)
+    cur = Currency(root)
+    changed = 0
+    for r in rows:
+        value = r['source']
+        if not value or value.startswith(fingerprint.PREFIX):
+            continue
+        name = name_of(r)
+        if value == cur.legacy(name, family):
+            fp = cur.fingerprint(name, family)
+            if fp.startswith(fingerprint.PREFIX) and fp != value:
+                r['source'] = fp
+                changed += 1
+    if changed:
+        write_csv(path, VERIFICATION_HEADER, rows)
+    return changed
 
 
 def read_csv(path: str, header: list[str]) -> list[dict]:
@@ -128,7 +217,7 @@ def record(root: str, function: str, cases: str, option: str, case_names: list[s
     failed = [c for c in failing if c not in q]
     row = {'function': function, 'cases': cases, 'option': option, 'total': str(len(case_names)),
            'passed': str(len(case_names) - len(failing)), 'failed': str(len(failed)),
-           'quarantined': str(len(failing) - len(failed)), 'source': source_hash(root, function),
+           'quarantined': str(len(failing) - len(failed)), 'source': source_fingerprint(root, function),
            'date': datetime.date.today().isoformat()}
     path = os.path.join(root, 'symbols', 'verification.csv')
     # Runs may record at the same time (one per function): read, update and write under a lock.
@@ -204,14 +293,14 @@ def check(root: str, funcs: list[dict]) -> list[str]:
         by_function.setdefault(r['function'], []).append(r)
     import match
     matched = match.byte_exact_functions(root)       # byte_exact=yes and targets_checked=yes, source current
+    cur = Currency(root)
     for f in funcs:
         if f['status'] != 'verified':
             continue
         where = f"symbols/functions.csv:{f['_line']}: {f['name']} is verified"
-        current = source_hash(root, f['name'])
         rows = by_function.get(f['name'], [])
-        stale = [r for r in rows if r['source'] != current]
-        fresh = [r for r in rows if r['source'] == current]
+        stale = [r for r in rows if not cur.current(f['name'], r['source'])]
+        fresh = [r for r in rows if cur.current(f['name'], r['source'])]
         for need in ('recorded', 'edge'):
             if need == 'recorded' and f['name'] in matched:
                 continue        # a current, target-checked byte-exact match stands in (docs/MATCHING.md)
@@ -227,21 +316,22 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             label = r['cases'] + (f" with {r['option']}" if r['option'] else '')
             errs.append(f"{where} but its {label} result (symbols/verification.csv:{r['_line']}) is for other code: "
                         f"run it again with --record")
-    errs += stale_errors(root, by_function, {f['name'] for f in funcs if f['status'] == 'verified'})
-    errs += missing_edge_errors(root, funcs, by_function)
+    errs += stale_errors(root, by_function, {f['name'] for f in funcs if f['status'] == 'verified'}, cur)
+    errs += missing_edge_errors(root, funcs, by_function, cur)
     return errs
 
 
-def missing_edge_errors(root: str, funcs: list[dict], by_function: dict[str, list[dict]]) -> list[str]:
+def missing_edge_errors(root: str, funcs: list[dict], by_function: dict[str, list[dict]],
+                        cur: Currency | None = None) -> list[str]:
     """An edge-verified function without a current, passing edge result without an option. The
     status says its edge cases pass; the row is the evidence, for the code as it is (check() reports
     verified functions with the rest of what verified needs)."""
     errs = []
+    cur = cur or Currency(root)
     for f in funcs:
         if f['status'] != 'edge-verified':
             continue
-        current = source_hash(root, f['name'])
-        if not any(r['cases'] == 'edge' and r['option'] == '' and r['source'] == current
+        if not any(r['cases'] == 'edge' and r['option'] == '' and cur.current(f['name'], r['source'])
                    and int(r['total']) > 0 and int(r['failed']) == 0
                    for r in by_function.get(f['name'], [])):
             errs.append(f"symbols/functions.csv:{f['_line']}: {f['name']} is edge-verified without a current, "
@@ -250,20 +340,21 @@ def missing_edge_errors(root: str, funcs: list[dict], by_function: dict[str, lis
     return errs
 
 
-def stale_errors(root: str, by_function: dict[str, list[dict]], verified: set[str]) -> list[str]:
+def stale_errors(root: str, by_function: dict[str, list[dict]], verified: set[str],
+                 cur: Currency | None = None) -> list[str]:
     """A result for other code, of a function that is not verified (check() reports those with what
     verified needs). A change to a file a replacement includes leaves its results stale; caught here,
     in the pull request that makes the change, they cannot pile up on main unnoticed."""
     errs = []
+    cur = cur or Currency(root)
     for name, rows in by_function.items():
         if name in verified:
             continue
-        current = source_hash(root, name)
         for r in rows:
-            if r['source'] != current:
+            if not cur.current(name, r['source']):
                 label = r['cases'] + (f" with {r['option']}" if r['option'] else '')
                 errs.append(f"symbols/verification.csv:{r['_line']}: the {label} result of {name} is for other "
-                            f"code (its source or a header it includes changed): run it again with "
+                            f"code (its code or a declaration it uses changed): run it again with "
                             f"tools/verify.py run --record {r['cases']}, or remove the row if you cannot run "
                             f"those cases (docs/VERIFY.md, \"Recorded results and quarantine\")")
     return errs

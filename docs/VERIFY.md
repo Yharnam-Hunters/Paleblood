@@ -378,10 +378,9 @@ run, so promotion does not add generated files beside the source cases.
 
 `verify.py run --record CASES` writes the run's counts to `symbols/verification.csv`, one row
 per function, case set (`recorded`, `edge`, or `option-recorded`: recorded in the game with an
-option on) and option (`--option LABEL`, needed with `--patch` or `--env`). The row carries a
-hash of the replacement's source, its defining file and the headers it includes, so a result
-belongs to the code it was run on; after any change, run the sets again. The file holds counts
-only, never case data.
+option on) and option (`--option LABEL`, needed with `--patch` or `--env`). The row carries the
+replacement's source fingerprint (below), so a result belongs to the code it was run on; after a
+change to that code, run the sets again. The file holds counts only, never case data.
 
 A case that can't be used goes in `symbols/quarantine.csv` (function, case set, option, case
 file name without `.json`, reason, date), and only when it can't be fixed: for example a
@@ -400,10 +399,70 @@ records. `promote.py` records the runs it makes and
 applies the same rule.
 
 It also refuses a result for other code of any function, whatever its status: a change to a
-replacement or to a header it includes (a shared container or heap header, say) has to run the
-sets of every function that includes it again, with `--record`, in the same pull request. When
+replacement or to anything it uses (a shared container or heap helper, a struct it reads) has to
+run the sets of every function whose fingerprint it changes again, with `--record`, in the same
+pull request. When
 you cannot run a set (its recordings are in someone else's library), remove its row instead: a
 result for other code counts for nothing, and a verified function still needs current rows.
+
+### Source fingerprints
+
+The `source` value of a row says which code the result is for. `tools/verify.py run --record`
+(and `tools/family_verify.py`) write the replacement's **source fingerprint**, `f1:` and 16 hex
+digits (`tools/fingerprint.py`). It covers the replacement's own definition and every declaration
+it reaches by name, transitively, in the files the legacy hash covered (its defining files and
+the headers they include from `game/` and `runtime/include/`):
+
+- each file is split into top-level declarations (a function with its body, a struct with its
+  members, a variable with its initializer, a typedef, a macro definition), with comments removed
+  and white space reduced to "a space or none";
+- from `bb_NAME`, every identifier in a declaration it holds, and in that declaration's macro
+  expansion (token pasting included), brings in every declaration and macro definition of that
+  name, until nothing new is reached; matching is by name alone, so every overload, forward
+  declaration and out-of-line member (filed under its class's name too) comes along;
+- free operator overloads, using-directives and using-declarations, `#pragma` lines and includes
+  whose content is not in the repository (system headers) are always in;
+- the hash covers each reached declaration's file, the `#if`/`#elif`/`#else` lines around it, the
+  namespaces it is in and its text, in translation-unit order.
+
+So an edit to a helper the function does not call, a struct it never names, a neighbouring
+function in the same file or a comment leaves its rows current; an edit to the function, to a
+helper it calls (directly or through another helper or macro), to the layout of a struct it uses,
+to a constant or macro it reads, a new overload of a name it uses, a change of order among those
+declarations, or a new system include makes them stale. `tools/fingerprint.py NAME --explain`
+lists what a function's fingerprint covers.
+
+Where the reading cannot be trusted the row gets the **legacy hash** instead (16 hex digits: the
+defining files and every header they include, whole): a file that does not split cleanly
+(unbalanced braces, an unterminated comment or string, a brace opened in one `#if` branch only), a
+definition that is not found, an `#include` inside a declaration, a token-pasting macro that
+cannot be expanded, or a closure that reaches `__LINE__`, `__COUNTER__`, `__DATE__`, `__TIME__` or
+`__TIMESTAMP__`. `tools/fingerprint.py --stats` lists those functions.
+
+Both kinds of value are valid. A row is current when its value equals what its own rule computes
+for the code now: a fingerprint row against the fingerprint, a legacy row against the legacy hash.
+Rows recorded before fingerprints keep the legacy rule exactly. `tools/fingerprint.py --migrate`
+rewrites a legacy value that is current to the fingerprint of the same code (and leaves every
+stale row stale); it is run once, on main, when no recording pull request is waiting on it.
+
+**Why this is not weaker for a change of behaviour.** What a compiled function does is fixed by
+the declarations its translation unit gives it: its body, and, through the names the body uses,
+the functions it calls, the types it reads (their layout comes from their definitions), the
+constants and macros it expands, and the overload and lookup decisions made among declarations of
+those names. Every such dependency is reached by a name that appears in a declaration already in
+the closure or in its macro expansion, or is implicit (a constructor, destructor or conversion is
+part of its class, which comes in by name; an operator overload is always in). The closure takes
+every declaration of every such name, so any edit that changes one of them changes the
+fingerprint, and so does moving them relative to one another or adding a declaration with one of
+those names. What the closure leaves out is code no name in the function leads to, which cannot
+reach its compiled code. Static assertions are left out too: they can stop a build but never
+change the code it makes. The places where a name-based reading could miss something (positional
+macros, unreadable files, unexpandable pasting) use the legacy hash, so they are exactly as strict
+as before. Neither rule looks outside the legacy file set (system headers' contents, compiler
+flags), so nothing the legacy hash caught falls outside the fingerprint's files.
+`test/test_fingerprint.py` holds both sides: unrelated edits that leave a fingerprint alone, and
+edits to the function, a used helper, a used struct's layout, a used macro, a pasted name, an
+overload, the order and the includes that change it.
 
 ## Community patches and hooks
 

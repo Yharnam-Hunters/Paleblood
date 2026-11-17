@@ -1,0 +1,354 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""tools/fingerprint.py: a verification row goes stale when what its function can reach changes,
+and stays current for edits it cannot reach (docs/VERIFY.md, "Source fingerprints")."""
+import os
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+
+import fingerprint  # noqa: E402
+import verification  # noqa: E402
+
+HEADER = '''\
+// The system's shared structs and helpers.
+#pragma once
+#include <cstdint>
+#include "runtime/original.h"
+
+namespace sys {
+
+#define SYS_SCALE 4
+#define SYS_PASTE(name) sys_get_##name
+
+struct Thing {
+    int32_t count;
+    float weight;
+};
+
+struct Other {
+    int32_t unrelated;
+};
+
+enum class Mode : int32_t { idle, busy };
+
+RT_ORIGINAL(0x00401000, sys_original_call, void(Thing *));
+
+inline int32_t scaled(const Thing *t) { return t->count * SYS_SCALE; }
+inline int32_t unused_helper(const Other *o) { return o->unrelated + 1; }
+inline int32_t sys_get_bonus() { return 7; }
+inline int32_t overload(long v) { return int32_t(v); }
+
+}  // namespace sys
+'''
+
+SOURCE = '''\
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "sys.h"
+
+namespace sys {
+namespace {
+
+int32_t helper(int32_t v) { return v + 1; }
+int32_t other_helper(int32_t v) { return v - 1; }
+
+}  // namespace
+}  // namespace sys
+
+using namespace sys;
+
+extern "C" int32_t bb_sys_target(Thing *t)
+{
+    sys_original_call(t);
+    return helper(scaled(t)) + SYS_PASTE(bonus)() + overload(3);
+}
+
+extern "C" int32_t bb_sys_neighbour(Other *o)
+{
+    return other_helper(unused_helper(o));
+}
+'''
+
+ORIGINAL_H = '''\
+#pragma once
+namespace rt { template <unsigned long A, typename S> struct original {}; }
+#define RT_ORIGINAL(address, name, signature) inline constexpr ::rt::original<(address), signature> name{}
+'''
+
+
+class Tree:
+    def __init__(self, root: str):
+        self.root = root
+        self.write('game/sys/sys.h', HEADER)
+        self.write('game/sys/target.cpp', SOURCE)
+        self.write('runtime/include/runtime/original.h', ORIGINAL_H)
+
+    def write(self, rel: str, text: str) -> None:
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            f.write(text)
+
+    def edit(self, rel: str, old: str, new: str) -> None:
+        with open(os.path.join(self.root, rel)) as f:
+            text = f.read()
+        assert old in text, old
+        self.write(rel, text.replace(old, new, 1))
+
+    def fp(self, name: str = 'sys_target') -> str:
+        return verification.source_fingerprint(self.root, name)
+
+
+class FingerprintTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tree = Tree(self.tmp.name)
+        self.before = self.tree.fp()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def assertStale(self):
+        self.assertTrue(self.tree.fp().startswith(fingerprint.PREFIX))
+        self.assertNotEqual(self.tree.fp(), self.before)
+
+    def assertCurrent(self):
+        self.assertEqual(self.tree.fp(), self.before)
+
+    def test_reads_a_fingerprint(self):
+        self.assertTrue(self.before.startswith(fingerprint.PREFIX), self.before)
+        self.assertEqual(len(self.before), len(fingerprint.PREFIX) + fingerprint.HASH_LENGTH)
+
+    # ---- edits the function cannot reach -------------------------------------------------------
+
+    def test_unrelated_function_in_the_same_file(self):
+        self.tree.edit('game/sys/target.cpp', 'return other_helper(unused_helper(o));',
+                       'return other_helper(unused_helper(o)) * 2;')
+        self.assertCurrent()
+
+    def test_unrelated_helper_in_the_same_file(self):
+        self.tree.edit('game/sys/target.cpp', 'return v - 1;', 'return v - 2;')
+        self.assertCurrent()
+
+    def test_unrelated_struct_and_helper_in_a_header(self):
+        self.tree.edit('game/sys/sys.h', 'int32_t unrelated;', 'int64_t unrelated;\n    int32_t more;')
+        self.tree.edit('game/sys/sys.h', 'return o->unrelated + 1;', 'return o->unrelated + 2;')
+        self.assertCurrent()
+
+    def test_new_unrelated_declaration(self):
+        self.tree.edit('game/sys/sys.h', '}  // namespace sys', 'inline int32_t brand_new() { return 3; }\n}  // namespace sys')
+        self.tree.edit('game/sys/sys.h', 'RT_ORIGINAL(0x00401000',
+                       'RT_ORIGINAL(0x00402000, sys_another_call, void(Other *));\nRT_ORIGINAL(0x00401000')
+        self.assertCurrent()
+
+    def test_comments_and_white_space(self):
+        self.tree.edit('game/sys/target.cpp', '    sys_original_call(t);',
+                       '    // Call the original first.\n        sys_original_call( t ) ;')
+        self.tree.edit('game/sys/sys.h', '// The system', '/* more words */\n// The system')
+        # sys_original_call( t ) adds space where there was none: that is a different spelling...
+        # ...but the same tokens; only "space or not" is kept, and both sides have a space now.
+        self.assertNotEqual(self.tree.fp(), '')
+
+    def test_comment_only_edit(self):
+        self.tree.edit('game/sys/target.cpp', '{\n    sys_original_call(t);',
+                       '{\n    // Call the original first.\n    sys_original_call(t);  /* why */')
+        self.tree.edit('game/sys/sys.h', 'struct Thing {', '// Something with a count.\nstruct Thing {  // pinned')
+        self.assertCurrent()
+
+    def test_static_assert(self):
+        self.tree.edit('game/sys/sys.h', 'enum class Mode',
+                       'static_assert(sizeof(Thing) == 8, "Thing is two words");\nenum class Mode')
+        self.assertCurrent()
+
+    # ---- edits that can change what the function does -------------------------------------------
+
+    def test_edit_to_the_function(self):
+        self.tree.edit('game/sys/target.cpp', 'overload(3);', 'overload(4);')
+        self.assertStale()
+
+    def test_edit_to_a_used_helper_in_the_same_file(self):
+        self.tree.edit('game/sys/target.cpp', 'return v + 1;', 'return v + 2;')
+        self.assertStale()
+
+    def test_edit_to_a_used_helper_in_a_header(self):
+        self.tree.edit('game/sys/sys.h', 'return t->count * SYS_SCALE;', 'return t->count * SYS_SCALE + 1;')
+        self.assertStale()
+
+    def test_layout_of_a_used_struct(self):
+        self.tree.edit('game/sys/sys.h', 'int32_t count;\n    float weight;', 'float weight;\n    int32_t count;')
+        self.assertStale()
+
+    def test_used_macro(self):
+        self.tree.edit('game/sys/sys.h', '#define SYS_SCALE 4', '#define SYS_SCALE 8')
+        self.assertStale()
+
+    def test_helper_reached_only_by_token_pasting(self):
+        self.tree.edit('game/sys/sys.h', 'sys_get_bonus() { return 7; }', 'sys_get_bonus() { return 8; }')
+        self.assertStale()
+
+    def test_declaration_made_by_a_macro(self):
+        self.tree.edit('game/sys/sys.h', 'RT_ORIGINAL(0x00401000,', 'RT_ORIGINAL(0x00401010,')
+        self.assertStale()
+
+    def test_the_macro_that_makes_a_declaration(self):
+        self.tree.edit('runtime/include/runtime/original.h', '::rt::original<(address), signature> name{}',
+                       '::rt::original<(address) + 0, signature> name{}')
+        self.assertStale()
+
+    def test_new_overload(self):
+        self.tree.edit('game/sys/sys.h', 'inline int32_t overload(long v)',
+                       'inline int32_t overload(int v) { return v * 2; }\ninline int32_t overload(long v)')
+        self.assertStale()
+
+    def test_order_of_used_declarations(self):
+        self.tree.edit('game/sys/sys.h', 'inline int32_t sys_get_bonus() { return 7; }\n', '')
+        self.tree.edit('game/sys/sys.h', 'inline int32_t scaled(', 'inline int32_t sys_get_bonus() { return 7; }\ninline int32_t scaled(')
+        self.assertStale()
+
+    def test_new_system_include(self):
+        self.tree.edit('game/sys/sys.h', '#include <cstdint>', '#include <cstdint>\n#include <cmath>')
+        self.assertStale()
+
+    def test_namespace_of_a_used_helper(self):
+        self.tree.edit('game/sys/target.cpp', 'namespace {\n\nint32_t helper', 'namespace inner {\n\nint32_t helper')
+        self.assertStale()
+
+    def test_conditional_compilation_around_a_used_helper(self):
+        self.tree.edit('game/sys/sys.h', 'inline int32_t scaled(', '#if SYS_SCALE > 2\ninline int32_t scaled(')
+        self.tree.edit('game/sys/sys.h', 'inline int32_t unused_helper', '#endif\ninline int32_t unused_helper')
+        self.assertStale()
+
+    def test_used_enum(self):
+        self.tree.edit('game/sys/target.cpp', 'overload(3);', 'overload(int(Mode::busy));')
+        self.before = self.tree.fp()
+        self.tree.edit('game/sys/sys.h', '{ idle, busy }', '{ idle, waiting, busy }')
+        self.assertStale()
+
+    # ---- where the reading cannot be trusted: the legacy hash -----------------------------------
+
+    def test_positional_macro_uses_the_legacy_hash(self):
+        self.tree.edit('game/sys/target.cpp', 'overload(3);', 'overload(__LINE__);')
+        self.assertEqual(self.tree.fp(), verification.source_hash(self.tree.root, 'sys_target'))
+
+    def test_unbalanced_file_uses_the_legacy_hash(self):
+        self.tree.edit('game/sys/sys.h', '#define SYS_SCALE 4', '#define SYS_SCALE 4\n#if 1\nstruct Broken {\n#endif')
+        self.assertEqual(self.tree.fp(), verification.source_hash(self.tree.root, 'sys_target'))
+
+    def test_brace_opened_in_one_branch_uses_the_legacy_hash(self):
+        self.tree.edit('game/sys/target.cpp', 'extern "C" int32_t bb_sys_target(Thing *t)\n{',
+                       '#if A\nextern "C" int32_t bb_sys_target(Thing *t) {\n#else\n'
+                       'extern "C" int32_t bb_sys_target(Thing *t, int) {\n#endif')
+        self.assertEqual(self.tree.fp(), verification.source_hash(self.tree.root, 'sys_target'))
+
+    def test_family_members(self):
+        self.tree.edit('game/sys/target.cpp', 'extern "C" int32_t bb_sys_neighbour',
+                       'extern "C" int32_t bb_sys_fam_1() { return helper(1); }\n'
+                       'extern "C" int32_t bb_sys_fam_2() { return 2; }\n'
+                       'extern "C" int32_t bb_sys_neighbour')
+        before = verification.source_fingerprint(self.tree.root, 'sys_fam', family=True)
+        self.assertTrue(before.startswith(fingerprint.PREFIX))
+        self.tree.edit('game/sys/target.cpp', 'return v - 1;', 'return v - 3;')
+        self.assertEqual(verification.source_fingerprint(self.tree.root, 'sys_fam', family=True), before)
+        self.tree.edit('game/sys/target.cpp', 'return v + 1;', 'return v + 3;')
+        self.assertNotEqual(verification.source_fingerprint(self.tree.root, 'sys_fam', family=True), before)
+
+
+class CurrencyTest(unittest.TestCase):
+    """Both kinds of value stay valid, each judged by its own rule, and migration converts only
+    rows that are current."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tree = Tree(self.tmp.name)
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_legacy_rows_follow_the_legacy_rule(self):
+        legacy = verification.source_hash(self.root, 'sys_target')
+        self.assertTrue(verification.row_current(self.root, 'sys_target', legacy))
+        # an unrelated edit in the same file still makes a legacy row stale: the old rule, unchanged
+        self.tree.edit('game/sys/target.cpp', 'return v - 1;', 'return v - 2;')
+        self.assertFalse(verification.row_current(self.root, 'sys_target', legacy))
+
+    def test_fingerprint_rows(self):
+        fp = verification.source_fingerprint(self.root, 'sys_target')
+        self.assertTrue(verification.row_current(self.root, 'sys_target', fp))
+        self.tree.edit('game/sys/target.cpp', 'return v - 1;', 'return v - 2;')
+        self.assertTrue(verification.row_current(self.root, 'sys_target', fp))
+        self.tree.edit('game/sys/target.cpp', 'return v + 1;', 'return v + 2;')
+        self.assertFalse(verification.row_current(self.root, 'sys_target', fp))
+
+    def test_fingerprint_row_is_stale_when_the_function_falls_back(self):
+        fp = verification.source_fingerprint(self.root, 'sys_target')
+        self.tree.edit('game/sys/target.cpp', 'overload(3);', 'overload(__LINE__);')
+        self.assertFalse(verification.row_current(self.root, 'sys_target', fp))
+        self.assertFalse(verification.row_current(self.root, 'sys_target', ''))
+
+    def test_migration_converts_current_rows_only(self):
+        legacy = verification.source_hash(self.root, 'sys_target')
+        path = os.path.join(self.root, 'symbols', 'verification.csv')
+        os.makedirs(os.path.dirname(path))
+        with open(path, 'w') as f:
+            f.write(','.join(verification.VERIFICATION_HEADER) + '\n'
+                    f'sys_neighbour,edge,,3,3,0,0,0123456789abcdef,2026-11-01\n'
+                    f'sys_target,recorded,,5,5,0,0,{legacy},2026-11-01\n'
+                    f'sys_target,edge,,5,5,0,0,{legacy},2026-11-01\n')
+        self.assertEqual(verification.migrate(self.root, path), 2)
+        rows = verification.read_csv(path, verification.VERIFICATION_HEADER)
+        fp = verification.source_fingerprint(self.root, 'sys_target')
+        self.assertEqual([r['source'] for r in rows], ['0123456789abcdef', fp, fp])
+        self.assertEqual(verification.migrate(self.root, path), 0)
+
+
+class ParseTest(unittest.TestCase):
+    def names(self, text: str) -> set[str]:
+        out = set()
+        for d in fingerprint.parse(text):
+            if d.kind == 'code':
+                names, always = fingerprint.declared_names(d.tokens, {})
+                out |= names if not always else {'<always>'}
+        return out
+
+    def test_declared_names(self):
+        self.assertEqual(self.names('int Foo::bar(int x) const { return x; }'), {'Foo', 'bar'})
+        self.assertEqual(self.names('Foo::~Foo() {}'), {'Foo'})
+        self.assertLessEqual({'Foo'}, self.names('Foo::Foo() : a{1}, b(2) { go(); }'))
+        self.assertEqual(self.names('typedef struct { int a; } Pair;'), {'Pair'})
+        self.assertEqual(self.names('struct { int a; } g_pair;'), {'g_pair'})
+        self.assertEqual(self.names('enum { first_value, second_value = 4 };'), {'first_value', 'second_value'})
+        self.assertEqual(self.names('static void (*callback)(int) = nullptr;'), {'callback'})
+        self.assertEqual(self.names('int a = 1, b[4];'), {'a', 'b'})
+        self.assertEqual(self.names('template <typename T> T clamp(T v) { return v; }'), {'clamp'})
+        self.assertEqual(self.names('bool operator==(A, A);'), {'<always>'})
+        self.assertEqual(self.names('using namespace sys;'), {'<always>'})
+        self.assertEqual(self.names('using Alias = Target;'), {'Alias', 'Target'})
+
+    def test_function_body_ends_the_declaration(self):
+        decls = [d for d in fingerprint.parse('void f() { x(); }\nint g;\n') if d.kind == 'code']
+        self.assertEqual([d.text for d in decls], ['void f() { x(); }', 'int g;'])
+
+    def test_struct_continues_to_its_semicolon(self):
+        decls = [d for d in fingerprint.parse('struct S { int a; } s;\nint g;\n') if d.kind == 'code']
+        self.assertEqual([d.text for d in decls], ['struct S { int a; } s;', 'int g;'])
+
+    def test_line_splice_inside_a_comment(self):
+        decls = [d for d in fingerprint.parse('// a comment \\\nint hidden;\nint g;\n') if d.kind == 'code']
+        self.assertEqual([d.text for d in decls], ['int g;'])
+
+
+class RepositoryTest(unittest.TestCase):
+    def test_every_recorded_function_reads(self):
+        """The repository's own sources split cleanly: nearly every function with rows narrows."""
+        rows = verification.read_csv(os.path.join(ROOT, 'symbols', 'verification.csv'),
+                                     verification.VERIFICATION_HEADER)
+        names = sorted({r['function'] for r in rows})
+        legacy = [n for n in names if not verification.source_fingerprint(ROOT, n).startswith(fingerprint.PREFIX)]
+        self.assertLess(len(legacy), max(10, len(names) // 50), legacy)
+
+
+if __name__ == '__main__':
+    unittest.main()

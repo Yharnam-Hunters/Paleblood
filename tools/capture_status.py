@@ -47,12 +47,13 @@ def unpromoted(root: str, captures: str) -> list[str]:
     with open(os.path.join(root, 'symbols', 'functions.csv'), newline='') as f:
         names = [r['name'] for r in csv.DictReader(f) if r['status'] == 'edge-verified']
     out = []
+    cur = verification.Currency(root)
     for name in names:
         directory = os.path.join(captures, name)
         if not os.path.isdir(directory) or not any(n.endswith('.json') for n in os.listdir(directory)):
             continue
-        current = verification.source_hash(root, name)
-        if not any(r['function'] == name and r['cases'] == 'recorded' and r['source'] == current for r in results):
+        if not any(r['function'] == name and r['cases'] == 'recorded' and cur.current(name, r['source'])
+                   for r in results):
             out.append(name)
     return out
 
