@@ -6,10 +6,11 @@
 // the tpfbnd resource vtable (0x0576ac10). Its allocation site in the binder cache
 // (0x01822120) inlines the same two steps with u"tpfbnd" and 0.
 //
-// No direct or indirect callers of 0x0181fb10 exist in the executable (only unwind metadata),
-// so void callers cannot be proved from call sites. Because the original unconditionally leaves
-// the relocated vtable address in RAX at return, the replacement returns that pointer (i64)
-// rather than relying on void codegen.
+// Cross-reference searches of the executable found no direct callers, relocations, or address
+// loads targeting 0x0181fb10 (only unwind metadata); whether an unfound indirect caller
+// exists or ignores RAX is unknown. Because the original unconditionally leaves the relocated
+// vtable address in RAX at return, the replacement returns that pointer (i64) rather than
+// relying on void codegen.
 #include "tpfbnd_resource.h"
 
 using namespace loading::tpfbnd;

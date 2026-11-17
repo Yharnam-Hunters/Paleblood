@@ -29,7 +29,7 @@ ABI = {
     'returns': {
         'type': 'uint64_t',
         'note': 'Preserves the relocated 64-bit vtable pointer (const uint8_t *) left in RAX at return; '
-                'no observed callers exist in eboot.elf to prove RAX is ignored.',
+                'cross-reference searches found no observed callers in eboot.elf to prove RAX is ignored.',
     },
     'arguments': [
         {'register': 'rdi', 'type': 'TpfbndResource * (0xa8-byte writable object)', 'direction': 'inout'},
@@ -47,8 +47,9 @@ ABI = {
         'stores 0x0576ac10 at [rbx] via rax, and returns with 0x0576ac10 in rax.',
         'Base constructor 0x017ea230 reads rdi (this), rsi (type name passed to 0x0137f210), and '
         'rdx (heap word stored in HeapReference::word_0x10).',
-        'No direct callers, relocations, or address loads target 0x0181fb10 in eboot.elf (only .eh_frame/.eh_frame_hdr); '
-        '0x01822120 inlines the equivalent sequence with u"tpfbnd" and 0 on a 0xa8-byte allocation.',
+        'Cross-reference searches of eboot.elf found no direct callers, relocations, or address loads '
+        'targeting 0x0181fb10 (only .eh_frame/.eh_frame_hdr); computed or external calls cannot be ruled out, '
+        'and 0x01822120 inlines the equivalent sequence with u"tpfbnd" and 0 on a 0xa8-byte allocation.',
     ],
     'execution_limits': {'timeout_seconds': 5},
     'observation_limits': (
