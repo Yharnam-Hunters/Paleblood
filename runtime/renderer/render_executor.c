@@ -38,13 +38,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
-       MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
+       MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16 };
+/* the run-time stop words (stop_slot): a power of two, well above the shaders kept at once so that two of
+   them seldom share one */
+enum { STOP_SLOT_BITS = 13, STOP_SLOTS = 1 << STOP_SLOT_BITS };
 enum { IMAGE_BUCKETS = 4096, TABLE_BUCKETS = 2048 }; /* powers of two */
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
@@ -586,7 +592,7 @@ struct rt_executor {
     VkBuffer gds_buffer;
     VkDeviceMemory gds_memory;
     VkDeviceAddress gds_address;
-    volatile uint32_t *stop_words;   /* one per translated shader (stop_slot) */
+    volatile uint32_t *stop_words;   /* STOP_SLOTS, each written by the shaders stop_index picks */
     uint64_t stop_address;
     /* What changed the guest memory, and when (memory_changed): each change counts one up, and each
        CHANGE_CHUNK of the memory keeps the count of the last change that reached it. The CPU's writes
@@ -653,6 +659,14 @@ struct rt_executor {
        compatible with an earlier one (a render target freed and made again, a target set aside and a new
        one at its address) comes from the cache instead of the driver's shader compiler. */
     VkPipelineCache pipeline_cache;
+    /* the pipeline cache's file (pipeline_file_open): its path ("" none), the pipelines made since it was
+       last written, and the thread that writes it */
+    char pipeline_file[512];
+    atomic_uint pipelines_made;
+    pthread_t pipeline_saver;
+    int saver_started, saver_stop;
+    pthread_mutex_t saver_lock;
+    pthread_cond_t saver_wake;
     VkPipeline tile_copies[TILE_COPY_SIZES][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
@@ -1101,6 +1115,154 @@ static void memory_take(memory_snapshot *m, const uint8_t *bytes, uint64_t size)
 
 /* ---- opening ---- */
 
+
+/* ---- the pipeline cache's file ----
+   The pipelines the executor makes (a few thousand by Iosefka's Clinic) take minutes of the driver's
+   shader compiler on the renderer's thread. The driver keeps its own cache on disk, but only up to its
+   size limit (NVIDIA's is 1 GB by default, shared by every program; once full it keeps nothing new),
+   so the executor keeps one of its own: the Vulkan pipeline cache is filled from the file when the
+   executor opens, and written back by a thread of its own while pipelines are being made (a run is
+   often ended by a timeout or a stop, not by rt_executor_close) and when the executor closes. The file
+   is BB_PIPELINE_CACHE (empty: none), else $XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin, else
+   ~/.cache/paleblood/vulkan-pipelines.bin. A file written for another device or driver (its header,
+   Vulkan's VkPipelineCacheHeaderVersionOne, names them), or larger than PIPELINE_FILE_MAX (old
+   translations pile up in it), is not used; the cache then starts empty, and the next write replaces
+   the file. */
+enum { PIPELINE_FILE_MAX = 512 << 20, PIPELINE_SAVE_SECONDS = 20, PIPELINE_HEADER_BYTES = 16 + VK_UUID_SIZE };
+
+/* The file's path into path ("" for none). */
+static void pipeline_file_path(char *path, size_t size)
+{
+    const char *named = getenv("BB_PIPELINE_CACHE"), *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    path[0] = 0;
+    if (named) snprintf(path, size, "%s", named);
+    else if (cache && *cache) snprintf(path, size, "%s/paleblood/vulkan-pipelines.bin", cache);
+    else if (home && *home) snprintf(path, size, "%s/.cache/paleblood/vulkan-pipelines.bin", home);
+}
+
+/* Whether a file's bytes begin with this device's pipeline cache header. */
+static int pipeline_header_matches(const rt_executor *x, const unsigned char *bytes, size_t size)
+{
+    if (size < PIPELINE_HEADER_BYTES) return 0;
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(x->physical, &properties);
+    uint32_t words[4];
+    memcpy(words, bytes, sizeof words); /* header size, version, vendor, device */
+    return words[0] >= PIPELINE_HEADER_BYTES && words[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && words[2] == properties.vendorID &&
+           words[3] == properties.deviceID && !memcmp(bytes + 16, properties.pipelineCacheUUID, VK_UUID_SIZE);
+}
+
+/* The file's bytes when they suit this device (*size set), else NULL. */
+static unsigned char *read_pipeline_file(const rt_executor *x, size_t *size)
+{
+    FILE *f = x->pipeline_file[0] ? fopen(x->pipeline_file, "rb") : NULL;
+    if (!f) return NULL;
+    struct stat st;
+    unsigned char *bytes = NULL;
+    if (fstat(fileno(f), &st) == 0 && st.st_size >= PIPELINE_HEADER_BYTES && st.st_size <= PIPELINE_FILE_MAX &&
+        (bytes = malloc((size_t)st.st_size)) && fread(bytes, 1, (size_t)st.st_size, f) == (size_t)st.st_size &&
+        pipeline_header_matches(x, bytes, (size_t)st.st_size)) {
+        *size = (size_t)st.st_size;
+    } else {
+        free(bytes);
+        bytes = NULL;
+    }
+    fclose(f);
+    return bytes;
+}
+
+/* Makes the directories above path (as mkdir -p would), ignoring those already there. */
+static void make_parent_directories(const char *path)
+{
+    char parent[sizeof ((rt_executor *)0)->pipeline_file];
+    snprintf(parent, sizeof parent, "%s", path);
+    for (char *slash = strchr(parent + 1, '/'); slash; slash = strchr(slash + 1, '/')) {
+        *slash = 0;
+        mkdir(parent, 0755);
+        *slash = '/';
+    }
+}
+
+/* Writes the cache to its file: to a temporary file beside it, then renamed over it, so that a reader
+   (another run) never sees half a file. Any failure leaves the file as it was. */
+static void write_pipeline_file(rt_executor *x)
+{
+    size_t size = 0;
+    if (!x->pipeline_file[0] || vkGetPipelineCacheData(x->device, x->pipeline_cache, &size, NULL) != VK_SUCCESS || !size ||
+        size > PIPELINE_FILE_MAX)
+        return;
+    unsigned char *bytes = malloc(size);
+    if (!bytes) return;
+    if (vkGetPipelineCacheData(x->device, x->pipeline_cache, &size, bytes) == VK_SUCCESS) {
+        char temporary[sizeof x->pipeline_file + 32];
+        snprintf(temporary, sizeof temporary, "%s.%ld.tmp", x->pipeline_file, (long)getpid());
+        make_parent_directories(x->pipeline_file);
+        FILE *f = fopen(temporary, "wb");
+        const int written = f && fwrite(bytes, 1, size, f) == size;
+        if (f && fclose(f)) unlink(temporary);
+        else if (written) rename(temporary, x->pipeline_file);
+        else if (f) unlink(temporary);
+    }
+    free(bytes);
+}
+
+/* The writing thread: every PIPELINE_SAVE_SECONDS, the file again if pipelines were made since. */
+static void *pipeline_saver(void *argument)
+{
+    rt_executor *x = argument;
+    pthread_mutex_lock(&x->saver_lock);
+    while (!x->saver_stop) {
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += PIPELINE_SAVE_SECONDS;
+        while (!x->saver_stop && pthread_cond_timedwait(&x->saver_wake, &x->saver_lock, &until) == 0) {
+        }
+        if (x->saver_stop || !atomic_exchange(&x->pipelines_made, 0)) continue;
+        pthread_mutex_unlock(&x->saver_lock);
+        write_pipeline_file(x); /* the cache is internally synchronized: pipelines go on being made meanwhile */
+        pthread_mutex_lock(&x->saver_lock);
+    }
+    pthread_mutex_unlock(&x->saver_lock);
+    return NULL;
+}
+
+/* The pipeline cache, from the file when there is one that suits the device, and its writing thread. */
+static int pipeline_cache_open(rt_executor *x, char *error, size_t error_size)
+{
+    pipeline_file_path(x->pipeline_file, sizeof x->pipeline_file);
+    size_t size = 0;
+    unsigned char *bytes = read_pipeline_file(x, &size);
+    VkPipelineCacheCreateInfo cache = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = size, .pInitialData = bytes};
+    VkResult made = vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache);
+    if (made != VK_SUCCESS && bytes) { /* a driver that refuses the data after all: an empty cache */
+        cache.initialDataSize = 0, cache.pInitialData = NULL;
+        made = vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache);
+    }
+    free(bytes);
+    if (made != VK_SUCCESS) return failed(error, error_size, "no pipeline cache");
+    pthread_mutex_init(&x->saver_lock, NULL);
+    pthread_cond_init(&x->saver_wake, NULL);
+    x->saver_started = x->pipeline_file[0] && pthread_create(&x->pipeline_saver, NULL, pipeline_saver, x) == 0;
+    return 0;
+}
+
+/* Stops the writing thread and writes the file a last time if pipelines were made since. */
+static void pipeline_cache_close(rt_executor *x)
+{
+    if (!x->pipeline_cache) return;
+    if (x->saver_started) {
+        pthread_mutex_lock(&x->saver_lock);
+        x->saver_stop = 1;
+        pthread_cond_signal(&x->saver_wake);
+        pthread_mutex_unlock(&x->saver_lock);
+        pthread_join(x->pipeline_saver, NULL);
+        x->saver_started = 0;
+    }
+    if (atomic_exchange(&x->pipelines_made, 0)) write_pipeline_file(x);
+    pthread_cond_destroy(&x->saver_wake);
+    pthread_mutex_destroy(&x->saver_lock);
+}
+
 static int open_device(rt_executor *x, char *error, size_t error_size)
 {
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_2};
@@ -1254,8 +1416,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
     const VkSemaphoreCreateInfo timeline = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline_type};
     if (vkCreateSemaphore(x->device, &timeline, NULL, &x->timeline) != VK_SUCCESS) return failed(error, error_size, "no timeline semaphore");
-    const VkPipelineCacheCreateInfo cache = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    if (vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache) != VK_SUCCESS) return failed(error, error_size, "no pipeline cache");
+    return pipeline_cache_open(x, error, error_size);
     return 0;
 }
 
@@ -1379,37 +1540,75 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
 
-/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. Each
-   translated shader has its own stop word (stop_slot), so the reason names the shader that stopped. */
+/* Which stop word a translated shader writes (gcn_spirv.h's error_address): chosen from what the shader
+   is, its kind (a graphics stage, compute, or a tessellation or geometry pass) and its code address,
+   never from the order the executor met it. Its SPIR-V holds that word's address, so a shader numbered
+   by order translated differently from one run to the next, and the driver's pipeline cache, which
+   knows a pipeline by its SPIR-V, compiled it again in every run: in Iosefka's Clinic 150-230 s of
+   pipeline compiles on the renderer's thread in each boot (November 2026). Two shaders may share a
+   word; a stop then names each shader kept with that word. */
+enum { STOP_KIND_COMPUTE = 16, STOP_KIND_PASS = 32 }; /* graphics shaders use their stage number, below 16 */
+
+static size_t stop_index(int kind, uint64_t code)
+{
+    const uint64_t mixed = (code ^ (uint64_t)kind << 56) * 0x9e3779b97f4a7c15ull; /* Fibonacci hashing: the top bits */
+    return (size_t)(mixed >> (64 - STOP_SLOT_BITS));
+}
+
+static uint64_t stop_slot(const rt_executor *x, int kind, uint64_t code) { return x->stop_address + 4 * stop_index(kind, code); }
+
+/* The shaders that write one stop word, for its stop's reason: each kind and address once (a shader
+   kept in several translations, for other settings, writes the same word). */
+enum { STOPPED_NAMED = 4 };
+typedef struct {
+    const char *kinds[STOPPED_NAMED];
+    uint64_t codes[STOPPED_NAMED];
+    unsigned count;
+} stopped_shaders;
+
+static void add_stopped(stopped_shaders *named, const char *kind, uint64_t code)
+{
+    for (unsigned k = 0; k < named->count; k++)
+        if (named->codes[k] == code && !strcmp(named->kinds[k], kind)) return;
+    if (named->count < STOPPED_NAMED) named->kinds[named->count] = kind, named->codes[named->count++] = code;
+}
+
+/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code, naming
+   the shaders kept that write that stop word (stop_index): almost always one. */
 static int check_stop_words(rt_executor *x, char *error, size_t error_size)
 {
+    const volatile uint64_t *pairs = (const volatile uint64_t *)x->stop_words; /* two words a read: the buffer is 8-byte aligned */
     for (size_t i = 0; i < STOP_SLOTS; i++) {
+        if (!(i & 1) && !pairs[i / 2]) {
+            i++;
+            continue;
+        }
         const uint32_t code = x->stop_words[i];
         if (!code) continue;
         x->stop_words[i] = 0;
-        char reason[512];
+        char reason[512], names[STOPPED_NAMED * 48] = "";
         stop_reason(code, reason, sizeof reason);
-        if (i >= MAX_SHADERS + MAX_COMPUTE_PIPELINES) { /* a tessellation pass (tessellation_pass_for) */
-            const size_t k = i - MAX_SHADERS - MAX_COMPUTE_PIPELINES;
-            return failed(error, error_size, "the %s shader at %#llx: %s", pass_names[x->tess_passes[k].kind],
-                          (unsigned long long)x->tess_passes[k].code, reason);
+        stopped_shaders named = {0};
+        for (size_t k = 0; k < x->shader_count; k++)
+            if (x->shaders[k].module && stop_index(x->shaders[k].stage, x->shaders[k].code) == i)
+                add_stopped(&named, stage_name(x->shaders[k].stage), x->shaders[k].code);
+        for (size_t k = 0; k < x->compute_count; k++)
+            if (stop_index(STOP_KIND_COMPUTE, x->computes[k].code) == i) add_stopped(&named, "compute", x->computes[k].code);
+        for (size_t k = 0; k < x->tess_pass_count; k++)
+            if (stop_index(STOP_KIND_PASS + x->tess_passes[k].kind, x->tess_passes[k].code) == i)
+                add_stopped(&named, pass_names[x->tess_passes[k].kind], x->tess_passes[k].code);
+        if (!named.count) return failed(error, error_size, "a shader no longer kept (stop word %zu): %s", i, reason);
+        size_t used = 0;
+        for (unsigned k = 0; k < named.count && used < sizeof names; k++) {
+            const int wrote = snprintf(names + used, sizeof names - used, "%sthe %s shader at %#llx", k ? " or " : "", named.kinds[k],
+                                       (unsigned long long)named.codes[k]);
+            used += wrote > 0 ? (size_t)wrote : 0;
         }
-        const int compute = i >= MAX_SHADERS;
-        const shader_entry *shader = compute ? NULL : &x->shaders[i];
-        const uint64_t code_address = compute ? x->computes[i - MAX_SHADERS].code : shader->code;
-        return failed(error, error_size, "the %s shader at %#llx: %s",
-                      compute ? "compute" : stage_name(shader->stage),
-                      (unsigned long long)code_address, reason);
+        return failed(error, error_size, "%s: %s", names, reason);
     }
     return 0;
 }
 
-/* The GPU address of a translated shader's stop word: graphics shader entry `index`, or compute
-   entry `index` past them. */
-static uint64_t stop_slot(const rt_executor *x, int compute, size_t index)
-{
-    return x->stop_address + 4 * ((compute ? MAX_SHADERS : 0) + index);
-}
 
 /* ---- the shader sweep ----
    A diagnostic mode, never the default (docs/RENDERER.md, "Coverage survey"): with BB_SHADER_SWEEP naming a
@@ -2161,6 +2360,7 @@ static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned element_bytes, int
         failed(error, error_size, "the device refused the GPU tile copy's pipeline");
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     return x->tile_copies[kind][to_tiled];
 }
 
@@ -3209,8 +3409,8 @@ static long shader_to_free(rt_executor *x)
    (walking a scene brings more shaders than that), the least recently used shader's once no unfinished
    batch draws with it, waiting for the GPU's work when every one is in use. That shader's module goes
    with the pipelines made from it: a module made later may get the same handle, and a pipeline found
-   by it would draw with the old shader. A shader keeps its entry (no other moves into it): its stop
-   word is the entry's (stop_slot), written into its code. The entry, or -1 with the reason. */
+   by it would draw with the old shader. A shader keeps its entry (no other moves into it). The entry,
+   or -1 with the reason. */
 static long shader_slot(rt_executor *x, char *error, size_t error_size)
 {
     if (x->shader_count < MAX_SHADERS) return (long)x->shader_count;
@@ -3278,7 +3478,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
-                                          .error_address = stop_slot(x, 0, (size_t)slot), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
+                                          .error_address = stop_slot(x, stage, code), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
                                           .code_address = code, .images = images, .image_count = image_count,
                                           .first_binding = first_binding, .user_data_read = user_read,
@@ -3287,7 +3487,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .step_rates_set = instancing.step_rates_set};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else if (stage == STAGE_DOMAIN) {
-        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, 0, (size_t)slot));
+        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
         layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
         layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
         result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
@@ -3299,7 +3499,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
                                          .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
                                          .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, 0, (size_t)slot),
+                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, stage, code),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .input_controls = input_controls,
                                          .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
@@ -3451,6 +3651,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         failed(error, error_size, "the device refused a pipeline");
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
@@ -3764,6 +3965,7 @@ static VkPipeline pass_pipeline(rt_executor *x, uint32_t *spirv, size_t words, i
         failed(error, error_size, "the device refused a %s pass pipeline", pass_names[kind]);
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     return pipeline;
 }
 
@@ -3809,7 +4011,7 @@ static VkPipeline tessellation_pass_for(rt_executor *x, const draw_state *s, int
         return VK_NULL_HANDLE;
     }
     gcn_tessellation_layout layout = tessellation_layout(x, &s->hull, s->local.lds_bytes, user_sgprs,
-                                                         x->stop_address + 4 * (MAX_SHADERS + MAX_COMPUTE_PIPELINES + x->tess_pass_count));
+                                                         stop_slot(x, STOP_KIND_PASS + hull, code));
     layout.user_data_read = user_read;
     if (callee) {
         layout.callee = (const uint32_t *)(uintptr_t)callee, layout.callee_dwords = (size_t)((x->guest_base + x->size - callee) / 4);
@@ -3981,7 +4183,7 @@ static VkPipeline geometry_pass_for(rt_executor *x, const draw_state *s, int geo
         failed(error, error_size, "more tessellation and geometry passes than the executor keeps");
         return VK_NULL_HANDLE;
     }
-    gcn_geometry_layout layout = geometry_layout(x, s, g->user_sgprs, x->stop_address + 4 * (MAX_SHADERS + MAX_COMPUTE_PIPELINES + x->tess_pass_count));
+    gcn_geometry_layout layout = geometry_layout(x, s, g->user_sgprs, stop_slot(x, STOP_KIND_PASS + kind, g->code));
     layout.user_data_read = user_read;
     if (callee) {
         layout.callee = (const uint32_t *)(uintptr_t)callee, layout.callee_dwords = (size_t)((x->guest_base + x->size - callee) / 4);
@@ -4411,7 +4613,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, 1, x->compute_count),
+                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code),
                                        .images = images, .image_count = image_count, .user_data_read = user_read,
                                        .gds_address = x->gds_address};
     uint32_t *spirv = NULL;
@@ -4443,6 +4645,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
         failed(error, error_size, "the device refused a compute pipeline");
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     compute_entry *e = &x->computes[x->compute_count++];
     *e = (compute_entry){.user_read = *user_read, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                          .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count, .module = module, .pipeline = pipeline};
@@ -6301,6 +6504,7 @@ void rt_executor_close(rt_executor *x)
             for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
                 if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
         if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);
+        pipeline_cache_close(x);
         if (x->pipeline_cache) vkDestroyPipelineCache(x->device, x->pipeline_cache, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);
