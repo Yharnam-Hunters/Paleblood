@@ -123,7 +123,8 @@ def cases():
             5: "0x014761a0",
             6: "0x01476420",
         }
-        repeats = 2 if multiple else 1
+        # A count below 64 masks the work word first: bit 63 is then dropped.
+        repeats = 2 if multiple and count >= 64 else 1
         for repeat in range(repeats):
             if kind in descriptor_calls:
                 stub = {"address": descriptor_calls[kind], "argc": 4, "ret": 0, "argu32": [1, 2]}
@@ -175,6 +176,8 @@ def cases():
             c["stubs"] = [{"address": "0x02ab9850", "argc": 2, "ret": 0}]
             yield c
         yield binding_case(f"multiple_bits_count65_bank_{bank}", 6, bank, count=65, multiple=True)
+        for kind in (0, 6):
+            yield binding_case(f"multiple_bits_count63_bank_{bank}_kind_{kind}", kind, bank, count=63, multiple=True)
     c = binding_case("cache_shared_across_both_banks", 7)
     c["args"]["rcx"] = "buf:descriptor"
     c["memory"].append({"addr": "buf:self+6448", "bytes": qword(1)})
