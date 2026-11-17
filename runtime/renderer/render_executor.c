@@ -63,6 +63,12 @@ enum { TRANSLATION_REASON_BYTES = 4096 };
 enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
 enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
+/* a draw's table snapshot blocks (gcn_spirv.h, Table snapshots): their GPU addresses after the user data,
+   the vertex shader's then the pixel shader's, on a device with that many push-constant bytes; each
+   batch's blocks in a buffer of their own, the first block empty (mask 0) */
+enum { VERTEX_TABLE_BLOCK = 2 * USER_DATA_BYTES, PIXEL_TABLE_BLOCK = VERTEX_TABLE_BLOCK + 8, DRAW_PUSH_BYTES = PIXEL_TABLE_BLOCK + 8,
+       SNAPSHOT_BLOCK_ALIGN = 16, DRAW_SNAPSHOT_BYTES = 4 << 20 };
+_Static_assert((int)DRAW_PUSH_BYTES <= (int)GCN_TABLE_BLOCK_PUSH_LIMIT, "the block addresses fit the translator's push-constant bytes");
 /* a compute shader's push constants: its user data, then its table snapshot's mask and words (gcn_spirv.h) */
 _Static_assert(RT_TABLE_WORDS == GCN_TABLE_SNAPSHOT_WORDS + 1, "a dispatch call holds the snapshot's mask and words");
 enum { TABLE_SNAPSHOT_BYTES = RT_TABLE_WORDS * 4, COMPUTE_PUSH_BYTES = USER_DATA_BYTES + TABLE_SNAPSHOT_BYTES };
@@ -128,6 +134,7 @@ typedef struct {
     int has_input_controls;
     uint64_t tessellation;           /* a domain shader's tessellation settings (tessellation_key), 0 otherwise */
     vertex_instancing instancing;    /* a vertex shader's instancing inputs (vertex_instancing_of), zero otherwise */
+    gcn_table_snapshot tables;       /* a vertex or pixel shader's table snapshot plan (draw_snapshot); no entries otherwise */
     VkShaderModule module;           /* VK_NULL_HANDLE: a slot freed (shader_slot), none kept there */
     uint32_t bucket_next;            /* the next shader of its bucket (shader_buckets), index + 1; 0 none */
     uint64_t used_ticket;            /* the submission that last draws with it (shader_to_free) */
@@ -482,6 +489,8 @@ typedef struct {
     int reads_anywhere;
     gpu_buffer indirect;             /* its indirect draws' Vulkan arguments (draw_indirect_arguments) */
     unsigned indirect_count;
+    gpu_buffer snapshots;            /* its draws' table snapshot blocks (draw_snapshot), mapped */
+    VkDeviceSize snapshot_used;
     struct {
         uint64_t first, second;      /* a draw's vertex and pixel shaders; a dispatch's shader and 0 */
         uint64_t largest;            /* the most vertices x instances (a draw) or workgroups (a dispatch) */
@@ -562,6 +571,11 @@ struct rt_executor {
        vertex shader */
     int tessellation;
     VkShaderStageFlags vertex_stages;
+    /* draws take table snapshots (DRAW_PUSH_BYTES): the push constants are then one range for every
+       stage, which each push names (draw_push_stages); otherwise a range a stage */
+    int draw_snapshots;
+    VkShaderStageFlags draw_push_stages;
+    unsigned push_range_count;
     gpu_buffer tess_lds, tess_factors;
     gpu_buffer gs_esgs, gs_gsvs, gs_strips; /* the geometry shader's rings and its strips' indices (gcn_spirv.h) */
     VkPipelineLayout tess_layout;
@@ -1382,11 +1396,17 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     const VkCommandPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = x->family,
                                           .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT};
     if (vkCreateCommandPool(x->device, &pool, NULL, &x->pool) != VK_SUCCESS) return failed(error, error_size, "no command pool");
-    /* each stage's user data in the push constants: the vertex shader's at 0, the pixel shader's at 64 */
-    const VkPushConstantRange ranges[] = {{x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES},
-                                          {VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES}};
-    const VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 2,
-                                               .pPushConstantRanges = ranges};
+    /* each stage's user data in the push constants: the vertex shader's at 0, the pixel shader's at 64;
+       with table snapshots, their blocks' addresses after them, in one range for every stage */
+    x->draw_snapshots = properties.limits.maxPushConstantsSize >= DRAW_PUSH_BYTES;
+    x->draw_push_stages = x->vertex_stages | VK_SHADER_STAGE_FRAGMENT_BIT;
+    x->push_range_count = x->draw_snapshots ? 1 : STAGES;
+    const VkPushConstantRange ranges[STAGES] = {
+        x->draw_snapshots ? (VkPushConstantRange){x->draw_push_stages, 0, DRAW_PUSH_BYTES}
+                          : (VkPushConstantRange){x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES},
+        {VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES}};
+    const VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                               .pushConstantRangeCount = x->push_range_count, .pPushConstantRanges = ranges};
     if (vkCreatePipelineLayout(x->device, &layout, NULL, &x->layout) != VK_SUCCESS) return failed(error, error_size, "no pipeline layout");
     /* a compute shader's user data at the start of its push constants, its table snapshot after it */
     const VkPushConstantRange compute_range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, COMPUTE_PUSH_BYTES};
@@ -1981,7 +2001,7 @@ static batch_slot *open_batch(rt_executor *x, char *error, size_t error_size)
         failed(error, error_size, "no command buffer");
         return NULL;
     }
-    x->batch_open = 1, b->indirect_count = 0, b->work_count = b->work_kinds = 0;
+    x->batch_open = 1, b->indirect_count = 0, b->work_count = b->work_kinds = 0, b->snapshot_used = SNAPSHOT_BLOCK_ALIGN;
     return b;
 }
 
@@ -3513,7 +3533,8 @@ static long shader_slot(rt_executor *x, char *error, size_t error_size)
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
                                  unsigned sampler_count, unsigned first_binding, uint64_t callee, const uint32_t *input_controls,
-                                 const draw_state *tess, uint32_t *user_read, uint32_t *sgprs_read, char *error, size_t error_size)
+                                 const draw_state *tess, uint32_t *user_read, uint32_t *sgprs_read, const gcn_table_snapshot **tables,
+                                 char *error, size_t error_size)
 {
     const uint64_t tessellation = stage == STAGE_DOMAIN ? tessellation_key(&tess->hull, tess->local.lds_bytes) : 0;
     vertex_instancing instancing = {0};
@@ -3533,6 +3554,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
             s->used_ticket = x->submitted + 1, s->used_call = x->call_serial;
             *user_read = s->user_read;
             memcpy(sgprs_read, s->sgprs_read, sizeof s->sgprs_read);
+            if (tables) *tables = &s->tables;
             return s->module;
         }
     }
@@ -3549,17 +3571,27 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     size_t spirv_words = 0;
     char reason[TRANSLATION_REASON_BYTES];
     int result;
+    /* a draw's vertex (with its fetch shader) or pixel shader takes table snapshots on a device with room
+       for their addresses; a plan that cannot be made leaves the shader without (its code then fails to
+       translate as well) */
+    const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+    const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+    gcn_table_snapshot planned = {0};
+    if (x->draw_snapshots && (stage == STAGE_VERTEX || stage == STAGE_PIXEL) &&
+        gcn_called_table_snapshot_plan(words, dwords, callee_words, callee_dwords, GCN_DRAW_SNAPSHOT_WORDS, &planned, reason, sizeof reason))
+        planned = (gcn_table_snapshot){0};
+    const gcn_table_snapshot *plan = planned.entry_count ? &planned : NULL;
     if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
         const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
-                                          .error_address = stop_slot(x, stage, code), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
-                                          .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
+                                          .error_address = stop_slot(x, stage, code), .callee = callee_words, .callee_dwords = callee_dwords,
                                           .code_address = code, .images = images, .image_count = image_count,
                                           .first_binding = first_binding, .user_data_read = user_read, .sgprs_read = sgprs_read,
                                           .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
                                           .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
-                                          .step_rates_set = instancing.step_rates_set};
+                                          .step_rates_set = instancing.step_rates_set, .table_snapshot = plan,
+                                          .table_block_offset = VERTEX_TABLE_BLOCK};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else if (stage == STAGE_DOMAIN) {
         gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
@@ -3579,7 +3611,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .input_controls = input_controls,
                                          .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
-                                         .user_data_read = user_read, .sgprs_read = sgprs_read};
+                                         .user_data_read = user_read, .sgprs_read = sgprs_read, .table_snapshot = plan,
+                                         .table_block_offset = PIXEL_TABLE_BLOCK};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
     sweep_shader(x, stage_name(stage), code, result ? reason : NULL, spirv, spirv_words);
@@ -3600,13 +3633,14 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     shader_entry *e = &x->shaders[slot];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
                         .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
-                        .tessellation = tessellation, .instancing = instancing, .module = module,
+                        .tessellation = tessellation, .instancing = instancing, .tables = planned, .module = module,
                         .bucket_next = x->shader_buckets[bucket], .used_ticket = x->submitted + 1, .used_call = x->call_serial};
     x->shader_buckets[bucket] = (uint32_t)(slot + 1);
     memcpy(e->sgprs_read, sgprs_read, sizeof e->sgprs_read);
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;
+    if (tables) *tables = &e->tables;
     return module;
 }
 
@@ -3834,7 +3868,7 @@ static int pixel_layout_for(rt_executor *x, unsigned n, unsigned m, char *error,
     if (vkCreateDescriptorSetLayout(x->device, &set, NULL, &x->pixel_set_layouts[n][m]) != VK_SUCCESS)
         return failed(error, error_size, "no descriptor set layout");
     const VkPipelineLayoutCreateInfo with_images = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
-                                                    .pSetLayouts = &x->pixel_set_layouts[n][m], .pushConstantRangeCount = STAGES,
+                                                    .pSetLayouts = &x->pixel_set_layouts[n][m], .pushConstantRangeCount = x->push_range_count,
                                                     .pPushConstantRanges = x->push_ranges};
     if (vkCreatePipelineLayout(x->device, &with_images, NULL, &x->pixel_layouts[n][m]) != VK_SUCCESS)
         return failed(error, error_size, "no pipeline layout with images");
@@ -3867,7 +3901,8 @@ static int graphics_layout_for(rt_executor *x, unsigned n, unsigned m, unsigned 
     VkDescriptorSetLayout made_set = VK_NULL_HANDLE;
     if (vkCreateDescriptorSetLayout(x->device, &set, NULL, &made_set) != VK_SUCCESS) return failed(error, error_size, "no descriptor set layout");
     const VkPipelineLayoutCreateInfo with_images = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
-                                                    .pSetLayouts = &made_set, .pushConstantRangeCount = STAGES, .pPushConstantRanges = x->push_ranges};
+                                                    .pSetLayouts = &made_set, .pushConstantRangeCount = x->push_range_count,
+                                                    .pPushConstantRanges = x->push_ranges};
     VkPipelineLayout made = VK_NULL_HANDLE;
     if (vkCreatePipelineLayout(x->device, &with_images, NULL, &made) != VK_SUCCESS) {
         vkDestroyDescriptorSetLayout(x->device, made_set, NULL);
@@ -4385,7 +4420,7 @@ static int geometry_passes(rt_executor *x, VkCommandBuffer commands, const draw_
 
 static scan_entry *scan_for(rt_executor *x, uint64_t code, uint64_t callee, int samplers);
 static void stage_reads(rt_executor *x, uint64_t code, uint64_t callee, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
-                        const uint32_t *sgprs_read);
+                        const uint32_t *sgprs_read, const gcn_table_snapshot *tables, uint32_t taken);
 static void scan_keep(rt_executor *x, scan_entry *e, unsigned count, const gcn_image_resource *images, const gcn_resource_origin *samplers);
 
 /* Whether a program may write memory: a buffer, image, flat or GDS instruction that stores or is atomic
@@ -4423,6 +4458,46 @@ static int draw_stores(rt_executor *x, const draw_state *s, int depth_only, int 
     if (program_writes_memory(x, "vertex", s->vertex.code, stores, error, error_size)) return -1;
     if (*stores || depth_only) return 0;
     return program_writes_memory(x, "pixel", s->pixel.code, stores, error, error_size);
+}
+
+/* A draw stage's table snapshot (gcn_spirv.h, Table snapshots), taken as the draw is recorded: a block
+   in the open batch's buffer holding the mask, then each entry's words copied from guest memory. An
+   entry whose pointer is not set, whose words are outside the memory, or where open or submitted work
+   may store keeps its bit clear, and its loads read memory as the draw runs. The block's GPU address
+   (the empty block's when no entry is taken or no room is left), *taken the mask; 0 with no buffer. */
+static uint64_t draw_snapshot(rt_executor *x, const gcn_table_snapshot *tables, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
+                              uint32_t *taken)
+{
+    enum { POINTER_HIGH_MASK = 0xffff };
+    batch_slot *b = &x->slots[x->current];
+    *taken = 0;
+    if (!b->snapshots.buffer) {
+        if (gpu_buffer_make(x, &b->snapshots, DRAW_SNAPSHOT_BYTES, 1)) return 0;
+        memset(b->snapshots.mapped, 0, SNAPSHOT_BLOCK_ALIGN); /* the empty block */
+    }
+    if (!tables || !tables->entry_count) return b->snapshots.address;
+    const gcn_table_entry *last = &tables->entries[tables->entry_count - 1];
+    const VkDeviceSize bytes = ((1 + last->first_word + last->dwords) * 4 + SNAPSHOT_BLOCK_ALIGN - 1) & ~(VkDeviceSize)(SNAPSHOT_BLOCK_ALIGN - 1);
+    if (b->snapshot_used + bytes > b->snapshots.size) return b->snapshots.address;
+    uint32_t *block = (uint32_t *)((uint8_t *)b->snapshots.mapped + b->snapshot_used);
+    uint32_t mask = 0;
+    for (unsigned k = 0; k < tables->entry_count; k++) {
+        const gcn_table_entry *e = &tables->entries[k];
+        const unsigned pair = e->pointer_sgpr;
+        if (pair + 2 > user_sgprs || (~user_set >> pair & 3)) continue;
+        const uint64_t address = ((uint64_t)(user[pair + 1] & POINTER_HIGH_MASK) << 32 | user[pair]) + e->offset, length = (uint64_t)e->dwords * 4;
+        if (address % 4 || address < x->guest_base || address - x->guest_base > x->size || length > x->size - (address - x->guest_base)) continue;
+        int stored = 0;
+        for (unsigned slot = 0; slot < BATCH_SLOTS && !stored; slot++) stored = batch_may_store(x, slot, address, length, 0);
+        if (stored) continue;
+        memcpy(block + 1 + e->first_word, (const uint8_t *)x->view + (address - x->guest_base), length);
+        mask |= 1u << k;
+    }
+    if (!mask) return b->snapshots.address;
+    block[0] = mask, *taken = mask;
+    const uint64_t address = b->snapshots.address + b->snapshot_used;
+    b->snapshot_used += bytes;
+    return address;
 }
 
 /* A draw of index_count vertices (indices, when given, index them), or, with `indirect` not 0, of the
@@ -4527,9 +4602,10 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                      vertex_bindings, vertex_views, NULL, &vertex_image_count, error, error_size))
         return -1;
     uint32_t vertex_read = 0, pixel_read = 0, vertex_sgprs[GCN_SGPR_READ_WORDS] = {0}, pixel_sgprs[GCN_SGPR_READ_WORDS] = {0};
+    const gcn_table_snapshot *vertex_tables = NULL, *pixel_tables = NULL;
     const VkShaderModule vertex = shader_for(x, tess ? STAGE_DOMAIN : gs ? STAGE_COPY : STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control,
                                              vertex_bindings, vertex_image_count, NULL, 0, image_count + sampler_count, callee, NULL, s,
-                                             &vertex_read, vertex_sgprs, error, error_size);
+                                             &vertex_read, vertex_sgprs, &vertex_tables, error, error_size);
     if (!vertex) return -1;
     VkShaderModule control = VK_NULL_HANDLE;
     VkPipeline passes[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
@@ -4561,7 +4637,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                                                          pixel_settings(&s->pixel), bindings,
                                                          image_count, sampler_origins, sampler_count, 0, 0,
                                                          s->ps_input_control_set ? s->ps_input_control : NULL, NULL, &pixel_read, pixel_sgprs,
-                                                         error, error_size);
+                                                         &pixel_tables, error, error_size);
     if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
         (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
@@ -4645,8 +4721,19 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         vkCmdSetStencilWriteMask(commands, which, r >> 16 & 0xff);
     }
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
-    vkCmdPushConstants(commands, layout, x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
-    vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
+    uint32_t vertex_taken = 0, pixel_taken = 0; /* the entries whose words the draw's blocks hold */
+    if (x->draw_snapshots) {
+        const uint64_t blocks[2] = {
+            draw_snapshot(x, tess || gs ? NULL : vertex_tables, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], &vertex_taken),
+            draw_snapshot(x, depth_only ? NULL : pixel_tables, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], &pixel_taken)};
+        if (!blocks[0] || !blocks[1]) return failed(error, error_size, "no buffer for the draws' table snapshots");
+        vkCmdPushConstants(commands, layout, x->draw_push_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
+        vkCmdPushConstants(commands, layout, x->draw_push_stages, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
+        vkCmdPushConstants(commands, layout, x->draw_push_stages, VERTEX_TABLE_BLOCK, sizeof blocks, blocks);
+    } else {
+        vkCmdPushConstants(commands, layout, x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
+        vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
+    }
     /* NUM_INSTANCES, from instance 0; 0 is one instance (AMD's CIK 3D register reference, VGT_NUM_INSTANCES:
        "if set to zero, it is interpreted as 1"; shadPS4's regs_vertex.h agrees) */
     const uint32_t instances = s->instances_set && s->instances ? s->instances : 1;
@@ -4666,9 +4753,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         if (tess || gs || indirect) {
             batch_reads_anywhere(x);
         } else {
-            stage_reads(x, s->vertex.code, callee, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], vertex_sgprs);
+            stage_reads(x, s->vertex.code, callee, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], vertex_sgprs,
+                        vertex_tables, vertex_taken);
             if (!depth_only)
-                stage_reads(x, s->pixel.code, 0, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], pixel_sgprs);
+                stage_reads(x, s->pixel.code, 0, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], pixel_sgprs, pixel_tables,
+                            pixel_taken);
             if (indices) batch_reads(x, x->guest_base + indices->offset, (uint64_t)index_count * (indices->type == VK_INDEX_TYPE_UINT16 ? 2 : 4));
         }
     }
@@ -6028,13 +6117,26 @@ static int settled_descriptor_words(const rt_executor *x, const gcn_resource_ori
     return 0;
 }
 
+/* Whether a draw stage's table snapshot holds the bytes of the s_load read r (gcn_spirv.h, Table
+   snapshots): an entry taken (bit k of `taken`) for its user-data pointer pair, offset and size, which
+   every load of that offset and size uses. The GPU then does not read them in place. */
+static int snapshot_holds(const gcn_table_snapshot *tables, uint32_t taken, const gcn_memory_read *r)
+{
+    if (!tables || r->pointer != 1 || r->origin.from_memory) return 0;
+    for (unsigned k = 0; k < tables->entry_count; k++) {
+        const gcn_table_entry *e = &tables->entries[k];
+        if (taken >> k & 1 && e->every_load && e->pointer_sgpr == r->origin.sgpr && e->offset == r->offset && e->dwords * 4 == r->bytes) return 1;
+    }
+    return 0;
+}
+
 /* Notes the memory a draw's shader (with its fetch shader, callee) reads in place as the GPU runs it
    (batch_reads): each buffer descriptor's range, and each s_load whose SGPRs its translated code reads
-   (sgprs_read). An s_load nothing reads is a descriptor the executor read itself before recording the
+   (sgprs_read), unless its table snapshot holds the words (snapshot_holds: `taken`, its entries copied). An s_load nothing reads is a descriptor the executor read itself before recording the
    draw (an image's or a sampler's), and the GPU's reading it again later changes nothing. Reads that
    cannot be bounded so are noted as anywhere. Called only while memory is watched (x->watched_count). */
 static void stage_reads(rt_executor *x, uint64_t code, uint64_t callee, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
-                        const uint32_t *sgprs_read)
+                        const uint32_t *sgprs_read, const gcn_table_snapshot *tables, uint32_t taken)
 {
     enum { POINTER_HIGH_MASK = 0xffff };
     gcn_memory_read found[GCN_MAX_IMAGES];
@@ -6061,7 +6163,7 @@ static void stage_reads(rt_executor *x, uint64_t code, uint64_t callee, const ui
     }
     for (unsigned i = 0; i < n && !anywhere; i++) {
         const gcn_memory_read *r = &found[i];
-        if (r->pointer && !sgprs_used(sgprs_read, r->sgpr, r->sgprs)) continue;
+        if ((r->pointer && !sgprs_used(sgprs_read, r->sgpr, r->sgprs)) || snapshot_holds(tables, taken, r)) continue;
         uint32_t words[4];
         if (r->pointer == 2 || settled_descriptor_words(x, &r->origin, user, user_sgprs, user_set, words, r->pointer ? 2 : 4)) {
             anywhere = 1;
@@ -6733,7 +6835,8 @@ void rt_executor_close(rt_executor *x)
             staging_free(x, &x->targets[i].staging);
             tile_plan_free(x, &x->targets[i].plan);
         }
-        for (unsigned k = 0; k < BATCH_SLOTS; k++) staging_free(x, &x->slots[k].upload), gpu_buffer_free(x, &x->slots[k].indirect);
+        for (unsigned k = 0; k < BATCH_SLOTS; k++) staging_free(x, &x->slots[k].upload), gpu_buffer_free(x, &x->slots[k].indirect),
+                                                  gpu_buffer_free(x, &x->slots[k].snapshots);
         for (unsigned k = 0; k < SNAPSHOT_SLOTS; k++) staging_free(x, &x->snapshots[k].staging);
         if (x->buffer) vkDestroyBuffer(x->device, x->buffer, NULL);
         if (x->memory) vkFreeMemory(x->device, x->memory, NULL);

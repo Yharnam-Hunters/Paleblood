@@ -2477,7 +2477,8 @@ static void depth_and_strips(rt_executor *x)
    (32_32_32_32 float, DST_SEL x, y, z, w); the triangle draws the reference image. */
 static void fetch_shader(rt_executor *x)
 {
-    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, FS_MOVED = 0x3780, TABLE = 0x11000, FETCH_TARGET = 0xc00000 };
+    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, FS_MOVED = 0x3780, TABLE = 0x32000, FETCH_TARGET = 0xc00000,
+           SNAPSHOT_TARGET = 0xc10000, TABLE_BYTES = 32 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(VS_CODE), vertex_calling_fetch, sizeof vertex_calling_fetch);
     memcpy((void *)(uintptr_t)at(FS_CODE), fetch_position_color, sizeof fetch_position_color);
@@ -2498,24 +2499,32 @@ static void fetch_shader(rt_executor *x)
     check_triangle(x, at(FETCH_TARGET));
     /* What the draw reads in place as the GPU runs it (rt_executor_cpu_write_ready, for the constant
        engine's dumps): memory first asked about answers 0 and is watched from then on. With the draw
-       recorded and not yet run, neither the descriptor table (its loads feed the fetch shader's buffer
-       loads) nor the colours read through it may be written, but memory past the vertex buffers'
-       ranges (64 KB each: NUM_RECORDS of the stride) may; once the batch has run, all may. */
+       recorded and not yet run, the colours read through the descriptor table may not be written, but
+       memory past the vertex buffers' ranges (64 KB each: NUM_RECORDS of the stride) may; once the batch
+       has run, all may. The table (past those ranges) may be written at once: the draw took a copy of its
+       descriptors as it was recorded (gcn_spirv.h, Table snapshots), so the table is rewritten (zeroed,
+       null descriptors) before the batch runs, and the triangle, into a target of its own, still draws. */
     {
         uint64_t ticket = 0;
         size_t count = 0;
-        CHECK(!rt_executor_cpu_write_ready(x, at(TABLE), 32) && !rt_executor_cpu_write_ready(x, at(COLORS), 16));
+        CHECK(!rt_executor_cpu_write_ready(x, at(TABLE), TABLE_BYTES) && !rt_executor_cpu_write_ready(x, at(COLORS), 16));
         CHECK(!rt_executor_cpu_write_ready(x, at(TABLE) + 0x20000, 16));
         rt_render_forget();
-        offset = record_setup(FETCH_BUFFER, at(FETCH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        memset((void *)(uintptr_t)at(SNAPSHOT_TARGET), 0, SIZE * SIZE * 4);
+        offset = record_setup(FETCH_BUFFER, at(SNAPSHOT_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         CHECK(rt_render_record_vertex_shader(FETCH_BUFFER, offset, vertex, error, sizeof error) == 0);
         CHECK(rt_render_record_user_data(FETCH_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 4, error, sizeof error) == 0);
         const rt_render_call *calls = rt_render_submitted(FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), &count);
         CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
-        CHECK(!rt_executor_cpu_write_ready(x, at(TABLE), 32) && !rt_executor_cpu_write_ready(x, at(COLORS), 16));
+        CHECK(rt_executor_cpu_write_ready(x, at(TABLE), TABLE_BYTES) && !rt_executor_cpu_write_ready(x, at(COLORS), 16));
         CHECK(rt_executor_cpu_write_ready(x, at(TABLE) + 0x20000, 16));
+        uint32_t saved[TABLE_BYTES / 4];
+        memcpy(saved, table, sizeof saved);
+        memset(table, 0, sizeof saved);
         CHECK(rt_executor_finish(x, error, sizeof error) == 0);
-        CHECK(rt_executor_cpu_write_ready(x, at(TABLE), 32) && rt_executor_cpu_write_ready(x, at(COLORS), 16));
+        memcpy(table, saved, sizeof saved);
+        check_triangle(x, at(SNAPSHOT_TARGET));
+        CHECK(rt_executor_cpu_write_ready(x, at(TABLE), TABLE_BYTES) && rt_executor_cpu_write_ready(x, at(COLORS), 16));
     }
     /* the same vertex shader with its fetch shader moved (the old place zeroed): the call goes where
        this draw's user data points, though which pair holds the address is kept from the first draw */

@@ -415,6 +415,58 @@ static void image_programs(void)
         }
 }
 
+/* Draw table snapshots (gcn_called_table_snapshot_plan): vertex_calling_fetch's fetch shader loads its
+   two buffer descriptors from the table at the caller's s[2:3], at bytes 0 and 16: two entries, their
+   uses at GCN_TABLE_CALLEE_AT plus the loads' dwords in the fetch shader, and no other load of their
+   offsets and sizes. A fetch-shader load through the call's return pair is no use; another load of an
+   entry's offset and size through a pointer the program writes leaves the entry's every_load clear.
+   The vertex shader translates with its block's address after the user data and validates; an
+   address over the user data is refused. */
+static void draw_table_snapshots(void)
+{
+    gcn_table_snapshot plan;
+    char error[300] = "";
+    const size_t fetch_dwords = sizeof fetch_position_color / 4;
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), fetch_position_color, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    CHECK(plan.entry_count == 2 && plan.entries[0].pointer_sgpr == 2 && plan.entries[0].offset == 0 && plan.entries[1].offset == 16 &&
+          plan.entries[1].first_word == 4 && plan.entries[0].every_load && plan.entries[1].every_load);
+    CHECK(plan.use_count == 2 && plan.uses[0].at == (GCN_TABLE_CALLEE_AT | 0) && plan.uses[1].at == (GCN_TABLE_CALLEE_AT | 1) &&
+          plan.uses[1].entry == 1);
+    CHECK(gcn_table_snapshot_plan(PROGRAM(vertex_calling_fetch), &plan, error, sizeof error) == 0 && plan.entry_count == 0); /* no callee given */
+    uint32_t through_return[sizeof fetch_position_color / 4];
+    memcpy(through_return, fetch_position_color, sizeof through_return);
+    through_return[0] = 0xc0820100; /* s_load_dwordx4 s[4:7], s[0:1], 0x0: the return address */
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), through_return, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].offset == 16 && plan.entries[0].every_load && plan.use_count == 1);
+    static const uint32_t copied_pointer[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe880402, /* s_mov_b64 s[8:9], s[2:3] */
+        0xc0860900, /* s_load_dwordx4 s[12:15], s[8:9], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(copied_pointer), NULL, 0, GCN_DRAW_SNAPSHOT_WORDS, &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && !plan.entries[0].every_load && plan.use_count == 1);
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), fetch_position_color, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    gcn_vertex_layout layout = vertex_layout;
+    layout.callee = fetch_position_color, layout.callee_dwords = fetch_dwords, layout.code_address = 0x1000, layout.error_address = 0x2000;
+    layout.table_snapshot = &plan, layout.table_block_offset = 2 * GCN_USER_SGPR_MAX * 4;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
+    if (translated) fprintf(stderr, "vertex_calling_fetch with snapshots: %s\n", error);
+    CHECK(translated == 0);
+    if (spirv) CHECK(validate(spirv, words, "vertex_calling_fetch_snapshot") != 0);
+    free(spirv);
+    spirv = NULL;
+    layout.table_block_offset = 8;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "block's address at push-constant byte 8"));
+    free(spirv);
+}
+
 /* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the
    callee inlined and validates, reporting the SGPRs its code reads (the inlined buffer loads read the
    descriptors in s[4:11]; nothing reads s12); gcn_called_memory_reads lists the callee's two descriptor
@@ -1033,6 +1085,7 @@ int main(void)
     vector_stores();
     image_programs();
     calls();
+    draw_table_snapshots();
     user_data_read();
     depth_exports();
     translates(PROGRAM(scale_add), "scale_add");

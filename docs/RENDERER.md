@@ -654,6 +654,20 @@ Instead:
        is recorded, is left out, and its loads read memory when the dispatch runs, as before. A tighter
        bound on how far the GPU may trail (tried first, not merged) looked slower in an A/B on a loaded
        machine.
+     - **A draw copies the tables its shaders read through their user data when it is recorded.** The
+       constant engine dumps the draws' buffer descriptors (the fetch shader's vertex buffers, the pixel
+       shader's constant buffers) into a ring that the next draws' shaders `s_load` from as they run, so
+       a dump could not land while any draw before it was still to run: after the GPU copies, these
+       dumps were about 95% of the steps that still waited for all the GPU's work (17 November 2026).
+       Now the translator plans a vertex shader's loads (its fetch shader's included,
+       `gcn_called_table_snapshot_plan`, at `GCN_TABLE_CALLEE_AT` plus the load's place in the fetch
+       shader) and a pixel shader's as for a compute shader, up to 255 words; as it records a draw,
+       the executor copies each entry's words from guest memory into a block of the open batch's own
+       buffer (the mask first, as for a dispatch), and the push constants carry each stage's block
+       address after the user data (bytes 128 and 136, on devices with at least 144 push-constant
+       bytes; the stages then share one range). Copied loads are left out of the reads the batch
+       notes, so the next dump lands at once; an entry that open or submitted work may store to keeps
+       reading memory as the draw runs, and so do loads of the same words through another pointer.
      - **A batch the GPU does not finish stops by name.** Each wait for submitted work gives the GPU
        20 seconds, far past any batch the game's frames make; then the run stops naming the oldest
        unfinished batch's draws (vertex and pixel shader, most vertices) and dispatches (shader, most

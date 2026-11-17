@@ -181,12 +181,24 @@ int gcn_called_memory_reads(const uint32_t *code, size_t dwords, const uint32_t 
    as before.
    uses[] lists each s_load's dword position with its entry. Entries take the loads in program order
    while their words fit (GCN_TABLE_SNAPSHOT_WORDS); a load past that, or one whose pointer is not
-   such a pair, reads memory. */
-enum { GCN_TABLE_SNAPSHOT_WORDS = 15, GCN_TABLE_SNAPSHOT_ENTRIES = 15, GCN_TABLE_SNAPSHOT_USES = 32 };
+   such a pair, reads memory.
+
+   Vertex and pixel shaders take snapshots too, when the draw is recorded (gcn_vertex_layout's and
+   gcn_pixel_layout's table_snapshot): the game's constant engine dumps their buffer descriptors into a
+   ring the draws after the dump read in place, so without a copy each dump had to wait for every draw
+   before it to run. Their words do not fit in the push constants: the executor writes each draw's mask
+   and words to a block of its own, and the push constants hold the block's GPU address. A vertex
+   shader's fetch shader is planned with it (gcn_called_table_snapshot_plan); a use in the fetch shader
+   is at GCN_TABLE_CALLEE_AT + its dword position there. */
+enum { GCN_TABLE_SNAPSHOT_WORDS = 15, GCN_DRAW_SNAPSHOT_WORDS = 255, GCN_TABLE_SNAPSHOT_ENTRIES = 32, GCN_TABLE_SNAPSHOT_USES = 128,
+       GCN_TABLE_BLOCK_PUSH_LIMIT = 256 /* table_block_offset + 8 within it: only on devices with that many push-constant bytes */ };
+#define GCN_TABLE_CALLEE_AT 0x80000000u
 typedef struct {
     unsigned pointer_sgpr;   /* the user-data SGPR pair holding the pointer (48 bits) */
     uint32_t offset, dwords; /* the bytes from the pointer, and how many dwords the load reads */
     unsigned first_word;     /* where its dwords start among the snapshot's data words */
+    int every_load;          /* 1 when no s_load outside the entry's uses reads that many dwords at that offset:
+                                when it holds a copy, its memory is then not read in place through any pointer */
 } gcn_table_entry;
 typedef struct {
     gcn_table_entry entries[GCN_TABLE_SNAPSHOT_ENTRIES];
@@ -199,6 +211,10 @@ typedef struct {
 } gcn_table_snapshot;
 /* The snapshot plan of a program; 0, or -1 with the reason (code that does not decode). */
 int gcn_table_snapshot_plan(const uint32_t *code, size_t dwords, gcn_table_snapshot *plan, char *error, size_t error_size);
+/* The same for a program that may call a fetch shader (callee, callee_dwords long; NULL for none), its
+   entries' words at most max_words (GCN_DRAW_SNAPSHOT_WORDS at most). */
+int gcn_called_table_snapshot_plan(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords, unsigned max_words,
+                                   gcn_table_snapshot *plan, char *error, size_t error_size);
 
 /* A table-driven copy: a compute program that loads its workgroup's entry of three 32-bit words (x, y,
    count) from a table buffer, indexed by its workgroup's x index, and in each thread (lane id v0, its
@@ -362,6 +378,11 @@ typedef struct {
     unsigned instance_vgprs;
     uint32_t step_rates[2];
     unsigned step_rates_set;
+    /* when not NULL, the program's plan (gcn_called_table_snapshot_plan, its fetch shader's included): its
+       loads take the draw's block, whose GPU address (64 bits) is at push-constant byte table_block_offset
+       (Table snapshots, above) */
+    const gcn_table_snapshot *table_snapshot;
+    uint32_t table_block_offset;
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
@@ -411,6 +432,8 @@ typedef struct {
     uint32_t depth_export;    /* DB_SHADER_CONTROL's export enables (GCN_DEPTH_EXPORT_*), 0 when SPI_SHADER_Z_FORMAT exports nothing */
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
     uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
+    const gcn_table_snapshot *table_snapshot; /* as gcn_vertex_layout's */
+    uint32_t table_block_offset;
 } gcn_pixel_layout;
 
 /* DB_SHADER_CONTROL's export enables (AMD's gfx_7_2_sh_mask.h): Z_EXPORT_ENABLE bit 0,
