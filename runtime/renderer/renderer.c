@@ -275,60 +275,64 @@ static void show_later(const rt_gpu_step *step)
     defer_step(step, copied ? snapshot.ticket : last_ticket, copied ? &snapshot : NULL);
 }
 
-/* The fills recorded into the GPU's work that may not have run yet (fill_on_gpu), with their tickets: a
-   wait on memory one of them writes is not taken to hold, nor to be satisfied by a deferred step,
+/* The fills and copies recorded into the GPU's work that may not have run yet (write_on_gpu), with the
+   guest memory they write and their tickets: a wait on memory one of them writes is not taken to hold
    before it has run. Those whose submissions have run are dropped as the list fills; while it is
-   still full, a fill is performed here instead (RECORDED_FILLS of them pending is far more than a
+   still full, the step is performed here instead (RECORDED_WRITES of them pending is far more than a
    buffer's few). */
-enum { RECORDED_FILLS = 64 };
+enum { RECORDED_WRITES = 64 };
 typedef struct {
     uint64_t address, bytes, ticket;
-} recorded_fill;
-static recorded_fill recorded_fills[RECORDED_FILLS];
-static size_t recorded_fill_count;
-static uint64_t last_fill_ticket; /* the latest recorded fill's, for rt_renderer_wait_idle (atomic) */
+} recorded_write;
+static recorded_write recorded_writes[RECORDED_WRITES];
+static size_t recorded_write_count;
+static uint64_t last_write_ticket; /* the latest recorded write's, for rt_renderer_wait_idle (atomic) */
 
-/* Drops the recorded fills whose submissions have run (renderer lock held). */
-static void forget_fills_run(void)
+/* Drops the recorded writes whose submissions have run (renderer lock held). */
+static void forget_writes_run(void)
 {
     const uint64_t done = executor ? rt_executor_done_ticket(executor) : 0;
     size_t kept = 0;
-    for (size_t i = 0; i < recorded_fill_count; i++)
-        if (recorded_fills[i].ticket > done) recorded_fills[kept++] = recorded_fills[i];
-    recorded_fill_count = kept;
+    for (size_t i = 0; i < recorded_write_count; i++)
+        if (recorded_writes[i].ticket > done) recorded_writes[kept++] = recorded_writes[i];
+    recorded_write_count = kept;
 }
 
-static int recorded_fill_over(const rt_gpu_step *wait)
+static int recorded_write_over(const rt_gpu_step *wait)
 {
-    if (!recorded_fill_count) return 0;
+    if (!recorded_write_count) return 0;
     lock_renderer();
-    forget_fills_run();
+    forget_writes_run();
     int over = 0;
-    for (size_t i = 0; i < recorded_fill_count && !over; i++) over = step_memory_over(wait, recorded_fills[i].address, recorded_fills[i].bytes);
+    for (size_t i = 0; i < recorded_write_count && !over; i++) over = step_memory_over(wait, recorded_writes[i].address, recorded_writes[i].bytes);
     unlock_renderer();
     return over;
 }
 
-/* A fill (RT_GPU_STEP_FILLS) recorded into the executor's open batch in the step's place, after the work
-   before it and before the work after it, instead of performed here once all that work has run: 1 when
-   recorded. Not while a deferred step not yet performed writes that memory (the GPU may make the fill
-   before the completion thread performs it), nor before the executor is open or for memory it declines. */
-static int fill_on_gpu(const rt_gpu_step *step)
+/* A fill (RT_GPU_STEP_FILLS) or a copy (RT_GPU_STEP_COPIES) recorded into the executor's open batch in
+   the step's place, after the work before it and before the work after it, instead of performed here
+   once all that work has run: 1 when recorded. Not while a deferred step not yet performed writes the
+   memory it writes, or a copy's source (the GPU may get there before the completion thread performs
+   it), nor before the executor is open or for memory it declines. */
+static int write_on_gpu(const rt_gpu_step *step)
 {
     const uint64_t address = step->memory[0], bytes = step->memory[1];
-    if (deferred_writes_over(address, bytes)) return 0;
+    const int copy = (step->flags & RT_GPU_STEP_COPIES) != 0;
+    const uint64_t *w = step->words; /* a copy's: source, source in the GDS, destination, destination in the GDS, bytes */
+    if (deferred_writes_over(address, bytes) || (copy && !w[1] && deferred_writes_over(w[0], w[4]))) return 0;
     lock_renderer();
-    if (recorded_fill_count == RECORDED_FILLS) forget_fills_run();
+    if (recorded_write_count == RECORDED_WRITES) forget_writes_run();
     char error[RENDER_ERROR_BYTES];
     uint64_t ticket = 0;
-    const int taken = !executor || recorded_fill_count == RECORDED_FILLS
-                          ? 1
-                          : rt_executor_fill(executor, address, bytes, (uint32_t)step->words[0], &ticket, error, sizeof error);
+    int taken = 1;
+    if (executor && recorded_write_count < RECORDED_WRITES)
+        taken = copy ? rt_executor_copy(executor, w[2], w[3] != 0, w[0], w[1] != 0, w[4], &ticket, error, sizeof error)
+                     : rt_executor_fill(executor, address, bytes, (uint32_t)w[0], &ticket, error, sizeof error);
     if (taken < 0) rt_fatal(step->function, error);
     if (taken == 0) {
-        last_ticket = ticket; /* the deferred steps after it wait for the fill too */
-        recorded_fills[recorded_fill_count++] = (recorded_fill){address, bytes, ticket};
-        __atomic_store_n(&last_fill_ticket, ticket, __ATOMIC_RELEASE);
+        last_ticket = ticket; /* the deferred steps after it wait for it too */
+        recorded_writes[recorded_write_count++] = (recorded_write){address, bytes, ticket};
+        __atomic_store_n(&last_write_ticket, ticket, __ATOMIC_RELEASE);
     }
     unlock_renderer();
     return taken == 0;
@@ -376,8 +380,8 @@ static void run_batch(batch *b)
             show_later(&b->steps[i]);
             continue;
         }
-        if ((b->steps[i].flags & RT_GPU_STEP_FILLS) && fill_on_gpu(&b->steps[i])) continue;
-        const int early = b->steps[i].holds && !recorded_fill_over(&b->steps[i]); /* a recorded fill may change what it reads */
+        if ((b->steps[i].flags & (RT_GPU_STEP_FILLS | RT_GPU_STEP_COPIES)) && write_on_gpu(&b->steps[i])) continue;
+        const int early = b->steps[i].holds && !recorded_write_over(&b->steps[i]); /* a recorded write may change what it reads */
         if (early && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
             perform_step(&b->steps[i]);
             continue;
@@ -388,7 +392,7 @@ static void run_batch(batch *b)
         lock_renderer();
         char error[RENDER_ERROR_BYTES];
         if (executor && rt_executor_finish(executor, error, sizeof error)) rt_fatal(b->steps[i].function, error);
-        recorded_fill_count = 0; /* every fill has run */
+        recorded_write_count = 0; /* every recorded write has run */
         unlock_renderer();
         perform_step(&b->steps[i]);
     }
@@ -434,9 +438,9 @@ void rt_renderer_wait_idle(void)
     while (queue_head || running) pthread_cond_wait(&queue_changed, &queue_lock);
     pthread_mutex_unlock(&queue_lock);
     drain_deferred(); /* the last batch's deferred steps (its work: their tickets) */
-    const uint64_t filled = __atomic_load_n(&last_fill_ticket, __ATOMIC_ACQUIRE); /* the fills the GPU makes in the steps' place */
+    const uint64_t written = __atomic_load_n(&last_write_ticket, __ATOMIC_ACQUIRE); /* the fills and copies the GPU makes in the steps' place */
     char error[RENDER_ERROR_BYTES];
-    if (filled && executor && rt_executor_wait_ticket(executor, filled, error, sizeof error)) rt_fatal("the renderer (a wait for its work)", error);
+    if (written && executor && rt_executor_wait_ticket(executor, written, error, sizeof error)) rt_fatal("the renderer (a wait for its work)", error);
 }
 
 /* Copies the tables each dispatch of a submitted buffer reads through its user data, now, on the

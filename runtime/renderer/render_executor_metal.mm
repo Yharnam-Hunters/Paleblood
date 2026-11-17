@@ -1706,6 +1706,7 @@ extern "C" int rt_executor_resolve(rt_executor *, uint64_t, uint64_t, char *, si
 
 /* Metal runs each buffer to completion before the renderer performs a step: the renderer fills the memory itself. */
 extern "C" int rt_executor_fill(rt_executor *, uint64_t, uint64_t, uint32_t, uint64_t *, char *, size_t) { return 1; }
+extern "C" int rt_executor_copy(rt_executor *, uint64_t, int, uint64_t, int, uint64_t, uint64_t *, char *, size_t) { return 1; }
 
 extern "C" int rt_executor_finish(rt_executor *x, char *error, size_t error_size)
 {
