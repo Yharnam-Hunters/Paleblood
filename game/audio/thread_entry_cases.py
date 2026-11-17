@@ -224,8 +224,10 @@ def cases():
     yield case('sleep-clears-startup', delay=1, sleeps=[[pointer('startup', None)]])
     yield case('routine-no-writes-wait-terminates', routine_a=[(a, [])])
     yield case('virtual-no-writes-wait-terminates', routine=False, virtual_a=[(0, [])])
+    # A wrong wide loop must pass the later byte gate and reach its terminating callback.
     yield case('initial-signal-stops-with-wide-neighbor-control',
-               initial_signal=[number('running', 0)], routine_a=[(a, [number('running', 0, 4)])])
+               initial_signal=[number('running', 0)], waits=[[number('running', 1)]],
+               routine_a=[(a, [number('running', 0, 4)])])
 
 
 def main():
