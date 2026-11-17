@@ -1032,8 +1032,8 @@ frame_timing_get_monotonic_ms,option-recorded,wait-sleep,91,91,0,0,3a73b48ae6f6d
 frame_timing_get_monotonic_ms,option-recorded,wait-spin,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_us,recorded,,800,799,0,1,4e1059aed1298996,2026-11-14
 frame_timing_get_monotonic_us,edge,,20,20,0,0,4e1059aed1298996,2026-11-14
-frame_timing_give_handle_to_local_request_02269d40,edge,,22,22,0,0,705c39228e7f29bd,2026-11-14
-frame_timing_give_handle_to_server_request_02269e30,edge,,22,22,0,0,705c39228e7f29bd,2026-11-14
+frame_timing_give_handle_to_local_request_02269d40,edge,,22,22,0,0,57878c2b5a84aba9,2026-11-17
+frame_timing_give_handle_to_server_request_02269e30,edge,,22,22,0,0,57878c2b5a84aba9,2026-11-17
 frame_timing_holygrail_until_idle_0200f970,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_until_idle_0200f970,edge,60,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_until_idle_020118f0,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
@@ -1059,7 +1059,7 @@ frame_timing_listener_list_prepare_013dab20,recorded,,125,125,0,0,d704f414255172
 frame_timing_listener_list_prepare_013dab20,edge,,20,20,0,0,d704f414255172fc,2026-11-14
 frame_timing_listener_take_owner_013d6880,edge,,7,7,0,0,abb51993bb79402d,2026-11-14
 frame_timing_listener_take_resource_013d68b0,edge,,12,12,0,0,abb51993bb79402d,2026-11-14
-frame_timing_lookup_session_object_02265290,edge,,33,33,0,0,e19b24011b8a7938,2026-11-13
+frame_timing_lookup_session_object_02265290,edge,,33,33,0,0,0d1d573c71ee68d6,2026-11-17
 frame_timing_pace_frame,recorded,,585,585,0,0,a3d44cba82dab3c2,2026-10-09
 frame_timing_pace_frame,recorded,30,585,585,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,recorded,60,585,585,0,0,a3d44cba82dab3c2,2026-10-07
@@ -1074,8 +1074,8 @@ frame_timing_part_0x10_update_013d5440,recorded,,102,102,0,0,b2b1e1391c2bf853,20
 frame_timing_part_0x10_update_013d5440,edge,,30,30,0,0,b2b1e1391c2bf853,2026-11-14
 frame_timing_pass_handle_on_01e9cb80,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
 frame_timing_pass_handle_on_with_items_01e9cd20,edge,,26,26,0,0,99aebc085c437b75,2026-11-13
-frame_timing_pass_on_in_local_mode_02265170,edge,,36,36,0,0,e19b24011b8a7938,2026-11-13
-frame_timing_pass_on_in_server_mode_02265960,edge,,21,21,0,0,20d642ef8efa172d,2026-11-13
+frame_timing_pass_on_in_local_mode_02265170,edge,,36,36,0,0,0d1d573c71ee68d6,2026-11-17
+frame_timing_pass_on_in_server_mode_02265960,edge,,21,21,0,0,830b3c0637ebe9ac,2026-11-17
 frame_timing_posix_sleep_ms,edge,,11,11,0,0,316683d176b2d7b8,2026-11-10
 frame_timing_profile_frame_end_01456ef0,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_profile_start_01456eb0,edge,,12,12,0,0,ef8ef3f096df299e,2026-11-13
