@@ -2,12 +2,12 @@
 
 # Camera
 
-The follow camera: how it turns the stick, the character's movement and a lock-on target into a camera position each frame, how it keeps out of walls, and where its field of view comes from.
+The follow camera: how it turns the stick, the character's movement and a lock-on target into a camera position each frame, how it keeps out of walls, where its field of view comes from, and the small math helpers it builds the subject's transform with.
 
 **At a glance**
 
 - **Scope:** Camera update, targeting and lock-on, collision with the world, field of view.
-- **Verified:** The whole follow-camera update, `camera_update_follow` (20 KB), and the pitch and yaw getters are replaced and edge-verified, each with an independent review.
+- **Verified:** The whole follow-camera update, `camera_update_follow` (20 KB), and the pitch and yaw getters are replaced and edge-verified, each with an independent review; so are the five math helpers it uses to build the subject's transform.
 - **Our option:** `BB_TARGET_FPS` (30, 60, uncapped) reproduces what the frame-rate patches change in the update.
 - **Open:** Who calls the update and sets its requests, the parameter table's other fields, and what the camera looks like in the running game.
 
@@ -107,6 +107,28 @@ turn that into angles:
 When the direction has no length to measure (both components zero), each falls back to the angle
 it stored last time instead of computing a meaningless one.
 
+### The math under the subject's transform
+
+When the update builds the subject's transform, it calls a few general math helpers. All five are
+now replaced and edge-verified, by [@FFwLo](https://github.com/FFwLo):
+
+- `camera_axis_angle_quaternion_00848e80` (`0x00848e80`) makes a rotation quaternion from an axis
+  and an angle: the axis times the sine of half the angle, and the cosine of half the angle. The
+  axis is used as given, not normalised. The sine and cosine come from the game's own polynomial
+  approximation, which works in eighths of a turn and clamps both results to at most 1, so even a
+  not-a-number or infinite angle gives values of plus or minus 1 rather than not-a-number.
+- `camera_transform_matrix_0083d4d0` (`0x0083d4d0`) builds a 4x4 transform from a position, a
+  quaternion and a per-axis scale: the quaternion's rotation, scaled along each axis, with the
+  position in the last row ([#839](https://github.com/Yharnam-Hunters/Paleblood/pull/839)).
+- Its three steps are replaced too ([#996](https://github.com/Yharnam-Hunters/Paleblood/pull/996)):
+  turning a quaternion into rotation rows (`0x00829b00`), multiplying three rows by three rows
+  (`0x0084b9d0`), and finishing an affine matrix by setting the last column to 0, 0, 0, 1
+  (`0x0083b7e0`).
+
+They follow the original's operations in the same order, so even not-a-number inputs give the
+same bits. A side effect is kept: because the scale is applied as a full matrix multiply, an
+infinite or not-a-number scale spreads not-a-number into entries that would otherwise be zero.
+
 <details>
 <summary>How these were verified</summary>
 
@@ -123,7 +145,16 @@ it stored last time instead of computing a meaningless one.
   in #109, merged in [#280](https://github.com/Yharnam-Hunters/Paleblood/pull/280). 32 and 30
   edge cases pass, including not-a-number directions, and an independent review approved
   them.
-- All three are edge-verified only. No camera behaviour has been recorded in the running game.
+- The math helpers: by [@FFwLo](https://github.com/FFwLo). The axis-angle quaternion and
+  the transform pass 866 and 168 edge cases
+  ([#839](https://github.com/Yharnam-Hunters/Paleblood/pull/839)), covering every octant
+  boundary, angles past the conversion's overflow, infinities, NaN payloads and denormals; the
+  rotation rows, row multiply and affine finish pass 103, 58 and 9
+  ([#996](https://github.com/Yharnam-Hunters/Paleblood/pull/996)), after which the transform's
+  cases were rerun with all three replaced. 39 and 22 deliberate mutants were killed; the two
+  survivors of #996 cannot change the result. None of these helpers is called during the boot
+  recordings, so none has recorded cases.
+- All of these are edge-verified only. No camera behaviour has been recorded in the running game.
 
 </details>
 
