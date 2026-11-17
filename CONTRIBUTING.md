@@ -199,6 +199,21 @@ that every other one rewrites too:
   differently stops for you, except dated test records, where the newer one wins), rebuilds and
   validates before it commits. Anything else that conflicts is left for you to resolve.
 
+### Refactoring while pull requests are open
+
+Cleanups (recovering a shared helper, merging duplicate structs, naming raw offsets, splitting a
+big file) keep behaviour unchanged, but a cleanup that rewrites files other pull requests are
+changing makes them conflict. Before one, run `tools/refactor_map.py`: it lists, for every source
+file under `game/` and `runtime/`, the open pull requests touching it and the functions and
+verification rows it holds, and ranks the **quiet** subsystems (no open pull request touches them)
+by what a simple scan finds there: structs with identical members in different files or one name
+defined in several files, raw offset access, `unknown_` padding, and repeated runs of code lines.
+`--files` lists every file, `--json` prints the whole map, `--prs FILE` reads the pull requests
+from a saved `gh pr list --json number,title,author,files` instead of asking GitHub. The scan is a
+lead, not a finding: read the code first. Work in a quiet subsystem, keep each pull request to one
+theme, re-record the verification rows that go stale, and leave busy subsystems until their pull
+requests merge.
+
 ### Definition of done
 
 A function goes to `main` only when it is **verified and readable**:
