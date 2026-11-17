@@ -29,41 +29,6 @@ namespace {
 
 using namespace engine::scaleform_heap;
 
-// The system allocators the engine and the page manager take memory from.
-struct SystemAllocator;
-struct SystemAllocatorVtable {
-    void *unknown_slots_0[5];
-    void (*free)(SystemAllocator *allocator, uintptr_t memory, uint64_t bytes, uint64_t alignment);
-    void *unknown_slots_6[5];
-    uintptr_t (*allocate)(SystemAllocator *allocator, uint64_t bytes, uint64_t alignment);
-};
-static_assert(offsetof(SystemAllocatorVtable, free) == 0x28 && offsetof(SystemAllocatorVtable, allocate) == 0x58);
-struct SystemAllocator {
-    const SystemAllocatorVtable *vtable;
-};
-
-// Fields of the shared structs that scaleform_heap.h leaves unnamed.
-constexpr std::size_t engine_root_offset = 0x0;     // Engine: the heap root
-constexpr std::size_t root_arenas_offset = 0x10;    // heap root: the arenas' allocators
-constexpr std::size_t heap_arena_offset = 0xb8;     // MemoryHeap: its arena (int32)
-constexpr std::size_t manager_allocator_offset = 0x0; // PageManager: its allocator
-constexpr std::size_t manager_spares_offset = 0x10; // PageManager: the ring of spare descriptors
-constexpr std::size_t node_parent_offset = 0x0;     // LargeBlockNode: its parent (the root's: the tree's root slot)
-
-template <typename T>
-T read_at(const void *object, std::size_t offset)
-{
-    T value;
-    std::memcpy(&value, static_cast<const uint8_t *>(object) + offset, sizeof value);
-    return value;
-}
-
-template <typename T>
-void write_at(void *object, std::size_t offset, T value)
-{
-    std::memcpy(static_cast<uint8_t *>(object) + offset, &value, sizeof value);
-}
-
 // A large block's node goes right after the block; flag 3 keeps the alignment in the word after it.
 constexpr uint64_t large_rounding = 8;
 constexpr uint64_t alignment_word_bytes = 8;
@@ -85,9 +50,7 @@ RT_ORIGINAL(0x0233a630, bins_remove_page, void(Bins *bins, uintptr_t base));
 
 SystemAllocator *arena_allocator(const Engine *engine)
 {
-    const auto *root = read_at<const uint8_t *>(engine, engine_root_offset);
-    const auto arena = read_at<int32_t>(engine->heap, heap_arena_offset);
-    return read_at<SystemAllocator *>(root, root_arenas_offset + static_cast<std::size_t>(arena) * sizeof(void *));
+    return engine->root->arenas[engine->heap->arena];
 }
 
 // Asks the limit handler to make room, with the page manager's lock let go around the call.
@@ -104,18 +67,13 @@ bool ask_limit_handler(Engine *engine, uint64_t bytes)
     return made_room;
 }
 
-void set_parent(LargeBlockNode *node, uintptr_t parent)
-{
-    write_at(node, node_parent_offset, parent);
-}
-
 // Puts a node in the page manager's tree, keyed by its address: each level goes left or right by
 // the key's next bit from the top. A node already in the tree stays where it is.
 void insert_node(PageManager *manager, LargeBlockNode *node)
 {
     if (manager->root == nullptr) {
         manager->root = node;
-        set_parent(node, reinterpret_cast<uintptr_t>(&manager->root));
+        node->parent = reinterpret_cast<uintptr_t>(&manager->root);
         return;
     }
     constexpr unsigned key_top_bit = 63;
@@ -125,7 +83,7 @@ void insert_node(PageManager *manager, LargeBlockNode *node)
         key <<= 1;
         if (child == nullptr) {
             child = node;
-            set_parent(node, reinterpret_cast<uintptr_t>(at));
+            node->parent = reinterpret_cast<uintptr_t>(at);
             return;
         }
         at = child;
@@ -166,10 +124,10 @@ extern "C" uintptr_t bb_engine_scaleform_heap_allocate_large_0233c660(Engine *en
     const uintptr_t flags = flags_for(alignment);
     node->heap_and_flags = reinterpret_cast<uintptr_t>(engine->heap) | flags;
     if (flags == stored_alignment_flags)
-        write_at(node, node_bytes, alignment);
+        *reinterpret_cast<uint64_t *>(node + 1) = alignment;  // the word right after the node
     node->children[1] = nullptr;
     node->children[0] = nullptr;
-    set_parent(node, 0);
+    node->parent = 0;
     insert_node(manager, node);
 
     info->bytes = length;
@@ -200,10 +158,10 @@ void release_page_held(Engine *engine, Page *page)
     const uintptr_t base = page->base;
     page->base = 0;
     page->heap = nullptr;
-    auto *allocator = read_at<SystemAllocator *>(manager, manager_allocator_offset);
+    SystemAllocator *allocator = manager->allocator;
     allocator->vtable->free(allocator, base, page_bytes, page_alignment);
 
-    auto *spares = reinterpret_cast<PageLinks *>(reinterpret_cast<uint8_t *>(manager) + manager_spares_offset);
+    PageLinks *spares = &manager->spares;
     page->links.next = spares->next;
     page->links.prev = spares;
     spares->next->prev = &page->links;

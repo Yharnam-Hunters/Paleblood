@@ -342,11 +342,29 @@ Declared SGPR bounds and written-slot masks are checked before reading either fo
 on shader-cache hits. Texels and descriptor words are read again at each draw, so CPU, compute
 and completed render-target writes remain visible through cached native views.
 
-Fragment sampling accepts the common translator's quad broadcasts for coordinate gradients;
-SPIRV-Cross lowers them to native 2x2 fragment-quad operations. Whole-quad mask expansion remains
-rejected because its wave-wide SCC is not established by a native 32-lane SIMD group. Vertex quad
-operations remain rejected. Native sampler selection is still limited to relative mip zero below;
-accepting the gradient instructions does not broaden that LOD profile.
+Fragment coordinate gradients use the common translator's numeric quad broadcasts. The Metal
+adapter accepts constant subgroup sources 0 through 3 and scalar 32-bit integer or float values.
+It gathers the requested producer's raw bits and presence in one native `quad_or` reduction;
+it never permutes data from an inactive lane. The call is materialized before later selections
+can short-circuit it. A missing producer discards that fragment and atomically records a fault
+in a separate word from the common translator's runtime stop. After GPU completion, the executor
+checks that word before publishing color or depth back to the guest pool. A fault poisons the
+executor: reset cannot resume it. This does not roll back shader writes performed earlier in
+the draw. See the [Metal language specification, sections 6.10.3 and 6.11.1](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
+for active-lane reductions, helper invocations and discard behavior.
+
+Admission currently requires one inlined, straight-line guest block. Quad reads inside per-lane
+selections, prior invocation termination, guest loops and mutable or escaping dispatcher state
+are rejected. Literal Boolean subgroup votes are width independent; dynamic wave votes and
+whole-quad mask expansion still require a separate control-flow proof. Vertex quad operations
+remain rejected. This does not broaden the sampler's relative-mip-zero profile below.
+
+`metal_quad_values_cpu` checks owned SPIR-V metadata, control-flow refusals, naming collisions
+and fresh-compiler reproducibility. `metal_quad_values` additionally executes full and one-pixel raster
+coverage with dynamic raw-bit patterns, plus deliberately divergent native packet callers that
+exercise the missing-source fault and discard. The latter callers are outside the adapter's
+admitted control-flow profile. These tests establish the stated numeric-read profile on the
+tested Metal device; they do not establish whole-quad execution or original-GPU equivalence.
 
 The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling
 modes through `rt_tiling_mip_chain`. SPIRV-Cross lowers 1D textures as 2D with height one. Native
