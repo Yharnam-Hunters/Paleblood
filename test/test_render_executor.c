@@ -15,6 +15,7 @@
 #include "render_fixture.h"
 #include "runtime/tiling.h"
 
+#include <dirent.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -1674,7 +1675,7 @@ static int draw_with_vertex_code(rt_executor *x, uint64_t buffer, uint64_t code,
    places, each drawn once, all draw, the least recently used giving its entry. The first, freed by
    then, draws again (translated again). A shader that then stops at run time (it reads VCC as a lane
    mask after writing its halves as scalars) is named by its own address: it took a freed entry, and
-   that entry's stop word is written into its code. */
+   its stop word follows from its own address (stop_index). */
 static void shaders_past_the_limit(rt_executor *x)
 {
     enum { MANY_SHADERS_BUFFER = 0xc0fd7000, SHADER_CODES = 0x3b00000, CODE_STRIDE = 0x100, SHADERS_DRAWN = 1100,
@@ -3668,6 +3669,58 @@ static void shader_sweep(const rt_executor_memory *memory)
     rmdir(directory);
 }
 
+/* Reads a whole file (at most `size` bytes) into `bytes`; its length, or -1. */
+static long read_file(const char *path, unsigned char *bytes, size_t size)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    const size_t got = fread(bytes, 1, size, f);
+    fclose(f);
+    return (long)got;
+}
+
+/* A shader translates to the same SPIR-V whatever the order the executor meets it in: its run-time stop
+   word follows from the shader itself, not from the entry it takes. Two vertex shaders (copies of one
+   program at two addresses) are drawn in one order in one executor and in the other order in a second,
+   each with the shader sweep writing the SPIR-V; each shader's SPIR-V is the same in both. Numbered by
+   entry, the stop word's address in the code differed, and so did the SPIR-V: the driver's pipeline
+   cache, which knows a pipeline by its SPIR-V, then compiled every pipeline again in every run. */
+static void same_spirv_in_any_order(const rt_executor_memory *memory)
+{
+    enum { ORDER_BUFFER = 0xc0e30000, ORDER_CODES = 0x3e00000, ORDER_STRIDE = 0x100, SPIRV_MAX = 1 << 20 };
+    const uint64_t codes[2] = {at(ORDER_CODES), at(ORDER_CODES + ORDER_STRIDE)};
+    for (int k = 0; k < 2; k++) memcpy((void *)(uintptr_t)codes[k], vertex_position_color, sizeof vertex_position_color);
+    char directories[2][32] = {"/tmp/pb-order-XXXXXX", "/tmp/pb-order-XXXXXX"}, path[320], error[256] = "";
+    for (int run = 0; run < 2; run++) {
+        CHECK(mkdtemp(directories[run]) != NULL);
+        setenv("BB_SHADER_SWEEP", directories[run], 1);
+        rt_executor *x = NULL;
+        const int opened = rt_executor_open(memory, &x, error, sizeof error);
+        unsetenv("BB_SHADER_SWEEP");
+        CHECK(opened == 0);
+        if (opened) return;
+        for (int k = 0; k < 2; k++) /* run 0 draws codes[0] first, run 1 codes[1] first */
+            CHECK(draw_with_vertex_code(x, ORDER_BUFFER, codes[run ? 1 - k : k], at(TARGET), error, sizeof error) == 0);
+        rt_executor_close(x);
+    }
+    static unsigned char spirv[2][SPIRV_MAX];
+    for (int k = 0; k < 2; k++) {
+        long length[2];
+        for (int run = 0; run < 2; run++) {
+            snprintf(path, sizeof path, "%s/vertex-%llx.spv", directories[run], (unsigned long long)codes[k]);
+            length[run] = read_file(path, spirv[run], SPIRV_MAX);
+        }
+        CHECK(length[0] > 0 && length[0] == length[1] && !memcmp(spirv[0], spirv[1], (size_t)length[0]));
+    }
+    for (int run = 0; run < 2; run++) { /* the sweep's files, then the directory */
+        DIR *d = opendir(directories[run]);
+        for (struct dirent *e; d && (e = readdir(d));)
+            if (e->d_name[0] != '.') snprintf(path, sizeof path, "%s/%s", directories[run], e->d_name), unlink(path);
+        if (d) closedir(d);
+        rmdir(directories[run]);
+    }
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -4425,6 +4478,7 @@ int main(void)
 
     rt_executor_close(x);
     shader_sweep(&memory);
+    same_spirv_in_any_order(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

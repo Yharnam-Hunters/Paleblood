@@ -44,7 +44,10 @@
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
-       MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
+       MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16 };
+/* the run-time stop words (stop_slot): a power of two, well above the shaders kept at once so that two of
+   them seldom share one */
+enum { STOP_SLOT_BITS = 13, STOP_SLOTS = 1 << STOP_SLOT_BITS };
 enum { IMAGE_BUCKETS = 4096, TABLE_BUCKETS = 2048 }; /* powers of two */
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
@@ -586,7 +589,7 @@ struct rt_executor {
     VkBuffer gds_buffer;
     VkDeviceMemory gds_memory;
     VkDeviceAddress gds_address;
-    volatile uint32_t *stop_words;   /* one per translated shader (stop_slot) */
+    volatile uint32_t *stop_words;   /* STOP_SLOTS, each written by the shaders stop_index picks */
     uint64_t stop_address;
     /* What changed the guest memory, and when (memory_changed): each change counts one up, and each
        CHANGE_CHUNK of the memory keeps the count of the last change that reached it. The CPU's writes
@@ -1379,37 +1382,75 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
 
-/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. Each
-   translated shader has its own stop word (stop_slot), so the reason names the shader that stopped. */
+/* Which stop word a translated shader writes (gcn_spirv.h's error_address): chosen from what the shader
+   is, its kind (a graphics stage, compute, or a tessellation or geometry pass) and its code address,
+   never from the order the executor met it. Its SPIR-V holds that word's address, so a shader numbered
+   by order translated differently from one run to the next, and the driver's pipeline cache, which
+   knows a pipeline by its SPIR-V, compiled it again in every run: in Iosefka's Clinic 150-230 s of
+   pipeline compiles on the renderer's thread in each boot (November 2026). Two shaders may share a
+   word; a stop then names each shader kept with that word. */
+enum { STOP_KIND_COMPUTE = 16, STOP_KIND_PASS = 32 }; /* graphics shaders use their stage number, below 16 */
+
+static size_t stop_index(int kind, uint64_t code)
+{
+    const uint64_t mixed = (code ^ (uint64_t)kind << 56) * 0x9e3779b97f4a7c15ull; /* Fibonacci hashing: the top bits */
+    return (size_t)(mixed >> (64 - STOP_SLOT_BITS));
+}
+
+static uint64_t stop_slot(const rt_executor *x, int kind, uint64_t code) { return x->stop_address + 4 * stop_index(kind, code); }
+
+/* The shaders that write one stop word, for its stop's reason: each kind and address once (a shader
+   kept in several translations, for other settings, writes the same word). */
+enum { STOPPED_NAMED = 4 };
+typedef struct {
+    const char *kinds[STOPPED_NAMED];
+    uint64_t codes[STOPPED_NAMED];
+    unsigned count;
+} stopped_shaders;
+
+static void add_stopped(stopped_shaders *named, const char *kind, uint64_t code)
+{
+    for (unsigned k = 0; k < named->count; k++)
+        if (named->codes[k] == code && !strcmp(named->kinds[k], kind)) return;
+    if (named->count < STOPPED_NAMED) named->kinds[named->count] = kind, named->codes[named->count++] = code;
+}
+
+/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code, naming
+   the shaders kept that write that stop word (stop_index): almost always one. */
 static int check_stop_words(rt_executor *x, char *error, size_t error_size)
 {
+    const volatile uint64_t *pairs = (const volatile uint64_t *)x->stop_words; /* two words a read: the buffer is 8-byte aligned */
     for (size_t i = 0; i < STOP_SLOTS; i++) {
+        if (!(i & 1) && !pairs[i / 2]) {
+            i++;
+            continue;
+        }
         const uint32_t code = x->stop_words[i];
         if (!code) continue;
         x->stop_words[i] = 0;
-        char reason[512];
+        char reason[512], names[STOPPED_NAMED * 48] = "";
         stop_reason(code, reason, sizeof reason);
-        if (i >= MAX_SHADERS + MAX_COMPUTE_PIPELINES) { /* a tessellation pass (tessellation_pass_for) */
-            const size_t k = i - MAX_SHADERS - MAX_COMPUTE_PIPELINES;
-            return failed(error, error_size, "the %s shader at %#llx: %s", pass_names[x->tess_passes[k].kind],
-                          (unsigned long long)x->tess_passes[k].code, reason);
+        stopped_shaders named = {0};
+        for (size_t k = 0; k < x->shader_count; k++)
+            if (x->shaders[k].module && stop_index(x->shaders[k].stage, x->shaders[k].code) == i)
+                add_stopped(&named, stage_name(x->shaders[k].stage), x->shaders[k].code);
+        for (size_t k = 0; k < x->compute_count; k++)
+            if (stop_index(STOP_KIND_COMPUTE, x->computes[k].code) == i) add_stopped(&named, "compute", x->computes[k].code);
+        for (size_t k = 0; k < x->tess_pass_count; k++)
+            if (stop_index(STOP_KIND_PASS + x->tess_passes[k].kind, x->tess_passes[k].code) == i)
+                add_stopped(&named, pass_names[x->tess_passes[k].kind], x->tess_passes[k].code);
+        if (!named.count) return failed(error, error_size, "a shader no longer kept (stop word %zu): %s", i, reason);
+        size_t used = 0;
+        for (unsigned k = 0; k < named.count && used < sizeof names; k++) {
+            const int wrote = snprintf(names + used, sizeof names - used, "%sthe %s shader at %#llx", k ? " or " : "", named.kinds[k],
+                                       (unsigned long long)named.codes[k]);
+            used += wrote > 0 ? (size_t)wrote : 0;
         }
-        const int compute = i >= MAX_SHADERS;
-        const shader_entry *shader = compute ? NULL : &x->shaders[i];
-        const uint64_t code_address = compute ? x->computes[i - MAX_SHADERS].code : shader->code;
-        return failed(error, error_size, "the %s shader at %#llx: %s",
-                      compute ? "compute" : stage_name(shader->stage),
-                      (unsigned long long)code_address, reason);
+        return failed(error, error_size, "%s: %s", names, reason);
     }
     return 0;
 }
 
-/* The GPU address of a translated shader's stop word: graphics shader entry `index`, or compute
-   entry `index` past them. */
-static uint64_t stop_slot(const rt_executor *x, int compute, size_t index)
-{
-    return x->stop_address + 4 * ((compute ? MAX_SHADERS : 0) + index);
-}
 
 /* ---- the shader sweep ----
    A diagnostic mode, never the default (docs/RENDERER.md, "Coverage survey"): with BB_SHADER_SWEEP naming a
@@ -3209,8 +3250,8 @@ static long shader_to_free(rt_executor *x)
    (walking a scene brings more shaders than that), the least recently used shader's once no unfinished
    batch draws with it, waiting for the GPU's work when every one is in use. That shader's module goes
    with the pipelines made from it: a module made later may get the same handle, and a pipeline found
-   by it would draw with the old shader. A shader keeps its entry (no other moves into it): its stop
-   word is the entry's (stop_slot), written into its code. The entry, or -1 with the reason. */
+   by it would draw with the old shader. A shader keeps its entry (no other moves into it). The entry,
+   or -1 with the reason. */
 static long shader_slot(rt_executor *x, char *error, size_t error_size)
 {
     if (x->shader_count < MAX_SHADERS) return (long)x->shader_count;
@@ -3278,7 +3319,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
-                                          .error_address = stop_slot(x, 0, (size_t)slot), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
+                                          .error_address = stop_slot(x, stage, code), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
                                           .code_address = code, .images = images, .image_count = image_count,
                                           .first_binding = first_binding, .user_data_read = user_read,
@@ -3287,7 +3328,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .step_rates_set = instancing.step_rates_set};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else if (stage == STAGE_DOMAIN) {
-        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, 0, (size_t)slot));
+        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
         layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
         layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
         result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
@@ -3299,7 +3340,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
                                          .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
                                          .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, 0, (size_t)slot),
+                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, stage, code),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .input_controls = input_controls,
                                          .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
@@ -3809,7 +3850,7 @@ static VkPipeline tessellation_pass_for(rt_executor *x, const draw_state *s, int
         return VK_NULL_HANDLE;
     }
     gcn_tessellation_layout layout = tessellation_layout(x, &s->hull, s->local.lds_bytes, user_sgprs,
-                                                         x->stop_address + 4 * (MAX_SHADERS + MAX_COMPUTE_PIPELINES + x->tess_pass_count));
+                                                         stop_slot(x, STOP_KIND_PASS + hull, code));
     layout.user_data_read = user_read;
     if (callee) {
         layout.callee = (const uint32_t *)(uintptr_t)callee, layout.callee_dwords = (size_t)((x->guest_base + x->size - callee) / 4);
@@ -3981,7 +4022,7 @@ static VkPipeline geometry_pass_for(rt_executor *x, const draw_state *s, int geo
         failed(error, error_size, "more tessellation and geometry passes than the executor keeps");
         return VK_NULL_HANDLE;
     }
-    gcn_geometry_layout layout = geometry_layout(x, s, g->user_sgprs, x->stop_address + 4 * (MAX_SHADERS + MAX_COMPUTE_PIPELINES + x->tess_pass_count));
+    gcn_geometry_layout layout = geometry_layout(x, s, g->user_sgprs, stop_slot(x, STOP_KIND_PASS + kind, g->code));
     layout.user_data_read = user_read;
     if (callee) {
         layout.callee = (const uint32_t *)(uintptr_t)callee, layout.callee_dwords = (size_t)((x->guest_base + x->size - callee) / 4);
@@ -4411,7 +4452,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, 1, x->compute_count),
+                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code),
                                        .images = images, .image_count = image_count, .user_data_read = user_read,
                                        .gds_address = x->gds_address};
     uint32_t *spirv = NULL;

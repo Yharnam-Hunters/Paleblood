@@ -94,13 +94,18 @@ Instead:
        AMD's sizes (2 VGPRs per barycentric pair, 3 for the pull model, 1 for the rest), as AMD's
        register documentation and LLVM's AMDGPU backend have it.
      - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
-       data format is its descriptor's). The executor owns a 32-bit stop word for each translated
-       shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
+       data format is its descriptor's). The executor owns 8,192 32-bit stop words; a translated
+       shader's GPU address of one is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
-       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shaders
+       kept that write that word. Which word a shader writes follows from its kind and code address
+       (`stop_index`), never from the order the executor met it: numbered by order, the same shader
+       translated to different SPIR-V from one run to the next, so the driver's pipeline cache, which
+       knows a pipeline by its SPIR-V, missed, and every boot compiled its pipelines again (in
+       Iosefka's Clinic, minutes of compiles on the renderer's thread in each boot, November 2026).
        The words live in host-cached memory where the device has it: every finished batch reads
-       all 1,600 of them, and from write-combined memory each read crossed the bus (in Iosefka's
-       Clinic that scan was the renderer thread's largest single cost, 13 November 2026).
+       all of them, and from write-combined memory each read crossed the bus (in Iosefka's Clinic
+       that scan was the renderer thread's largest single cost, 13 November 2026).
      - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
        shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
        base plus its offsets) is first checked against the imported pool. An access outside goes to
