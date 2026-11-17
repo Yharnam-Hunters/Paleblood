@@ -316,6 +316,60 @@ class ReviewFindingsTest(unittest.TestCase):
                 self.assertNotEqual(tree.fp(), before)
 
 
+# Edits a second independent review found; each must change what a row is for (the fingerprint,
+# or the legacy hash where the reading falls back). Files under game/sys/, before and after.
+HOLES_SECOND_REVIEW = {
+    'splice_space': ({'x.cpp': 'static const int zz = 0;\n#define K 5 \\  \n+ 1 + zz;\nextern "C" int bb_sys_target() { return K; }\n'},
+        {'x.cpp': 'static const int zz = 0;\n#define K 5 \\  \n+ 2 + zz;\nextern "C" int bb_sys_target() { return K; }\n'}),
+    'lonecr': ({'x.cpp': '#define K 5\n// note\r#undef K\r#define K 6\nextern "C" int bb_sys_target() { return K; }\n'},
+        {'x.cpp': '#define K 5\n// note\r#undef K\r#define K 7\nextern "C" int bb_sys_target() { return K; }\n'}),
+    'nestcat': ({'x.cpp': 'static int helper_v() { return 1; }\n#define CAT_(a, b) a ## b\n#define CAT(a, b) CAT_(a, b)\nextern "C" int bb_sys_target() { return CAT(CAT(help, er), _v)(); }\n'},
+        {'x.cpp': 'static int helper_v() { return 2; }\n#define CAT_(a, b) a ## b\n#define CAT(a, b) CAT_(a, b)\nextern "C" int bb_sys_target() { return CAT(CAT(help, er), _v)(); }\n'}),
+    'vaopt': ({'x.cpp': 'static int helper() { return 0; }\nstatic int helper_v() { return 1; }\n#define CALL(x, ...) x ## __VA_OPT__(_v)\nextern "C" int bb_sys_target() { return CALL(helper, 1)(); }\n'},
+        {'x.cpp': 'static int helper() { return 0; }\nstatic int helper_v() { return 2; }\n#define CALL(x, ...) x ## __VA_OPT__(_v)\nextern "C" int bb_sys_target() { return CALL(helper, 1)(); }\n'}),
+    'pragmamac': ({'x.cpp': '#define PACK_TIGHT _Pragma("pack(1)")\nPACK_TIGHT struct Wire { int z; };\nstruct S { char c; int i; };\nextern "C" int bb_sys_target(S *s) { return s->i; }\n'},
+        {'x.cpp': '#define PACK_TIGHT _Pragma("pack(4)")\nPACK_TIGHT struct Wire { int z; };\nstruct S { char c; int i; };\nextern "C" int bb_sys_target(S *s) { return s->i; }\n'}),
+    'swallow_anon': ({'x.cpp': 'struct S;\nstatic struct S *get_s() { return 0; }\nnamespace { const int kLimit = 4; }\nint other();\nextern "C" int bb_sys_target() { return kLimit; }\n'},
+        {'x.cpp': 'struct S;\nstatic struct S *get_s() { return 0; }\nnamespace { const int kLimit = 5; }\nint other();\nextern "C" int bb_sys_target() { return kLimit; }\n'}),
+    'swallow_tdefault': ({'x.cpp': 'template <typename T = int> T zero() { return T(); }\nextern "C" { static const int kLimit = 4; }\nint other();\nextern "C" int bb_sys_target() { return kLimit; }\n'},
+        {'x.cpp': 'template <typename T = int> T zero() { return T(); }\nextern "C" { static const int kLimit = 5; }\nint other();\nextern "C" int bb_sys_target() { return kLimit; }\n'}),
+    'fnret': ({'x.cpp': 'typedef int Handler;\nstatic int one(int a) { return a + 1; }\nstatic int two(int a) { return a + 2; }\nstatic Handler (*get_handler(int k))(int) { return k ? one : two; }\nextern "C" int bb_sys_target() { return get_handler(1)(5); }\n'},
+        {'x.cpp': 'typedef int Handler;\nstatic int one(int a) { return a + 1; }\nstatic int two(int a) { return a + 2; }\nstatic Handler (*get_handler(int k))(int) { return k ? two : one; }\nextern "C" int bb_sys_target() { return get_handler(1)(5); }\n'}),
+    'fptable': ({'x.cpp': 'static int f1(int a) { return a + 1; }\nstatic int f2(int a) { return a + 2; }\nstatic int other = 0, (*const tbl[2])(int) = { f1, f2 };\nextern "C" int bb_sys_target() { return tbl[0](3); }\n'},
+        {'x.cpp': 'static int f1(int a) { return a + 1; }\nstatic int f2(int a) { return a + 2; }\nstatic int other = 0, (*const tbl[2])(int) = { f2, f1 };\nextern "C" int bb_sys_target() { return tbl[0](3); }\n'}),
+    'sbind': ({'x.cpp': 'struct P { int x, y; };\nstatic auto [pa, pb] = P{1, 2};\nextern "C" int bb_sys_target() { return pb; }\n'},
+        {'x.cpp': 'struct P { int x, y; };\nstatic auto [pa, pb] = P{1, 3};\nextern "C" int bb_sys_target() { return pb; }\n'}),
+    'ifzero_inc': ({'a.h': '#ifndef A_H\n#define A_H\n#define VAL 2\n#endif\n', 'x.cpp': '#if 0\n#include "a.h"\n#endif\n#include "a.h"\n#ifndef VAL\n#define VAL 7\n#endif\nextern "C" int bb_sys_target() { return VAL; }\n'},
+        {'a.h': '#ifndef A_H\n#define A_H\n#define VAL 2\n#endif\n', 'x.cpp': '#if 0\n#include "a.h"\n#endif\n#ifndef VAL\n#define VAL 7\n#endif\nextern "C" int bb_sys_target() { return VAL; }\n'}),
+    'undefguard': ({'a.h': '#ifndef A_H\n#define A_H\n#undef VAL\n#define VAL 2\n#undef A_H\n#endif\n', 'x.cpp': '#include "a.h"\n#undef VAL\n#define VAL 7\n#include "a.h"\nextern "C" int bb_sys_target() { return VAL; }\n'},
+        {'a.h': '#ifndef A_H\n#define A_H\n#undef VAL\n#define VAL 2\n#undef A_H\n#endif\n', 'x.cpp': '#include "a.h"\n#undef VAL\n#define VAL 7\nextern "C" int bb_sys_target() { return VAL; }\n'}),
+    'once_if0': ({'a.h': '#if 0\n#pragma once\n#endif\n#undef VAL\n#define VAL 2\n', 'x.cpp': '#include "a.h"\n#undef VAL\n#define VAL 7\n#include "a.h"\nextern "C" int bb_sys_target() { return VAL; }\n'},
+        {'a.h': '#if 0\n#pragma once\n#endif\n#undef VAL\n#define VAL 2\n', 'x.cpp': '#include "a.h"\n#undef VAL\n#define VAL 7\nextern "C" int bb_sys_target() { return VAL; }\n'}),
+    'assert': ({'x.cpp': '#include <cassert>\nextern "C" int bb_sys_target(int a) { assert(a > 0); return a; }\n'},
+        {'x.cpp': '#include <cassert>\n\nextern "C" int bb_sys_target(int a) { assert(a > 0); return a; }\n'}),
+    'bline': ({'x.cpp': 'extern "C" int bb_sys_target() { return __builtin_LINE(); }\n'},
+        {'x.cpp': '\nextern "C" int bb_sys_target() { return __builtin_LINE(); }\n'}),
+    'alias': ({'x.cpp': 'extern "C" int real_impl(int a) { return a + 1; }\nextern "C" int entry(int a) __attribute__((alias("real_impl")));\nextern "C" int bb_sys_target(int a) { return entry(a); }\n'},
+        {'x.cpp': 'extern "C" int real_impl(int a) { return a + 2; }\nextern "C" int entry(int a) __attribute__((alias("real_impl")));\nextern "C" int bb_sys_target(int a) { return entry(a); }\n'}),
+}
+
+
+class SecondReviewTest(unittest.TestCase):
+    def test_each_edit_changes_what_the_row_is_for(self):
+        for label, (before, after) in HOLES_SECOND_REVIEW.items():
+            with self.subTest(label):
+                values = []
+                for files in (before, after):
+                    with tempfile.TemporaryDirectory() as root:
+                        for name, text in files.items():
+                            path = os.path.join(root, 'game', 'sys', name)
+                            os.makedirs(os.path.dirname(path), exist_ok=True)
+                            with open(path, 'w', newline='') as f:
+                                f.write(text)
+                        values.append(verification.source_fingerprint(root, 'sys_target'))
+                self.assertNotEqual(values[0], values[1])
+
+
 class CurrencyTest(unittest.TestCase):
     """Both kinds of value stay valid, each judged by its own rule, and migration converts only
     rows that are current."""

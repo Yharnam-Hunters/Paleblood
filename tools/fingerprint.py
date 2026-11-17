@@ -62,7 +62,11 @@ HASH_LENGTH = 16
 # Macros whose value depends on where code sits or when it was built. A closure that reaches one of
 # them uses the legacy hash.
 POSITIONAL = frozenset({'__LINE__', '__COUNTER__', '__DATE__', '__TIME__', '__TIMESTAMP__',
-                        '__INCLUDE_LEVEL__', '__BASE_FILE__'})
+                        '__INCLUDE_LEVEL__', '__BASE_FILE__', '__builtin_LINE', '__builtin_COLUMN',
+                        '__builtin_FILE', '__builtin_FILE_NAME', '__builtin_FUNCTION',
+                        '__builtin_source_location', 'source_location',
+                        # assert (<cassert>, <assert.h>) expands to __LINE__ inside a system header
+                        'assert', '_assert', '__assert', '__assert_fail', '__ASSERT_FUNCTION'})
 MAX_EXPANSION_TOKENS = 200_000
 MAX_EXPANSION_DEPTH = 32
 
@@ -125,7 +129,9 @@ def render(tokens: list[Tok]) -> str:
 def lex(text: str) -> list[tuple[bool, list[Tok]]]:
     """Logical lines (line splices joined) as (is_directive, tokens), comments removed. Code
     between directives is one run: only directive lines are line-bound."""
-    text = text.replace('\r\n', '\n').replace('\\\n', '')
+    # Line ends: CR LF and a lone CR end a line; a backslash before a line end (blanks between
+    # allowed, as GCC and Clang accept) joins the lines.
+    text = re.sub(r'\\[ \t\f\v]*\n', '', text.replace('\r\n', '\n').replace('\r', '\n'))
     out: list[tuple[bool, list[Tok]]] = []
     cur: list[Tok] = []
     in_directive = False
@@ -255,10 +261,13 @@ def parse(text: str) -> list[Decl]:
             continue
         for t in toks:
             if pending_end:
-                if t.kind == 'punct' and t.text not in ('}', '~', '#'):
+                if t.kind == 'punct' and t.text not in ('}', '~', '#', '[', ':', '::'):
                     pending_end = False
                 else:
                     finish()
+            if cur and head_end is not None and depth['{'] == 0 and (
+                    t.text == 'namespace' or (t.kind == 'str' and cur[-1].text == 'extern')):
+                raise ParseError('a namespace or extern block inside a declaration')
             if not cur:
                 cur_conds = cond_snapshot()
             if t.kind == 'punct' and t.text in ('(', '['):
@@ -314,17 +323,48 @@ def _opens_scope(cur: list[Tok]) -> bool:
     return len(cur) == 2 and words[0] == 'extern' and cur[1].kind == 'str'
 
 
+FUNCTION_TAIL = frozenset({'const', 'volatile', '&', '&&', 'noexcept', 'override', 'final', 'throw',
+                           'mutable', 'constexpr', 'requires', 'try'})
+
+
 def _function_like(head: list[Tok]) -> bool:
     """Whether a declaration whose first top-level braces just closed ends there (a function body)
-    rather than at the next ';' (a struct, enum, typedef or initializer)."""
+    rather than at the next ';' (a struct, enum, typedef or initializer): a head whose last
+    top-level parenthesis group is followed only by qualifiers, attributes, a trailing return type
+    or a constructor's initializer list."""
+    head = head[_skip_prefix(head):]
     depth = 0
-    for t in head:
+    last_close = None
+    for k, t in enumerate(head):
         if t.text in ('(', '['):
             depth += 1
         elif t.text in (')', ']'):
             depth -= 1
-        elif depth == 0 and (t.text in TAG_KEYWORDS or t.text in ('typedef', '=', 'using', 'concept')):
-            return False
+            if depth == 0 and t.text == ')':
+                last_close = k
+        elif depth == 0 and t.text == '=' and last_close is None:
+            return False                            # an initializer: int x = { ... };
+    if last_close is None:
+        return False
+    tail = head[last_close + 1:]
+    k = 0
+    while k < len(tail):
+        k = _skip_attributes(tail, k)
+        if k >= len(tail):
+            break
+        x = tail[k].text
+        if x in (':', '->'):
+            return True                             # initializer list, trailing return type
+        if x in FUNCTION_TAIL:
+            if k + 1 < len(tail) and tail[k + 1].text == '(':
+                try:
+                    _, k = _arguments(tail, k + 1)
+                except ExpansionError:
+                    return False
+                continue
+            k += 1
+            continue
+        return False
     return True
 
 
@@ -363,9 +403,10 @@ class Macro:
             names = [t.text for t in rest[1:close] if t.text != ',']
             if names and names[-1] == '...':
                 self.variadic = True
-                names[-1] = '__VA_ARGS__'
-            elif names and names[-1].endswith('...'):
-                self.variadic = True
+                if close >= 3 and rest[close - 2].kind == 'id':
+                    names.pop()                     # GNU named variadic: args...
+                else:
+                    names[-1] = '__VA_ARGS__'
             self.params = names
             self.body = rest[close + 1:]
         else:
@@ -405,7 +446,7 @@ def expand(tokens: list[Tok], macros: dict[str, list[Macro]], hide: frozenset = 
                 produced.extend(_join(m.body))
                 produced.extend(invocation)       # an object-like alternative leaves the parentheses
             elif args is not None:
-                produced.extend(_substitute(m, args, macros, h | {m.name}, depth, budget))
+                produced.extend(_substitute(m, args, macros, h, depth, budget))
             else:
                 continue
             expanded_any = True
@@ -473,7 +514,7 @@ def _substitute(m: Macro, args: list[list[Tok]], macros, hide, depth, budget) ->
     elif len(args) != len(params):
         raise ExpansionError(f'{m.name}: {len(args)} arguments for {len(params)} parameters')
     values = dict(zip(params, args))
-    body = m.body
+    body = _va_opt(m.body, bool(m.variadic and any(args[-1:]) and args[-1]))
     out: list[Tok] = []
     i = 0
     while i < len(body):
@@ -491,6 +532,25 @@ def _substitute(m: Macro, args: list[list[Tok]], macros, hide, depth, budget) ->
         out.append(t)
         i += 1
     return _join(out)
+
+
+def _va_opt(body: list[Tok], present: bool) -> list[Tok]:
+    """__VA_OPT__(x) is x when variadic arguments are given, nothing otherwise."""
+    out: list[Tok] = []
+    i = 0
+    while i < len(body):
+        if body[i].text == '__VA_OPT__' and i + 1 < len(body) and body[i + 1].text == '(':
+            args, end = _arguments(body, i + 1)
+            if present:
+                for k, a in enumerate(args):
+                    if k:
+                        out.append(Tok('punct', ',', False))
+                    out.extend(a)
+            i = end
+            continue
+        out.append(body[i])
+        i += 1
+    return out
 
 
 def _join(out: list[Tok]) -> list[Tok]:
@@ -526,6 +586,31 @@ def identifiers(tokens: list[Tok]) -> set[str]:
     return out
 
 
+SYMBOL_STRING_WORDS = frozenset({'asm', '__asm__', '__asm', 'alias', 'ifunc', 'weakref', 'symver'})
+
+
+def _symbol_strings(tokens: list[Tok]) -> set[str]:
+    """Identifiers inside the string literals of asm(...) and alias/ifunc/weakref/symver attributes:
+    they name symbols the code reaches without a name token."""
+    out: set[str] = set()
+    for k, t in enumerate(tokens):
+        if t.text not in SYMBOL_STRING_WORDS:
+            continue
+        j = k + 1
+        while j < len(tokens) and tokens[j].text in ('volatile', '__volatile__', 'goto', 'inline'):
+            j += 1
+        if j < len(tokens) and tokens[j].text == '(':
+            try:
+                args, _ = _arguments(tokens, j)
+            except ExpansionError:
+                continue
+            for a in args:
+                for y in a:
+                    if y.kind == 'str':
+                        out.update(IDENTIFIER.findall(y.text.split('"', 1)[-1]))
+    return out
+
+
 def _without_strings(text: str) -> str:
     return re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', ' ', text)
 
@@ -555,6 +640,8 @@ def declared_names(tokens: list[Tok], macros: dict[str, list[Macro]]) -> tuple[s
         if any(m.pastes for t in tokens if t.kind == 'id' for m in macros.get(t.text, ())):
             raise
         expanded = tokens
+    if any(t.text in ('_Pragma', '__pragma') for t in expanded):
+        return set(), True
     names: set[str] = set()
     for toks in (tokens, expanded):
         n, always = _names(toks, macros)
@@ -666,6 +753,8 @@ def _names(tokens: list[Tok], macros) -> tuple[set[str], bool]:
                     names.add(tag)
             continue
         if bracket:
+            if paren == 0 and _structured_binding(tokens, i):
+                names.add(x)                      # auto [a, b] = ...
             continue
         if paren == 0:
             follower = _follower(tokens, i + 1)
@@ -689,10 +778,27 @@ def _names(tokens: list[Tok], macros) -> tuple[set[str], bool]:
                         names.add(ids[0].text)
                     if x not in macros:
                         names |= {y.text for y in ids}
+        elif nxt in ('(', '[') and not (x in macros and nxt == '('):
+            # inside parentheses at the top level, a name followed by ( or [ declares: a function
+            # returning a function pointer, an array of function pointers (*name[N])(...)
+            names.add(x)
+            names |= _qualifiers(tokens, i)
         elif _parenthesized_declarator(tokens, i):
             names.add(x)                          # (name), (*name)(...), (&name)[N]
             names |= _qualifiers(tokens, i)
     return names, False
+
+
+def _structured_binding(tokens: list[Tok], i: int) -> bool:
+    j = i - 1
+    while j >= 0 and (tokens[j].kind == 'id' and tokens[j].text not in KEYWORDS or tokens[j].text == ','):
+        j -= 1
+    if j < 0 or tokens[j].text != '[':
+        return False
+    j -= 1
+    while j >= 0 and tokens[j].text in ('&', '&&', 'const', 'volatile', 'static', 'thread_local'):
+        j -= 1
+    return j >= 0 and tokens[j].text == 'auto'
 
 
 ATTRIBUTE_WORDS = frozenset({'__attribute__', '__declspec', 'alignas', '__asm__', '__asm', 'asm'})
@@ -858,48 +964,77 @@ def resolve(root: str, including: str, target: str) -> str | None:
     return None
 
 
-def guarded(decls: list[Decl]) -> bool:
-    """Whether a header's content is read once however often it is included: #pragma once, or
-    everything inside one #ifndef G whose first line is #define G."""
-    if any(d.kind == 'pragma' and re.search(r'\bonce\b', d.text) for d in decls):
-        return True
+def guard_of(decls: list[Decl]) -> str | None:
+    """A header's guard, if its content is read once however often it is included: '#pragma once'
+    outside any #if, or the #ifndef G line around everything when its first line is #define G and
+    the header never #undefs G. None for a header without a guard."""
     if not decls:
-        return True
+        return '#pragma once'
+    if any(d.kind == 'pragma' and not d.conds and re.search(r'\bonce\b', d.text) for d in decls):
+        return '#pragma once'
     first = decls[0]
     if first.kind != 'macro' or not first.conds:
-        return False
+        return None
     guard = first.conds[0]
     m = re.match(r'#\s*ifndef\s+(\w+)$', guard) or re.match(r'#\s*if\s+!\s*defined\s*\(?\s*(\w+)\s*\)?$', guard)
-    return bool(m and m.group(1) == first.name and all(d.conds[:1] == (guard,) for d in decls))
+    if not (m and m.group(1) == first.name and all(d.conds[:1] == (guard,) for d in decls)):
+        return None
+    if any(d.kind == 'macro' and d.tokens[1].text == 'undef' and d.name == first.name for d in decls):
+        return None
+    return guard
 
 
 def unit(root: str, defining: str) -> list[Entry]:
-    """The translation unit of one defining file, in include order (each header once)."""
+    """The translation unit of one defining file, in include order. A header's content is placed at
+    its first include; an include site that matters by itself is an always-in marker: a second
+    include of a header without a guard (its directives run again), and every include of a header
+    that is included anywhere under conditional compilation (which include is live is then a
+    question of the #if lines, so all of them count)."""
     entries: list[Entry] = []
     seen: set[str] = set()
+    guards: set[str] = set()              # guard lines of the headers entered: not conditions
+    guard_names: dict[str, str] = {}      # header -> its #ifndef guard macro
+    conditional: set[str] = set()         # headers with an include site under a real #if
+    skipped: set[str] = set()             # guarded headers whose later include sites were skipped
+
+    def marker(d: Decl, rel: str, c: tuple, sc: tuple) -> None:
+        m = Decl('include', d.tokens, d.conds, d.scope, include=d.include, always=True)
+        entries.append(Entry(m, rel, c, sc, len(entries)))
 
     def walk(path: str, conds: tuple, scope: tuple) -> None:
-        path = os.path.normpath(path)
-        if path in seen:
-            return
         seen.add(path)
+        decls = parsed(path)
+        guard = guard_of(decls)
+        if guard:
+            guards.add(guard)
+            if guard != '#pragma once':
+                guard_names[path] = decls[0].name
         rel = os.path.relpath(path, root).replace(os.sep, '/')
-        for d in parsed(path):
-            c, s = conds + d.conds, scope + d.scope
+        for d in decls:
+            c, sc = conds + d.conds, scope + d.scope
             if d.kind == 'include' and d.include and d.include[0] == 'quote':
                 target = resolve(root, path, d.include[1])
                 if target is not None:
-                    if os.path.normpath(target) in seen and not guarded(parsed(target)):
-                        # A header without a guard included again runs its directives again (its
-                        # #undef/#define, an X-macro list): where that happens is part of the code.
-                        marker = Decl('include', d.tokens, d.conds, d.scope, include=d.include, always=True)
-                        entries.append(Entry(marker, rel, c, s, len(entries)))
+                    target = os.path.normpath(target)
+                    if any(x not in guards for x in c):
+                        conditional.add(target)
+                    if target in seen:
+                        if guard_of(parsed(target)) is None or target in conditional:
+                            marker(d, rel, c, sc)
+                        else:
+                            skipped.add(target)
                         continue
-                    walk(target, c, s)
+                    if target in conditional:
+                        marker(d, rel, c, sc)
+                    walk(target, c, sc)
                     continue
-            entries.append(Entry(d, rel, c, s, len(entries)))
+            entries.append(Entry(d, rel, c, sc, len(entries)))
 
-    walk(os.path.join(root, defining), (), ())
+    walk(os.path.normpath(os.path.join(root, defining)), (), ())
+    # A guard #undef'd elsewhere makes a skipped include live again: do not trust the reading.
+    undone = {e.decl.name for e in entries if e.decl.kind == 'macro' and e.decl.tokens[1].text == 'undef'}
+    if any(guard_names.get(h) in undone for h in skipped):
+        raise ParseError('a header guard is #undef\'d and the header included again')
     return entries
 
 
@@ -953,6 +1088,7 @@ class Index:
                     raise ParseError(f'{e.file}: a token-pasting macro could not be expanded')
             for c in e.conds + e.scope:
                 ids |= set(re.findall(r'[A-Za-z_]\w*', c))
+            ids |= _symbol_strings(toks)
             self._ids[k] = ids
         return self._ids[k]
 

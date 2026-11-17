@@ -423,7 +423,9 @@ the headers they include from `game/` and `runtime/include/`):
   declaration and out-of-line member (filed under its class's name too) comes along;
 - free operator overloads, using-directives and using-declarations, `#pragma` lines, declarations
   holding a `_Pragma` or a `#pragma`, includes whose content is not in the repository (system
-  headers) and a second include of a header without a guard are always in;
+  headers), a second include of a header without a guard and every include of a header that is
+  included anywhere under a real `#if` are always in; the symbols named in `asm(...)` strings and
+  `alias`/`ifunc`/`weakref` attributes count as names;
 - the hash covers each reached declaration's file, the `#if`/`#elif`/`#else` lines around it, the
   namespaces it is in and its text, in translation-unit order.
 
@@ -439,8 +441,9 @@ defining files and every header they include, whole): a file that does not split
 (unbalanced braces, an unterminated comment or string, a brace opened in one `#if` branch only, a
 digraph such as `%:` or `<%`), a
 definition that is not found, an `#include` inside a declaration, a token-pasting macro that
-cannot be expanded, or a closure that reaches `__LINE__`, `__COUNTER__`, `__DATE__`, `__TIME__` or
-`__TIMESTAMP__`. `tools/fingerprint.py --stats` lists those functions.
+cannot be expanded, a header guard `#undef`'d elsewhere while the header is included again, or a
+closure that reaches a value that depends on where code sits (`__LINE__`, `__COUNTER__`, `__DATE__`,
+`__TIME__`, `__TIMESTAMP__`, `__builtin_LINE` and its relatives, `std::source_location`, `assert`). `tools/fingerprint.py --stats` lists those functions.
 
 Both kinds of value are valid. A row is current when its value equals what its own rule computes
 for the code now: a fingerprint row against the fingerprint, a legacy row against the legacy hash.
@@ -468,7 +471,16 @@ edits to the function, a used helper, a used struct's layout, a used macro, a pa
 overload, the order and the includes that change it, plus the cases an independent review of the
 reading found and that are now covered (an `#if` inside a body or struct, object-like pasting,
 pasting through an alias, a repeated unguarded include, attributed and parenthesized declarators,
-a declarator named like a macro, digraphs, `_Pragma`).
+a declarator named like a macro, digraphs, `_Pragma`), and a second review's (line splices with
+trailing blanks, lone carriage returns, nested pasting, `__VA_OPT__`, `_Pragma` from a macro,
+declarations swallowing a following namespace, functions returning function pointers, arrays of
+function pointers, structured bindings, includes under `#if 0`, re-entrant guards, `assert` and
+`__builtin_LINE`, `alias` attributes).
+
+This is a reading of the source, not a compiler: its safety rests on conservative choices (match
+by name, keep everything a name could mean, fall back where unsure) and on those reviews and tests.
+Over the last week of merges on main, every function it would have kept current had identical
+compiled code before and after (object code of the function and everything it reaches).
 
 ## Community patches and hooks
 
