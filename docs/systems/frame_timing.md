@@ -2,14 +2,14 @@
 
 # Frame timing
 
-How the game paces its frames: a frame step that runs once a frame, a frame limiter that waits out each frame's budget, and a task manager that runs the frame's work.
+How the game paces its frames: a frame step that runs once a frame, a frame limiter that waits out each frame's budget, and a task manager that hands the frame's work to worker lanes. The same system label also holds the fixed-step methods the 60 FPS patches edit, such as the Chalice Dungeon gate's.
 
 **At a glance**
 
 - **Scope:** Frame pacing, delta time, vsync and the main loop's time step.
-- **Verified:** The frame step, the frame limiter, the flipper constructor and the task manager's frame path are replaced and verified.
+- **Verified:** The frame step, the frame limiter, the flipper constructor and the task manager's frame path, dispatcher and task registration are replaced and verified. The worker lanes, the task manager's helpers and the per-frame task's parts are edge-verified.
 - **Our option:** `BB_TARGET_FPS` does in code what the community frame-rate patches do in these functions.
-- **Open:** A few limiter fields, the owner of the `0x0111a...` clock layer, and most functions the 60 FPS patches edit.
+- **Open:** A few limiter fields, the owner of the `0x0111a...` clock layer, what the 76 registered tasks do, and most functions the 60 FPS patches edit.
 
 ## Summary
 
@@ -30,7 +30,11 @@ Both the limiter and the frame step are replaced and verified.
 Each frame the limiter does four things.
 
 **It applies the flip mode.** The constructor reads the mode from the config value
-`Game.FlipMode`. A pending mode at `+0xc` replaces the current one at `+0x8` when `+0x276` is
+`Game.FlipMode`, through the game's integer config getter (`0x024eba00`, replaced and
+edge-verified by [@FFwLo](https://github.com/FFwLo) in
+[#889](https://github.com/Yharnam-Hunters/Paleblood/pull/889)): it looks the key up, expands any
+reference markers in the text and parses it as a base-10 number, or returns the caller's fallback
+when the key is missing. A pending mode at `+0xc` replaces the current one at `+0x8` when `+0x276` is
 set. The mode chooses the sync interval (stored at `+0x10`) and the frame interval (a float at
 `+0x18`):
 
@@ -64,8 +68,8 @@ Two other clock functions are easy to mistake for part of the limiter:
   frame-rate patches overwrite it and its neighbours with their own code (a code cave), so it is
   not replaced.
 - The millisecond clock `frame_timing_get_monotonic_ms` (`0x0111a7f0`), its microsecond twin
-  `0x0111a760` (replaced too, edge-verified, by [@evill33t](https://github.com/evill33t) in
-  [#103](https://github.com/Yharnam-Hunters/Paleblood/pull/103)) and the sleep wrapper `0x0111a880` (now replaced, see below) are not on the limiter's path. They look like
+  `0x0111a760` (replaced too, by [@evill33t](https://github.com/evill33t) in
+  [#103](https://github.com/Yharnam-Hunters/Paleblood/pull/103); both clocks are now verified) and the sleep wrapper `0x0111a880` (now replaced, see below) are not on the limiter's path. They look like
   the timing layer of a separate subsystem.
 
 <details>
@@ -114,25 +118,40 @@ The latest belong to the **Chalice Dungeon gate**, the object behind the ritual 
   go, it stops and reports failure rather than trying the next entry.
 - **Letting the handle go again.** In a ritual mode a third method resets the handle. In the
   local ritual mode it always may; in the server ritual mode only when the online manager's bytes
-  allow it and a flag bit in the handled object is clear. It clears one word of that object, hands
-  the handle to a routine not yet analyzed (`0x01e9cb80`), and gives the gate request 8.
+  allow it and a flag bit in the handled object is clear. It clears one word of that object, passes
+  the handle on (`0x01e9cb80`: it copies the handled object's items into a new list and hands both
+  to the online side), and gives the gate request 8.
   A fourth method does the same under the same rules but first gathers the gate's sixteen slots:
   each active one goes into a short list (its key, its number, and a value the caller supplies for
   it), built on one of the engine's memory heaps. With no active slot it does nothing; otherwise
-  it hands the handle and the list on (`0x01e9cd20`, not yet analyzed), gives request 8, and then
+  it hands the handle and its own list on (`0x01e9cd20`, the same pass-on with the caller's list),
+  gives request 8, and then
   frees the list's memory.
 - **Passing the handle on.** A readiness check lets the gate go on when it is idle in a ritual or
   dungeon mode and the online manager allows it; in the server modes the handled object must also
   have one word at zero. Two methods that differ only in a "kind" number (1 or 2) run that check,
-  clear two words of the handled object, hand the handle on with the kind (to one routine in the
-  local modes, another in the server modes, neither analyzed yet), and give request 9.
+  clear two words of the handled object, hand the handle on with the kind, and give request 9. In the
+  local modes (`0x02265170`) and the server modes (`0x02265960`) the hand-on makes a request from
+  the online manager's object and gives it the handle and the kind (`0x02269d40`, `0x02269e30`):
+  the request takes a counted reference to the handled object, marks it and is sent. When the
+  online manager's bytes refuse, the local version instead marks the object with a different
+  value and reports failure.
 - **Creating the handle.** Two methods make the handle in the first place, both only while the
   gate is idle in mode 1. One drops the old handle, builds a new handled object from two blocks of
   data, a block of the online manager and a name (the current name entry's, or a default), and
   gives request 3. The other reads four "levels" from event flags: for each of four base flags, the
   highest level from 9 down to 1 whose flag is set (flag numbers 6228 to 6287, every seventh one
   belonging to the same column). It builds the handled object from those four levels and gives
-  request 5. What the levels and the flags stand for in the game is not known yet.
+  request 5: the builder (`0x02265580`) makes a handle object stamped with the local date, adds it
+  to the online manager's list and starts a new entry with it and the levels. A helper of the
+  other creation (`0x0231fbc0`) packs a decimal number into one word as four two-digit groups.
+  What the levels and the flags stand for in the game is not known yet.
+- **Small helpers around the steps.** The test the ritual resets open with is its own function
+  (`0x01ea5570`: no while busy, yes in the local ritual mode, and in the server ritual mode only
+  when the online manager allows it and the handled object's flag is clear). Every gate step first
+  counts itself (`0x01ec3000`), and builds a debug message once the next step would be 27 or more. The owner check's lookup
+  (`0x02265290`) finds or makes the online manager's entry for an id and keeps a counted
+  reference to it.
 
 The millisecond sleep wrapper (`0x0111a880`), which is not on the limiter's path, is replaced too.
 It converts the engine's millisecond delay to the kernel's microseconds. It multiplies in 32 bits,
@@ -167,16 +186,28 @@ as the original does, so very large delays wrap, and it always reports success.
   (`0x01ea47a0`, one 60 FPS++ edit).
 - [#199](https://github.com/Yharnam-Hunters/Paleblood/pull/199): the level creation
   (`0x01ea4cb0`, one 60 FPS++ edit), with the event-flag store shared with the event system.
-- Status: **replaced**, not verified. Each was compared with the original function on authored
-  edge cases, stock and with the 60 FPS++ edits, and wrong variants were rejected. None was
-  checked on frames recorded from a real game run.
+- [@FFwLo](https://github.com/FFwLo) replaced the routines these methods call:
+  [#886](https://github.com/Yharnam-Hunters/Paleblood/pull/886) (the gate state query and the
+  step counter), [#834](https://github.com/Yharnam-Hunters/Paleblood/pull/834) (the two
+  handle pass-ons and the list's append), [#835](https://github.com/Yharnam-Hunters/Paleblood/pull/835)
+  (the local-mode pass-on and the session lookup),
+  [#952](https://github.com/Yharnam-Hunters/Paleblood/pull/952) (his server-mode pass-on and
+  the two creation helpers, carried onto main with him credited as co-author) and
+  [#1032](https://github.com/Yharnam-Hunters/Paleblood/pull/1032) (giving the handle to a local
+  or server request).
+- Status: **edge-verified**, not verified. Each was compared with the original function on
+  constructed edge cases (the methods stock and with the 60 FPS++ edits), and deliberately
+  wrong versions were rejected. None was checked against recordings from the game: the title
+  and clinic boots never reach the online ritual paths, though the step counter has recorded
+  calls.
 
 </details>
 
 ### Small clocks, waits and stopwatches
 
-Nine small helpers that read the time or sleep are replaced and edge-verified (Paleblood
-[#514](https://github.com/Yharnam-Hunters/Paleblood/pull/514)). None of them is on the limiter's
+Nine small helpers that read the time or sleep are replaced (Paleblood
+[#514](https://github.com/Yharnam-Hunters/Paleblood/pull/514)); eight are edge-verified and the
+job result take has since been verified against recordings. None of them is on the limiter's
 path:
 
 - **Time of day.** `frame_timing_time_of_day_us` (`0x02e61140`) gives the time of day in
@@ -206,8 +237,9 @@ option for them yet.
 <summary>How these were verified</summary>
 
 Each function's edge cases pass against the original (10 to 55 cases each), deliberately
-wrong versions fail, and an independent review approved all nine. They are edge-verified:
-none has been recorded in a game run.
+wrong versions fail, and an independent review approved all nine. Apart from the job result
+take, which recordings from the game now cover, they are edge-verified: from the code and
+constructed tests only.
 
 </details>
 
@@ -238,19 +270,74 @@ every registered task (76 in Iosefka's Clinic), then fills a job with the record
 the group mask and runs it through the same five steps as the workers. Each of those tasks is a
 piece of the game's own per-frame work, the next layer to map.
 
-On 13 November contributor [@FFwLo](https://github.com/FFwLo) replaced the parts this path still
-called as originals, all edge-verified ([#814](https://github.com/Yharnam-Hunters/Paleblood/pull/814)). A worker holds a list of 16-byte slots, each a
-lane and the batch given to it, and a busy byte: `0x0143e030` puts a batch in a slot (refused while
-the worker is busy, for a null batch or an index past the slot count); `0x0143de20` marks the worker
-busy and starts every slot that holds a batch, a lane in mode 0 running on the calling thread and any
-other lane on its own thread; `0x0143deb0` runs the mode-0 lanes; `0x0143df10` waits until no lane is
-running, spinning on lanes that belong to other threads as the original does; and `0x0143ec40` frees
-a task's pending items under the task's lock. The per-frame task's own helpers followed
-([#793](https://github.com/Yharnam-Hunters/Paleblood/pull/793)): two profiling stopwatch brackets and the end-of-frame tick of ten profiling stopwatches,
-which do nothing unless the profiling switch byte is set, and the item list and listener list updates
-that pass the frame-time descriptor on. The seeding of a thread's random generator (`0x024f8110`)
-fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential step
-([#790](https://github.com/Yharnam-Hunters/Paleblood/pull/790)); it uses the seed it is given and reads no entropy of its own.
+**The worker lanes.** Most of this path's helpers were replaced by contributor
+[@FFwLo](https://github.com/FFwLo), all edge-verified. A worker holds a list of slots, each a
+*lane* and the *batch* of tasks given to it, plus a busy byte
+([#814](https://github.com/Yharnam-Hunters/Paleblood/pull/814)): `0x0143e030` puts a batch in a
+slot (refused while the worker is busy, for a null batch or an index past the slot count);
+`0x0143de20` marks the worker busy and starts every slot that holds a batch; `0x0143deb0` runs the
+lanes that work on the calling thread; and `0x0143df10` waits until no lane is running, spinning on
+lanes that belong to other threads as the original does. The lane steps themselves followed
+([#973](https://github.com/Yharnam-Hunters/Paleblood/pull/973)). A lane in mode 0 runs its batch on
+the thread that calls it; any other mode wakes the lane's own thread through its sync object. A
+lane can be started, run one task at a time (each task's run gets the lane's mode) and finished,
+which gives it back empty. The two calls under them are replaced too
+([#1012](https://github.com/Yharnam-Hunters/Paleblood/pull/1012)): taking the next task from a
+batch, which is a double-ended queue of task pointers, and signalling the lane's sync event.
+
+**Bookkeeping around the dispatch.** Six small helpers count and index the registered task entries,
+push a job onto a batch, look a task up by id and open or close a group record
+([#795](https://github.com/Yharnam-Hunters/Paleblood/pull/795)); closing a record with no index
+makes the next dispatch wake the registered tasks first. For a registered task whose entry asks
+for it, the dispatcher refills the task's queue
+([#822](https://github.com/Yharnam-Hunters/Paleblood/pull/822)): under the task's lock it empties
+the queue (`0x0143ec40`, which #822 showed empties a queue rather than freeing "pending items") and
+pushes a copy of every item of the task's item list back on, first to last. The same PR replaced
+the engine's general heap lookup, which finds the allocator a pointer came from. Putting a task into the manager's queues
+(`0x01381580`) and adding the manager's switch to the debug menu (`0x013894f0`) are replaced and
+verified ([#995](https://github.com/Yharnam-Hunters/Paleblood/pull/995)).
+
+**The per-frame task's parts.** The per-frame task (`0x013d3520`, verified) does a share of the
+frame's own bookkeeping. Its helpers are replaced and edge-verified:
+
+- two profiling stopwatch brackets and the end-of-frame tick of ten profiling stopwatches, which do
+  nothing unless the profiling switch byte is set
+  ([#793](https://github.com/Yharnam-Hunters/Paleblood/pull/793));
+- the stopwatch's frame end (`0x014486d0`,
+  [#978](https://github.com/Yharnam-Hunters/Paleblood/pull/978)): every 30 frames it turns the
+  totals into per-frame averages and starts again, and every frame it folds the frame's count and
+  seconds into their peaks;
+- the item update and the listener list's prepare step
+  ([#978](https://github.com/Yharnam-Hunters/Paleblood/pull/978)): an item takes its requested
+  enabled state and is switched on or off; the list hands its owner and a named resource to every
+  listener. The two listener "takes" that receive them
+  ([#1063](https://github.com/Yharnam-Hunters/Paleblood/pull/1063)) keep nothing: the argument only
+  decides whether an unbound listener asks for an owner binding, or an empty label takes its
+  source's text;
+- the update of the task's part at `+0x10` (`0x013d5440`,
+  [#965](https://github.com/Yharnam-Hunters/Paleblood/pull/965)), which does nothing unless the
+  frame's seconds are above 0, then steps its source and has its generator fill or step a buffer
+  sized for its output; and the generator's buffer size, fill and refresh
+  ([#1016](https://github.com/Yharnam-Hunters/Paleblood/pull/1016), [@FFwLo](https://github.com/FFwLo)'s
+  [#1002](https://github.com/Yharnam-Hunters/Paleblood/pull/1002) carried onto main with him
+  credited as co-author). What the generator produces is not known yet.
+
+The seeding of a thread's random generator (`0x024f8110`) fills four 32-bit words from a 32-bit
+seed with a 64-bit linear congruential step
+([#790](https://github.com/Yharnam-Hunters/Paleblood/pull/790)); it uses the seed it is given and
+reads no entropy of its own.
+
+<details>
+<summary>Task manager: what is verified</summary>
+
+The frame path (`0x024512a0`, `0x01388c60`, `0x01388c70`), the dispatcher, the queue flush, the
+worker step, the frame-value publish, task registration and the per-frame task are **verified**
+against recordings from the game. The worker lanes and their callees, the six helpers, the
+queue refill, the per-frame task's parts and the generator calls are **edge-verified**: from
+the code and constructed tests. Some of them do have recorded calls (the refill, several of the
+helpers) that pass, but they have not yet been promoted.
+
+</details>
 
 ## Key functions
 
