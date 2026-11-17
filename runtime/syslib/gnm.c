@@ -768,10 +768,28 @@ static void wait_step(const rt_gpu_step *step)
     }
 }
 
+/* Whether a WAIT_REG_MEM's compare holds whatever the memory holds: the masked value lies in
+   [0, mask], so "always", ">= 0", "<= mask", "< more than mask", and "!=" a reference with bits
+   outside the mask hold for every value (Iosefka's Clinic waits ">= 0" on labels it has just zeroed). */
+static int wait_holds_always(const wait_reg_mem_packet *packet)
+{
+    const uint32_t reference = packet->reference, mask = packet->mask;
+    switch (packet->control & WAIT_FUNCTION_MASK) {
+    case 0: return 1;
+    case 1: return reference > mask;
+    case 2: return reference >= mask;
+    case 3: return mask == 0 && reference == 0;
+    case 4: return (reference & ~mask) != 0;
+    case 5: return reference == 0;
+    default: return 0;
+    }
+}
+
 static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
 {
     if (!(packet->control & WAIT_ON_MEMORY)) rt_fatal(fn, "a GPU wait on a register: the stand-in has none");
     if (!(packet->address_low | (packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK))) rt_fatal(fn, "a GPU wait without an address");
+    if (wait_holds_always(packet)) return; /* the GPU passes it at once: no step, nothing waits */
     if (collecting) {
         const uint64_t words[6] = {packet->control, packet->address_low, packet->address_high, packet->reference, packet->mask,
                                    packet->poll_interval};
