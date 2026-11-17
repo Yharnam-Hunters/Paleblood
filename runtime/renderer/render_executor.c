@@ -38,6 +38,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
@@ -656,6 +659,14 @@ struct rt_executor {
        compatible with an earlier one (a render target freed and made again, a target set aside and a new
        one at its address) comes from the cache instead of the driver's shader compiler. */
     VkPipelineCache pipeline_cache;
+    /* the pipeline cache's file (pipeline_file_open): its path ("" none), the pipelines made since it was
+       last written, and the thread that writes it */
+    char pipeline_file[512];
+    atomic_uint pipelines_made;
+    pthread_t pipeline_saver;
+    int saver_started, saver_stop;
+    pthread_mutex_t saver_lock;
+    pthread_cond_t saver_wake;
     VkPipeline tile_copies[TILE_COPY_SIZES][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
@@ -1104,6 +1115,154 @@ static void memory_take(memory_snapshot *m, const uint8_t *bytes, uint64_t size)
 
 /* ---- opening ---- */
 
+
+/* ---- the pipeline cache's file ----
+   The pipelines the executor makes (a few thousand by Iosefka's Clinic) take minutes of the driver's
+   shader compiler on the renderer's thread. The driver keeps its own cache on disk, but only up to its
+   size limit (NVIDIA's is 1 GB by default, shared by every program; once full it keeps nothing new),
+   so the executor keeps one of its own: the Vulkan pipeline cache is filled from the file when the
+   executor opens, and written back by a thread of its own while pipelines are being made (a run is
+   often ended by a timeout or a stop, not by rt_executor_close) and when the executor closes. The file
+   is BB_PIPELINE_CACHE (empty: none), else $XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin, else
+   ~/.cache/paleblood/vulkan-pipelines.bin. A file written for another device or driver (its header,
+   Vulkan's VkPipelineCacheHeaderVersionOne, names them), or larger than PIPELINE_FILE_MAX (old
+   translations pile up in it), is not used; the cache then starts empty, and the next write replaces
+   the file. */
+enum { PIPELINE_FILE_MAX = 512 << 20, PIPELINE_SAVE_SECONDS = 20, PIPELINE_HEADER_BYTES = 16 + VK_UUID_SIZE };
+
+/* The file's path into path ("" for none). */
+static void pipeline_file_path(char *path, size_t size)
+{
+    const char *named = getenv("BB_PIPELINE_CACHE"), *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    path[0] = 0;
+    if (named) snprintf(path, size, "%s", named);
+    else if (cache && *cache) snprintf(path, size, "%s/paleblood/vulkan-pipelines.bin", cache);
+    else if (home && *home) snprintf(path, size, "%s/.cache/paleblood/vulkan-pipelines.bin", home);
+}
+
+/* Whether a file's bytes begin with this device's pipeline cache header. */
+static int pipeline_header_matches(const rt_executor *x, const unsigned char *bytes, size_t size)
+{
+    if (size < PIPELINE_HEADER_BYTES) return 0;
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(x->physical, &properties);
+    uint32_t words[4];
+    memcpy(words, bytes, sizeof words); /* header size, version, vendor, device */
+    return words[0] >= PIPELINE_HEADER_BYTES && words[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && words[2] == properties.vendorID &&
+           words[3] == properties.deviceID && !memcmp(bytes + 16, properties.pipelineCacheUUID, VK_UUID_SIZE);
+}
+
+/* The file's bytes when they suit this device (*size set), else NULL. */
+static unsigned char *read_pipeline_file(const rt_executor *x, size_t *size)
+{
+    FILE *f = x->pipeline_file[0] ? fopen(x->pipeline_file, "rb") : NULL;
+    if (!f) return NULL;
+    struct stat st;
+    unsigned char *bytes = NULL;
+    if (fstat(fileno(f), &st) == 0 && st.st_size >= PIPELINE_HEADER_BYTES && st.st_size <= PIPELINE_FILE_MAX &&
+        (bytes = malloc((size_t)st.st_size)) && fread(bytes, 1, (size_t)st.st_size, f) == (size_t)st.st_size &&
+        pipeline_header_matches(x, bytes, (size_t)st.st_size)) {
+        *size = (size_t)st.st_size;
+    } else {
+        free(bytes);
+        bytes = NULL;
+    }
+    fclose(f);
+    return bytes;
+}
+
+/* Makes the directories above path (as mkdir -p would), ignoring those already there. */
+static void make_parent_directories(const char *path)
+{
+    char parent[sizeof ((rt_executor *)0)->pipeline_file];
+    snprintf(parent, sizeof parent, "%s", path);
+    for (char *slash = strchr(parent + 1, '/'); slash; slash = strchr(slash + 1, '/')) {
+        *slash = 0;
+        mkdir(parent, 0755);
+        *slash = '/';
+    }
+}
+
+/* Writes the cache to its file: to a temporary file beside it, then renamed over it, so that a reader
+   (another run) never sees half a file. Any failure leaves the file as it was. */
+static void write_pipeline_file(rt_executor *x)
+{
+    size_t size = 0;
+    if (!x->pipeline_file[0] || vkGetPipelineCacheData(x->device, x->pipeline_cache, &size, NULL) != VK_SUCCESS || !size ||
+        size > PIPELINE_FILE_MAX)
+        return;
+    unsigned char *bytes = malloc(size);
+    if (!bytes) return;
+    if (vkGetPipelineCacheData(x->device, x->pipeline_cache, &size, bytes) == VK_SUCCESS) {
+        char temporary[sizeof x->pipeline_file + 32];
+        snprintf(temporary, sizeof temporary, "%s.%ld.tmp", x->pipeline_file, (long)getpid());
+        make_parent_directories(x->pipeline_file);
+        FILE *f = fopen(temporary, "wb");
+        const int written = f && fwrite(bytes, 1, size, f) == size;
+        if (f && fclose(f)) unlink(temporary);
+        else if (written) rename(temporary, x->pipeline_file);
+        else if (f) unlink(temporary);
+    }
+    free(bytes);
+}
+
+/* The writing thread: every PIPELINE_SAVE_SECONDS, the file again if pipelines were made since. */
+static void *pipeline_saver(void *argument)
+{
+    rt_executor *x = argument;
+    pthread_mutex_lock(&x->saver_lock);
+    while (!x->saver_stop) {
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += PIPELINE_SAVE_SECONDS;
+        while (!x->saver_stop && pthread_cond_timedwait(&x->saver_wake, &x->saver_lock, &until) == 0) {
+        }
+        if (x->saver_stop || !atomic_exchange(&x->pipelines_made, 0)) continue;
+        pthread_mutex_unlock(&x->saver_lock);
+        write_pipeline_file(x); /* the cache is internally synchronized: pipelines go on being made meanwhile */
+        pthread_mutex_lock(&x->saver_lock);
+    }
+    pthread_mutex_unlock(&x->saver_lock);
+    return NULL;
+}
+
+/* The pipeline cache, from the file when there is one that suits the device, and its writing thread. */
+static int pipeline_cache_open(rt_executor *x, char *error, size_t error_size)
+{
+    pipeline_file_path(x->pipeline_file, sizeof x->pipeline_file);
+    size_t size = 0;
+    unsigned char *bytes = read_pipeline_file(x, &size);
+    VkPipelineCacheCreateInfo cache = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = size, .pInitialData = bytes};
+    VkResult made = vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache);
+    if (made != VK_SUCCESS && bytes) { /* a driver that refuses the data after all: an empty cache */
+        cache.initialDataSize = 0, cache.pInitialData = NULL;
+        made = vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache);
+    }
+    free(bytes);
+    if (made != VK_SUCCESS) return failed(error, error_size, "no pipeline cache");
+    pthread_mutex_init(&x->saver_lock, NULL);
+    pthread_cond_init(&x->saver_wake, NULL);
+    x->saver_started = x->pipeline_file[0] && pthread_create(&x->pipeline_saver, NULL, pipeline_saver, x) == 0;
+    return 0;
+}
+
+/* Stops the writing thread and writes the file a last time if pipelines were made since. */
+static void pipeline_cache_close(rt_executor *x)
+{
+    if (!x->pipeline_cache) return;
+    if (x->saver_started) {
+        pthread_mutex_lock(&x->saver_lock);
+        x->saver_stop = 1;
+        pthread_cond_signal(&x->saver_wake);
+        pthread_mutex_unlock(&x->saver_lock);
+        pthread_join(x->pipeline_saver, NULL);
+        x->saver_started = 0;
+    }
+    if (atomic_exchange(&x->pipelines_made, 0)) write_pipeline_file(x);
+    pthread_cond_destroy(&x->saver_wake);
+    pthread_mutex_destroy(&x->saver_lock);
+}
+
 static int open_device(rt_executor *x, char *error, size_t error_size)
 {
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_2};
@@ -1257,8 +1416,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
     const VkSemaphoreCreateInfo timeline = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline_type};
     if (vkCreateSemaphore(x->device, &timeline, NULL, &x->timeline) != VK_SUCCESS) return failed(error, error_size, "no timeline semaphore");
-    const VkPipelineCacheCreateInfo cache = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    if (vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache) != VK_SUCCESS) return failed(error, error_size, "no pipeline cache");
+    return pipeline_cache_open(x, error, error_size);
     return 0;
 }
 
@@ -2202,6 +2360,7 @@ static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned element_bytes, int
         failed(error, error_size, "the device refused the GPU tile copy's pipeline");
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     return x->tile_copies[kind][to_tiled];
 }
 
@@ -3492,6 +3651,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         failed(error, error_size, "the device refused a pipeline");
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
@@ -3805,6 +3965,7 @@ static VkPipeline pass_pipeline(rt_executor *x, uint32_t *spirv, size_t words, i
         failed(error, error_size, "the device refused a %s pass pipeline", pass_names[kind]);
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     return pipeline;
 }
 
@@ -4484,6 +4645,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
         failed(error, error_size, "the device refused a compute pipeline");
         return VK_NULL_HANDLE;
     }
+    atomic_fetch_add(&x->pipelines_made, 1);
     compute_entry *e = &x->computes[x->compute_count++];
     *e = (compute_entry){.user_read = *user_read, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                          .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count, .module = module, .pipeline = pipeline};
@@ -6342,6 +6504,7 @@ void rt_executor_close(rt_executor *x)
             for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
                 if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
         if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);
+        pipeline_cache_close(x);
         if (x->pipeline_cache) vkDestroyPipelineCache(x->device, x->pipeline_cache, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);

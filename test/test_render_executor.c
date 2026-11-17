@@ -3721,8 +3721,43 @@ static void same_spirv_in_any_order(const rt_executor_memory *memory)
     }
 }
 
+/* The pipeline cache's file (BB_PIPELINE_CACHE): an executor that made pipelines writes it when it
+   closes, beginning with Vulkan's pipeline cache header for this device; the next executor opens with
+   it and writes it again. A file of other bytes there is not used, and is replaced. */
+static void pipeline_cache_file(const rt_executor_memory *memory)
+{
+    enum { CACHE_BUFFER = 0xc0e40000 };
+    char directory[] = "/tmp/pb-pipelines-XXXXXX", path[64], error[256] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    snprintf(path, sizeof path, "%s/cache.bin", directory);
+    FILE *f = fopen(path, "wb");
+    CHECK(f != NULL);
+    if (f) fputs("not a pipeline cache", f), fclose(f);
+    setenv("BB_PIPELINE_CACHE", path, 1);
+    for (int run = 0; run < 2; run++) {
+        rt_executor *x = NULL;
+        const int opened = rt_executor_open(memory, &x, error, sizeof error);
+        CHECK(opened == 0);
+        if (opened) break;
+        rt_render_forget(), rt_executor_reset(x);
+        const uint32_t size = record_draw(CACHE_BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_executor_run(x, CACHE_BUFFER, size, error, sizeof error) == 0);
+        rt_executor_close(x);
+        uint32_t header[4] = {0};
+        f = fopen(path, "rb");
+        CHECK(f && fread(header, sizeof header, 1, f) == 1);
+        if (f) fclose(f);
+        /* header size (16 bytes and the cache UUID), version one, then the vendor's id */
+        CHECK(header[0] >= 16 + VK_UUID_SIZE && header[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && header[2] != 0);
+    }
+    setenv("BB_PIPELINE_CACHE", "", 1);
+    unlink(path);
+    rmdir(directory);
+}
+
 int main(void)
 {
+    setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
     const int fd = map_guest_memory();
     if (fd < 0) {
         fprintf(stderr, "cannot map the guest memory at %#llx\n", GUEST_BASE);
@@ -4479,6 +4514,7 @@ int main(void)
     rt_executor_close(x);
     shader_sweep(&memory);
     same_spirv_in_any_order(&memory);
+    pipeline_cache_file(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

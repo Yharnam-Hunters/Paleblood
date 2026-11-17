@@ -1196,6 +1196,24 @@ depth of field never reached the renderer (the scene behind the HUD stayed one f
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
 
+## Pipeline compiles
+
+Every pipeline the executor makes goes through the driver's shader compiler, a few thousand by
+Iosefka's Clinic, and in the clinic they took minutes on the renderer's thread in every boot. Two
+things keep that to the first run:
+
+- **The same SPIR-V in every run.** Nothing in a translation depends on the order the executor
+  meets shaders in: a shader's run-time stop word follows from its own code address
+  (`stop_index`). The driver knows a cached pipeline by its SPIR-V.
+- **A pipeline cache file of the executor's own.** The driver keeps a cache on disk, but only up
+  to its size limit (NVIDIA's is 1 GB by default, shared by every program; once it is full nothing
+  new is kept). The executor fills its Vulkan pipeline cache from a file when it opens and writes
+  the file back while pipelines are being made (every 20 seconds after new ones, from a thread of
+  its own) and when it closes. The file is `BB_PIPELINE_CACHE` (empty: none), else
+  `$XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin`, else `~/.cache/paleblood/vulkan-pipelines.bin`.
+  A file written for another device or driver, or larger than 512 MB, is not used and is replaced.
+  The unit tests set it empty unless a test asks for one.
+
 ## Measuring frame rate
 
 Two runs of one build differ: in Iosefka's Clinic the same build measured from 4.81 to 7.15 fps
