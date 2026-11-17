@@ -136,6 +136,16 @@ class BackstopTest(unittest.TestCase):
         self.commit('changes a string the function reads')
         self.assertEqual(len(self.check(base)), 1)
 
+    def test_planted_hole_in_what_a_handler_catches_is_caught(self):
+        self.edit('game/sys/sys.h', 'struct Thing {', 'struct Small {};\nstruct Large {};\nvoid sys_may_throw();\n\nstruct Thing {')
+        self.edit('game/sys/target.cpp', 'return scaled(t) + g_names[t->count & 1][0];',
+                  'try { sys_may_throw(); } catch (const Small &) { return 1; }\n    return scaled(t) + g_names[t->count & 1][0];')
+        self.record()
+        base = self.commit('record')
+        self.edit('game/sys/target.cpp', 'catch (const Small &)', 'catch (const Large &)')
+        self.commit('catches another exception')
+        self.assertEqual(len(self.check(base)), 1)
+
     def test_planted_hole_in_a_struct_layout_is_caught(self):
         self.record()
         base = self.commit('record')

@@ -72,6 +72,7 @@ ATRAC9 = 'third_party/libatrac9/src'
 NOT_LINUX = re.compile(r'.*_darwin\.(c|cpp)')
 SEARCH_LIMIT = 300          # commits of the branch searched for a row's recorded code
 STARTUP_SECTIONS = ('.init_array', '.preinit_array', '.ctors', '.fini_array', '.dtors')
+EXCEPTION_TABLES = ('.gcc_except_table',)
 # Every compiler of the CI build matrix: equal code under one says nothing about another.
 DEFAULT_COMPILERS = 'gcc:g++,clang:clang++'
 # Conditions on a platform the backstop does not compile for: a changed line under one is stale.
@@ -172,6 +173,9 @@ def reached_code(objs: dict, starts: list[str], is_root) -> bytes | None:
             for s in objs[rel].sections:
                 if s.name.startswith(STARTUP_SECTIONS):
                     out.write(f'startup {s.name} {visit(rel, s.index)}\n'.encode())
+                elif s.name.startswith(EXCEPTION_TABLES):
+                    # which exceptions a landing pad catches: reached from unwind data, not from code
+                    out.write(f'exceptions {visit(rel, s.index)}\n'.encode())
         if (rel, index) not in order:
             order[(rel, index)] = len(order)
             queue.append((rel, index))
