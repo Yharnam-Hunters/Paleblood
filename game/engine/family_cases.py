@@ -438,6 +438,635 @@ def member_release_cases(address: str, value: int | None, freed: bool = False) -
 def member_release_free_cases(address: str, value: int | None) -> list[dict]:
     return member_release_cases(address, value, freed=True)
 
+
+
+
+
+# (object, guard) of each guarded vtable setter; the vtable is whatever the original stores.
+STATIC_VTABLE_SETTERS = {'sets_static_vtable_at_0x05ac59b0': (0x05ac59b0, 0x05ac59b8), 'sets_static_vtable_at_0x05ac59c0': (0x05ac59c0, 0x05ac59c8), 'sets_static_vtable_at_0x05ac59d0': (0x05ac59d0, 0x05ac59d8)}
+
+
+
+def static_vtable_cases(family: str):
+    """The guard 0 (the vtable is stored and the guard set), 1 and 0xff (nothing happens) and
+    0x100 (only the low byte is tested: stored); the object starts as a pattern."""
+    obj, guard = STATIC_VTABLE_SETTERS[family]
+
+    def cases(address: str, value: int | None) -> list[dict]:
+        return [{'schema': 1, 'address': address, 'id': f'guard_{start:x}', 'returns': 'void',
+                 'buffers': {},
+                 'memory': [{'addr': hex(obj), 'bytes': struct.pack('<Q', 0x5a5a5a5a5a5a5a5a ^ start).hex()},
+                            {'addr': hex(guard), 'bytes': struct.pack('<Q', start).hex()}],
+                 'imports': [], 'stubs': [],
+                 'args': {'rdi': '0x1111111111111111', 'rax': '0x5aa5c33c0ff0e11e'}}
+                for start in (0, 1, 0xff, 0x100)]
+    return cases
+
+
+
+RELEASE_FUNCTION = '0x00400240'
+   # a stand-in for slot 0x18 of the member's table, stubbed
+RELEASE_SLOT = 0x18
+
+
+
+def release_member_cases(address: str, value: int | None) -> list[dict]:
+    """No member at +8 (only the vtable is stored), and a member whose table's slot 0x18 is a stub
+    comparing the member; the object starts all ones and as a pattern."""
+    out = []
+    for seed, fill in ((3, 0xff), (5, None)):
+        body = bytes(fill if fill is not None else (seed * 11 + i) & 0xff for i in range(0x20))
+        for member in (False, True):
+            c = {'schema': 1, 'address': address, 'id': f'{"member" if member else "no_member"}_{seed}',
+                 'returns': 'void', 'buffers': {'object': {'size': 0x20, 'bytes': body.hex()}},
+                 'memory': [{'addr': 'buf:object+0x8', 'bytes': bytes(8).hex()}], 'imports': [], 'stubs': [],
+                 'args': {'rdi': 'buf:object', 'rsi': '0x2222222222222222', 'rax': '0x5aa5c33c0ff0e11e'}}
+            if member:
+                c['buffers']['member'] = {'size': 0x10, 'bytes': bytes((seed + i) & 0xff for i in range(0x10)).hex()}
+                c['buffers']['table'] = {'size': 0x20}
+                c['memory'] = [{'addr': 'buf:object+0x8', 'pointer': 'member'},
+                               {'addr': 'buf:member+0x0', 'pointer': 'table'},
+                               {'addr': f'buf:table+0x{RELEASE_SLOT:x}', 'guest': RELEASE_FUNCTION}]
+                c['stubs'] = [{'address': RELEASE_FUNCTION, 'argc': 1, 'ret': seed}]
+            out.append(c)
+    return out
+
+
+
+
+
+def array64_reserve_cases(address: str, value: int | None) -> list[dict]:
+    """The cases of array64_reserve_cases.py (the hand-named copies) at this member's address."""
+    return _load('array64_reserve_cases').reserve_cases(address)
+
+
+
+
+
+def slot_table_cases(address: str, value: int | None) -> list[dict]:
+    """A table buffer of 0x90 bytes (a pattern; the bytes past +0x80 must stay) and two owners;
+    every written byte and the result are compared."""
+    out = []
+    for seed, owner in ((3, '0x123456789abcdef0'), (5, '0xfedcba9876543210')):
+        out.append({'schema': 1, 'address': address, 'id': f'table_{seed}', 'returns': 'i64',
+                    'buffers': {'table': {'size': 0x90, 'bytes': bytes((seed * 29 + i) & 0xff for i in range(0x90)).hex()}},
+                    'memory': [], 'imports': [], 'stubs': [],
+                    'args': {'rdi': owner, 'rsi': 'buf:table', 'rax': '0x5aa5c33c0ff0e11e'}})
+    return out
+
+
+
+
+
+MEMBER_RELEASE_0X10 = '0x02450560'
+
+MEMBER_OPERATOR_DELETE = '0x02fbe588'
+
+MEMBER_RELEASE_0X01401720 = '0x01401720'
+
+MEMBER_FREE_SIZED = '0x02fa1c20'
+
+MEMBER_OBJECT_ALLOCATOR = '0x05ac8288'
+
+
+
+def holder(seed: int, size: int = 0x30) -> dict:
+    return {'size': size, 'bytes': bytes((seed * 19 + i) & 0xff for i in range(size)).hex()}
+
+
+
+def member_case(address: str, case_id: str, offset: int, set_member: bool, seed: int, returns: str = 'void') -> dict:
+    """A holder whose member at OFFSET is a buffer (SET_MEMBER) or null."""
+    case = {'schema': 1, 'address': address, 'id': case_id, 'returns': returns,
+            'buffers': {'holder': holder(seed)}, 'memory': [], 'imports': [], 'stubs': [],
+            'args': {'rdi': 'buf:holder', 'rsi': '0x1111111111111111', 'rax': '0x5aa5c33c0ff0e11e'}}
+    if set_member:
+        case['buffers']['member'] = holder(seed + 1, 0x20)
+        case['memory'].append({'addr': f'buf:holder+0x{offset:x}', 'pointer': 'member'})
+    else:
+        case['memory'].append({'addr': f'buf:holder+0x{offset:x}', 'bytes': '00' * 8})
+    return case
+
+
+
+def vtable_release_cases(deletes: bool):
+    """The member at +0x10 set (released with a stub comparing it, then cleared) or null; the base
+    destructor (and, DELETES, operator delete) are stubs comparing the holder and its first 0x18
+    bytes at the call (the table address stored, the member cleared). The base destructor is an
+    empty function (returns_nothing) and runs as it is, unstubbed."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for case_id, set_member, seed in (('member', True, 3), ('no_member', False, 5)):
+            case = member_case(address, case_id, 0x10, set_member, seed)
+            if set_member:
+                case['stubs'].append({'address': MEMBER_RELEASE_0X10, 'argc': 1, 'ret': seed})
+            if deletes:
+                case['stubs'].append({'address': MEMBER_OPERATOR_DELETE, 'argc': 1, 'ret': 0})
+            out.append(case)
+        return out
+    return cases
+
+
+
+def member_at_cases(offset: int):
+    """The member at OFFSET set (released through 0x01401720, a stub comparing it, then cleared)
+    or null."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for case_id, set_member, seed in (('member', True, 3), ('no_member', False, 5)):
+            case = member_case(address, case_id, offset, set_member, seed)
+            if set_member:
+                case['stubs'].append({'address': MEMBER_RELEASE_0X01401720, 'argc': 1, 'ret': seed})
+            out.append(case)
+        return out
+    return cases
+
+
+
+def sized_free_cases(address: str, value: int | None) -> list[dict]:
+    """The destructor (an empty function, returns_nothing, run unstubbed), then the sized free (a stub comparing the
+    allocator the global points at, the object, the size and the alignment), whose result comes
+    back."""
+    out = []
+    for seed in (3, 5):
+        case = member_case(address, f'object_{seed}', 0x10, False, seed, 'i64')
+        case['memory'] = []
+        case['buffers']['allocator'] = holder(seed + 2, 0x20)
+        case['memory'].append({'addr': MEMBER_OBJECT_ALLOCATOR, 'pointer': 'allocator'})
+        case['stubs'] = [{'address': MEMBER_FREE_SIZED, 'argc': 4, 'ret': seed << 40 | 0xf3ee}]
+        out.append(case)
+    return out
+
+
+
+
+
+SMALL_HEAP_OWNING = '0x0247b720'
+
+SMALL_PATH_TABLE_FIND = '0x013e68f0'
+
+SMALL_PATH_TABLE_RELEASE = '0x013e6ae0'
+
+SMALL_COMPARE_MEMORY = '0x02fbe638'
+
+SMALL_INTERFACE_ID = '0x04b2f320'
+
+SMALL_FATAL_ERROR = '0x024b55b0'
+
+SMALL_FATAL_ERROR_MESSAGE = '0x04b38390'
+
+SMALL_RESOLVE = '0x02c4f560'
+
+SMALL_TAGGED_STRING_RELEASE = '0x00836840'
+
+SMALL_TAGGED_STRING_OWNER_BASE = '0x00d5f020'
+
+SMALL_FLAGGED_RELEASE = '0x0271db70'
+          # slot +0x18 of the table at 0x057b9530
+SMALL_FLAGGED_BASE = '0x0271a600'
+
+SMALL_OPERATOR_DELETE = '0x02fbe588'
+
+SMALL_HAVOK_HEAP = '0x058018b0'
+
+SMALL_RELEASE_ELEMENT = '0x02fa7940'
+
+SMALL_STACK_GUARD_SLOT = '0x057e3be0'
+
+# Stand-ins for the virtual functions fake tables point at.
+SMALL_DESTROY, SMALL_HEAP_FREE, SMALL_SLOT = '0x00500100', '0x00500200', '0x00500300'
+
+
+
+def seeded(size: int, seed: int) -> dict:
+    return {'size': size, 'bytes': bytes((seed * 29 + i * 7) & 0xff for i in range(size)).hex()}
+
+
+
+def small_case(address: str, case_id: str, returns: str, args: dict, buffers: dict) -> dict:
+    full = {'rdi': '0x1111111111111111', 'rsi': '0x2222222222222222', 'rdx': '0x3333333333333333',
+            'rax': '0x5aa5c33c0ff0e11e'}
+    full.update(args)
+    return {'schema': 1, 'address': address, 'id': case_id, 'returns': returns, 'buffers': buffers,
+            'memory': [], 'imports': [], 'stubs': [], 'args': full}
+
+
+
+def add_destroy_and_free(case: dict, name: str, seed: int) -> None:
+    """NAME (a buffer) is destroyed through its table's second slot and freed through the heap the
+    owning-heap stub returns; the destructor stub writes into the object, so its order shows."""
+    case['buffers'].update({f'{name}_table': {'size': 0x10}, 'heap': seeded(0x10, seed + 7),
+                            'heap_table': {'size': 0x78}})
+    case['memory'] += [{'addr': f'buf:{name}+0x0', 'pointer': f'{name}_table'},
+                       {'addr': f'buf:{name}_table+0x8', 'guest': SMALL_DESTROY},
+                       {'addr': 'buf:heap+0x0', 'pointer': 'heap_table'},
+                       {'addr': 'buf:heap_table+0x70', 'guest': SMALL_HEAP_FREE}]
+    case['stubs'] += [{'address': SMALL_HEAP_OWNING, 'argc': 1, 'argi': [0], 'ret': 'buf:heap'},
+                      {'address': SMALL_DESTROY, 'argc': 1, 'argi': [0],
+                       'writes': [{'arg': 0, 'offset': 8, 'bytes': f'{0xd0 + seed:02x}' * 8}]},
+                      {'address': SMALL_HEAP_FREE, 'argc': 2, 'argi': [0, 1], 'ret': 0}]
+
+
+
+def owning_heap_delete_cases(address: str, value: int | None) -> list[dict]:
+    """Two objects (destroyed, then freed through the heap that owns them) and null (nothing)."""
+    out = []
+    for seed in (3, 5):
+        case = small_case(address, f'object_{seed}', 'void', {'rdi': 'buf:object'}, {'object': seeded(0x20, seed)})
+        add_destroy_and_free(case, 'object', seed)
+        out.append(case)
+    out.append(small_case(address, 'null', 'void', {'rdi': '0x0'}, {}))
+    return out
+
+
+
+def path_entry_release_cases(address: str, value: int | None) -> list[dict]:
+    """The release (a stub comparing the table at +0x68 and the entry) says last use or not, for an
+    entry and for null; only a set entry at its last use is destroyed and freed."""
+    out = []
+    for case_id, entry, last_use, seed in (('last_use', True, 1, 3), ('still_used', True, 0, 5),
+                                           ('null_last_use', False, 1, 7), ('null_still_used', False, 0, 9)):
+        case = small_case(address, case_id, 'void', {'rdi': 'buf:holder', 'rsi': 'buf:entry' if entry else '0x0'},
+                          {'holder': seeded(0x90, seed)})
+        case['stubs'].append({'address': SMALL_PATH_TABLE_RELEASE, 'argc': 2, 'argi': [0, 1], 'ret': last_use})
+        if entry:
+            case['buffers']['entry'] = seeded(0x68, seed + 1)
+            if last_use:
+                add_destroy_and_free(case, 'entry', seed)
+        out.append(case)
+    return out
+
+
+
+def path_entry_find_cases(address: str, value: int | None) -> list[dict]:
+    """The find (a stub comparing the table at +0x68 and the key's text, hash and stale byte; the
+    key is on the stack) returns an entry or null, which comes back."""
+    out = []
+    for case_id, found, seed in (('found', True, 3), ('not_found', False, 5)):
+        case = small_case(address, case_id, 'i64', {'rdi': 'buf:holder', 'rsi': 'buf:text'},
+                          {'holder': seeded(0x90, seed), 'text': seeded(0x20, seed + 1),
+                           'guard': seeded(8, seed + 2)})
+        case['memory'].append({'addr': SMALL_STACK_GUARD_SLOT, 'pointer': 'guard'})
+        if found:
+            case['buffers']['entry'] = seeded(0x60, seed + 3)
+        case['stubs'].append({'address': SMALL_PATH_TABLE_FIND, 'argc': 2, 'argi': [0],
+                              'argmem': [{'arg': 1, 'size': 0xd}], 'ret': 'buf:entry' if found else 0})
+        out.append(case)
+    return out
+
+
+
+def interface_id_cases(address: str, value: int | None) -> list[dict]:
+    """The id comparison (a stub comparing both pointers and the size) says equal (a reference is
+    added and the object stored), greater or less (nothing); the result is the same."""
+    out = []
+    for case_id, compared, seed in (('equal', 0, 3), ('greater', 1, 5), ('less', 0xffffffff, 7)):
+        case = small_case(address, case_id, 'i32', {'rdi': 'buf:object', 'rsi': 'buf:id', 'rdx': 'buf:out'},
+                          {'object': seeded(0x18, seed), 'object_table': {'size': 0x10},
+                           'id': seeded(0x10, seed + 1), 'out': seeded(8, seed + 2)})
+        case['memory'] += [{'addr': 'buf:object+0x0', 'pointer': 'object_table'},
+                           {'addr': 'buf:object_table+0x8', 'guest': SMALL_SLOT}]
+        case['stubs'].append({'address': SMALL_COMPARE_MEMORY, 'argc': 3, 'argi': [0, 1, 2], 'ret': compared})
+        if compared == 0:
+            case['stubs'].append({'address': SMALL_SLOT, 'argc': 1, 'argi': [0], 'ret': 0})
+        out.append(case)
+    return out
+
+
+
+def fatal_error_cases(address: str, value: int | None) -> list[dict]:
+    """The report (a stub comparing the file, the line and the message)."""
+    out = []
+    for seed in (3, 5):
+        case = small_case(address, f'report_{seed}', 'void', {'rdi': f'0x{seed:x}{seed:x}{seed:x}'}, {})
+        case['stubs'].append({'address': SMALL_FATAL_ERROR, 'argc': 3, 'argi': [0, 1, 2], 'ret': 0})
+        out.append(case)
+    return out
+
+
+
+def resolve_slot_cases(slot: int):
+    """Kinds and indices (the index sign-extended) resolved by a stub comparing the context, the
+    kind and the index; the resolved object's slot (a stub comparing it and the context) returns
+    the result."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for case_id, kind, index, seed in (('kind_2', 2, 0xfffd, 3), ('kind_8001', 0x8001, 0x7fff, 5),
+                                           ('index_8000', 0x7, 0x8000, 7)):
+            reference = bytearray.fromhex(seeded(0x10, seed)['bytes'])
+            reference[8:12] = kind.to_bytes(2, 'little') + index.to_bytes(2, 'little')
+            case = small_case(address, case_id, 'i64', {'rdi': 'buf:reference', 'rsi': 'buf:context'},
+                              {'reference': {'size': 0x10, 'bytes': reference.hex()},
+                               'context': seeded(0x60, seed + 1), 'resolved': seeded(0x20, seed + 2),
+                               'resolved_table': {'size': 0x60}})
+            case['memory'] += [{'addr': 'buf:resolved+0x0', 'pointer': 'resolved_table'},
+                               {'addr': f'buf:resolved_table+0x{slot:x}', 'guest': SMALL_SLOT}]
+            case['stubs'] += [{'address': SMALL_RESOLVE, 'argc': 3, 'argi': [0, 1, 2], 'ret': 'buf:resolved'},
+                              {'address': SMALL_SLOT, 'argc': 2, 'argi': [0, 1], 'ret': seed << 36 | 0x5107}]
+            out.append(case)
+        return out
+    return cases
+
+
+
+def tagged_string_destructor_cases(address: str, value: int | None) -> list[dict]:
+    """The tagged string release and the base destructor are stubs comparing their argument."""
+    out = []
+    for seed in (3, 5):
+        case = small_case(address, f'object_{seed}', 'void', {'rdi': 'buf:object'}, {'object': seeded(0x48, seed)})
+        case['stubs'] += [{'address': SMALL_TAGGED_STRING_RELEASE, 'argc': 1, 'argi': [0], 'ret': 0},
+                          {'address': SMALL_TAGGED_STRING_OWNER_BASE, 'argc': 1, 'argi': [0], 'ret': 0}]
+        out.append(case)
+    return out
+
+
+
+def flagged_destructor_cases(deletes: bool):
+    """The flag bit set or clear; the slot +0x18 call and the base destructor are stubs comparing
+    the object and its first 0x10 bytes at the call (the table stored, then the flag cleared);
+    DELETES: operator delete is a stub comparing the object."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for case_id, flags, seed in (('flag_set', 0xff, 3), ('flag_clear', 0x3a, 5)):
+            case = small_case(address, case_id, 'void', {'rdi': 'buf:object'}, {'object': seeded(0x20, seed)})
+            case['memory'].append({'addr': 'buf:object+0xb', 'bytes': f'{flags:02x}'})
+            compared = [{'arg': 0, 'size': 0x10}]
+            case['stubs'] += [{'address': SMALL_FLAGGED_RELEASE, 'argc': 1, 'argi': [0], 'argmem': compared, 'ret': 0},
+                              {'address': SMALL_FLAGGED_BASE, 'argc': 1, 'argi': [0], 'argmem': compared, 'ret': 0}]
+            if deletes:
+                case['stubs'].append({'address': SMALL_OPERATOR_DELETE, 'argc': 1, 'argi': [0], 'ret': 0})
+            out.append(case)
+        return out
+    return cases
+
+
+
+def hk_array_cases(address: str, value: int | None) -> list[dict]:
+    """Owned buffers (capacity 8, 8 with the 0x40000000 flag, 0) are freed through the Havok heap's
+    slot +0x28 (a stub comparing the heap, the data and the low dword of the size); a buffer the
+    array does not own (0x80000008) is not."""
+    out = []
+    for case_id, capacity, seed in (('owned_8', 8, 3), ('owned_flagged', 0x40000008, 5),
+                                    ('owned_empty', 0, 7), ('not_owned', 0x80000008, 9)):
+        case = small_case(address, case_id, 'void', {'rdi': 'buf:array'},
+                          {'array': seeded(0x18, seed), 'data': seeded(0x20, seed + 1),
+                           'heap_table': {'size': 0x30}})
+        case['memory'] += [{'addr': 'buf:array+0x0', 'pointer': 'data'},
+                           {'addr': 'buf:array+0x8', 'bytes': (5).to_bytes(4, 'little').hex() + capacity.to_bytes(4, 'little').hex()},
+                           {'addr': SMALL_HAVOK_HEAP, 'pointer': 'heap_table'},
+                           {'addr': 'buf:heap_table+0x28', 'guest': SMALL_HEAP_FREE}]
+        if capacity < 0x80000000:
+            case['stubs'].append({'address': SMALL_HEAP_FREE, 'argc': 2, 'argi': [0, 1], 'argu32': [2], 'ret': 0})
+        out.append(case)
+    return out
+
+
+
+def element_array_cases(address: str, value: int | None) -> list[dict]:
+    """Three, one and no elements, each released by a stub comparing it; the end becomes the begin."""
+    out = []
+    for count, seed in ((3, 3), (1, 5), (0, 7)):
+        case = small_case(address, f'elements_{count}', 'void', {'rdi': 'buf:array'},
+                          {'array': seeded(0x30, seed), 'items': seeded(0x48, seed + 1)})
+        case['memory'] += [{'addr': 'buf:array+0x18', 'pointer': 'items'},
+                           {'addr': 'buf:array+0x20', 'pointer': f'items+0x{count * 0x18:x}'}]
+        case['stubs'] += [{'address': SMALL_RELEASE_ELEMENT, 'argc': 1, 'argi': [0], 'ret': 0} for _ in range(count)]
+        out.append(case)
+    return out
+
+
+
+
+MEMBER_DESTRUCTOR = '0x005c9010'
+BASE_DESTRUCTOR = '0x005696e0'
+MEMBER_RELEASE = '0x0045a4c0'
+CLASS_HEAD = 0x70                  # the bytes before the member at +0x70: the tables and +0x68
+
+
+def member_destroying_object_buffer(seed: int, size: int = 0x100) -> dict:
+    return {'size': size, 'bytes': bytes((seed * 29 + i * 7) & 0xff for i in range(size)).hex()}
+
+
+def member_destroying_cases(member: int, adjust: int, frees: bool, releases: bool):
+    """An object (thunks get it at +ADJUST) whose member at +MEMBER goes to the member destructor,
+    then the object to the base destructor (stubs comparing their argument; for RELEASES the
+    destructor also sees the object's first 0x70 bytes still untouched, and the base destructor
+    sees the two tables stored); RELEASES: the member at +0x68 set (released with a stub comparing
+    it) or null. FREES: then slot 0x68 of the allocator the global points at, a stub comparing the
+    allocator and the object, whose result comes back."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for case_id, seed, released in (('released', 3, True), ('no_release', 5, False)):
+            if not releases:
+                case_id = f'object_{seed}'
+            case = {'schema': 1, 'address': address, 'id': case_id, 'returns': 'i64' if frees else 'void',
+                    'buffers': {'object': member_destroying_object_buffer(seed)}, 'memory': [], 'imports': [],
+                    'stubs': [{'address': MEMBER_DESTRUCTOR, 'argc': 1, 'ret': seed},
+                              {'address': BASE_DESTRUCTOR, 'argc': 1, 'ret': seed + 1}],
+                    'args': {'rdi': f'buf:object+0x{adjust:x}', 'rsi': hex(0x1111111111111111 * (seed & 0xf)),
+                             'rax': '0x5aa5c33c0ff0e11e'}}
+            if releases:
+                case['stubs'][0]['argmem'] = [{'arg': 0, 'offset': -member, 'size': CLASS_HEAD}]
+                case['stubs'][1]['argmem'] = [{'arg': 0, 'offset': 0, 'size': CLASS_HEAD}]
+                case['stubs'].append({'address': MEMBER_RELEASE, 'argc': 1, 'ret': seed + 2})
+                if released:
+                    case['buffers']['released'] = member_destroying_object_buffer(seed + 7, 0x20)
+                    case['memory'].append({'addr': 'buf:object+0x68', 'pointer': 'released'})
+                else:
+                    case['memory'].append({'addr': 'buf:object+0x68', 'bytes': '00' * 8})
+            if frees:
+                case['buffers'].update({'allocator': member_destroying_object_buffer(seed + 1, 0x20), 'allocator_table': {'size': 0x80}})
+                case['memory'] += [{'addr': OBJECT_ALLOCATOR, 'pointer': 'allocator'},
+                                   {'addr': 'buf:allocator+0x0', 'pointer': 'allocator_table'},
+                                   {'addr': 'buf:allocator_table+0x68', 'guest': ALLOCATOR_FREE}]
+                case['stubs'].append({'address': ALLOCATOR_FREE, 'argc': 2, 'ret': seed << 40 | 0xf3ee})
+            out.append(case)
+        return out
+    return cases
+
+
+
+
+SLOT_STAND_IN = '0x00400240'        # a stand-in for the virtual slot a case calls, stubbed
+ADJUSTED_DESTRUCTOR = '0x005696e0'
+ADJUSTED_ALLOCATOR = '0x057e7320'   # the global that points at the allocator (free: slot 0x68)
+COMPARE_BYTES = '0x02fbe638'
+COPY_BYTES = '0x02fbe578'
+FIND_ENTRY = '0x02e3b0f0'
+INSERT_ENTRY = '0x02e3b210'
+BLOCK_ALLOCATOR = '0x05ac8288'      # the global that points at the block allocator
+ALLOCATE_ALIGNED = '0x02fa1b80'
+FREE_SIZED = '0x02fa1c20'
+
+
+def filled(seed: int, size: int) -> dict:
+    return {'size': size, 'bytes': bytes((seed * 29 + i * 7) & 0xff for i in range(size)).hex()}
+
+
+def le32(value: int) -> str:
+    return (value & 0xffffffff).to_bytes(4, 'little').hex()
+
+
+def make_case(address: str, case_id: str, returns: str, args: dict, buffers: dict, memory: list,
+              stubs: list) -> dict:
+    regs = {'rdi': '0x0', 'rsi': '0x1111111111111111', 'rdx': '0x2222222222222222', 'rcx': '0x3333333333333333',
+            'rax': '0x5aa5c33c0ff0e11e'}
+    regs.update(args)
+    return {'schema': 1, 'address': address, 'id': case_id, 'returns': returns, 'buffers': buffers,
+            'memory': memory, 'imports': [], 'stubs': stubs, 'args': regs}
+
+
+def adjusting_free_cases(address: str, value: int | None) -> list[dict]:
+    """The pointer is 0x20 bytes into the object: the destructor (a stub comparing the object),
+    then the allocator's slot 0x68 (a stub comparing the allocator and the object), whose result
+    comes back; two seeds."""
+    out = []
+    for seed in (3, 5):
+        buffers = {'object': filled(seed, 0x60), 'allocator': filled(seed + 1, 0x20), 'allocator_table': {'size': 0x80}}
+        memory = [{'addr': ADJUSTED_ALLOCATOR, 'pointer': 'allocator'},
+                  {'addr': 'buf:allocator+0x0', 'pointer': 'allocator_table'},
+                  {'addr': 'buf:allocator_table+0x68', 'guest': SLOT_STAND_IN}]
+        stubs = [{'address': ADJUSTED_DESTRUCTOR, 'argc': 1, 'ret': seed},
+                 {'address': SLOT_STAND_IN, 'argc': 2, 'ret': seed << 40 | 0xf3ee}]
+        out.append(make_case(address, f'object_{seed}', 'i64', {'rdi': 'buf:object+0x20'}, buffers, memory, stubs))
+    return out
+
+
+def interface_query_cases(address: str, value: int | None) -> list[dict]:
+    """The key compares (stubs comparing the key, the known key and 16) equal to the first key,
+    the second, or neither; results with only high bits set count as equal (the original tests
+    eax). A match takes a reference (slot 0x8, a stub comparing the object) and stores the object."""
+    out = []
+    for case_id, first, second, seed in (('first', 0, None, 3), ('second', 1, 0, 5), ('neither', 1, 0xffffffff, 7),
+                                         ('first_high_bits', 1 << 32, None, 9), ('second_high_bits', 0x80, 1 << 32, 11),
+                                         ('neither_negative', 0xffffffff, 0x7fffffff, 13)):
+        buffers = {'object': filled(seed, 0x20), 'table': {'size': 0x20}, 'key': filled(seed + 1, 0x10),
+                   'out': filled(seed + 2, 0x10)}
+        memory = [{'addr': 'buf:object+0x0', 'pointer': 'table'}, {'addr': 'buf:table+0x8', 'guest': SLOT_STAND_IN}]
+        results = [first] if second is None else [first, second]
+        stubs = [{'address': COMPARE_BYTES, 'argc': 3, 'ret': r} for r in results]
+        if (results[-1] & 0xffffffff) == 0:
+            stubs.append({'address': SLOT_STAND_IN, 'argc': 1, 'ret': seed})
+        out.append(make_case(address, case_id, 'i32', {'rdi': 'buf:object', 'rsi': 'buf:key', 'rdx': 'buf:out'},
+                             buffers, memory, stubs))
+    return out
+
+
+def store_setup(seed: int) -> tuple[dict, list]:
+    """A store whose end node (+0x38) is end_node; node is an entry whose data and size are set."""
+    buffers = {'store': filled(seed, 0x48), 'key': filled(seed + 1, 0x10), 'end_node': filled(seed + 2, 0x30),
+               'node': filled(seed + 3, 0x30), 'source': filled(seed + 4, 0x20)}
+    memory = [{'addr': 'buf:store+0x38', 'pointer': 'end_node'}, {'addr': 'buf:node+0x20', 'pointer': 'source'}]
+    return buffers, memory
+
+
+def find_stub(found: str, seed: int) -> dict:
+    """The lookup writes the node it found at +0x10 of the iterator (a stack slot, not compared)."""
+    return {'address': FIND_ENTRY, 'argc': 3, 'argi': [1, 2], 'ret': seed,
+            'writes': [{'arg': 0, 'offset': 0x10, 'pointer': found}]}
+
+
+def entry_copy_cases(address: str, value: int | None) -> list[dict]:
+    """The key absent (the end node), or found with the caller's size below, equal to or above
+    the entry's (an unsigned compare: 0x80000001 is above 0x7fffffff); the copy is a stub
+    comparing the destination, the source and the size."""
+    out = []
+    for case_id, found, size, entry_size, seed in (('absent', 'end_node', 0x10, 8, 3), ('too_small', 'node', 3, 8, 5),
+                                                   ('equal', 'node', 8, 8, 7), ('larger', 'node', 0x20, 8, 9),
+                                                   ('unsigned_small', 'node', 0x7fffffff, 0x80000001, 11),
+                                                   ('unsigned_large', 'node', 0x80000001, 0x10, 13)):
+        buffers, memory = store_setup(seed)
+        buffers.update({'size': {'size': 8, 'bytes': le32(size) + 'a5a5a5a5'}, 'destination': filled(seed + 5, 0x20)})
+        memory.append({'addr': 'buf:node+0x28', 'bytes': le32(entry_size) + 'c3c3c3c3'})
+        stubs = [find_stub(found, seed)]
+        if found == 'node' and size >= entry_size:
+            stubs.append({'address': COPY_BYTES, 'argc': 3, 'ret': 'buf:destination'})
+        out.append(make_case(address, case_id, 'i32', {'rdi': 'buf:store', 'rsi': 'buf:key', 'rdx': 'buf:size',
+                                                       'rcx': 'buf:destination'}, buffers, memory, stubs))
+    return out
+
+
+def entry_store_cases(address: str, value: int | None) -> list[dict]:
+    """The key found or absent (then inserted: a stub comparing the tree and the new entry's key,
+    null data and zero size, writing the inserted node), and the default key or not (the compare
+    is a stub). The size's high bits are not stored."""
+    out = []
+    for case_id, found, compare, seed in (('found', True, 1, 3), ('found_default', True, 0, 5),
+                                          ('inserted', False, 0xffffffff, 7), ('inserted_default', False, 0, 9),
+                                          ('found_high_bits', True, 1 << 32, 11)):
+        buffers, memory = store_setup(seed)
+        stubs = [find_stub('node' if found else 'end_node', seed)]
+        if not found:
+            stubs.append({'address': INSERT_ENTRY, 'argc': 3, 'argi': [1], 'ret': seed + 1,
+                          'argmem': [{'arg': 2, 'offset': 0, 'size': 0x1c}],
+                          'writes': [{'arg': 0, 'offset': 0x10, 'pointer': 'node'}]})
+        stubs.append({'address': COMPARE_BYTES, 'argc': 3, 'ret': compare})
+        args = {'rdi': 'buf:store', 'rsi': 'buf:key', 'rdx': f'0x{0xabcdef01 << 32 | (seed << 8 | 0x10):x}',
+                'rcx': f'0x{0x12345678 << 16 | seed << 4:x}'}
+        out.append(make_case(address, case_id, 'i32', args, buffers, memory, stubs))
+    return out
+
+
+# (case id, layout kind results, count): the kind (& ~1) 4 gives three elements per count; 6 on
+# the second query three plus two; any other one. The kind is eax: high bits do not count; 3n
+# wraps in 32 bits; a negative count is sign-extended.
+LAYOUTS = (('triples', [4], 5), ('triples_odd_kind', [5], 6), ('triples_high_bits', [1 << 32 | 4], 7),
+           ('triples_wrap', [4], 0x40000001), ('plus_two', [6, 6], 7), ('plus_two_odd_kind', [1, 7], 9),
+           ('single', [0, 0], 11), ('single_after_six', [6, 2], 13), ('single_negative', [0, 0], -3))
+
+
+def layout_setup(seed: int, count: int, block: bool) -> tuple[dict, list]:
+    buffers = {'object': filled(seed, 0x30), 'table': {'size': 0x100}, 'allocator': filled(seed + 1, 0x20)}
+    memory = [{'addr': 'buf:object+0x0', 'pointer': 'table'},
+              {'addr': 'buf:table+0x88', 'guest': SLOT_STAND_IN},
+              {'addr': 'buf:object+0x18', 'bytes': le32(count)},
+              {'addr': BLOCK_ALLOCATOR, 'pointer': 'allocator'}]
+    if block:
+        buffers['block'] = filled(seed + 2, 0x40)
+        memory.append({'addr': 'buf:object+0x8', 'pointer': 'block'})
+    else:
+        memory.append({'addr': 'buf:object+0x8', 'bytes': '00' * 8})
+    return buffers, memory
+
+
+def kind_stubs(kinds: list[int]) -> list[dict]:
+    """Slot 0x88 queried with the object and 0 (a stub comparing both)."""
+    return [{'address': SLOT_STAND_IN, 'argc': 2, 'argi': [0], 'argu32': [1], 'ret': k} for k in kinds]
+
+
+def layout_free_cases(address: str, value: int | None) -> list[dict]:
+    """Each layout with a block (freed by a stub comparing the allocator, the block, the size and
+    the alignment), and no block (nothing called); +0x8 and +0x10 are cleared."""
+    out = []
+    for n, (case_id, kinds, count) in enumerate(LAYOUTS):
+        seed = 3 + 2 * n
+        buffers, memory = layout_setup(seed, count, True)
+        stubs = kind_stubs(kinds) + [{'address': FREE_SIZED, 'argc': 4, 'ret': seed}]
+        out.append(make_case(address, case_id, 'i8', {'rdi': 'buf:object'}, buffers, memory, stubs))
+    buffers, memory = layout_setup(41, 5, False)
+    out.append(make_case(address, 'no_block', 'i8', {'rdi': 'buf:object'}, buffers, memory, []))
+    return out
+
+
+def layout_allocate_cases(sets_count: bool):
+    """Each layout allocated (a stub comparing the allocator, the size and the alignment, returning
+    storage), and one failing allocation. SETS_COUNT: the count comes in the second argument (its
+    high bits are not stored) and the object's count is something else."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for n, (case_id, kinds, count) in enumerate(LAYOUTS + (('fails', [4], 5),)):
+            seed = 3 + 2 * n
+            buffers, memory = layout_setup(seed, 0x7777 if sets_count else count, False)
+            buffers['storage'] = {'size': 0x10}
+            ret = 0 if case_id == 'fails' else 'buf:storage'
+            stubs = kind_stubs(kinds) + [{'address': ALLOCATE_ALIGNED, 'argc': 3, 'ret': ret}]
+            args = {'rdi': 'buf:object'}
+            if sets_count:
+                args['rsi'] = f'0x{0xabcdef01 << 32 | (count & 0xffffffff):x}'
+            out.append(make_case(address, case_id, 'i8', args, buffers, memory, stubs))
+        return out
+    return cases
+
 CASES = {'initialize_static_wide_string': static_wide_string_cases,
          'deletes_sized_through_thread_allocator': sized_delete_cases,
          'allocates_from_thread_allocator': allocate_cases,
@@ -466,7 +1095,65 @@ CASES = {'initialize_static_wide_string': static_wide_string_cases,
          'destroys_with_0x006fbd50_then_frees': destroy_then_delete_cases('0x006fbd50', freed=True),
 
          'releases_member_at_0xc0_then_destroys_base': member_release_cases,
-         'releases_member_at_0xc0_then_destroys_and_frees': member_release_free_cases}
+         'releases_member_at_0xc0_then_destroys_and_frees': member_release_free_cases,
+         **{name: static_vtable_cases(name) for name in STATIC_VTABLE_SETTERS},
+         'stores_vtable_0x05541b90_then_releases_member_at_8': release_member_cases,
+         'reallocates_array64': array64_reserve_cases,
+         'fills_3_slots_with_05ac5cac': slot_table_cases,
+         'fills_1_slot_with_05ac5e6b': slot_table_cases,
+         'fills_1_slot_with_05ac5cac': slot_table_cases,
+         'fills_4_slots_with_05ac5cac': slot_table_cases,
+         'fills_5_slots_with_05ac5cac': slot_table_cases,
+         'fills_1_slot_with_05acd45c': slot_table_cases,
+         'fills_1_slot_with_05acd1bc': slot_table_cases,
+         'fills_2_slots_with_05acd45c': slot_table_cases,
+         'fills_2_slots_with_05ac5cac': slot_table_cases,
+         'fills_1_slot_with_05acee04': slot_table_cases,
+         'fills_1_slot_with_05ac5dfd': slot_table_cases,
+         'fills_1_slot_with_05ac5f5b': slot_table_cases,
+         'fills_2_slots_05ac74a5_05ac74a3': slot_table_cases,
+         'fills_2_slots_05ac74a7_05ac5cac': slot_table_cases,
+         'fills_2_slots_05ac74a4_05ac74a3': slot_table_cases,
+         'fills_2_slots_05ac74a9_05ac5cac': slot_table_cases,
+
+         'stores_vtable_releases_0x10_then_destroys': vtable_release_cases(False),
+         'stores_vtable_releases_0x10_destroys_then_deletes': vtable_release_cases(True),
+         'releases_member_at_0x20_through_0x01401720': member_at_cases(0x20),
+         'releases_member_at_0x18_through_0x01401720': member_at_cases(0x18),
+         'destroys_then_frees_0x10_bytes_through_0x05ac8288': sized_free_cases,
+         'destroys_and_frees_object_through_owning_heap': owning_heap_delete_cases,
+         'releases_path_entry_then_deletes_it': path_entry_release_cases,
+         'finds_path_entry_by_text': path_entry_find_cases,
+         'adds_reference_on_interface_id_0x04b2f320': interface_id_cases,
+         'reports_fatal_error_line_0xad': fatal_error_cases,
+         'resolves_kind_and_index_then_calls_slot_0x38': resolve_slot_cases(0x38),
+         'resolves_kind_and_index_then_calls_slot_0x58': resolve_slot_cases(0x58),
+         'stores_vtable_releases_tagged_string_0x38_then_destroys': tagged_string_destructor_cases,
+         'stores_vtable_calls_slot_0x18_clears_flag_then_destroys': flagged_destructor_cases(False),
+         'stores_vtable_calls_slot_0x18_clears_flag_destroys_then_deletes': flagged_destructor_cases(True),
+         'clears_hk_array_of_4_byte_elements': hk_array_cases,
+         'releases_0x18_byte_elements_at_0x18_then_empties': element_array_cases,
+         'destroys_member_0x68_then_base': member_destroying_cases(0x68, 0x0, False, False),
+         'destroys_member_0x68_and_base_then_frees': member_destroying_cases(0x68, 0x0, True, False),
+         'adjusts_0x20_destroys_member_0x68_then_base': member_destroying_cases(0x68, 0x20, False, False),
+         'adjusts_0x20_destroys_member_0x68_and_base_then_frees': member_destroying_cases(0x68, 0x20, True, False),
+         'adjusts_0x68_destroys_member_0x68_then_base': member_destroying_cases(0x68, 0x68, False, False),
+         'adjusts_0x68_destroys_member_0x68_and_base_then_frees': member_destroying_cases(0x68, 0x68, True, False),
+         'destroys_member_0x70_releases_0x68_then_base': member_destroying_cases(0x70, 0x0, False, True),
+         'destroys_member_0x70_releases_0x68_and_base_then_frees': member_destroying_cases(0x70, 0x0, True, True),
+         'adjusts_0x20_destroys_member_0x70_releases_0x68_then_base': member_destroying_cases(0x70, 0x20, False, True),
+         'adjusts_0x20_destroys_member_0x70_releases_0x68_and_base_then_frees': member_destroying_cases(0x70, 0x20, True, True),
+         'adjusts_0x70_destroys_member_0x70_releases_0x68_then_base': member_destroying_cases(0x70, 0x70, False, True),
+         'adjusts_0x70_destroys_member_0x70_releases_0x68_and_base_then_frees': member_destroying_cases(0x70, 0x70, True, True),
+
+         'thunk_minus_0x20_destroys_with_0x005696e0_then_frees': adjusting_free_cases,
+         'queries_interface_0x04b2f0f0_or_0x04b2f320': interface_query_cases,
+         'copies_entry_found_by_key_at_0x30': entry_copy_cases,
+         'stores_entry_by_key_at_0x30': entry_store_cases,
+         'frees_layout_block_align_16': layout_free_cases,
+         'frees_layout_block_align_4': layout_free_cases,
+         'allocates_layout_block_for_stored_count': layout_allocate_cases(False),
+         'allocates_layout_block_for_count': layout_allocate_cases(True)}
 
 MUTANTS = {
     # Doing nothing leaves the string and the guard as they were and makes none of the calls; only
@@ -513,6 +1200,74 @@ MUTANTS = {
     # game image, which the mutant library does not see.)
     'releases_member_at_0xc0_then_destroys_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'releases_member_at_0xc0_then_destroys_and_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+
+    # Nothing stored. (A mutant storing the wrong vtable would need the game image.)
+    'sets_static_vtable_at_0x05ac59b0': ['bb_mutant_does_nothing'],
+    'sets_static_vtable_at_0x05ac59c0': ['bb_mutant_does_nothing'],
+    'sets_static_vtable_at_0x05ac59d0': ['bb_mutant_does_nothing'],
+    # Nothing stored or called; or the member released but no vtable stored.
+    'stores_vtable_0x05541b90_then_releases_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_releases_member_at_8_only'],
+
+    'reallocates_array64': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+
+    # No write. (A mutant with the wrong pointers would need the game image.)
+    'fills_3_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5e6b': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_4_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_5_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05acd45c': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05acd1bc': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_with_05acd45c': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_with_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05acee04': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5dfd': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_1_slot_with_05ac5f5b': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a5_05ac74a3': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a7_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a4_05ac74a3': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'fills_2_slots_05ac74a9_05ac5cac': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+
+    'stores_vtable_releases_0x10_then_destroys': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'stores_vtable_releases_0x10_destroys_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'releases_member_at_0x20_through_0x01401720': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'releases_member_at_0x18_through_0x01401720': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_then_frees_0x10_bytes_through_0x05ac8288': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+
+    'destroys_and_frees_object_through_owning_heap': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'releases_path_entry_then_deletes_it': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'finds_path_entry_by_text': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adds_reference_on_interface_id_0x04b2f320': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'reports_fatal_error_line_0xad': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'resolves_kind_and_index_then_calls_slot_0x38': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'resolves_kind_and_index_then_calls_slot_0x58': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'stores_vtable_releases_tagged_string_0x38_then_destroys': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'stores_vtable_calls_slot_0x18_clears_flag_then_destroys': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'stores_vtable_calls_slot_0x18_clears_flag_destroys_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'clears_hk_array_of_4_byte_elements': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'releases_0x18_byte_elements_at_0x18_then_empties': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+
+    'destroys_member_0x68_then_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_member_0x68_and_base_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x20_destroys_member_0x68_then_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x20_destroys_member_0x68_and_base_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x68_destroys_member_0x68_then_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x68_destroys_member_0x68_and_base_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_member_0x70_releases_0x68_then_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'destroys_member_0x70_releases_0x68_and_base_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x20_destroys_member_0x70_releases_0x68_then_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x20_destroys_member_0x70_releases_0x68_and_base_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x70_destroys_member_0x70_releases_0x68_then_base': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'adjusts_0x70_destroys_member_0x70_releases_0x68_and_base_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+
+    'thunk_minus_0x20_destroys_with_0x005696e0_then_frees': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'queries_interface_0x04b2f0f0_or_0x04b2f320': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'copies_entry_found_by_key_at_0x30': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'stores_entry_by_key_at_0x30': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'frees_layout_block_align_16': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'frees_layout_block_align_4': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'allocates_layout_block_for_stored_count': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'allocates_layout_block_for_count': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 }
 
 

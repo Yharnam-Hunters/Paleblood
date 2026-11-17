@@ -114,6 +114,7 @@ struct MetalState {
     uint32_t compute_user_set = 0;
     uint32_t user[2][GCN_USER_SGPR_MAX] = {};
     uint32_t user_set[2] = {};
+    uint32_t depth_bounds[2] = {}; /* Independent raw DB_DEPTH_BOUNDS_MIN/MAX words. */
     uint32_t step_rates[2] = {}, step_rates_set = 0;
     uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
     uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
@@ -174,7 +175,8 @@ static int failed(char *error, size_t size, const char *format, ...)
 }
 
 /* Validate the supported opaque-triangle profile using AMD GFX7 register fields. */
-enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005,
+enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009,
+       DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005,
        DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b, DB_DEPTH_INFO = 0xa00f,
        DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_HTILE_SURFACE = 0xa2af,
        CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
@@ -187,12 +189,14 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
    is not clipped the depth is clamped to the viewport's range: Metal's MTLDepthClipModeClamp, as the Vulkan executor's
    depth clamp (render_executor.c). */
 enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
-enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
+enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4, DEPTH_BOUNDS_ENABLE = 8,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
        ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17 };
 static int set_register(MetalState &state, uint32_t address, uint32_t value)
 {
     switch (address) {
+    case DB_DEPTH_BOUNDS_MIN: case DB_DEPTH_BOUNDS_MAX:
+        state.depth_bounds[address - DB_DEPTH_BOUNDS_MIN] = value; return 0;
     case DB_DEPTH_CONTROL: state.depth = value; state.depth_set = true; return 0;
     case CB_COLOR_CONTROL: state.color_control = value; state.color_control_set = true; return 0;
     case CB_TARGET_MASK: state.target_mask = value; state.target_mask_set = true; return 0;
@@ -246,6 +250,8 @@ static int check_state(const MetalState &state, char *error, size_t size)
     /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
     if ((state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
         return failed(error, size, "blending is not drawn yet");
+    if (state.depth_set && (state.depth & DEPTH_BOUNDS_ENABLE))
+        return failed(error, size, "depth bounds testing (DB_DEPTH_CONTROL.DEPTH_BOUNDS_ENABLE) is not drawn yet");
     if (state.color_control_set) {
         const uint32_t mode = (state.color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT;
         const uint32_t rop = (state.color_control & ROP3_MASK) >> ROP3_SHIFT;

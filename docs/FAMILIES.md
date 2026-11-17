@@ -229,6 +229,66 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `destroys_with_0x006fbd50_then_frees` | 42 bytes, two `{rel:...}` | destroy the object with 0x006fbd50, then free it through the allocator |
 | `releases_member_at_0xc0_then_destroys_base` | 87 bytes, three `{rel:...}` | a scaleform destructor: store the vtable, release the member at +0xc0, then destroy the base class |
 | `releases_member_at_0xc0_then_destroys_and_frees` | 109 bytes, four `{rel:...}` | the deleting twin: the same, then free the object through the allocator |
+| `sets_static_vtable_at_0x05ac59b0` | 41 bytes, three `{rel:...}` | guarded static initializer: store a vtable in the static object at 0x05ac59b0 once |
+| `sets_static_vtable_at_0x05ac59c0` | 41 bytes, three `{rel:...}` | guarded static initializer: store a vtable in the static object at 0x05ac59c0 once |
+| `sets_static_vtable_at_0x05ac59d0` | 41 bytes, three `{rel:...}` | guarded static initializer: store a vtable in the static object at 0x05ac59d0 once |
+| `stores_vtable_0x05541b90_then_releases_member_at_8` | 30 bytes, one `{rel:...}` | store a vtable in the object, then call slot 0x18 of the object at +8 if any |
+| `reallocates_array64` | relative, 251 bytes (0x0167e800's) | the copies of the engine array reallocation for 8-byte elements that `engine/array64_reserve.cpp` does not name (`engine/array_reserve.h`) |
+| `fills_3_slots_with_05ac5cac` | 121 bytes, 1 `{rel:...}` | fill a 15-entry table with 3 fixed pointers and nulls |
+| `fills_1_slot_with_05ac5e6b` | 129 bytes, 1 `{rel:...}` | fill a 15-entry table with 1 fixed pointer and nulls |
+| `fills_1_slot_with_05ac5cac` | 129 bytes, 1 `{rel:...}` | fill a 15-entry table with 1 fixed pointer and nulls |
+| `fills_4_slots_with_05ac5cac` | 117 bytes, 1 `{rel:...}` | fill a 15-entry table with 4 fixed pointers and nulls |
+| `fills_5_slots_with_05ac5cac` | 113 bytes, 1 `{rel:...}` | fill a 15-entry table with 5 fixed pointers and nulls |
+| `fills_1_slot_with_05acd45c` | 129 bytes, 1 `{rel:...}` | fill a 15-entry table with 1 fixed pointer and nulls |
+| `fills_1_slot_with_05acd1bc` | 129 bytes, 1 `{rel:...}` | fill a 15-entry table with 1 fixed pointer and nulls |
+| `fills_2_slots_with_05acd45c` | 125 bytes, 1 `{rel:...}` | fill a 15-entry table with 2 fixed pointers and nulls |
+| `fills_2_slots_with_05ac5cac` | 125 bytes, 1 `{rel:...}` | fill a 15-entry table with 2 fixed pointers and nulls |
+| `fills_1_slot_with_05acee04` | 129 bytes, 1 `{rel:...}` | fill a 15-entry table with 1 fixed pointer and nulls |
+| `fills_1_slot_with_05ac5dfd` | 129 bytes, 1 `{rel:...}` | fill a 15-entry table with 1 fixed pointer and nulls |
+| `fills_1_slot_with_05ac5f5b` | 129 bytes, 1 `{rel:...}` | fill a 15-entry table with 1 fixed pointer and nulls |
+| `fills_2_slots_05ac74a5_05ac74a3` | 132 bytes, 2 `{rel:...}` | fill a 15-entry table with 2 fixed pointers and nulls |
+| `fills_2_slots_05ac74a7_05ac5cac` | 132 bytes, 2 `{rel:...}` | fill a 15-entry table with 2 fixed pointers and nulls |
+| `fills_2_slots_05ac74a4_05ac74a3` | 132 bytes, 2 `{rel:...}` | fill a 15-entry table with 2 fixed pointers and nulls |
+| `fills_2_slots_05ac74a9_05ac5cac` | 132 bytes, 2 `{rel:...}` | fill a 15-entry table with 2 fixed pointers and nulls |
+| `releases_named_resource_held_at_0x70` | 155 bytes, four `{rel:...}` | release a held named resource, the flags at +0x70 (0x0238a210 and its copies) |
+| `releases_named_resource_held_at_0x68` | 155 bytes, four `{rel:...}` | release a held named resource, the flags at +0x68 (the same, 8 bytes earlier) |
+| `stores_vtable_releases_0x10_then_destroys` | 55 bytes, three `{rel:...}` | store the vtable, release the member at +0x10, then destroy the base |
+| `stores_vtable_releases_0x10_destroys_then_deletes` | 63 bytes, four `{rel:...}` | the deleting twin: the same, then delete the object |
+| `releases_member_at_0x20_through_0x01401720` | 38 bytes, one `{rel:...}` | release the member at +0x20 and clear it |
+| `releases_member_at_0x18_through_0x01401720` | 38 bytes, one `{rel:...}` | release the member at +0x18 and clear it |
+| `destroys_then_frees_0x10_bytes_through_0x05ac8288` | 48 bytes, three `{rel:...}` | destroy the object, then free its 0x10 bytes through an allocator |
+| `destroys_and_frees_object_through_owning_heap` | 59 bytes, one `{rel:...}` | destroy an object, then free it through the heap that owns it |
+| `releases_path_entry_then_deletes_it` | 80 bytes, two `{rel:...}` | release an entry from the path table at +0x68, deleting it when it was the last use |
+| `finds_path_entry_by_text` | 72 bytes, three `{rel:...}` | find the entry for a path text in the path table at +0x68 |
+| `adds_reference_on_interface_id_0x04b2f320` | 62 bytes, two `{rel:...}` | hand out the object for one interface id (the result is 0x80000004 either way) |
+| `reports_fatal_error_line_0xad` | 21 bytes, two `{rel:...}` | report a fatal error (line 0xad, one message) |
+| `resolves_kind_and_index_then_calls_slot_0x38` | 46 bytes, one `{rel:...}` | resolve an object by kind and index, then call its slot +0x38 |
+| `resolves_kind_and_index_then_calls_slot_0x58` | 46 bytes, one `{rel:...}` | resolve an object by kind and index, then call its slot +0x58 |
+| `stores_vtable_releases_tagged_string_0x38_then_destroys` | 46 bytes, three `{rel:...}` | store the vtable, release the tagged string at +0x38, then destroy the base |
+| `stores_vtable_calls_slot_0x18_clears_flag_then_destroys` | 44 bytes, two `{rel:...}` | store the vtable, call its slot +0x18, clear a flag, then destroy the base |
+| `stores_vtable_calls_slot_0x18_clears_flag_destroys_then_deletes` | 52 bytes, three `{rel:...}` | the deleting twin: the same, then delete the object |
+| `clears_hk_array_of_4_byte_elements` | 63 bytes, one `{rel:...}` | clear an hkArray of 4-byte elements and free its buffer |
+| `releases_0x18_byte_elements_at_0x18_then_empties` | 68 bytes, one `{rel:...}` | release every element of the array at +0x18, then empty it |
+| `destroys_member_0x68_then_base` | 32 bytes, two `{rel:...}` | destroy the member at +0x68, then the base |
+| `destroys_member_0x68_and_base_then_frees` | 54 bytes, three `{rel:...}` | destroy the member at +0x68, then the base, then free the object |
+| `adjusts_0x20_destroys_member_0x68_then_base` | 33 bytes, two `{rel:...}` | thunk (this = argument - 0x20): destroy the member at +0x68, then the base |
+| `adjusts_0x20_destroys_member_0x68_and_base_then_frees` | 55 bytes, three `{rel:...}` | thunk (this = argument - 0x20): destroy the member at +0x68, then the base, then free the object |
+| `adjusts_0x68_destroys_member_0x68_then_base` | 29 bytes, two `{rel:...}` | thunk (this = argument - 0x68): destroy the member at +0x68, then the base |
+| `adjusts_0x68_destroys_member_0x68_and_base_then_frees` | 51 bytes, three `{rel:...}` | thunk (this = argument - 0x68): destroy the member at +0x68, then the base, then free the object |
+| `destroys_member_0x70_releases_0x68_then_base` | 70 bytes, four `{rel:...}` | destroy the member at +0x70, store the tables, release the member at +0x68, then the base |
+| `destroys_member_0x70_releases_0x68_and_base_then_frees` | 92 bytes, five `{rel:...}` | destroy the member at +0x70, store the tables, release the member at +0x68, then the base, then free the object |
+| `adjusts_0x20_destroys_member_0x70_releases_0x68_then_base` | 74 bytes, four `{rel:...}` | thunk (this = argument - 0x20): destroy the member at +0x70, store the tables, release the member at +0x68, then the base |
+| `adjusts_0x20_destroys_member_0x70_releases_0x68_and_base_then_frees` | 96 bytes, five `{rel:...}` | thunk (this = argument - 0x20): destroy the member at +0x70, store the tables, release the member at +0x68, then the base, then free the object |
+| `adjusts_0x70_destroys_member_0x70_releases_0x68_then_base` | 71 bytes, four `{rel:...}` | thunk (this = argument - 0x70): destroy the member at +0x70, store the tables, release the member at +0x68, then the base |
+| `adjusts_0x70_destroys_member_0x70_releases_0x68_and_base_then_frees` | 93 bytes, five `{rel:...}` | thunk (this = argument - 0x70): destroy the member at +0x70, store the tables, release the member at +0x68, then the base, then free the object |
+| `thunk_minus_0x20_destroys_with_0x005696e0_then_frees` | 43 bytes, two `{rel:...}` | adjusting deleting entry: back 0x20 bytes, destroy, free through an allocator |
+| `queries_interface_0x04b2f0f0_or_0x04b2f320` | 101 bytes, four `{rel:...}` | interface query on two 16-byte keys |
+| `copies_entry_found_by_key_at_0x30` | 116 bytes, four `{rel:...}` | copy out the entry a 16-byte key finds |
+| `stores_entry_by_key_at_0x30` | 205 bytes, seven `{rel:...}` | store an entry under a 16-byte key |
+| `frees_layout_block_align_16` | 159 bytes, two `{rel:...}` | free the block sized by the layout kind |
+| `frees_layout_block_align_4` | 147 bytes, two `{rel:...}` | the packed variant |
+| `allocates_layout_block_for_stored_count` | 150 bytes, two `{rel:...}` | allocate the block sized by the layout kind |
+| `allocates_layout_block_for_count` | 154 bytes, two `{rel:...}` | the same, storing a new count first |
 
 A parameterized family's source is generated by `tools/family_emit.py FAMILY` from its member
 table and a template (one named constant and one replacement per value); the validator refuses a
