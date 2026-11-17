@@ -49,11 +49,53 @@ class Shapes(unittest.TestCase):
         for negative_or_zero in ('488b47f8c3', '488b4700c3'):
             with self.assertRaises(fam.ShapeError):
                 disp.value(bytes.fromhex(negative_or_zero))
+        far = fam.parse_shape('48 8b 87 {d32} c3')
+        self.assertEqual(far.value(bytes.fromhex('488b87d0cc0200c3')), 0x2ccd0)
+        for negative_or_zero in ('488b87d0feffffc3', '488b8700000000c3', '488b8700000080c3'):
+            with self.assertRaises(fam.ShapeError):
+                far.value(bytes.fromhex(negative_or_zero))
 
     def test_bad_shapes_are_refused(self):
         for text in ('', 'C3', 'b8 {u32} {u8}', 'zz', 'b8 {u16}'):
             with self.assertRaises(fam.ShapeError):
                 fam.parse_shape(text)
+
+    def test_relative_fields_must_reach_their_targets(self):
+        shape = fam.parse_shape('e8 {rel:0x00402000} 80 3d {rel:0x00403000+1} 00 c3')
+        self.assertEqual(shape.size, 13)
+
+        def code(address, call_target=0x402000, global_target=0x403000, last=b'\xc3'):
+            call = struct.pack('<i', call_target - (address + 5))
+            cmp = struct.pack('<i', global_target - (address + 5 + 2 + 4 + 1))
+            return b'\xe8' + call + b'\x80\x3d' + cmp + b'\x00' + last
+
+        for address in (0x401000, 0x401100, 0x5f0000):
+            self.assertTrue(shape.matches(code(address), address))
+            self.assertIsNone(shape.value(code(address), address))
+        self.assertFalse(shape.matches(code(0x401000), 0x401100))           # same bytes, another address
+        self.assertFalse(shape.matches(code(0x401000, call_target=0x402010), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, global_target=0x403001), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, last=b'\x90'), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000)[:-1], 0x401000))
+        with self.assertRaises(fam.ShapeError):
+            shape.value(code(0x401000))                                     # no address
+        for text in ('e8 {rel:0x402000+0} c3', 'e8 {rel:402000} c3', 'b8 {u32} {u8} {rel:0x402000}'):
+            with self.assertRaises(fam.ShapeError):
+                fam.parse_shape(text)
+
+    def test_a_relative_shape_may_have_one_parameter(self):
+        shape = fam.parse_shape('48 03 05 {rel:0x00403000} ba {u32} c3')
+        self.assertEqual(shape.size, 13)
+
+        def code(address, value, target=0x403000):
+            return (b'\x48\x03\x05' + struct.pack('<i', target - (address + 7)) + b'\xba'
+                    + struct.pack('<I', value) + b'\xc3')
+
+        for address, value in ((0x401000, 0x10), (0x5f0000, 0x640)):
+            self.assertEqual(shape.value(code(address, value), address), value)
+        self.assertFalse(shape.matches(code(0x401000, 0x10), 0x401100))
+        self.assertFalse(shape.matches(code(0x401000, 0x10, target=0x403008), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, 0x10)[:-1] + b'\x90', 0x401000))
 
     def test_names(self):
         family = {'family': 'returns_constant', 'system': 'leaf'}
@@ -463,11 +505,46 @@ class MatchingValues(unittest.TestCase):
 
 
 class MatchingSources(unittest.TestCase):
-    def test_every_family_has_a_matching_template_and_its_symbols(self):
-        self.assertEqual(set(family_emit.MATCHING_TEMPLATES), {f['family'] for f in fam.families(ROOT)})
+    def test_every_registered_family_has_a_matching_template_and_its_symbols(self):
+        # A focused tooling prerequisite can add support before its family is registered.
+        # Every registered exact family still needs a template; staged support cannot waive that.
+        # A relative family's members are large enough to record (docs/FAMILIES.md, "Relative
+        # shapes"), so they take the recorded path to verified and need no matching template.
+        exact = {f['family'] for f in fam.families(ROOT) if not fam.parse_shape(f['shape']).rels}
+        self.assertLessEqual(exact, set(family_emit.MATCHING_TEMPLATES))
         text = family_emit.render_matching(ROOT, 'reads_qword_field')
         self.assertIn('uint64_t leaf_reads_qword_field_0x8(const struct object_with_qword_at_0x8 *object)', text)
         self.assertNotIn('bb_leaf_', text)      # the replacements' source hash must not see it
+
+    def counter_root(self, root, name='increments_dword_field', value=''):
+        write_csv(os.path.join(root, fam.FAMILIES_TABLE), fam.FAMILY_HEADER,
+                  [[name, 'leaf', '8b 47 08 ff c0 89 47 08 c3', 'i64', 1, 9, 'synthetic shape']])
+        write_csv(fam.members_path(root, name), fam.MEMBER_HEADER,
+                  [['0x00401000', 9, 16, value, 'replaced']])
+
+    def test_fixed_counter_matching_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.counter_root(root)
+            text = family_emit.render_matching(root, 'increments_dword_field')
+        self.assertIn('uint8_t unknown_0x0000[8];', text)
+        self.assertIn('uint32_t counter;', text)
+        self.assertEqual(text.count('uint32_t leaf_increments_dword_field('), 1)
+        self.assertIn('uint32_t next = object->counter + 1u;', text)
+        self.assertIn('object->counter = next;', text)
+        self.assertIn('return next;', text)
+        self.assertNotIn('bb_leaf_', text)
+
+    def test_fixed_counter_matching_source_rejects_a_parameter(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.counter_root(root, value='0x8')
+            with self.assertRaisesRegex(SystemExit, 'parameter values but one matching function'):
+                family_emit.render_matching(root, 'increments_dword_field')
+
+    def test_unsupported_matching_family_is_still_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.counter_root(root, name='unsupported_counter')
+            with self.assertRaisesRegex(SystemExit, 'no matching template'):
+                family_emit.render_matching(root, 'unsupported_counter')
 
 
 if __name__ == '__main__':

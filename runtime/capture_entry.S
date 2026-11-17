@@ -8,11 +8,21 @@
    replacement exactly as it arrived; or 1: the original ran traced, and its result returns to
    the caller. */
 
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_SYMBOL(name) _##name
+#else
+#define RT_SYMBOL(name) name
+#endif
+
     .text
-    .globl rt_capture_entry
+    .globl RT_SYMBOL(rt_capture_entry)
+#if defined(__APPLE__) && defined(__MACH__)
+    .private_extern RT_SYMBOL(rt_capture_entry)
+#else
     .hidden rt_capture_entry
     .type rt_capture_entry, @function
-rt_capture_entry:
+#endif
+RT_SYMBOL(rt_capture_entry):
     mov %rsp, %r10
     sub $264, %rsp                  /* 8 mod 16 at entry: the call below is aligned */
     mov %rdi, 0(%rsp)
@@ -34,7 +44,7 @@ rt_capture_entry:
     movdqu %xmm7, 192(%rsp)
     mov %r11, %rdi
     mov %rsp, %rsi
-    call rt_capture_dispatch
+    call RT_SYMBOL(rt_capture_dispatch)
     test %eax, %eax
     jnz 1f
     movdqu 80(%rsp), %xmm0
@@ -63,6 +73,8 @@ rt_capture_entry:
     movdqu 240(%rsp), %xmm1
     add $264, %rsp
     ret
+#if !defined(__APPLE__) || !defined(__MACH__)
     .size rt_capture_entry, . - rt_capture_entry
 
     .section .note.GNU-stack, "", @progbits
+#endif
