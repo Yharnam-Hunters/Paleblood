@@ -2,12 +2,13 @@
 
 # Physics
 
-The game's rigid bodies live in one physics world: shared tables of bodies, motions and constraints that other objects index into, and listeners that hear when a body changes.
+The game's rigid bodies live in one physics world: shared tables of bodies, motions and constraints that other objects index into, and listeners that hear when a body changes. The constructor that builds a physics instance is verified, and the nine helpers it calls are now replaced too.
 
 **At a glance**
 
 - **Scope:** The physics world reached through the physics manager, and the objects that own bodies in it.
 - **Verified:** The physics-instance constructor `physics_instance_construct_01c0c2b0` (`0x01c0c2b0`).
+- **Edge-verified:** All nine helpers the constructor calls: the body set, controller, tracker and shape constructors, the shape bounds, the frame-to-transform step, the root body's ragdoll update and the id-vector growth.
 - **Fixed step:** An instance's controller steps at 1/30 s; the 60 FPS patches and `BB_TARGET_FPS=60` make it 1/60 s.
 - **Open:** What kind of object a physics instance is, and what the manager's two special modes mean.
 
@@ -60,6 +61,46 @@ this:
 It is a compact way to store floats at half the size, and an example of why a replacement has to
 reproduce the exact instructions: the truncation works on the float's bits, not its value.
 
+### The constructor's helpers
+
+The constructor was verified while it still called nine helpers as original code. All nine are now
+replaced and edge-verified, by [@FFwLo](https://github.com/FFwLo). Many of the objects are Havok's
+(the physics middleware the game uses), with its reference counting and growable `hkArray` lists.
+
+- **The body set** (`0x00ae8700`) is built from a source description: it keeps a reference to the
+  source's shape set and copies its list of 32-bit body indices into a buffer from the shape heap.
+  Havok only counts references on objects that record a size, and the count wraps within 16 bits.
+- **The controller** (`0x00ae3fc0`) is built over the body set: it empties its lists, runs its
+  set-up with the set and the world, and appends the caller's 0x30-byte parameter block.
+- **Growing an id list** (`0x02bc1ca0`) moves a vector of 32-bit ids into a larger buffer from its
+  heap and frees the old one; many systems use it, not only physics. A failed allocation goes
+  through the engine's report and then carries on with no buffer, as the original does
+  ([#930](https://github.com/Yharnam-Hunters/Paleblood/pull/930) for these three).
+- **The tracker** (`0x00ae6d00`, with its set-up cleared by `0x00ae6dc0`) is a Havok object that
+  keeps one 32-bit entry per shape flag, each starting at 1.
+- **The shape object** (`0x00ac46a0`) keeps the shape set, empties its four lists and goes on to
+  fill them; **the shape summary** (`0x00ac5e00`) works out the smallest box around each shape
+  entry's first row. With no entries the box stays inside out (minimum at the largest float,
+  maximum at its negative), and a not-a-number value in an entry wins, as in the original.
+- **The transform from a frame** (`0x0083d6d0`) turns three axes and a position into a transform:
+  a rotation built from the axes, the position, and a scale of 1.
+- **The root update** (`0x00ae6180`) is the ragdoll update of the root body. The constructor calls
+  it last, and two other systems call it too: it builds a pose, applies it with a weight, and
+  frees it ([#796](https://github.com/Yharnam-Hunters/Paleblood/pull/796) for these six).
+
+<details>
+<summary>How the helpers were verified</summary>
+
+Each helper was compared with the original on constructed cases in pattern-filled buffers, so
+every byte a function writes or leaves alone is checked, with the functions it calls stubbed
+and their arguments recorded: 3 to 16 cases each
+([#796](https://github.com/Yharnam-Hunters/Paleblood/pull/796),
+[#930](https://github.com/Yharnam-Hunters/Paleblood/pull/930)). The id-list growth also
+passes its 11 cases recorded from a boot; the others are not reached in the boot recordings.
+All nine are edge-verified, not verified.
+
+</details>
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
@@ -102,5 +143,6 @@ reproduce the exact instructions: the truncation works on the float's bits, not 
 
 ## Open questions
 
-- What kind of object is a physics instance: ragdolls, breakables, or both?
+- What kind of object is a physics instance: ragdolls, breakables, or both? The root body's
+  ragdoll update in its last step suggests ragdolls at least, but that is not confirmed.
 - What do the physics manager's two special modes mean? Both are on while the clinic loads.
