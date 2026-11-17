@@ -515,20 +515,24 @@ the code now, with the game library's compiler and flags (`CC`/`CXX`, `-O3 -DNDE
 and compares everything `bb_NAME` reaches: its code and its compiler clones, every section a
 relocation in a reached section leads to (called and address-taken functions, jump tables,
 constants, string pools, variables with their initial values, vtables), and the static
-initializers of every object it enters. Where a header of the function's file set changed, what
-other sources make of it matters too (a runtime function the replacement calls, a constant another
-game source defines from a header macro, a virtual function defined elsewhere): then every source
-of the Linux build (the game library and every `.c`/`.cpp` under `runtime/` but the macOS-only
-`*_darwin.c`) is compiled, those that include a changed header on both trees, and references to
-symbols another object defines are followed into it, transitively. Bytes, sizes, flags,
-alignments and relocations must be identical, under **every compiler of the CI build matrix** (gcc
-and clang). A difference, a source that does not compile, an object without the replacement, or a
-changed line under a condition on a platform the backstop does not compile for (`__APPLE__`,
-`_WIN32`, an architecture macro and the like) fails validation: the row is stale and is run again (`tools/verify.py run --record`
+initializers and exception tables of every object it enters. Every source of the Linux build (the
+game library and every `.c`, `.cpp` and `.S` under `runtime/` but the macOS-only `*_darwin.c`) is
+compiled from its own tree on each side, and references are followed from object to object as the
+linker resolves them: a global symbol leads to every strong definition (alternative sources such
+as `trace.c` and `trace_none.c` are both compared), else to every weak copy. Every object that
+compiles a changed file of the set (by the compiler's own dependency list) also contributes
+everything it exports except the replacements `bb_*` (reached only through the hook table, which
+recorded runs do not install), so code reached by `dlsym`, a function pointer registered at
+startup or a table is compared too. Bytes, sizes, flags, alignments and relocations must be
+identical, under **every compiler of the CI build matrix** (gcc and clang). A difference, a source
+that does not compile, an object without the replacement, or a changed line under a condition on
+a platform the backstop does not compile for (`__APPLE__`, `_WIN32`, an architecture macro and the
+like) fails validation: the row is stale and is run again (`tools/verify.py run --record`
 writes the code's current legacy hash, which settles it). The code a row stands for is the base's,
 for a row the base already has with the same value (the base accepted it, so each step from the
 recording to now has been compared), or, for a row the branch adds or changes, the commit whose
-legacy hash is the row's; a row recorded on code that no commit has is stale. The induction
+legacy hash is the row's (also for a row the base has but that is not current there, as a stale
+family row may be); a row recorded on code that no commit has is stale. The induction
 relies on every commit reaching main through the protected path (the merge queue's CI on the
 merged tree, or CI on main); rows record runs of the Linux build, which is what is compared.
 

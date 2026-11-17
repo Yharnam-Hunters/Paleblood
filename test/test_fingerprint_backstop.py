@@ -264,6 +264,44 @@ class BackstopTest(unittest.TestCase):
         self.assertEqual(len(errs), 1, errs)
         self.assertIn('platform condition', errs[0])
 
+    def test_neighbour_reached_through_another_object_is_caught(self):
+        """bb_sys_target calls other_twice (game/other), which calls sys_helper in the defining file."""
+        self.edit('game/sys/target.cpp', 'extern "C" int32_t bb_sys_neighbour',
+                  'extern "C" int32_t sys_helper(int32_t v) { return v + 8; }\n'
+                  'extern "C" int32_t other_twice(int32_t v);\n\nextern "C" int32_t bb_sys_neighbour')
+        self.edit('game/sys/target.cpp', 'return scaled(t) +', 'return other_twice(t->count) + scaled(t) +')
+        self.write('game/other/twice.cpp', '#include <stdint.h>\nextern "C" int32_t sys_helper(int32_t v);\n'
+                   'extern "C" int32_t other_twice(int32_t v) { return 2 * sys_helper(v); }\n')
+        self.record()
+        base = self.commit('record')
+        self.edit('game/sys/target.cpp', 'return v + 8;', 'return v + 9;')
+        self.commit('changes the helper only another object calls')
+        self.assertEqual(len(self.check(base)), 1)
+
+    def test_export_reached_only_by_name_is_caught(self):
+        """A runtime source that includes the changed header exports code reached through dlsym."""
+        self.write('runtime/include/rt.h', '#pragma once\n#define RT_LIMIT 4\n')
+        self.write('runtime/record.c', '#include "rt.h"\nint rt_record(int v) { return v < RT_LIMIT; }\n')
+        self.edit('game/sys/target.cpp', '#include "sys.h"', '#include "sys.h"\n#include "rt.h"')
+        self.record()
+        base = self.commit('record')
+        self.edit('runtime/include/rt.h', 'RT_LIMIT 4', 'RT_LIMIT 8')
+        self.commit('changes what the record accepts')
+        self.assertEqual(len(self.check(base)), 1)
+
+    def test_every_alternative_definition_is_compared(self):
+        self.write('runtime/include/rt.h', '#pragma once\n#define RT_NONE_SCALE 3\n#ifdef __cplusplus\nextern "C"\n#endif\n'
+                   'int rt_scale(int v);\n')
+        self.write('runtime/scale.c', '#include "rt.h"\nint rt_scale(int v) { return v * 2; }\n')
+        self.write('runtime/scale_none.c', '#include "rt.h"\nint rt_scale(int v) { return v * RT_NONE_SCALE; }\n')
+        self.edit('game/sys/target.cpp', '#include "sys.h"', '#include "sys.h"\n#include "rt.h"')
+        self.edit('game/sys/target.cpp', 'return scaled(t) +', 'return rt_scale(t->count) + scaled(t) +')
+        self.record()
+        base = self.commit('record')
+        self.edit('runtime/include/rt.h', 'RT_NONE_SCALE 3', 'RT_NONE_SCALE 4')
+        self.commit('changes the build without the optional library')
+        self.assertEqual(len(self.check(base)), 1)
+
     def test_a_fingerprint_without_its_legacy_hash_is_never_current(self):
         self.assertFalse(verification.row_current(self.root, 'sys_target', BLIND))
 

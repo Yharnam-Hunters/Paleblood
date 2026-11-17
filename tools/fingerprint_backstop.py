@@ -69,7 +69,7 @@ COMPARE_FLAGS = ['-ffunction-sections', '-fdata-sections', '-fno-asynchronous-un
 # runtime/syslib/audio_ajm.c includes the vendored decoder's header (CMakeLists.txt, atrac9)
 ATRAC9 = 'third_party/libatrac9/src'
 # Sources only the macOS build compiles. Rows record runs of the Linux build, which is what is compared.
-NOT_LINUX = re.compile(r'.*_darwin\.(c|cpp)')
+NOT_LINUX = re.compile(r'.*_darwin\.(c|cpp|S)')
 SEARCH_LIMIT = 300          # commits of the branch searched for a row's recorded code
 STARTUP_SECTIONS = ('.init_array', '.preinit_array', '.ctors', '.fini_array', '.dtors')
 EXCEPTION_TABLES = ('.gcc_except_table',)
@@ -146,16 +146,26 @@ def cstring(table: bytes, offset: int) -> str:
     return table[offset:end if end >= 0 else len(table)].decode('utf-8', 'replace')
 
 
-def reached_code(objs: dict, starts: list[str], is_root) -> bytes | None:
-    """A canonical description of everything the replacement's code reaches, starting in the start
-    objects and following references to symbols the other objects define, or None where no start
-    object defines the replacement."""
-    defined: dict[str, tuple] = {}      # global name -> (rel, symbol): a strong definition first
+REPLACEMENT = re.compile(r'bb_\w+')
+
+
+def reached_code(objs: dict, starts: list[str], is_root, affected: list[str] = ()) -> bytes | None:
+    """A canonical description of everything the replacement's code reaches, and of everything the
+    affected objects export, following references from object to object as the linker resolves
+    them; None where no start object defines the replacement.
+
+    A global symbol resolves to every strong definition in the objects (several, where alternative
+    sources define it: both are compared), else to every weak one, never to a local copy the linker
+    may not keep. The affected objects (those that compile a changed file) contribute every global
+    symbol but the replacements (bb_*, reached only through the hook table, which recorded runs do
+    not install) and their static initializers: code reached by a function pointer, dlsym or a
+    registration at startup is compared too."""
+    strong: dict[str, list[tuple]] = {}
+    weak: dict[str, list[tuple]] = {}
     for rel in sorted(objs):
         for sym in objs[rel].symbols:
             if sym.binding in (1, 2) and sym.shndx not in (SHN_UNDEF, SHN_ABS, SHN_COMMON):
-                if sym.name not in defined or (defined[sym.name][1].binding == 2 and sym.binding == 1):
-                    defined[sym.name] = (rel, sym)
+                (strong if sym.binding == 1 else weak).setdefault(sym.name, []).append((rel, sym))
     roots = sorted(((rel, s) for rel in starts for s in objs[rel].symbols
                     if s.type == STT_FUNC and s.shndx not in (SHN_UNDEF, SHN_ABS, SHN_COMMON)
                     and is_root(s.name.split('.', 1)[0])), key=lambda p: (p[1].name, p[0]))
@@ -181,28 +191,38 @@ def reached_code(objs: dict, starts: list[str], is_root) -> bytes | None:
             queue.append((rel, index))
         return order[(rel, index)]
 
+    def resolve(name: str) -> str:
+        found = strong.get(name) or weak.get(name)
+        if not found:
+            return f'external {name}'
+        return f'global {name} ' + ' '.join(f'{visit(r, s.shndx)}+{s.value}/{s.size}' for r, s in found)
+
     def target(rel: str, index: int) -> str:
         obj = objs[rel]
         sym = obj.symbols[index] if index < len(obj.symbols) else None
         if sym is None:
             return 'none'
-        if sym.shndx in (SHN_UNDEF, SHN_COMMON):
-            where = defined.get(sym.name)
-            if where is None:
-                return f'external {sym.name} {sym.size if sym.shndx == SHN_COMMON else ""}'
-            other, osym = where
-            return f'external {sym.name} at {visit(other, osym.shndx)} {osym.value} {osym.size}'
+        if sym.binding in (1, 2) or sym.shndx in (SHN_UNDEF, SHN_COMMON):
+            return resolve(sym.name) + (f' common {sym.size}' if sym.shndx == SHN_COMMON else '')
         if sym.shndx == SHN_ABS:
             return f'absolute {sym.value}'
         place = visit(rel, sym.shndx)
         if sym.type == STT_SECTION:
             return f'section {place}'
-        # a symbol other objects can name keeps its name; a local one is known by its place
-        name = sym.name if sym.binding != 0 else ''
-        return f'symbol {place} {sym.value} {sym.size} {name}'
+        return f'local {place} {sym.value} {sym.size}'
 
     for rel, sym in roots:
         out.write(f'root {sym.name} {visit(rel, sym.shndx)} {sym.value} {sym.size}\n'.encode())
+    for rel in sorted(affected):
+        if rel not in objs:
+            out.write(f'affected {rel} absent\n'.encode())
+            continue
+        exported = sorted(s.name for s in objs[rel].symbols
+                          if s.binding in (1, 2) and s.shndx not in (SHN_UNDEF, SHN_ABS, SHN_COMMON)
+                          and not REPLACEMENT.fullmatch(s.name.split('.', 1)[0]))
+        out.write(f'affected {rel} {visit(rel, 0)}\n'.encode())
+        for name in exported:
+            out.write(f'exports {name} {resolve(name)}\n'.encode())
     done = 0
     while done < len(queue):
         rel, index = queue[done]
@@ -224,11 +244,14 @@ def compilers(spec: str | None = None) -> list[tuple[str, str]]:
     return [tuple(pair.split(':', 1)) for pair in spec.split(',') if pair]
 
 
-def compile_object(tree: str, rel: str, out: str, pair: tuple[str, str] = ('cc', 'c++')) -> str | None:
-    """Compiles one source of the tree to out; None on success, else the compiler's complaint."""
+def compile_object(tree: str, rel: str, out: str, pair: tuple[str, str] = ('cc', 'c++'),
+                   deps: str | None = None) -> str | None:
+    """Compiles one source of the tree to out (and its make-style dependencies to deps); None on
+    success, else the compiler's complaint."""
     cxx = rel.endswith('.cpp')
-    cmd = shlex.split(pair[1] if cxx else pair[0]) + ['-c', '-std=gnu++20' if cxx else '-std=gnu11'] + \
-        GAME_FLAGS + COMPARE_FLAGS + ['-I', 'runtime/include', '-I', ATRAC9, rel, '-o', out]
+    std = [] if rel.endswith('.S') else ['-std=gnu++20' if cxx else '-std=gnu11']
+    cmd = shlex.split(pair[1] if cxx else pair[0]) + ['-c'] + std + GAME_FLAGS + COMPARE_FLAGS + [
+        '-I', 'runtime/include', '-I', ATRAC9, rel, '-o', out] + (['-MD', '-MF', deps] if deps else [])
     env = dict(os.environ, SOURCE_DATE_EPOCH='0', LC_ALL='C')
     try:
         r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True, env=env, timeout=600)
@@ -246,6 +269,7 @@ class Objects:
         self.scratch = scratch
         self.jobs = jobs
         self.done: dict[tuple, tuple] = {}     # (compiler pair, tree, rel) -> (ObjectFile | None, error)
+        self.deps: dict[tuple, frozenset] = {}  # (compiler pair, tree, rel) -> files of the tree it reads
 
     def compile_all(self, keys: set[tuple]) -> None:
         todo = sorted(k for k in keys if k not in self.done)
@@ -256,7 +280,13 @@ class Objects:
     def _compile(self, key: tuple) -> tuple:
         pair, tree, rel = key
         out = os.path.join(self.scratch, hashlib.sha256(repr(key).encode()).hexdigest()[:24] + '.o')
-        error = compile_object(tree, rel, out, pair)
+        error = compile_object(tree, rel, out, pair, out + '.d')
+        if os.path.exists(out + '.d'):
+            with open(out + '.d') as f:
+                words = f.read().replace('\\\n', ' ').split()
+            os.unlink(out + '.d')
+            self.deps[key] = frozenset(os.path.normpath(w).replace(os.sep, '/') for w in words[1:]
+                                       if not os.path.isabs(w) and not w.startswith('..'))
         if error:
             return None, f'{rel} does not compile with {pair[1] if rel.endswith(".cpp") else pair[0]}: {error}'
         try:
@@ -291,39 +321,11 @@ def universe(tree: str) -> list[str]:
             for dp, _, fns in os.walk(os.path.join(tree, top)):
                 for fn in fns:
                     rel = os.path.relpath(os.path.join(dp, fn), tree).replace(os.sep, '/')
-                    if LIBRARY_SOURCE.fullmatch(rel) or (top == 'runtime' and fn.endswith(('.c', '.cpp'))
+                    if LIBRARY_SOURCE.fullmatch(rel) or (top == 'runtime' and fn.endswith(('.c', '.cpp', '.S'))
                                                          and not NOT_LINUX.fullmatch(rel)):
                         out.append(rel)
         _universe[tree] = sorted(out)
     return _universe[tree]
-
-
-_includes: dict[tuple, frozenset] = {}
-
-
-def includes(tree: str, rel: str) -> frozenset:
-    """Every header rel includes from game/ or runtime/include/, transitively (as the legacy hash
-    resolves them)."""
-    key = (tree, rel)
-    if key not in _includes:
-        search = [os.path.join(tree, 'game'), os.path.join(tree, 'runtime', 'include')]
-        seen: set[str] = set()
-        todo = [os.path.join(tree, rel)]
-        while todo:
-            path = os.path.normpath(todo.pop())
-            if path in seen or not os.path.isfile(path):
-                continue
-            seen.add(path)
-            with open(path, errors='replace') as f:
-                text = f.read()
-            for inc in verification.INCLUDE.findall(text):
-                for base in [os.path.dirname(path)] + search:
-                    candidate = os.path.normpath(os.path.join(base, inc))
-                    if os.path.isfile(candidate):
-                        todo.append(candidate)
-                        break
-        _includes[key] = frozenset(os.path.relpath(p, tree).replace(os.sep, '/') for p in seen) - {rel}
-    return _includes[key]
 
 
 def read(tree: str, rel: str) -> str | None:
@@ -365,8 +367,9 @@ def platform_change(then: str | None, now: str | None) -> bool:
 
 
 def compare(objects: Objects, then_tree: str, now_tree: str, name: str, family: bool) -> str:
-    """'' when everything bb_NAME reaches compiles to the same code on both trees under every
-    compiler, else why not."""
+    """'' when the replacement's code, everything it reaches and everything the objects compiling a
+    changed file export compile to the same code on both trees under every compiler, else why not.
+    Every source of the Linux build is compiled from its own tree on each side."""
     files = set(verification.source_files(then_tree, name, family)) | set(verification.source_files(now_tree, name, family))
     changed = {rel for rel in files if read(then_tree, rel) != read(now_tree, rel)}
     for rel in sorted(changed):
@@ -375,31 +378,23 @@ def compare(objects: Objects, then_tree: str, now_tree: str, name: str, family: 
     then_defining, now_defining = library_files(then_tree, name, family), library_files(now_tree, name, family)
     if not now_defining:
         return f'no game library source defines bb_{name}'
-    # what else the code calls or reads may change where a changed header is used: every source that
-    # includes one is compiled on both trees, every other source once, so calls can be followed
-    headers = {rel for rel in changed if not LIBRARY_SOURCE.fullmatch(rel)}
-    then_objects = {rel: then_tree for rel in then_defining}
-    now_objects = {rel: now_tree for rel in now_defining}
-    if headers:
-        for rel in sorted(set(universe(then_tree)) | set(universe(now_tree))):
-            then_has = os.path.isfile(os.path.join(then_tree, rel))
-            now_has = os.path.isfile(os.path.join(now_tree, rel))
-            affected = (then_has and includes(then_tree, rel) & headers) or (now_has and includes(now_tree, rel) & headers)
-            if rel not in then_objects:
-                then_objects[rel] = then_tree if (affected and then_has) or not now_has else now_tree
-            if rel not in now_objects:
-                now_objects[rel] = now_tree if now_has else then_tree
+    is_root = fingerprint.root_matcher(name, family)
     for pair in compilers():
-        objects.compile_all({(pair, t, rel) for side in (then_objects, now_objects) for rel, t in side.items()})
-        digests = []
-        for side, starts in ((then_objects, then_defining), (now_objects, now_defining)):
+        objects.compile_all({(pair, t, rel) for t in (then_tree, now_tree) for rel in universe(t)})
+        sides = []
+        for t in (then_tree, now_tree):
             objs = {}
-            for rel, t in side.items():
+            for rel in universe(t):
                 obj, error = objects.get((pair, t, rel))
                 if obj is None:
                     return error
                 objs[rel] = obj
-            code = reached_code(objs, starts, fingerprint.root_matcher(name, family))
+            sides.append(objs)
+        affected = sorted({rel for t in (then_tree, now_tree) for rel in universe(t)
+                           if objects.deps.get((pair, t, rel), frozenset()) & changed})
+        digests = []
+        for objs, starts in zip(sides, (then_defining, now_defining)):
+            code = reached_code(objs, starts, is_root, affected)
             if code is None:
                 return f'no game library source defines bb_{name}'
             digests.append(hashlib.sha256(code).hexdigest())
@@ -459,7 +454,6 @@ def rows_of(text: str | None, rel: str) -> list[dict]:
 def check(root: str, base: str, jobs: int = os.cpu_count() or 1, log=print) -> list[str]:
     """Errors for fingerprint rows the compiled code does not back."""
     _universe.clear()
-    _includes.clear()
     head_tree = os.path.abspath(root)
 
     def read_head(rel):
@@ -498,6 +492,13 @@ def check(root: str, base: str, jobs: int = os.cpu_count() or 1, log=print) -> l
                 extract(root, rev, trees[rev])
             return trees[rev]
 
+        base_currency = []
+
+        def base_current(name: str, value: str, family: bool) -> bool:
+            if not base_currency:
+                base_currency.append(verification.Currency(tree(base)))
+            return base_currency[0].current(name, value, family)
+
         def legacy_at(rev: str, name: str, family: bool) -> str:
             return verification.source_hash(tree(rev), name, family)
 
@@ -506,7 +507,8 @@ def check(root: str, base: str, jobs: int = os.cpu_count() or 1, log=print) -> l
         branch = None
         for r, name, family, recorded in pending:
             key = (r['_table'], r['function'], r['cases'], r['option'])
-            if base_values.get(key) == r['source']:
+            if base_values.get(key) == r['source'] and base_current(name, r['source'], family):
+                # the base has the row, current there, so the base's CI accepted it
                 if legacy_at(base, name, family) != cur.legacy(name, family):
                     comparisons.append((r, name, family, base))
                 continue
