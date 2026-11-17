@@ -270,6 +270,6 @@ of the current table, in functions and bytes (generated):
 | yebis | 2,214 | 840,720 | 74 | 810 | 1,330 | 0 |
 | havokscript | 1,353 | 478,316 | 188 | 448 | 717 | 0 |
 | sce-gnmx | 113 | 31,093 | 7 | 20 | 86 | 0 |
-| untagged | 27,029 | 6,703,142 | | | | |
-| all | 179,038 | 44,422,449 | | | | |
+| untagged | 27,029 | 6,703,098 | | | | |
+| all | 179,038 | 44,422,405 | | | | |
 <!-- source-files:end -->
