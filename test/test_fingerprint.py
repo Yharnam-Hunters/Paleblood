@@ -351,6 +351,21 @@ HOLES_SECOND_REVIEW = {
         {'x.cpp': '\nextern "C" int bb_sys_target() { return __builtin_LINE(); }\n'}),
     'alias': ({'x.cpp': 'extern "C" int real_impl(int a) { return a + 1; }\nextern "C" int entry(int a) __attribute__((alias("real_impl")));\nextern "C" int bb_sys_target(int a) { return entry(a); }\n'},
         {'x.cpp': 'extern "C" int real_impl(int a) { return a + 2; }\nextern "C" int entry(int a) __attribute__((alias("real_impl")));\nextern "C" int bb_sys_target(int a) { return entry(a); }\n'}),
+    # third review
+    'static_writer': ({'x.cpp': 'static int counter = 5;\nvoid bump() { counter++; }\nextern "C" int bb_sys_target() { return counter; }\n'},
+        {'x.cpp': 'static int counter = 5;\nextern "C" int bb_sys_target() { return counter; }\n'}),
+    'called_once': ({'x.cpp': 'extern int sink[64];\nstatic int helper(int a) { int s = 0; for (int i = 0; i < 64; i++) { s += sink[i] * a; sink[i] ^= s; if (s > 1000) s -= sink[(i * 7) & 63]; } return s; }\nextern "C" int bb_sys_target(int a) { return helper(a); }\n'},
+        {'x.cpp': 'extern int sink[64];\nstatic int helper(int a) { int s = 0; for (int i = 0; i < 64; i++) { s += sink[i] * a; sink[i] ^= s; if (s > 1000) s -= sink[(i * 7) & 63]; } return s; }\nextern "C" int bb_sys_target(int a) { return helper(a); }\nint other(int a) { return helper(a + 1); }\n'}),
+    'packed_typedef': ({'x.cpp': 'typedef struct __attribute__((packed)) { char c; int i; } Rec;\nextern "C" int bb_sys_target(Rec *r) { return r->i; }\n'},
+        {'x.cpp': 'typedef struct __attribute__((aligned(4))) { char c; int i; } Rec;\nextern "C" int bb_sys_target(Rec *r) { return r->i; }\n'}),
+    'decltype_base': ({'x.cpp': 'struct B { int b; };\nextern B proto;\nstruct S : decltype(proto) { char c; int i; } g;\nextern "C" int bb_sys_target() { return g.i; }\n'},
+        {'x.cpp': 'struct B { int b; };\nextern B proto;\nstruct S : decltype(proto) { int i; char c; } g;\nextern "C" int bb_sys_target() { return g.i; }\n'}),
+    'guardline_cond': ({'a.h': '#ifndef A_H\n#define A_H\n#define VAL 2\n#endif\n', 'b.h': '#ifndef B_H\n#define B_H\nint b_unused;\n#endif\n', 'x.cpp': '#include "b.h"\n#ifndef B_H\n#include "a.h"\n#endif\n#include "a.h"\n#ifndef VAL\n#define VAL 7\n#endif\nextern "C" int bb_sys_target() { return VAL; }\n'},
+        {'a.h': '#ifndef A_H\n#define A_H\n#define VAL 2\n#endif\n', 'b.h': '#ifndef B_H\n#define B_H\nint b_unused;\n#endif\n', 'x.cpp': '#include "b.h"\n#ifndef B_H\n#include "a.h"\n#endif\n#ifndef VAL\n#define VAL 7\n#endif\nextern "C" int bb_sys_target() { return VAL; }\n'}),
+    'rawsplice': ({'x.cpp': 'extern "C" int bb_sys_target() { return R"(a\\\nbc)"[1]; }\n'},
+        {'x.cpp': 'extern "C" int bb_sys_target() { return R"(abc)"[1]; }\n'}),
+    'vaopt_empty': ({'x.cpp': '#define EMPTY\nstatic int help_impl() { return 1; }\nstatic int help_v_impl() { return 5; }\n#define CALL(x, ...) x ## __VA_OPT__(_v) ## _impl\nextern "C" int bb_sys_target() { return CALL(help, EMPTY)(); }\n'},
+        {'x.cpp': '#define EMPTY\nstatic int help_impl() { return 2; }\nstatic int help_v_impl() { return 5; }\n#define CALL(x, ...) x ## __VA_OPT__(_v) ## _impl\nextern "C" int bb_sys_target() { return CALL(help, EMPTY)(); }\n'}),
 }
 
 

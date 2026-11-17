@@ -421,6 +421,11 @@ the headers they include from `game/` and `runtime/include/`):
   with what follows, token pasting included), brings in every declaration and macro definition of
   that name, until nothing new is reached; matching is by name alone, so every overload, forward
   declaration and out-of-line member (filed under its class's name too) comes along;
+- for a reached declaration with internal linkage (in an anonymous namespace, or `static` at
+  namespace scope), every declaration that names it comes in as well: the compiler sees all uses
+  of such an entity in the unit and compiles the function differently because of them (a static
+  nobody writes folds to a constant, a static function called once is inlined, a class nobody
+  derives from is devirtualized);
 - free operator overloads, using-directives and using-declarations, `#pragma` lines, declarations
   holding a `_Pragma` or a `#pragma`, includes whose content is not in the repository (system
   headers), a second include of a header without a guard and every include of a header that is
@@ -475,7 +480,9 @@ a declarator named like a macro, digraphs, `_Pragma`), and a second review's (li
 trailing blanks, lone carriage returns, nested pasting, `__VA_OPT__`, `_Pragma` from a macro,
 declarations swallowing a following namespace, functions returning function pointers, arrays of
 function pointers, structured bindings, includes under `#if 0`, re-entrant guards, `assert` and
-`__builtin_LINE`, `alias` attributes).
+`__builtin_LINE`, `alias` attributes), and a third's (writers and second callers of internal
+entities, struct heads with attributes or `decltype` bases, a real `#ifndef` matching a guard,
+splices in raw strings, an empty `__VA_OPT__` argument).
 
 This is a reading of the source, not a compiler: its safety rests on conservative choices (match
 by name, keep everything a name could mean, fall back where unsure) and on those reviews and tests.

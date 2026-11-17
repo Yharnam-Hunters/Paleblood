@@ -21,7 +21,9 @@ covers the same files, but only the parts of them the function can reach:
    rescanned with what follows), every declaration of that
    name in the translation unit and every macro definition of it, until nothing new is reached.
    Matching is by name only: every overload, every forward declaration, every member defined out of
-   line under its class's name. Some declarations are always in the closure: free operator
+   line under its class's name. A reached declaration with internal linkage (anonymous namespace,
+   namespace-scope static) also brings in every declaration that names it: the compiler sees all
+   its uses. Some declarations are always in the closure: free operator
    overloads, using-directives and using-declarations, #pragma lines and declarations holding a
    _Pragma or #pragma, includes whose content is not in the repository (system headers), a second
    include of a header without a guard, and anything whose declared names could not be read.
@@ -131,6 +133,8 @@ def lex(text: str) -> list[tuple[bool, list[Tok]]]:
     between directives is one run: only directive lines are line-bound."""
     # Line ends: CR LF and a lone CR end a line; a backslash before a line end (blanks between
     # allowed, as GCC and Clang accept) joins the lines.
+    if re.search(r'R"', text) and re.search(r'\\[ \t\f\v]*(?:\r\n|\n|\r)|\r(?!\n)', text):
+        raise ParseError('a raw string literal with line splices or carriage returns about')
     text = re.sub(r'\\[ \t\f\v]*\n', '', text.replace('\r\n', '\n').replace('\r', '\n'))
     out: list[tuple[bool, list[Tok]]] = []
     cur: list[Tok] = []
@@ -261,7 +265,7 @@ def parse(text: str) -> list[Decl]:
             continue
         for t in toks:
             if pending_end:
-                if t.kind == 'punct' and t.text not in ('}', '~', '#', '[', ':', '::'):
+                if (t.kind == 'punct' and t.text not in ('}', '~', '#', '[', ':', '::')) or t.text == 'catch':
                     pending_end = False
                 else:
                     finish()
@@ -345,6 +349,19 @@ def _function_like(head: list[Tok]) -> bool:
         elif depth == 0 and t.text == '=' and last_close is None:
             return False                            # an initializer: int x = { ... };
     if last_close is None:
+        return False
+    # the group must belong to a declarator: not __attribute__((...)), alignas(...), decltype(...)
+    depth, open_at = 0, None
+    for k in range(last_close, -1, -1):
+        depth += {')': 1, '(': -1}.get(head[k].text, 0)
+        if depth == 0:
+            open_at = k
+            break
+    before = head[open_at - 1] if open_at else None
+    if before is None or before.text in ATTRIBUTE_WORDS or before.text in (
+            'decltype', 'sizeof', 'alignof', 'noexcept', 'throw', 'requires', 'typeof', '__typeof__'):
+        return False
+    if before.kind != 'id' and before.text not in (')', '>'):
         return False
     tail = head[last_close + 1:]
     k = 0
@@ -514,7 +531,8 @@ def _substitute(m: Macro, args: list[list[Tok]], macros, hide, depth, budget) ->
     elif len(args) != len(params):
         raise ExpansionError(f'{m.name}: {len(args)} arguments for {len(params)} parameters')
     values = dict(zip(params, args))
-    body = _va_opt(m.body, bool(m.variadic and any(args[-1:]) and args[-1]))
+    present = bool(m.variadic and args and expand(args[-1], macros, hide, depth + 1, budget))
+    body = _va_opt(m.body, present)
     out: list[Tok] = []
     i = 0
     while i < len(body):
@@ -550,7 +568,13 @@ def _va_opt(body: list[Tok], present: bool) -> list[Tok]:
             continue
         out.append(body[i])
         i += 1
-    return out
+    # an empty __VA_OPT__ between two ## leaves a placemarker: x ## ## y joins x and y
+    collapsed: list[Tok] = []
+    for t in out:
+        if t.text == '##' and collapsed and collapsed[-1].text == '##':
+            continue
+        collapsed.append(t)
+    return collapsed
 
 
 def _join(out: list[Tok]) -> list[Tok]:
@@ -692,6 +716,19 @@ def _single_call(tokens: list[Tok], first: int) -> bool:
         if depth == 0:
             return j == len(tokens) - 2
     return False
+
+
+def _head_length(tokens: list[Tok]) -> int:
+    """How many tokens come before the first top-level brace."""
+    depth = 0
+    for k, t in enumerate(tokens):
+        if t.text in ('(', '['):
+            depth += 1
+        elif t.text in (')', ']'):
+            depth -= 1
+        elif t.text == '{' and depth == 0:
+            return k
+    return len(tokens)
 
 
 def _top_words(tokens: list[Tok]) -> set[str]:
@@ -992,7 +1029,6 @@ def unit(root: str, defining: str) -> list[Entry]:
     question of the #if lines, so all of them count)."""
     entries: list[Entry] = []
     seen: set[str] = set()
-    guards: set[str] = set()              # guard lines of the headers entered: not conditions
     guard_names: dict[str, str] = {}      # header -> its #ifndef guard macro
     conditional: set[str] = set()         # headers with an include site under a real #if
     skipped: set[str] = set()             # guarded headers whose later include sites were skipped
@@ -1001,14 +1037,16 @@ def unit(root: str, defining: str) -> list[Entry]:
         m = Decl('include', d.tokens, d.conds, d.scope, include=d.include, always=True)
         entries.append(Entry(m, rel, c, sc, len(entries)))
 
-    def walk(path: str, conds: tuple, scope: tuple) -> None:
+    def walk(path: str, conds: tuple, scope: tuple, guard_at: frozenset) -> None:
+        # guard_at: the positions in conds that are the guards of the files being included, not
+        # real conditions
         seen.add(path)
         decls = parsed(path)
         guard = guard_of(decls)
-        if guard:
-            guards.add(guard)
-            if guard != '#pragma once':
-                guard_names[path] = decls[0].name
+        own = frozenset()
+        if guard and guard != '#pragma once':
+            guard_names[path] = decls[0].name
+            own = frozenset({len(conds)})
         rel = os.path.relpath(path, root).replace(os.sep, '/')
         for d in decls:
             c, sc = conds + d.conds, scope + d.scope
@@ -1016,7 +1054,8 @@ def unit(root: str, defining: str) -> list[Entry]:
                 target = resolve(root, path, d.include[1])
                 if target is not None:
                     target = os.path.normpath(target)
-                    if any(x not in guards for x in c):
+                    positions = guard_at | own
+                    if any(i not in positions for i in range(len(c))):
                         conditional.add(target)
                     if target in seen:
                         if guard_of(parsed(target)) is None or target in conditional:
@@ -1026,11 +1065,11 @@ def unit(root: str, defining: str) -> list[Entry]:
                         continue
                     if target in conditional:
                         marker(d, rel, c, sc)
-                    walk(target, c, sc)
+                    walk(target, c, sc, guard_at | own)
                     continue
             entries.append(Entry(d, rel, c, sc, len(entries)))
 
-    walk(os.path.normpath(os.path.join(root, defining)), (), ())
+    walk(os.path.normpath(os.path.join(root, defining)), (), (), frozenset())
     # A guard #undef'd elsewhere makes a skipped include live again: do not trust the reading.
     undone = {e.decl.name for e in entries if e.decl.kind == 'macro' and e.decl.tokens[1].text == 'undef'}
     if any(guard_names.get(h) in undone for h in skipped):
@@ -1057,6 +1096,7 @@ class Index:
         self.names: list[set[str]] = []
         self.always: list[int] = []
         self._ids: dict[int, set[str]] = {}
+        self._users: dict[str, list[int]] | None = None
         self.entries = entries
         for k, e in enumerate(entries):
             d = e.decl
@@ -1092,6 +1132,25 @@ class Index:
             self._ids[k] = ids
         return self._ids[k]
 
+    def internal(self, k: int) -> bool:
+        """Whether entry k declares something with internal linkage: in an anonymous namespace, or
+        `static` at namespace scope."""
+        e = self.entries[k]
+        if e.decl.kind != 'code':
+            return False
+        if any(re.fullmatch(r'(?:inline\s+)?namespace', h.strip()) for h in e.scope):
+            return True
+        return 'static' in _top_words(e.decl.tokens[:_head_length(e.decl.tokens)])
+
+    def users(self, name: str) -> list[int]:
+        """Every entry whose identifiers include `name`."""
+        if self._users is None:
+            self._users = {}
+            for k in range(len(self.entries)):
+                for n in self.ids(k):
+                    self._users.setdefault(n, []).append(k)
+        return self._users.get(name, [])
+
 
 _index_cache: dict[tuple, Index] = {}
 
@@ -1115,6 +1174,7 @@ def closure(entries: list[Entry], is_root) -> Closure:
     queue = roots + ix.always
     taken: set[int] = set()
     done_names: set[str] = set()
+    reverse_done: set[str] = set()
     positional = False
     while queue:
         k = queue.pop()
@@ -1127,6 +1187,15 @@ def closure(entries: list[Entry], is_root) -> Closure:
         for name in ids - done_names:
             done_names.add(name)
             queue.extend(ix.by_name.get(name, ()))
+        # Internal linkage: the compiler sees every use of a static or anonymous-namespace entity
+        # in this unit, and how it compiles the function can depend on them (a static never
+        # written folds to a constant; a static function called once is inlined; a class nobody
+        # derives from is devirtualized). So every declaration that names one comes in too.
+        if ix.internal(k):
+            for name in ix.names[k]:
+                if name not in reverse_done:
+                    reverse_done.add(name)
+                    queue.extend(ix.users(name))
     return Closure([entries[k] for k in sorted(taken)], positional)
 
 
