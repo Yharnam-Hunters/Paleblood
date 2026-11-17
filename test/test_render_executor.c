@@ -3125,6 +3125,15 @@ static void guarded_targets(int fd, rt_executor *shared)
     CHECK(rt_executor_fill(x, at(FILLED) + 2, 64, 0, &ticket, error, sizeof error) == 1);
     CHECK(rt_executor_fill(x, at(FILLED), 6, 0, &ticket, error, sizeof error) == 1);
     CHECK(rt_executor_fill(x, GUEST_BASE + GUEST_SIZE, 64, 0, &ticket, error, sizeof error) == 1);
+    /* rt_executor_copy: recorded and landed once the batch has run; declined over the drawn target, for
+       overlapping guest ranges and for the GDS this executor was not given */
+    uint32_t *copied = filled + FILL_WORDS;
+    memset(copied, 0, FILL_WORDS * 4);
+    CHECK(rt_executor_copy(x, at(FILLED) + FILL_WORDS * 4, 0, at(FILLED), 0, FILL_WORDS * 4, &ticket, error, sizeof error) == 0);
+    CHECK(copied[0] == 0 && rt_executor_finish(x, error, sizeof error) == 0 && copied[0] == FILL_WORD && copied[FILL_WORDS - 1] == FILL_WORD);
+    CHECK(rt_executor_copy(x, at(FILLED), 0, at(TILED_TARGET), 0, 64, &ticket, error, sizeof error) == 1);
+    CHECK(rt_executor_copy(x, at(FILLED) + 4, 0, at(FILLED), 0, 64, &ticket, error, sizeof error) == 1);
+    CHECK(rt_executor_copy(x, at(FILLED), 0, 0, 1, 4, &ticket, error, sizeof error) == 1);
     CHECK(rt_executor_resolve(x, at(TILED_TARGET) + 64, 4, error, sizeof error) == 0);
     CHECK(!tiled_memory_zero() && guarded.unguards == 1 && guarded.unguarded == at(TILED_TARGET));
     uint32_t image[8];

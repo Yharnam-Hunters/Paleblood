@@ -1477,7 +1477,9 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
     x->address_offset = address - x->guest_base; /* wraps as the shaders' adds do */
     if (!memory->gds) return 0;
     if (memory->gds_bytes != GCN_GDS_BYTES) return failed(error, error_size, "a GDS of %u bytes, not 64 KB", memory->gds_bytes);
-    return import_host(x, memory->gds, memory->gds_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+    return import_host(x, memory->gds, memory->gds_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                        &x->gds_buffer, &x->gds_memory, &x->gds_address, "the GDS", error, error_size);
 }
 
@@ -6137,6 +6139,37 @@ int rt_executor_fill(rt_executor *x, uint64_t address, uint64_t bytes, uint32_t 
     if (fill_guest_memory(x, address, bytes, word, error, error_size)) return -1;
     changed_outside(x, address, bytes); /* as a CPU write the write watch reports */
     *ticket = x->submitted + 1;         /* the open batch's */
+    return 0;
+}
+
+/* Whether a copy's source or destination is memory the GPU takes: inside the GDS, or inside the
+   guest memory and clear of the targets. */
+static int copy_end_taken(const rt_executor *x, uint64_t at, int gds, uint64_t bytes)
+{
+    if (gds) return x->gds_buffer && at <= GCN_GDS_BYTES && bytes <= GCN_GDS_BYTES - at;
+    return at >= x->guest_base && at - x->guest_base <= x->size && bytes <= x->size - (at - x->guest_base) && !target_memory_over(x, at, bytes);
+}
+
+int rt_executor_copy(rt_executor *x, uint64_t to, int to_gds, uint64_t from, int from_gds, uint64_t bytes, uint64_t *ticket, char *error,
+                     size_t error_size)
+{
+    if (!bytes || !copy_end_taken(x, to, to_gds, bytes) || !copy_end_taken(x, from, from_gds, bytes)) return 1;
+    if (to_gds == from_gds && from < to + bytes && to < from + bytes) return 1; /* one buffer's overlapping regions */
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+    const VkBufferCopy region = {from_gds ? from : from - x->guest_base, to_gds ? to : to - x->guest_base, bytes};
+    vkCmdCopyBuffer(commands, from_gds ? x->gds_buffer : x->buffer, to_gds ? x->gds_buffer : x->buffer, 1, &region);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    if (!to_gds) {
+        batch_writes(x, to, bytes, 0);
+        changed_outside(x, to, bytes); /* as a CPU write the write watch reports */
+    }
+    *ticket = x->submitted + 1; /* the open batch's */
     return 0;
 }
 

@@ -104,6 +104,12 @@ int rt_executor_submit(rt_executor *executor, char *error, size_t error_size);
    there. Run-time stops are reported by the next call on the recording thread. Returns 0, or -1 with
    the reason (the GPU failed). */
 int rt_executor_wait_ticket(rt_executor *executor, uint64_t ticket, char *error, size_t error_size);
+/* The same for a copy of `bytes` from `from` to `to`, each a guest address, or a byte offset into the
+   GDS (rt_executor_memory's gds) when from_gds or to_gds is set. Also declined (1) for a source or
+   destination over a render or depth target or its metadata, outside its memory, or for guest ranges
+   that overlap. */
+int rt_executor_copy(rt_executor *executor, uint64_t to, int to_gds, uint64_t from, int from_gds, uint64_t bytes, uint64_t *ticket,
+                     char *error, size_t error_size);
 /* The latest ticket whose submission (and every one before it) has run, without waiting; 0 when not
    known. Like rt_executor_wait_ticket it may run on another thread. */
 uint64_t rt_executor_done_ticket(rt_executor *executor);
