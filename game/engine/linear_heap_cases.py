@@ -97,8 +97,9 @@ def allocate_aligned():
             case(f, 'alignment_six', bottom=0x40, args=[8, 6]),
             case(f, 'alignment_top_bit', bottom=0x40, args=[8, 1 << 63]),
             case(f, 'padding_overflows', bottom=0x1e1, top=0x1f0, args=[0x8, 0x20]),
-            case(f, 'exact_after_padding', bottom=0x1e1, top=0x1f0, args=[0xf, 0x10]),
-            case(f, 'one_over_after_padding', bottom=0x1e1, top=0x1f0, args=[0x10, 0x10])]
+            # Bottom 0x1d1 pads by 0xf to 0x1e0: 0x10 bytes end exactly at the top, 0x11 bytes one past it.
+            case(f, 'exact_after_padding', bottom=0x1d1, top=0x1f0, args=[0x10, 0x10]),
+            case(f, 'one_over_after_padding', bottom=0x1d1, top=0x1f0, args=[0x11, 0x10])]
 
 
 def allocate_top():
@@ -117,8 +118,10 @@ def allocate_aligned_top():
             case(f, 'alignment_8', top=0x1ec, args=[0x13, 8]), case(f, 'alignment_4', top=0x1ec, args=[0x13, 4]),
             case(f, 'alignment_1', top=0x1ef, args=[0x13, 1]), case(f, 'alignment_zero', top=0x1ef, args=[0x13, 0]),
             case(f, 'alignment_three', args=[0x10, 3]), case(f, 'alignment_twelve', args=[0x10, 12]),
-            case(f, 'no_room_after_padding', bottom=0x48, top=0x70, args=[0x10, 0x20]),
-            case(f, 'exact_room_after_padding', bottom=0x40, top=0x70, args=[0x10, 0x20])]
+            # Top 0x78 pads 0x10 bytes by 8 to 0x60, so the header lands at 0x50: a bottom of 0x50 fits
+            # exactly, 0x51 misses by one byte.
+            case(f, 'no_room_after_padding', bottom=0x51, top=0x78, args=[0x10, 0x20]),
+            case(f, 'exact_room_after_padding', bottom=0x50, top=0x78, args=[0x10, 0x20])]
 
 
 def free():
