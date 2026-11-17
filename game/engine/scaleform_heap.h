@@ -132,9 +132,30 @@ struct LimitHandler {
 static_assert(offsetof(LimitHandlerVtable, on_limit_exceeded) == 0x10);
 static_assert(offsetof(LimitHandler, calls_in_progress) == 8);
 
+// The system allocators the heap root and the page manager take memory from.
+struct SystemAllocator;
+struct SystemAllocatorVtable {
+    void *unknown_slots_0[5];
+    void (*free)(SystemAllocator *allocator, uintptr_t memory, uint64_t bytes, uint64_t alignment);
+    void *unknown_slots_6[5];
+    uintptr_t (*allocate)(SystemAllocator *allocator, uint64_t bytes, uint64_t alignment);
+};
+static_assert(offsetof(SystemAllocatorVtable, free) == 0x28 && offsetof(SystemAllocatorVtable, allocate) == 0x58);
+struct SystemAllocator {
+    const SystemAllocatorVtable *vtable;
+};
+
+// The heap root: one system allocator per arena, picked by each heap's arena index (how many
+// arenas there are is not known; the code indexes the array with the heap's int32 unchecked).
+struct HeapRoot {
+    uint8_t unknown_0x00[0x10];
+    SystemAllocator *arenas[];
+};
+static_assert(offsetof(HeapRoot, arenas) == 0x10);
+
 // The small-block engine (part of the heap's allocation engine).
 struct Engine {
-    uint8_t unknown_0x00[0x8];
+    HeapRoot *root;             // where large blocks get their memory (through the heap's arena)
     MemoryHeap *heap;           // the heap the engine allocates for
     uint64_t alignment;         // the heap's minimum alignment: above 16, every allocation is aligned
     Bins bins;
@@ -145,7 +166,7 @@ struct Engine {
     LimitHandler *limit_handler;
     uint64_t allocation_count;
 };
-static_assert(offsetof(Engine, heap) == 8 && offsetof(Engine, bins) == 0x18 && offsetof(Engine, pages) == 0x220);
+static_assert(offsetof(Engine, root) == 0 && offsetof(Engine, heap) == 8 && offsetof(Engine, bins) == 0x18 && offsetof(Engine, pages) == 0x220);
 static_assert(offsetof(Engine, page_bytes_taken) == 0x230 && offsetof(Engine, used_bytes) == 0x238);
 static_assert(offsetof(Engine, limit) == 0x240 && offsetof(Engine, limit_handler) == 0x248);
 static_assert(offsetof(Engine, allocation_count) == 0x250);
@@ -157,9 +178,11 @@ struct MemoryHeap {
     bool thread_safe;           // lock the heap's mutex around its operations
     uint8_t unknown_0xa1[0x7];
     Engine *engine;
+    uint8_t unknown_0xb0[0x8];
+    int32_t arena;              // which of the heap root's arenas its large blocks come from
 };
 static_assert(offsetof(MemoryHeap, mutex) == 0x98 && offsetof(MemoryHeap, thread_safe) == 0xa0);
-static_assert(offsetof(MemoryHeap, engine) == 0xa8);
+static_assert(offsetof(MemoryHeap, engine) == 0xa8 && offsetof(MemoryHeap, arena) == 0xb8);
 
 // What a heap allocation reports to its caller.
 struct AllocationInfo {
@@ -173,14 +196,15 @@ static_assert(sizeof(AllocationInfo) == 0x18);
 // that may take pages or touch the large-block tree, and the tree's root.
 struct LargeBlockNode;
 struct PageManager {
-    uint8_t unknown_0x00[0x8];
+    SystemAllocator *allocator; // where page memory comes from and goes back to
     void *mutex;
-    uint8_t unknown_0x10[0x10];
+    PageLinks spares;           // the ring of spare page descriptors (released pages go in front)
     uint32_t page_table_entries; // entries of the global page table in use
     uint8_t unknown_0x24[0x4];
     LargeBlockNode *root;
 };
-static_assert(offsetof(PageManager, mutex) == 0x8 && offsetof(PageManager, page_table_entries) == 0x20);
+static_assert(offsetof(PageManager, allocator) == 0 && offsetof(PageManager, mutex) == 0x8 &&
+              offsetof(PageManager, spares) == 0x10 && offsetof(PageManager, page_table_entries) == 0x20);
 static_assert(offsetof(PageManager, root) == 0x28);
 RT_GLOBAL(0x05940360, page_manager, PageManager *);
 
@@ -191,11 +215,11 @@ RT_ORIGINAL(0x02fbe5a8, mutex_unlock, int(void **mutex));
 // address (a radix tree: each level goes left or right by the next bit of the key).
 constexpr uint64_t tree_branches = 2;
 struct LargeBlockNode {
-    uint8_t unknown_0x00[0x8];
+    uintptr_t parent;           // the parent node; for the tree's root, the manager's root slot
     LargeBlockNode *children[tree_branches];
     uintptr_t heap_and_flags;   // the owning MemoryHeap, low two bits: flags
 };
-static_assert(offsetof(LargeBlockNode, children) == 0x8 && offsetof(LargeBlockNode, heap_and_flags) == 0x18);
+static_assert(offsetof(LargeBlockNode, parent) == 0 && offsetof(LargeBlockNode, children) == 0x8 && offsetof(LargeBlockNode, heap_and_flags) == 0x18);
 constexpr uintptr_t node_flag_bits = 3;
 
 // The bitset's own functions: mark `units` units from `unit` as one allocated block, and read the
