@@ -7,6 +7,7 @@
 #include "runtime/render_calls.h"
 #include "runtime/render_executor.h"
 #include "runtime/render_placed.h"
+#include "runtime/table_snapshot.h"
 #include "runtime/write_watch.h"
 
 #include <pthread.h>
@@ -90,6 +91,7 @@ typedef struct batch {
     const char *function;
     unsigned queue;                  /* the GPU queue it went to (rt_renderer_submit) */
     rt_render_call *calls;
+    rt_table_words *tables;          /* each dispatch's tables, copied at submission (snapshot_tables); NULL: none */
     size_t call_count;
     rt_gpu_step *steps;
     size_t step_count;
@@ -225,7 +227,8 @@ static void run_calls(batch *b, size_t first, size_t last)
     char error[RENDER_ERROR_BYTES];
     uint64_t ticket = 0;
     if (x && (rt_executor_select_queue(x, b->queue, error, sizeof error) ||
-              rt_executor_record_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)))
+              rt_executor_record_calls_with_tables(x, b->calls + first, b->tables ? b->tables + first : NULL, last - first, &ticket, error,
+                                                   sizeof error)))
         rt_fatal(b->function, error);
     if (x) last_ticket = ticket, calls_unsubmitted += last - first;
     unlock_renderer();
@@ -334,6 +337,7 @@ static void *renderer_thread(void *unused)
         pthread_mutex_unlock(&queue_lock);
         if (queue_dry || calls_unsubmitted >= SUBMIT_CALLS) submit_open(b->function); /* nothing to join it soon, or enough to start on */
         free(b->calls);
+        free(b->tables);
         free(b->steps);
         free(b);
         pthread_mutex_lock(&queue_lock);
@@ -351,6 +355,23 @@ void rt_renderer_wait_idle(void)
     while (queue_head || running) pthread_cond_wait(&queue_changed, &queue_lock);
     pthread_mutex_unlock(&queue_lock);
     drain_deferred(); /* the last batch's deferred steps (its work: their tickets) */
+}
+
+/* Copies the tables each dispatch of a submitted buffer reads through its user data, now, on the
+   submitting thread (runtime/table_snapshot.h): the renderer's thread records the buffer later, when
+   the game may have written the ring slot again. queue_lock held, so the tracker sees the buffers in
+   the order they queue. A buffer without dispatches still goes through the tracker, for the compute
+   shader and user data it sets. */
+static void snapshot_tables(batch *b)
+{
+    static rt_table_snapshots *tracker;
+    int fd;
+    uint64_t bytes;
+    if (!b->call_count || rt_gpu_memory_pool(&fd, &bytes)) return; /* no direct memory yet: no table to copy */
+    if (!tracker && !(tracker = rt_table_snapshots_new())) rt_fatal(b->function, "no memory for the table snapshots");
+    if (!(b->tables = malloc(b->call_count * sizeof *b->tables))) rt_fatal(b->function, "no memory for a submission's table snapshots");
+    const rt_table_memory memory = {rt_gpu_memory_base(), bytes};
+    rt_table_snapshots_take(tracker, b->queue, b->calls, b->call_count, &memory, b->tables);
 }
 
 void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,
@@ -382,6 +403,7 @@ void rt_renderer_submit(const char *function, unsigned queue, const void *buffer
         pthread_detach(thread);
         thread_started = 1, thread_process = getpid();
     }
+    snapshot_tables(b);
     if (queue_tail) queue_tail->next = b;
     else queue_head = b;
     queue_tail = b;

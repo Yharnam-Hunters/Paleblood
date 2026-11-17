@@ -19,6 +19,7 @@
    A recorded state or operation outside the selected backend's profile stops with a reason. */
 
 #include "runtime/render_calls.h"
+#include "runtime/table_snapshot.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -80,6 +81,11 @@ int rt_executor_submit_calls(rt_executor *executor, const rt_render_call *calls,
    GPU work reads that memory (a dispatch, an image over it), when the CPU touches it
    (rt_executor_resolve), or when rt_executor_submit_calls writes every drawn target back. A target
    that cannot be guarded is written back at the buffer's end. Returns 0, or -1 with the reason. */
+/* The same, with each dispatch's table snapshot taken when the buffer was submitted (tables[i] for
+   calls[i], runtime/table_snapshot.h; NULL: none). The Metal executor translates without snapshots
+   and leaves them aside. */
+int rt_executor_record_calls_with_tables(rt_executor *executor, const rt_render_call *calls, const rt_table_words *tables, size_t count,
+                                         uint64_t *ticket, char *error, size_t error_size);
 int rt_executor_record_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
                              size_t error_size);
 /* Before the CPU touches `length` bytes at guest address `address` (a fault on a guarded page):

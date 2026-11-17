@@ -610,6 +610,23 @@ Instead:
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
        context when the main thread drew (found at the opening movie, 10 November 2026).
+     - **Tables a compute shader reads through its user data are copied when its buffer is submitted.**
+       The game hands some compute shaders a pointer (user data 2-3) to a 16-byte table in a per-frame
+       ring that holds a buffer descriptor, and writes that ring slot again soon after it submits the
+       buffer; the console's GPU has read it by then. The renderer's thread records a buffer up to four
+       submissions later, and about one clinic boot in six stopped on the LUT pass (compute shader
+       `0x20d1b00800`) reading another table's words, floats, as its descriptor ("a shader reached
+       outside the guest memory"). A copy taken when the dispatch was recorded did not help: logged
+       there, the last dispatch before such a stop already held the floats (14 November 2026). Now the
+       translator lists the shader's `s_load`s through user-data pointer pairs it does not write, at
+       constant offsets (`gcn_table_snapshot_plan`, up to 15 words); on the submitting thread the
+       renderer follows each queue's compute shader and user data across buffers, as the executor
+       does, and copies those words into each dispatch's call (`runtime/table_snapshot.h`); the
+       executor puts them in the push constants after the user data, and the loads take the copy. An
+       entry the calls have not set, or that open or submitted GPU work may store to when the dispatch
+       is recorded, is left out, and its loads read memory when the dispatch runs, as before. A tighter
+       bound on how far the GPU may trail (tried first, not merged) looked slower in an A/B on a loaded
+       machine.
      - **A batch the GPU does not finish stops by name.** Each wait for submitted work gives the GPU
        20 seconds, far past any batch the game's frames make; then the run stops naming the oldest
        unfinished batch's draws (vertex and pixel shader, most vertices) and dispatches (shader, most
