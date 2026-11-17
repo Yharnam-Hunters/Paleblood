@@ -13,11 +13,17 @@ usage:
       the member count and bytes equal the row's pre-registered `members` and `bytes`
   family_scan.py check [--elf ELF]
       every member of every family still matches its shape, size and padding in ELF
+  family_scan.py relative-shape ADDRESS [--elf ELF]
+      print the relative shape of the function at ADDRESS: its bytes with every rip-relative
+      displacement and every call or jump out of the function written as a {rel:TARGET} field
+      (needs Capstone)
 
 The executable is read only (default $BB_ELF, then $BB_DATA_ROOT/elf/eboot.elf). A function is a
 member only if all of these hold, and the scan prints how many each one excluded:
   - its bytes, from its start to its size in symbols/ghidra_functions.csv, match the shape
-    exactly (no interior matches, no prefix matches)
+    exactly (no interior matches, no prefix matches); for a relative shape, the bytes outside
+    the {rel:...} fields match exactly and every field, at the member's own address, reaches
+    the field's target
   - every byte after it up to the next function is the compiler's NOP padding, and that
     extent is at least 14 bytes (the hook's absolute jump overwrites the padding, never the next
     function)
@@ -161,7 +167,7 @@ class Scanner:
         """('member', row) or (exclusion reason, None) for function INDEX against SHAPE."""
         address, size = self.functions[index]
         code = self.code(address, size)
-        if code is None or not shape.matches(code):
+        if code is None or not shape.matches(code, address):
             return 'shape', None
         extent = self.extent(index)
         if extent is None:
@@ -180,7 +186,7 @@ class Scanner:
         if range_overlaps(self.patched, address, address + extent):
             return 'community patch line in its extent', None
         return 'member', {'address': f'0x{address:08x}', 'size': str(size), 'extent': str(extent),
-                          'value': fam.value_text(shape.value(code)), 'status': 'replaced'}
+                          'value': fam.value_text(shape.value(code, address)), 'status': 'replaced'}
 
     def scan(self, shape: fam.Shape) -> tuple[list[dict], collections.Counter]:
         rows, reasons = [], collections.Counter()
@@ -267,6 +273,53 @@ def check(scanner: Scanner) -> int:
     return 1 if errors else 0
 
 
+def relative_shape(scanner: Scanner, address: int) -> str:
+    """The function at ADDRESS as a relative shape (tools/families.py): its bytes, with every
+    rip-relative displacement and every call or jump that leaves the function as {rel:TARGET}.
+    Jumps inside the function stay bytes: their displacements are the same wherever the copy is."""
+    from capstone import CS_ARCH_X86, CS_MODE_64, Cs
+    from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_REG_RIP
+    sizes = dict(scanner.functions)
+    if address not in sizes:
+        raise SystemExit(f'family_scan: 0x{address:08x} is not a function in symbols/ghidra_functions.csv')
+    size = sizes[address]
+    code = scanner.code(address, size)
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    md.detail = True
+    tokens: dict[int, str] = {}         # offset of a rel32 field -> its token
+    end = 0
+    for insn in md.disasm(code, address):
+        at = insn.address - address
+        end = at + insn.size
+        field = target = None
+        for op in insn.operands:
+            if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP:
+                field, target = insn.disp_offset, insn.address + insn.size + op.mem.disp
+            elif op.type == X86_OP_IMM and insn.group(1) | insn.group(2) | insn.group(7):   # jump, call, relative
+                if not address <= op.imm < address + size:
+                    if insn.imm_size != 4:
+                        raise SystemExit(f'family_scan: 0x{insn.address:08x} leaves the function with a '
+                                         f'{insn.imm_size}-byte displacement')
+                    field, target = insn.imm_offset, op.imm
+        if field is not None:
+            after = insn.size - field - fam.REL_WIDTH
+            tokens[at + field] = f'{{rel:0x{target & (2**64 - 1):08x}' + (f'+{after}}}' if after else '}')
+    if end != size:
+        raise SystemExit(f'family_scan: 0x{address:08x} does not disassemble to its {size} bytes')
+    parts, i = [], 0
+    while i < size:
+        if i in tokens:
+            parts.append(tokens[i])
+            i += fam.REL_WIDTH
+        else:
+            parts.append(f'{code[i]:02x}')
+            i += 1
+    text = ' '.join(parts)
+    if not fam.parse_shape(text).matches(code, address):
+        raise SystemExit(f'family_scan: the shape of 0x{address:08x} does not match its own bytes')
+    return text
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--root', default=ROOT)
@@ -281,6 +334,8 @@ def main() -> int:
     w = sub.add_parser('write')
     w.add_argument('family')
     sub.add_parser('check')
+    r = sub.add_parser('relative-shape')
+    r.add_argument('address')
     a = ap.parse_args()
     if not a.elf or not os.path.isfile(a.elf):
         print('family_scan: no executable: pass --elf or set BB_ELF', file=sys.stderr)
@@ -299,6 +354,9 @@ def main() -> int:
                   'overlap a patch line', file=sys.stderr)
             return 3
         return write(scanner, a.family)
+    if a.cmd == 'relative-shape':
+        print(relative_shape(scanner, int(a.address, 16)))
+        return 0
     return check(scanner)
 
 

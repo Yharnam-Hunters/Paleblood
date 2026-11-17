@@ -199,6 +199,20 @@ registers, the final value of every written byte, and the library calls with the
 arguments are equal. Pointer arguments into the stack are recorded as `stack`, since frames
 differ. Write order is not compared.
 
+### Stack bytes the code never wrote
+
+Some originals copy bytes out of their own frame that they never wrote: a 32-bit field stored
+into an eight-byte slot, the padding of a struct, a field one path leaves unset (the load queue's
+request copies its event's four bytes after the kind into the queue). In the game those bytes are
+whatever the stack held. In the harness the original and the replacement run in two processes
+whose stacks hold different leftovers, so such a byte would differ although both copy "nothing".
+The harness therefore starts both runs with the same stack: its trampoline fills the
+`STACK_FILL_SIZE` bytes below the call with `STACK_FILL` (`0xa5`) before it loads the arguments
+(`tools/harness.py`). The bytes are still compared: a replacement that copies its own unwritten
+bytes (a struct with the same unset field) writes the fill too and passes; one that writes a
+value there (a zero-extended kind, say) fails, and its struct is corrected to leave the bytes
+unset, as the original's does. Nothing is excluded from the comparison and no case changes.
+
 ### The time-stamp counter
 
 Game code reads the processor's time-stamp counter (`rdtsc`, `rdtscp`): the frame profiler
@@ -215,6 +229,13 @@ library's duplicate check); a function that branches on the difference of two re
 on the path the fixed clock takes, which may not be the recorded one, so its review says so.
 Other faults are left alone: the case still ends with `signal 11`. `--trace-instructions` runs
 keep the real counter (the instruction tracer refuses `rdtsc` anyway).
+
+Fixed-sequence interception is supported only on Linux x86-64. On other platforms, the loader
+exports the same API but `rt_fixed_tsc_install` refuses with `-1` and `errno=ENOTSUP`, without
+installing a signal handler or changing counter behavior. `rt_fixed_tsc_reads` then reports zero
+intercepted reads; it does not supply a counter value. The harness currently requests a fixed
+sequence only on Linux. A macOS loader build or unsupported-API test does not validate the fixed
+sequence or deterministic counter-dependent comparisons.
 
 ## Limits
 

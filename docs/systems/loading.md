@@ -7,7 +7,7 @@ How the game reads its files: the file interfaces the executable imports from th
 **At a glance**
 
 - **Scope:** File access, Fios file and directory handles, PlayGo chunks, and the archive and mount layers above them.
-- **Verified:** Seven functions directly above the file imports (kernel files, Fios handles, C streams) are replaced and edge-verified, and since 12 and 13 November the resource loader above them: mount names, the disk file device's open, load requests, the load event queues and transfer tasks (the function table below gives each one's status).
+- **Verified:** Ten functions directly above the file imports (kernel files, Fios handles, C streams) are replaced; the kernel file open and the C stream open are verified on recordings from the game, the rest edge-verified. Since 12 to 14 November most of the resource loader above them is replaced too: mount names, the disk file device, load requests and results, resource references, the load event queues, transfer and file tasks, and finished entries. A handful of these are verified; most are edge-verified (the function table below gives each one's status).
 - **Open:** Which calls run during a load, and in what order. The boot now reads files from your copy, its scratch folder and its saves, but the game's loading code itself is not mapped.
 
 ## Summary
@@ -46,14 +46,17 @@ runtime system-call notes describe:
 - **`/savedataN`**, a mounted save, kept in a host folder you choose ([#402](https://github.com/Yharnam-Hunters/Paleblood/pull/402)).
 - **PlayGo** reports every chunk installed ([#370](https://github.com/Yharnam-Hunters/Paleblood/pull/370)).
 
-This is the runtime's side. Apart from the seven small functions below, the game's own archive,
-mount and load-screen code above these calls has not been mapped, so which assets it loads, and in what order, is not documented here yet.
+This is the runtime's side. The game's own code just above these calls, and the resource loader
+above that, are described below; its archive and load-screen code have not been mapped, so which
+assets it loads, and in what order, is not documented here yet.
 
 ### The first loading functions
 
-Seven small functions on the file path are replaced and edge-verified (Paleblood
-[#517](https://github.com/Yharnam-Hunters/Paleblood/pull/517)). They sit directly on the
-imports above, one per interface:
+The first small functions on the file path sit directly on the imports above, one group per
+interface. Seven came first (Paleblood
+[#517](https://github.com/Yharnam-Hunters/Paleblood/pull/517)); the kernel file's write, seek
+and close followed, by [@Jeffiest](https://github.com/Jeffiest)
+([#1061](https://github.com/Yharnam-Hunters/Paleblood/pull/1061)).
 
 **Kernel files.** The loader's platform layer keeps a file as a descriptor and an "open" bit.
 `loading_kernel_file_open` (`0x02a70890`) turns the caller's mode bits into FreeBSD open flags:
@@ -61,8 +64,14 @@ read and write pick read-only, write-only or read-write; then the first of creat
 create-and-truncate and create that is set adds `O_CREAT` with `O_EXCL` or `O_TRUNC` (a lone
 truncate bit adds `O_TRUNC`). A new file gets permissions 0777 when it is writable and 0555 when
 it is opened only to read. This is the call that creates the start-up `temp:/cache.bin`.
-`loading_kernel_file_read` (`0x02a70920`) reads through the descriptor and hands back the count.
-Both answer 0 or -1; the kernel's own error code is dropped.
+`loading_kernel_file_read` (`0x02a70920`) reads through the descriptor and hands back the count,
+and `loading_kernel_file_write` (`0x02a70950`) writes the same way. `loading_kernel_file_seek`
+(`0x02a70980`) passes the caller's origin on and stores the new position when asked; every caller
+in the game seeks from the start and does not ask for the position, so the other origins are
+covered only by constructed cases. `loading_kernel_file_close` (`0x02a709c0`) closes the
+descriptor, then marks the file closed (descriptor -1, open bit cleared) whatever the kernel
+answers. All of them answer 0 or -1; the kernel's own error code is dropped. The small open-bit
+test the close's callers make first is too short to hook and stays original.
 
 **Fios handles.** `loading_fios_open_file` (`0x00857cd0`) and `loading_fios_open_file_read`
 (`0x0085cda0`) open a file with `sceFiosFHOpenSync` and wrap the handle in a small engine object
@@ -79,25 +88,43 @@ turns a failure's `errno` into the engine's own codes: not found `0x1001`, denie
 <details>
 <summary>How these were verified</summary>
 
-Each function's edge cases pass against the original (72, 19, 15, 14, 11, 30 and 9 cases),
-with deliberately wrong versions failing, and an independent review approved all seven. No
-community patch edits them. None has been recorded in a game run yet, so they are
-edge-verified, not verified.
+The first seven pass their edge cases against the original (72, 19, 15, 14, 11, 30 and 9
+cases), with deliberately wrong versions failing, and an independent review approved all
+seven. The kernel file open and the C stream open were later also recorded in the game and
+passed every recorded case, so they are verified
+([#683](https://github.com/Yharnam-Hunters/Paleblood/pull/683)); the other five remain
+edge-verified. The write, seek and close pass 20, 25 and 11 edge cases, and all sixteen
+deliberately wrong versions fail. A 30-second boot does not reach them, so they have no
+recorded cases yet and are edge-verified. No community patch edits any of them.
 
 </details>
 
 ### The resource loader above the files
 
 Between the game's request for a resource and the file read sits Dantelion2's resource loader.
-Its first layers were replaced on 12 and 13 November, each with an edge-case generator; all of them
-are reached in coverage boots to character creation:
+Most of its layers were replaced between 12 and 14 November, each with an edge-case generator, and
+most of them run in coverage boots to character creation. Many of these pieces are by contributor
+[@FFwLo](https://github.com/FFwLo).
 
 - **Mount names.** A path the game opens starts with a mount name and a colon (`name:/...`). The
   PS4 disk file device keeps two tables of (name, target) pairs and rewrites a path's prefix with
   them in rounds, aliases first and then one root, until none matches; the wide path token scanner
   they use was called about 11,000 times in one boot ([#685](https://github.com/Yharnam-Hunters/Paleblood/pull/685)). Its open then picks the device
   registered under the path's mount name, or tries every unnamed device until one opens
-  ([#710](https://github.com/Yharnam-Hunters/Paleblood/pull/710)).
+  ([#710](https://github.com/Yharnam-Hunters/Paleblood/pull/710)). On macOS these disk-open
+  replacements find the game's per-thread heap through the runtime's own guest thread pointer,
+  looked up once before the hooks are installed (by [@evill33t](https://github.com/evill33t),
+  carried onto `main` in [#962](https://github.com/Yharnam-Hunters/Paleblood/pull/962)); Linux
+  is unchanged.
+- **The disk file device itself.** The device is a singleton, built on first use under its own
+  lock and released at quit through the game's quit query; its *locate* call tells which device
+  finds a path, resolving the mount prefixes on a copy of the path the same way the open does
+  ([#968](https://github.com/Yharnam-Hunters/Paleblood/pull/968),
+  [#1007](https://github.com/Yharnam-Hunters/Paleblood/pull/1007)). The locate is verified on
+  recordings from the game ([#1053](https://github.com/Yharnam-Hunters/Paleblood/pull/1053)).
+  Beside it, the engine's hashed table of paths, which caches each path's hash in its key, is
+  verified as well ([#967](https://github.com/Yharnam-Hunters/Paleblood/pull/967),
+  [#1017](https://github.com/Yharnam-Hunters/Paleblood/pull/1017)).
 - **Load requests and events.** The request's copy constructor and the load event queues: a
   request asks the queue's resource manager for a handle, a load event array grows as a vector does,
   and removing a resource's info cancels the first transfer task loading it, under the queue's
@@ -106,6 +133,56 @@ are reached in coverage boots to character creation:
   device where it finds the path, then the read, close, start and update steps run a small state
   machine. Moving from a final state back to a working one is reported ("Tried to shift into lower
   priority.") and done anyway, as the original does ([#799](https://github.com/Yharnam-Hunters/Paleblood/pull/799)).
+  A task can be cancelled with an atomic flag; once it is closed, a cancel changes nothing
+  ([#791](https://github.com/Yharnam-Hunters/Paleblood/pull/791)).
+- **The file task, start to end.** The file transfer task prepares its read buffer (none for some
+  tasks, a small buffer inside the task for tiny reads, otherwise one from its allocator after the
+  resource manager agrees), builds a read request and queues it to its reader thread, and at the
+  end hands the resource info back to the manager, marking it loaded if the task completed
+  ([#847](https://github.com/Yharnam-Hunters/Paleblood/pull/847),
+  [#869](https://github.com/Yharnam-Hunters/Paleblood/pull/869)).
+- **The file load queue.** Its dispatch sends each queued event to a handler by kind: kind 0
+  starts a file task (taken from a pool of 32-slot blocks), kind 3 cancels the task loading an
+  info, kind 4 starts a file task that needs no read buffer
+  ([#847](https://github.com/Yharnam-Hunters/Paleblood/pull/847),
+  [#869](https://github.com/Yharnam-Hunters/Paleblood/pull/869)). The growable arrays its tasks
+  and requests are kept in share one replacement for the engine's `push_back`
+  ([#938](https://github.com/Yharnam-Hunters/Paleblood/pull/938),
+  [#1013](https://github.com/Yharnam-Hunters/Paleblood/pull/1013)).
+- **Results and finished entries.** A finished load is posted to the queue as an entry: a result
+  (the request's words and a code) plus a handle to the resource info. The result's and entry's
+  constructors, copies and assignments, and the queue's post and "loaded" report, are replaced
+  ([#847](https://github.com/Yharnam-Hunters/Paleblood/pull/847),
+  [#903](https://github.com/Yharnam-Hunters/Paleblood/pull/903),
+  [#1007](https://github.com/Yharnam-Hunters/Paleblood/pull/1007)), as is the load request's
+  copy assignment ([#968](https://github.com/Yharnam-Hunters/Paleblood/pull/968)).
+- **Resource infos and handles.** Each loaded resource has an info with a reference count, read,
+  raised and lowered under the info's own mutex (a count at zero stays zero). A resource handle
+  takes a reference when it is built or assigned and drops it when destroyed. The resource
+  manager finds an info for a request and frees the slot of a released one
+  ([#741](https://github.com/Yharnam-Hunters/Paleblood/pull/741),
+  [#791](https://github.com/Yharnam-Hunters/Paleblood/pull/791),
+  [#869](https://github.com/Yharnam-Hunters/Paleblood/pull/869),
+  [#903](https://github.com/Yharnam-Hunters/Paleblood/pull/903),
+  [#938](https://github.com/Yharnam-Hunters/Paleblood/pull/938),
+  [#991](https://github.com/Yharnam-Hunters/Paleblood/pull/991)).
+- **Resources that keep a copy of their file.** Three resource classes next to the localization
+  code copy a loaded file's bytes into a buffer of their own, holding the file while they copy;
+  the last holder of a file marked for it unloads the file. They share one body per operation and
+  build on the engine's resource base, whose constructor and destructor are replaced too
+  ([#906](https://github.com/Yharnam-Hunters/Paleblood/pull/906),
+  [#991](https://github.com/Yharnam-Hunters/Paleblood/pull/991)). Their copy functions also match
+  the original byte for byte when compiled as C.
+- **Small allocator helpers.** Allocating and freeing a block with a 16-byte header in front of
+  its data, and releasing the engine's tagged strings (an odd word means the string owns its
+  text) ([#791](https://github.com/Yharnam-Hunters/Paleblood/pull/791),
+  [#1016](https://github.com/Yharnam-Hunters/Paleblood/pull/1016)).
+
+Almost all of these are edge-verified: their constructed cases pass against the original and
+deliberately wrong versions fail. Some also pass cases recorded in a boot, but most have not yet
+been through recording and independent review, and a few cannot be recorded at all, because a
+trace that reaches the replaced engine mutex leaves the traced code. The function table below
+gives each one's status.
 
 How these layers are driven during a real load, and in what order, is still being mapped.
 

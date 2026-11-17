@@ -2,12 +2,12 @@
 
 # Audio
 
-The audio system covers sound playback, mixing and music. The game uses the FMOD sound engine; the first of its functions are mapped.
+The audio system covers sound playback, mixing and music. The game uses the FMOD sound engine; the first of its functions are mapped: how FMOD's threads are placed, started and stopped, and the callbacks that describe the console's audio output to it.
 
 **At a glance**
 
 - **Scope:** Sound playback, mixing, music.
-- **Verified:** Three FMOD functions are edge-verified against constructed cases: the thread affinity lookup (`0x0111a8c0`) and two output callbacks (`0x0111b060`, `0x0111b0b0`).
+- **Verified:** Seven FMOD functions are replaced and edge-verified against constructed cases: the thread affinity lookup, the thread object's initialisation and stop, and four output callbacks. Two string copies FMOD uses are verified.
 - **Open:** Playback, mixing and music themselves.
 
 ## Summary
@@ -20,6 +20,23 @@ thread may use. `audio_fmod_thread_affinity_lookup` (`0x0111a8c0`) answers: it c
 thread's name against eight known FMOD thread names in a fixed order (the non-blocking one by
 its first 23 characters only) and copies the matching slot's settings; for any other name it
 changes nothing and returns 0.
+
+Each of those threads is an FMOD *Thread* object, and two of its member functions are replaced,
+both by [@evill33t](https://github.com/evill33t):
+
+- **Initialising a thread object.** `audio_fmod_initialize_thread` (`0x011183b0`) installs the
+  object's vtable and clears the eight fields that track a running thread: its native handle, the
+  running flag, its entry point and argument, a callback delay, the two semaphores used to start
+  and wake it, and one field whose purpose is unknown. The thread's name and its service context
+  are kept, and nothing else in the object is touched
+  ([#1161](https://github.com/Yharnam-Hunters/Paleblood/pull/1161), 84 cases).
+- **Stopping a thread.** `audio_fmod_stop_thread` (`0x011185a0`) does nothing for a thread that is
+  not running. Otherwise it clears the running flag, wakes the thread if it has a wake-up
+  semaphore, waits on its start-up semaphore, and deletes both; any semaphore error is returned at
+  once. Then it tells an optional listener that the thread stopped (passing its handle and name),
+  clears the handle and releases any extra storage the thread held. It does not wait for the
+  native thread to exit: the call that looks like it would do that returns zero and does nothing
+  ([#1148](https://github.com/Yharnam-Hunters/Paleblood/pull/1148), 152 cases).
 
 <details>
 <summary>How the lookup was verified</summary>
@@ -36,13 +53,21 @@ semaphore wrappers) are FMOD's too; they are described on the [Engine](engine.md
 ### FMOD's output device
 
 FMOD learns about the PS4's audio output through a table of callbacks the game installs (at
-`0x0111aed0`). Two of them are mapped and replaced:
+`0x0111aed0`). Four of them are mapped and replaced:
 
 - `audio_fmod_output_driver_count` (`0x0111b060`) reports one output driver.
 - `audio_fmod_output_defaults` (`0x0111b0b0`) fills in the output's defaults, each only when FMOD
   asked for it: a setting word, then what looks like a 48 kHz sample rate and FMOD's 5.1 speaker
   mode. Those two meanings are hypotheses from the values, not yet confirmed from FMOD's use of
   them.
+- `audio_fmod_copy_output_label` (`0x0111b070`) copies the output's fixed name into FMOD's buffer:
+  at most one character less than the buffer's size, then the terminating zero. A missing buffer
+  or a size of zero or less is left alone ([#1101](https://github.com/Yharnam-Hunters/Paleblood/pull/1101),
+  291 cases).
+- `audio_fmod_stop_output_threads` (`0x0111b1f0`) stops the output's two threads in order: the
+  audio-output thread first, then the mixer thread, only if the first stop succeeded. It returns
+  the thread stop's result ([#1132](https://github.com/Yharnam-Hunters/Paleblood/pull/1132),
+  181 cases).
 
 <details>
 <summary>How the callbacks were verified</summary>
@@ -50,6 +75,13 @@ FMOD learns about the PS4's audio output through a table of callbacks the game i
 By [@evill33t](https://github.com/evill33t) in [#114](https://github.com/Yharnam-Hunters/Paleblood/pull/114): both match the original on
 constructed edge cases (every combination of present and missing outputs), and an independent
 review approved it. They are edge-verified, not yet verified against recorded game runs.
+The label copy, the output-thread stop and the two thread-object functions
+([#1101](https://github.com/Yharnam-Hunters/Paleblood/pull/1101), [#1132](https://github.com/Yharnam-Hunters/Paleblood/pull/1132),
+[#1148](https://github.com/Yharnam-Hunters/Paleblood/pull/1148), [#1161](https://github.com/Yharnam-Hunters/Paleblood/pull/1161), all by
+[@evill33t](https://github.com/evill33t)) were compared with the original on the synthetic
+cases counted above, built with two compilers, and deliberately broken versions were
+rejected. They are edge-verified too; thread start-up, concurrency and real playback are
+outside those cases.
 
 </details>
 
@@ -74,9 +106,13 @@ This is the runtime's side; FMOD's own code above these calls is still mostly un
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x011183b0` | 98 | `audio_fmod_initialize_thread` | edge-verified | FMOD Thread initialization; publish the relocated vtable and clear selected fields; preserve all other bytes |
+| `0x011185a0` | 269 | `audio_fmod_stop_thread` | edge-verified | FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status |
 | `0x0111a8c0` | 290 | `audio_fmod_thread_affinity_lookup` | edge-verified | FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched |
 | `0x0111b060` | 14 | `audio_fmod_output_driver_count` | edge-verified | FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero |
+| `0x0111b070` | 58 | `audio_fmod_copy_output_label` | edge-verified | Copy the fixed output label for a positive signed DWORD count; set the final NUL after the counted copy; return zero |
 | `0x0111b0b0` | 37 | `audio_fmod_output_defaults` | edge-verified | FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses |
+| `0x0111b1f0` | 64 | `audio_fmod_stop_output_threads` | edge-verified | FMOD output descriptor callback; stop AudioOut first and mixer only after success; return the Thread helper DWORD status |
 | `0x011c4810` | 34 | `audio_fmod_string_copy` | verified | NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered |
 | `0x011c4840` | 38 | `audio_fmod_string_copy_counted` | verified | FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer |
 
@@ -93,5 +129,7 @@ replacement or a mod would change, and the risk.
 
 - FMOD's mixing, music and sound banks: beyond the functions above, this system has not been
   studied yet.
+- The full layout of FMOD's Thread object and its virtual methods, the meaning of the stop
+  listener's arguments, and the thread stop's result codes beyond the normal 0 and 33.
 - Whether the speaker-mode value in the output defaults is 5.1, given that the game opens
   eight-channel ports.

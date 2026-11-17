@@ -2,13 +2,13 @@
 
 # Menu
 
-The game's menus and dialogs: so far the text input dialog behind the system keyboard, and two item dialogs' list entries.
+The game's menus and dialogs: so far the text input dialog behind the system keyboard and the Dantelion calls under it, the item dialogs' cursor, direction keys and lists, and the game's own glue code around the Scaleform user interface library.
 
 **At a glance**
 
-- **Scope:** Paleblood's `game/menu/`: the text input dialog (open, poll, close, destructor) and the list entry copies of two item dialogs.
-- **Verified:** All six replacements are edge-verified against constructed cases. None is `verified` yet: none has been checked on inputs recorded from a real game run.
-- **Open:** The menus themselves (the Scaleform screens and the code that drives them) are not mapped yet.
+- **Scope:** Paleblood's `game/menu/`: the text input dialog and Dantelion's system text dialog object, the item selection and item status dialogs, the Scaleform glue (heap adapter, movie screen, texture repository, file set loader, named resources), and two menu families.
+- **Verified:** Six item dialog functions are `verified`: the cursor move, the list row, both direction-key reads, the text pair copy and the status label `push_back`. The rest are edge-verified against constructed cases only.
+- **Open:** The menus themselves (the Scaleform screens and the code that drives each menu) are mostly not mapped yet.
 
 ## Summary
 
@@ -35,15 +35,58 @@ dialog returned. Four of its functions are replaced and edge-verified
 
 Ghidra's class guess for two of these functions named them parameter code; their callers are menu
 code (the message repository and Scaleform), the debug menu and network code, so they form this
-new system. Dantelion's own dialog calls under them stay original. In coverage boots the poll ran
-thousands of times and close a few times; open and the destructor did not run.
+new system. In coverage boots the poll ran thousands of times and close a few times; open and the
+destructor did not run.
 
-### Item dialog list entries
+Since [#979](https://github.com/Yharnam-Hunters/Paleblood/pull/979), by
+[@FFwLo](https://github.com/FFwLo), the four calls the dialog makes on Dantelion's dialog object are
+replaced too. Each goes through the dialog backend singleton (made on first use) and the object's
+open flag: **set up** copies the settings unless the system dialog is already open, **open** asks
+the backend to open it, **status** reports the backend's status while it is open (-1 otherwise),
+and **take text** closes the object and fetches the text once the dialog has accepted or been
+canceled.
+
+### The item dialogs
 
 Two item dialogs copy their list entries, each two wide strings with a word before each:
 `0x01edf560` copies an entry of the item selection dialog (`GaitemSelectDialog`) into a slot of a
 fixed pool, and `0x01f1bca0` copies entry *n* of the item status dialog (`GaitemStatusDialog`)
 ([#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823)). Both are edge-verified.
+
+More of the item selection dialog followed: its two direction-key reads, where the first held key
+of a group of four gives a step {x, y} ([#967](https://github.com/Yharnam-Hunters/Paleblood/pull/967)),
+and its cursor move, list row, text pair copy and the status dialog's label `push_back`
+([#995](https://github.com/Yharnam-Hunters/Paleblood/pull/995)). Both fixed vectors report a bad
+slot or a full vector and then copy anyway, as the original does. In
+[#1024](https://github.com/Yharnam-Hunters/Paleblood/pull/1024) the fixed vectors gained real
+structs (sixteen slots, then an in-use count) in place of raw offsets, and a misalignment case
+killed the last surviving mutant of the text pair copy. All six of these are now `verified`
+([#1001](https://github.com/Yharnam-Hunters/Paleblood/pull/1001),
+[#1017](https://github.com/Yharnam-Hunters/Paleblood/pull/1017),
+[#1024](https://github.com/Yharnam-Hunters/Paleblood/pull/1024),
+[#1053](https://github.com/Yharnam-Hunters/Paleblood/pull/1053)).
+
+### The Scaleform glue
+
+The menus are drawn with Scaleform, a Flash-based user interface library. The game's own code
+around it is starting to be replaced ([#923](https://github.com/Yharnam-Hunters/Paleblood/pull/923)):
+
+- the **heap adapter** that gives Scaleform its memory: free, and reallocate (which releases the old
+  buffer even when the new allocation failed);
+- two **work holder** destructors with the same code;
+- the **movie screen**'s close and step (the player's step is tried up to twice; a failure closes
+  the movie);
+- the **texture repository**, which has a missing texture made by its owner's texture source;
+- a **file set loader** of up to three files, its wait and build steps (both also match the
+  original byte for byte with the original compiler);
+- the release of a held **named resource**.
+
+[@FFwLo](https://github.com/FFwLo) then replaced the named resource registry's find and release,
+the resource handle's release and the `SprjScaleform` request queue
+([#986](https://github.com/Yharnam-Hunters/Paleblood/pull/986)), and turned the 82 other compiled
+copies of the named resource release, on two object layouts, into two
+families ([#1151](https://github.com/Yharnam-Hunters/Paleblood/pull/1151)).
+What each named resource is for is not known yet.
 
 <details>
 <summary>How these were verified</summary>
@@ -52,9 +95,18 @@ Each replacement is readable C++ in `game/menu/` and passes `verify.py` against 
 constructed cases (the dialog object as a buffer, Dantelion's calls stubbed with the status
 each case needs, invented text including every escaped character and its neighbours): 18, 18,
 12 and 8 cases for the text input dialog's poll, close, open and destructor
-([#727](https://github.com/Yharnam-Hunters/Paleblood/pull/727)), and the entry copies in
-[#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823). None has been checked on inputs
-recorded from a real game run, so none is `verified`.
+([#727](https://github.com/Yharnam-Hunters/Paleblood/pull/727)), the entry copies in
+[#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823), and the later functions in
+[#923](https://github.com/Yharnam-Hunters/Paleblood/pull/923),
+[#967](https://github.com/Yharnam-Hunters/Paleblood/pull/967),
+[#979](https://github.com/Yharnam-Hunters/Paleblood/pull/979),
+[#986](https://github.com/Yharnam-Hunters/Paleblood/pull/986) and
+[#995](https://github.com/Yharnam-Hunters/Paleblood/pull/995); each PR lists its case and
+mutant counts. The six item dialog functions marked `verified` also pass on inputs recorded in
+the game (for example 6 of 6 for the text pair copy, 8 of 8 for the label `push_back`), and an
+independent review approved each one. The family members of #1151 run the named resource
+release's own cases at each copy's address and are edge-verified. Everything else here is
+edge-verified only.
 
 </details>
 
@@ -95,9 +147,10 @@ recorded from a real game run, so none is `verified`.
 
 ## Structs and globals
 
-**Dantelion's dialog status** (`0x02d03420`): -1 when no dialog is open, 0 while it runs, 3 for
-accepted text, and 2 for a cancel, an abort or a failed result read. That the two system calls it
-reads are the system dialog's status and result calls is inferred from their signatures.
+**Dantelion's dialog status** (`0x02d03420`, replaced in #979): -1 when no dialog is open, 0 while
+it runs, 3 for accepted text, and 2 for a cancel, an abort or a failed result read. That the two
+system calls it reads are the system dialog's status and result calls is inferred from their
+signatures.
 
 ## Patch points
 
@@ -107,5 +160,6 @@ No patch points are recorded for these functions.
 
 - The menus themselves: the Scaleform screens, the message repository and the code that drives
   each menu.
+- What the named resources and the file set loader's files are, and which menus use them.
 - Which caller opens the text input dialog for each use (the hunter's name, messages, the debug
   menu).

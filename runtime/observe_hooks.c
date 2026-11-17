@@ -43,7 +43,7 @@ static int replaced(uint32_t address, const rt_hook_entry *table, size_t count)
 int rt_observe_hooks_install(const rt_host *host, const rt_observe_hook *table, size_t count, const rt_hook_entry *replaced_table,
                              size_t replaced_count)
 {
-    if (!count || count > MAX_OBSERVE_HOOKS || !rt_trace_available() || !rt_render_observer_available()) return 0;
+    if (!count || count > MAX_OBSERVE_HOOKS || !rt_trace_relocation_available() || !rt_render_observer_available()) return 0;
     const size_t code_size = (count * (RT_RELOCATE_MAX + THUNK_SIZE) + 0xfff) & ~(size_t)0xfff;
     unsigned char *code = rt_map_near_image(host->image, host->image_size, code_size);
     if (!code) {
