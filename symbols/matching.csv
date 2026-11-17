@@ -87,6 +87,7 @@ address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_che
 0x0149eac0,render_record_geometry_classification,clang-3.4.2,ps4-o2,100.0,78.3,yes,yes,game/matching/render/geometry.c,6b9f6615618d3f99,2026-11-12
 0x0149eb20,render_record_geometry_first_exponent,clang-3.4.2,ps4-o2,100.0,78.3,yes,yes,game/matching/render/geometry.c,6b9f6615618d3f99,2026-11-12
 0x0149eb50,render_record_geometry_second_exponent,clang-3.4.2,ps4-o2,100.0,78.3,yes,yes,game/matching/render/geometry.c,6b9f6615618d3f99,2026-11-12
+0x0181fb10,loading_tpfbnd_resource_construct_0181fb10,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/loading/tpfbnd_resource.c,cdad6744da09b95d,2026-11-17
 0x0183fad0,camera_follow_pitch,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/camera/follow_angles.c,b368bbc12ac20cde,2026-11-12
 0x0183fb20,camera_follow_yaw,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/camera/follow_angles.c,b368bbc12ac20cde,2026-11-12
 0x01f6a9f0,frame_timing_until_idle_01f6a9f0,clang-3.4.2,ps4-o2-sspall,100.0,96.4,yes,yes,game/matching/frame_timing/fixed_step_states.c,508bfdba745caf63,2026-11-12

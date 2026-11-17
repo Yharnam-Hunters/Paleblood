@@ -71,7 +71,7 @@ struct MetalShader {
     unsigned user, output;
     unsigned required_parameters;
     uint32_t user_read;
-    bool vertex, flip_y;
+    bool vertex, flip_y, color_output; /* Independent fragment output interface mode. */
     MetalVertexInstancing instancing;
     std::vector<uint32_t> program, fetch;
     std::vector<gcn_image_binding> images;
@@ -115,6 +115,7 @@ struct MetalState {
     uint32_t compute_user_set = 0;
     uint32_t user[2][GCN_USER_SGPR_MAX] = {};
     uint32_t user_set[2] = {};
+    uint32_t depth_bounds[2] = {}; /* Independent raw DB_DEPTH_BOUNDS_MIN/MAX words. */
     uint32_t step_rates[2] = {}, step_rates_set = 0;
     uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
     uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
@@ -180,7 +181,8 @@ static int failed(char *error, size_t size, const char *format, ...)
 }
 
 /* Validate the supported opaque-triangle profile using AMD GFX7 register fields. */
-enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005,
+enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009,
+       DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005,
        DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b, DB_DEPTH_INFO = 0xa00f,
        DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_HTILE_SURFACE = 0xa2af,
        CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
@@ -193,12 +195,14 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
    is not clipped the depth is clamped to the viewport's range: Metal's MTLDepthClipModeClamp, as the Vulkan executor's
    depth clamp (render_executor.c). */
 enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
-enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
+enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4, DEPTH_BOUNDS_ENABLE = 8,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
        ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17 };
 static int set_register(MetalState &state, uint32_t address, uint32_t value)
 {
     switch (address) {
+    case DB_DEPTH_BOUNDS_MIN: case DB_DEPTH_BOUNDS_MAX:
+        state.depth_bounds[address - DB_DEPTH_BOUNDS_MIN] = value; return 0;
     case DB_DEPTH_CONTROL: state.depth = value; state.depth_set = true; return 0;
     case CB_COLOR_CONTROL: state.color_control = value; state.color_control_set = true; return 0;
     case CB_TARGET_MASK: state.target_mask = value; state.target_mask_set = true; return 0;
@@ -240,6 +244,12 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     }
 }
 
+static bool color_writes(const MetalState &state)
+{
+    return state.color_enabled && (!state.target_mask_set || (state.target_mask & TARGET0_MASK)) &&
+        (!state.color_control_set || (state.color_control & COLOR_MODE_MASK) != 0);
+}
+
 /* Validate the supported state. A zero colour mask still executes shaders and their writes. */
 static int check_state(const MetalState &state, char *error, size_t size)
 {
@@ -250,8 +260,10 @@ static int check_state(const MetalState &state, char *error, size_t size)
     if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_TRISTRIP)
         return failed(error, size, "primitive type %u: only triangle lists and strips are drawn yet", state.primitive);
     /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
-    if ((state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
+    if (color_writes(state) && (state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
         return failed(error, size, "blending is not drawn yet");
+    if (state.depth_set && (state.depth & DEPTH_BOUNDS_ENABLE))
+        return failed(error, size, "depth bounds testing (DB_DEPTH_CONTROL.DEPTH_BOUNDS_ENABLE) is not drawn yet");
     if (state.color_control_set) {
         const uint32_t mode = (state.color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT;
         const uint32_t rop = (state.color_control & ROP3_MASK) >> ROP3_SHIFT;
@@ -739,13 +751,13 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
 static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
                                  const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
-                                 const MetalVertexInstancing &instancing = {})
+                                 const MetalVertexInstancing &instancing = {}, bool color_output = true)
 {
     MetalProgram program, callee; uint32_t target_read = 0;
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
-        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
+        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y && shader.color_output == color_output &&
             shader.instancing == instancing &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
             std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
@@ -784,6 +796,11 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     try {
         pb::MetalFragmentQuadCompiler compiler(spirv, count,
             x->stop.gpuAddress + offsetof(MetalShaderStops, fragment_quad));
+        if (!vertex) {
+            auto options = compiler.get_msl_options();
+            options.enable_frag_output_mask = color_output ? 1u : 0u;
+            compiler.set_msl_options(options);
+        }
         /* Fragment image_sample gradients use native 2x2 quad broadcasts. Whole-quad mask
            expansion also writes wave-wide SCC; its GCN-wave behavior is still outside this profile. */
         for (size_t at = 5; at < count;) {
@@ -818,7 +835,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         if (!function) return nil;
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
-        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, instancing,
+        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, color_output, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
             pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},function});
@@ -1203,11 +1220,9 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (depth_attachments(x,state,depth,error,size)) return -1;
     const bool has_depth = depth.z.texture || depth.stencil.texture;
     if (!state.color_enabled && !has_depth) return failed(error,size,"a draw has no color target or depth/stencil attachment");
-    const bool write_color = state.color_enabled && (!state.target_mask_set || (state.target_mask & TARGET0_MASK)) &&
-        (!state.color_control_set || (state.color_control & COLOR_MODE_MASK) != 0);
+    const bool write_color = color_writes(state);
     if (!state.pixel.code && (write_color || !has_depth))
         return failed(error,size,"a draw with no pixel shader requires depth/stencil and no color writes");
-    if (state.pixel.code && !state.color_enabled) return failed(error,size,"pixel color exports require a color target");
     MetalTarget *target = state.color_enabled ? target_for(x,state.color,error,size) : nullptr;
     if (state.color_enabled && !target) return -1;
     const uint32_t width = target ? target->width : depth.width, height = target ? target->height : depth.height;
@@ -1229,7 +1244,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
                                       state.user[0], state.user_set[0], nullptr, vertex_read, error, size, instancing);
     if (!vertex) return -1;
     id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
-                                             state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size) : nil;
+                                             state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size, {}, state.color_enabled) : nil;
     if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;

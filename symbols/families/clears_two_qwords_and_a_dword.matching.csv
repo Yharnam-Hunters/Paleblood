@@ -1,0 +1,15 @@
+address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_checked,source,source_sha256,date
+0x005f28f0,leaf_clears_two_qwords_and_a_dword_005f28f0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x0095de90,leaf_clears_two_qwords_and_a_dword_0095de90,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x010cbcf0,leaf_clears_two_qwords_and_a_dword_010cbcf0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x010cbd10,leaf_clears_two_qwords_and_a_dword_010cbd10,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x010cbd30,leaf_clears_two_qwords_and_a_dword_010cbd30,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02b13c00,leaf_clears_two_qwords_and_a_dword_02b13c00,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02b21320,leaf_clears_two_qwords_and_a_dword_02b21320,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02b21340,leaf_clears_two_qwords_and_a_dword_02b21340,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02b21360,leaf_clears_two_qwords_and_a_dword_02b21360,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02b214f0,leaf_clears_two_qwords_and_a_dword_02b214f0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02b21510,leaf_clears_two_qwords_and_a_dword_02b21510,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02b21530,leaf_clears_two_qwords_and_a_dword_02b21530,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02f0cd30,leaf_clears_two_qwords_and_a_dword_02f0cd30,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
+0x02f7fa20,leaf_clears_two_qwords_and_a_dword_02f7fa20,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/clears_two_qwords_and_a_dword.c,72273c459aa4ff59,2026-11-16
