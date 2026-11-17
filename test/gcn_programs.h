@@ -22,6 +22,16 @@ static const uint32_t scale_add[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Lane i stores i at byte 4 * i of the buffer whose descriptor it loads from the table at the
+   pointer in s[2:3] (the game's ring tables: a 16-byte table holding a buffer descriptor). */
+static const uint32_t table_descriptor_store[] = {
+    0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0701000, 0x80010001, /* buffer_store_dword v0, v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Each lane of workgroup (x, y, z) of a 2 x 3 x 4 dispatch stores x | y << 8 | z << 16 at byte
    ((z * 3 + y) * 2 + x) * 256 + 4 * lane of the buffer in s[4:7]: the workgroup's indexes start in
    s8, s9 and s10, after 8 user SGPRs (TGID_X/Y/Z_EN all set). */

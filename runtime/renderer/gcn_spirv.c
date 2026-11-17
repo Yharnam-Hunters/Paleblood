@@ -77,6 +77,7 @@ typedef struct {
     unsigned step_rates_set;
     gcn_lds lds;                     /* the workgroup's LDS (runtime/gcn_spirv.h) */
     uint64_t gds_address;            /* a compute shader's GDS (runtime/gcn_spirv.h), or 0 */
+    const gcn_table_snapshot *table_snapshot; /* a compute shader's table snapshots (runtime/gcn_spirv.h), or NULL */
     uint32_t lds_workgroups;         /* the tessellation stages' LDS buffer's workgroups */
     /* tessellation (runtime/gcn_spirv.h): the local and hull shaders run as compute shaders, the domain
        shader as a vertex shader's translation in a tessellation evaluation shader */
@@ -1543,6 +1544,35 @@ static uint32_t ulong_constant(translator *t, uint64_t v)
     return spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)v, (uint32_t)(v >> 32)}, 3);
 }
 
+/* The table snapshot entry the s_load at t->at takes its words from (runtime/gcn_spirv.h), or NULL. */
+static const gcn_table_entry *table_entry_at(const translator *t)
+{
+    const gcn_table_snapshot *plan = t->layout->table_snapshot;
+    if (!plan) return NULL;
+    for (unsigned i = 0; i < plan->use_count; i++)
+        if (plan->uses[i].at == t->at) return &plan->entries[plan->uses[i].entry];
+    return NULL;
+}
+
+/* Push-constant word `index` of the table snapshot (member 1 of the user data block). */
+static uint32_t snapshot_word(translator *t, unsigned index)
+{
+    const uint32_t pointer = value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_PUSH_CONSTANT, t_uint(t)), 3, t->push_constants,
+                                   konst(t, 1), konst(t, index));
+    return load(t, t_uint(t), pointer);
+}
+
+/* Dword i of a snapshot entry's load: the executor's copy when the mask's bit for the entry is set, else
+   what the load read from memory. */
+static uint32_t snapshot_or(translator *t, const gcn_table_entry *entry, uint32_t i, uint32_t loaded)
+{
+    const gcn_table_snapshot *plan = t->layout->table_snapshot;
+    const uint32_t bit = konst(t, 1u << (unsigned)(entry - plan->entries));
+    const uint32_t taken = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, snapshot_word(t, 0), bit),
+                                 konst(t, 0));
+    return value(t, SPV_OP_SELECT, t_uint(t), 3, taken, snapshot_word(t, 1 + entry->first_word + i), loaded);
+}
+
 static void scalar_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
@@ -1562,7 +1592,11 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
     if (!descriptor) {
-        for (uint32_t i = 0; i < dwords_named(name); i++) write_sgpr(t, sdst + i, load_dword(t, dword_pointer(t, base, byte_offset, i)), ins);
+        const gcn_table_entry *entry = table_entry_at(t);
+        for (uint32_t i = 0; i < dwords_named(name); i++) {
+            const uint32_t loaded = load_dword(t, dword_pointer(t, base, byte_offset, i));
+            write_sgpr(t, sdst + i, entry ? snapshot_or(t, entry, i, loaded) : loaded, ins);
+        }
         return;
     }
     /* s_buffer_load is range-checked against its descriptor as vector buffer accesses are: a dword at
@@ -2510,8 +2544,13 @@ static uint32_t user_data_block(translator *t)
     const int draw_words = t->layout->tess == TESS_LOCAL || t->layout->tess == TESS_HULL || t->layout->gs == GS_EXPORT ||
                            t->layout->gs == GS_GEOMETRY;
     const uint32_t draw = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, 2)}, 2); /* the draw record's address */
-    const uint32_t block = draw_words ? spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array, draw}, 2)
-                                      : spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array}, 1);
+    /* a compute shader's table snapshots (runtime/gcn_spirv.h): the mask, then the words (the same type
+       as the user data's array while both hold 16 words, decorated once) */
+    const uint32_t snapshot =
+        t->layout->table_snapshot ? spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, GCN_TABLE_SNAPSHOT_WORDS + 1)}, 2) : 0;
+    const uint32_t block = draw_words                 ? spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array, draw}, 2)
+                           : t->layout->table_snapshot ? spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array, snapshot}, 2)
+                                                       : spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array}, 1);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){array, SPV_DECORATION_ARRAY_STRIDE, BYTES_PER_DWORD}, 3);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){block, SPV_DECORATION_BLOCK}, 2);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE,
@@ -2520,6 +2559,11 @@ static uint32_t user_data_block(translator *t)
         spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){draw, SPV_DECORATION_ARRAY_STRIDE, BYTES_PER_DWORD}, 3);
         spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE,
                    (const uint32_t[]){block, 1, SPV_DECORATION_OFFSET, GCN_TESS_DRAW_OFFSET}, 4);
+    } else if (t->layout->table_snapshot) {
+        if (snapshot != array)
+            spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){snapshot, SPV_DECORATION_ARRAY_STRIDE, BYTES_PER_DWORD}, 3);
+        spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE,
+                   (const uint32_t[]){block, 1, SPV_DECORATION_OFFSET, t->layout->push_constant_offset + GCN_USER_SGPR_MAX * BYTES_PER_DWORD}, 4);
     }
     const uint32_t id = spirv_new_id(m);
     spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
@@ -4208,6 +4252,71 @@ int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads
     return gcn_called_memory_reads(code, dwords, NULL, 0, reads, max, count, unknown, error, error_size);
 }
 
+/* gcn_table_snapshot_plan runs on the submitting thread for every new compute shader, so it decides in
+   linear time, more strictly than descriptor_origin (which costs up to a second on the game's longer
+   programs): an s_load's pointer pair counts as the user data's when no instruction before it in the
+   program writes the pair and no branch from it or after it goes back to it or before it (a loop that
+   could carry a later write around). A program with a branch whose target is not known (a call, a
+   computed jump) has no entries. */
+int gcn_table_snapshot_plan(const uint32_t *code, size_t dwords, gcn_table_snapshot *plan, char *error, size_t error_size)
+{
+    enum { POINTER_DWORDS = 2, PAIRS = 64, BACK_BRANCHES = 64, NOT_WRITTEN = -1 };
+    *plan = (gcn_table_snapshot){0};
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) {
+        snprintf(error, error_size, "no program end found");
+        return -1;
+    }
+    const callee_code no_callee = {NULL, 0};
+    long first_write[PAIRS]; /* by the pair's first SGPR / 2: the first instruction writing it */
+    for (unsigned k = 0; k < PAIRS; k++) first_write[k] = NOT_WRITTEN;
+    struct {
+        long from, to;
+    } back[BACK_BRANCHES];
+    unsigned back_count = 0;
+    for (size_t at = 0; at < (size_t)program;) { /* the writes and the branches back */
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) {
+            snprintf(error, error_size, "dword %zu: an instruction the decoder cannot name", at);
+            return -1;
+        }
+        long target;
+        if (branches(code + at, &ins, at, &target)) {
+            if (target < 0 || back_count == BACK_BRANCHES) return 0; /* an unknown target: no entries */
+            if ((size_t)target <= at) back[back_count].from = (long)at, back[back_count++].to = target;
+        }
+        for (unsigned k = 0; k < PAIRS; k++)
+            if (first_write[k] == NOT_WRITTEN && writes_sgprs(code + at, &ins, &no_callee, 2 * k, POINTER_DWORDS)) first_write[k] = (long)at;
+        at += ins.dwords;
+    }
+    unsigned words = 0;
+    for (size_t at = 0; at < (size_t)program && plan->use_count < GCN_TABLE_SNAPSHOT_USES;) {
+        gcn_instruction ins;
+        gcn_decode(code + at, (size_t)program - at, &ins);
+        const uint32_t *w = code + at;
+        const int immediate = (w[0] & SMRD_IMM) != 0, literal = !immediate && (w[0] & 0xff) == OPERAND_LITERAL;
+        const unsigned pair = (w[0] >> 9) & 0x3f;
+        int user_data = ins.encoding == GCN_SMRD && !strncmp(ins.name, "s_load_dword", 12) && (immediate || literal) && pair < PAIRS &&
+                        (first_write[pair] == NOT_WRITTEN || first_write[pair] >= (long)at);
+        for (unsigned b = 0; b < back_count && user_data; b++) user_data = !(back[b].to <= (long)at && back[b].from >= (long)at);
+        if (user_data) {
+            const gcn_table_entry wanted = {.pointer_sgpr = 2 * pair, .offset = (literal ? w[1] : w[0] & 0xff) * BYTES_PER_DWORD,
+                                            .dwords = dwords_named(ins.name)};
+            unsigned k = 0;
+            while (k < plan->entry_count && (plan->entries[k].pointer_sgpr != wanted.pointer_sgpr || plan->entries[k].offset != wanted.offset ||
+                                             plan->entries[k].dwords != wanted.dwords))
+                k++;
+            if (k == plan->entry_count && k < GCN_TABLE_SNAPSHOT_ENTRIES && words + wanted.dwords <= GCN_TABLE_SNAPSHOT_WORDS) {
+                plan->entries[k] = wanted, plan->entries[k].first_word = words;
+                plan->entry_count++, words += wanted.dwords;
+            }
+            if (k < plan->entry_count) plan->uses[plan->use_count].at = (uint32_t)at, plan->uses[plan->use_count++].entry = k;
+        }
+        at += ins.dwords;
+    }
+    return 0;
+}
+
 /* What a VGPR holds in the table-driven copy (gcn_table_copy_shape). */
 typedef enum { HOLDS_OTHER, HOLDS_LANE, HOLDS_WORKGROUP, HOLDS_ENTRY_X, HOLDS_ENTRY_Y, HOLDS_ENTRY_COUNT, HOLDS_LANE_PLUS_X, HOLDS_LANE_PLUS_Y,
                HOLDS_ELEMENT } held_value;
@@ -4659,6 +4768,10 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         layout->push_constant_offset + GCN_USER_SGPR_MAX * BYTES_PER_DWORD > GCN_PUSH_CONSTANT_LIMIT)
         fail(t, "user data at push-constant byte %u: not a whole word within %d bytes", layout->push_constant_offset,
              GCN_PUSH_CONSTANT_LIMIT);
+    if (layout->table_snapshot &&
+        (layout->stage != STAGE_COMPUTE || layout->tess || layout->gs ||
+         layout->push_constant_offset + (GCN_USER_SGPR_MAX + GCN_TABLE_SNAPSHOT_WORDS + 1) * BYTES_PER_DWORD > GCN_PUSH_CONSTANT_LIMIT))
+        fail(t, "table snapshots outside a compute shader, or past the %d push-constant bytes", GCN_PUSH_CONSTANT_LIMIT);
 
     static const uint32_t capabilities[] = {SPV_CAPABILITY_SHADER, SPV_CAPABILITY_INT64, SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER,
                                             SPV_CAPABILITY_GROUP_NON_UNIFORM, SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE};
@@ -4895,7 +5008,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
                             .images = layout->images, .image_count = layout->image_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address, .guest = layout->guest,
                             .user_data_read = layout->user_data_read, .sgprs_read = layout->sgprs_read, .lds = layout->lds,
-                            .gds_address = layout->gds_address};
+                            .gds_address = layout->gds_address, .table_snapshot = layout->table_snapshot};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
