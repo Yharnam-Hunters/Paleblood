@@ -722,6 +722,7 @@ engine_scaleform_heap_allocate_large_0233c660,recorded,,353,353,0,0,7cf908b7d689
 engine_scaleform_heap_allocate_large_0233c660,edge,,39,39,0,0,7cf908b7d6893363,2026-11-17
 engine_scaleform_heap_bin_allocate_0233a7f0,recorded,,400,400,0,0,ea8b261ae8d7f591,2026-11-17
 engine_scaleform_heap_bin_allocate_0233a7f0,edge,,24,24,0,0,ea8b261ae8d7f591,2026-11-17
+engine_scaleform_heap_bin_allocate_aligned_0233ae40,recorded,,102,102,0,0,d8a1a28215704329,2026-11-17
 engine_scaleform_heap_bin_allocate_aligned_0233ae40,edge,,18,18,0,0,d8a1a28215704329,2026-11-17
 engine_scaleform_heap_bin_free_0233ab20,recorded,,1530,1530,0,0,90670d9df1baef7c,2026-11-17
 engine_scaleform_heap_bin_free_0233ab20,edge,,19,19,0,0,90670d9df1baef7c,2026-11-17
@@ -742,6 +743,7 @@ engine_scaleform_heap_reallocate_023392d0,recorded,,245,245,0,0,35fa457d20ea037d
 engine_scaleform_heap_reallocate_023392d0,edge,,29,29,0,0,35fa457d20ea037d,2026-11-17
 engine_scaleform_heap_reallocate_small_moving_0233d140,recorded,,130,130,0,0,97102a6a78cdb45a,2026-11-17
 engine_scaleform_heap_reallocate_small_moving_0233d140,edge,,23,23,0,0,97102a6a78cdb45a,2026-11-17
+engine_scaleform_heap_release_page_0233be70,recorded,,101,101,0,0,7cf908b7d6893363,2026-11-17
 engine_scaleform_heap_release_page_0233be70,edge,,21,21,0,0,7cf908b7d6893363,2026-11-17
 engine_segregated_bi_heap_allocate_bottom_02488030,edge,,25,25,0,0,b7d264f4a2acb1db,2026-11-13
 engine_segregated_bi_heap_allocate_top_024882f0,edge,,29,29,0,0,ad25567b394bf685,2026-11-12
