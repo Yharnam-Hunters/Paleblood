@@ -263,13 +263,13 @@ of the current table, in functions and bytes (generated):
 <!-- source-files:start -->
 | Library | Functions | Bytes | Direct | File range | Library range | Extent |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| engine | 101,048 | 22,181,362 | 777 | 8,385 | 91,886 | 0 |
+| engine | 101,048 | 22,181,025 | 777 | 8,385 | 91,886 | 0 |
 | havok | 21,778 | 8,522,147 | 328 | 598 | 20,852 | 0 |
 | scaleform | 21,192 | 4,575,814 | 0 | 0 | 0 | 21,192 |
 | fmod | 4,311 | 1,090,192 | 403 | 1,187 | 2,721 | 0 |
 | yebis | 2,214 | 840,720 | 74 | 810 | 1,330 | 0 |
 | havokscript | 1,353 | 478,316 | 188 | 448 | 717 | 0 |
 | sce-gnmx | 113 | 31,093 | 7 | 20 | 86 | 0 |
-| untagged | 27,029 | 6,703,155 | | | | |
-| all | 179,038 | 44,422,799 | | | | |
+| untagged | 27,029 | 6,703,142 | | | | |
+| all | 179,038 | 44,422,449 | | | | |
 <!-- source-files:end -->

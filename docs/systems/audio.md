@@ -74,9 +74,12 @@ This is the runtime's side; FMOD's own code above these calls is still mostly un
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x011185a0` | 269 | `audio_fmod_stop_thread` | edge-verified | FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status |
 | `0x0111a8c0` | 290 | `audio_fmod_thread_affinity_lookup` | edge-verified | FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched |
 | `0x0111b060` | 14 | `audio_fmod_output_driver_count` | edge-verified | FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero |
+| `0x0111b070` | 58 | `audio_fmod_copy_output_label` | edge-verified | Copy the fixed output label for a positive signed DWORD count; set the final NUL after the counted copy; return zero |
 | `0x0111b0b0` | 37 | `audio_fmod_output_defaults` | edge-verified | FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses |
+| `0x0111b1f0` | 64 | `audio_fmod_stop_output_threads` | edge-verified | FMOD output descriptor callback; stop AudioOut first and mixer only after success; return the Thread helper DWORD status |
 | `0x011c4810` | 34 | `audio_fmod_string_copy` | verified | NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered |
 | `0x011c4840` | 38 | `audio_fmod_string_copy_counted` | verified | FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer |
 
