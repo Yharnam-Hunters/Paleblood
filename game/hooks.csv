@@ -30,6 +30,7 @@ address,replacement,system,returns
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
 0x011183b0,bb_audio_fmod_initialize_thread,audio,void
+0x01118420,bb_audio_fmod_start_thread,audio,i32
 0x011185a0,bb_audio_fmod_stop_thread,audio,i32
 0x0111a620,bb_kernel_file_open,kernel,i32
 0x0111a6b0,bb_kernel_file_close,kernel,i32
