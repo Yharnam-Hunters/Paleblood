@@ -13,15 +13,11 @@
 #include "flipper.h"
 #include "runtime/original.h"
 #include "target_fps.h"
+#include "time_of_day.h"
 
 namespace {
 
 using namespace frame_timing;
-
-struct Timeval {
-    int64_t seconds;
-    int64_t microseconds;
-};
 
 struct Config;
 
@@ -29,10 +25,8 @@ RT_GLOBAL(0x0575a910, flipper_vtable, const uint8_t);
 RT_GLOBAL(0x0593d710, config_instance, Config *);
 RT_GLOBAL(0x04d7ea96, flip_mode_key, const char16_t);   // u"Game.FlipMode"
 RT_ORIGINAL(0x024eba00, config_get_int, uint32_t(Config *, engine::WideString *key, uint32_t fallback));
-RT_ORIGINAL(0x02fbe728, c_gettimeofday, int(Timeval *, void *timezone));
 
 constexpr uint32_t default_flip_mode = 4, default_pending_flip_mode = 3, max_flip_mode = 4;
-constexpr uint64_t us_per_second = 1000000;
 constexpr int32_t no_override = -1;
 
 uint32_t read_flip_mode(uint32_t fallback)
@@ -56,9 +50,7 @@ extern "C" void bb_frame_timing_flipper_init(SprjFlipper *f)
     f->mode_flag_0x14 = 1;
     f->interval = std::bit_cast<float>(fixed_step_bits());
 
-    Timeval now_tv;
-    c_gettimeofday(&now_tv, nullptr);
-    const uint64_t now = static_cast<uint64_t>(now_tv.seconds) * us_per_second + static_cast<uint64_t>(now_tv.microseconds);
+    const uint64_t now = time_of_day::now_microseconds();
     f->frame_start_us = now;
     f->frame_end_us = now;
     for (uint64_t &stamp : f->clock_stamps) stamp = now;
