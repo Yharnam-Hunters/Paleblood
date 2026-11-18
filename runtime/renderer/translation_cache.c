@@ -32,6 +32,7 @@ struct translation_cache {
     int fd;             /* the file, opened for appending; -1 once it can take no more */
     size_t file_size;
     unsigned char *read_bytes; /* the file as read when the cache opened: the records found there point into it */
+    size_t read_from, read_to; /* where its records begin, and end (read_records) */
     unsigned char **added;     /* the records added since, one allocation each */
     size_t added_count, added_capacity;
     slot *slots;
@@ -177,8 +178,10 @@ static int load_file(translation_cache *cache, const char *version)
             if (n <= 0) break;
             got += (size_t)n;
         }
-        if (got == size && header_matches(cache->read_bytes, size, version))
+        if (got == size && header_matches(cache->read_bytes, size, version)) {
             good = read_records(cache, cache->read_bytes, size, header_size(version));
+            cache->read_from = header_size(version), cache->read_to = good;
+        }
     }
     if (good && good == size) {
         cache->file_size = size;
@@ -303,3 +306,27 @@ void translation_cache_add(translation_cache *cache, const translation_key *key,
 }
 
 size_t translation_cache_count(const translation_cache *cache) { return cache ? cache->used : 0; }
+
+/* Calls each for the key of one record, in the order kept: a key kept twice (by two runs adding it at
+   once) is given once, at its first record. */
+static void each_record(translation_cache *cache, const unsigned char *record, translation_cache_each_key each, void *context)
+{
+    record_header h;
+    memcpy(&h, record, sizeof h);
+    const unsigned char *key = record + sizeof h;
+    if (slot_for(cache, key_hash(key, h.key_size), key, h.key_size)->key == key) each(context, key, h.key_size);
+}
+
+void translation_cache_each(translation_cache *cache, translation_cache_each_key each, void *context)
+{
+    if (!cache || !cache->slots) return;
+    pthread_mutex_lock(&cache->lock);
+    for (size_t at = cache->read_from; at < cache->read_to;) {
+        record_header h;
+        memcpy(&h, cache->read_bytes + at, sizeof h);
+        each_record(cache, cache->read_bytes + at, each, context);
+        at += sizeof h + h.key_size + h.value_size;
+    }
+    for (size_t i = 0; i < cache->added_count; i++) each_record(cache, cache->added[i], each, context);
+    pthread_mutex_unlock(&cache->lock);
+}
