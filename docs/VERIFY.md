@@ -85,9 +85,12 @@ tools/capture_loop.py --captures "$BB_CAPTURES"
    data): a new game through character creation, each save checkpoint (`savedata_from`), with the
    input script and keyboard text that get there. Each boot holds the GPU lock;
 2. the edge cases of every function with recordings, written to `CAPTURES/NAME/edge` by the
-   generator beside its replacement;
+   generator beside its replacement (a generator for several functions is run with each variant
+   its usage line offers: `OUT_DIR a|b`, `OUT_DIR ADDRESS` with the function's address, or
+   `OUT_DIR MODE` with the modes listed after `MODE:` or described as `mode (0xADDRESS)`);
 3. `tools/promote.py --check-unreviewed`: reviewed functions whose recorded and edge cases all
-   pass become `verified`; those that pass without a review are listed as awaiting one (the
+   pass become `verified`; those that pass without a review are listed as awaiting one (failing
+   cases quarantined for that case set don't count, reviewed or not; the
    independent review, CONTRIBUTING.md); a failure is reported (a bug to fix, or a quarantine with
    its reason, below).
 

@@ -129,6 +129,50 @@ class CaptureLoop(unittest.TestCase):
             write(self.root / 'game/kernel/usage_cases.py', f'"""Edge cases.\nusage: usage_cases.py {usage}\n"""\n')
             self.assertEqual(capture_loop.generator_variants(str(self.root / 'game/kernel/usage_cases.py')), variants)
 
+    def test_named_variants(self):
+        """A usage line that names its variant (OUT_DIR MODE): the address itself, a list after
+        `NAME:`, or variants described as `name (0xADDR)`, as transfer_task_cases.py writes them."""
+        usage = self.root / 'game/kernel/usage_cases.py'
+        modes = ('usage: usage_cases.py OUT_DIR MODE\n\n'
+                 '- start (0x00000010): a task; the lookup (0x00000030) is a stub.\n'
+                 '- check_read (0x00000020), check_close (0x00000040): a task; the base start (0x00000010)\n'
+                 '  is a stub.\n')
+        for doc, address, variants in (
+                ('usage: usage_cases.py OUT_DIR ADDRESS   (one of the copies)', 0x1234, ['0x00001234']),
+                ('usage: usage_cases.py OUT_DIR ADDRESS', None, [None]),
+                ('usage: usage_cases.py OUT_DIR KIND\n  KIND: fast_destroy, fast_delete (fast\n'
+                 '        allocators), destroy\n\nKIND is not destroy_all.', 0x10,
+                 ['fast_destroy', 'fast_delete', 'destroy']),
+                ('usage: usage_cases.py OUT_DIR MODE\n\nMODE: wide|bytes|\nwide_string\n', 0x10,
+                 ['wide', 'bytes', 'wide_string']),
+                # The modes described with the function's address, else every described mode.
+                (modes, 0x10, ['start']),
+                (modes, 0x40, ['check_close']),
+                (modes, 0x50, ['start', 'lookup', 'check_read', 'check_close']),
+                ('usage: usage_cases.py OUT_DIR MODE\n\nNothing described.', 0x10, [None])):
+            write(usage, f'"""Edge cases.\n{doc}\n"""\n')
+            self.assertEqual(capture_loop.generator_variants(str(usage), address), variants, doc)
+
+    def test_edge_cases_from_a_described_mode(self):
+        """write_edge_cases runs a MODE generator with the mode described with the address."""
+        write(self.root / 'game/kernel/task.cpp', 'extern "C" int bb_kernel_task_close(int)\n{\n    return 0;\n}\n')
+        write(self.root / 'game/kernel/task_modes_cases.py', '"""Edge cases for the tasks (game/kernel/task.cpp).\n'
+              'usage: task_modes_cases.py OUT_DIR MODE\n\n'
+              '- open (0x00000050): a task.\n- close (0x00000060): a task.\n"""\n'
+              'import json, os, sys\n'
+              'ADDRESSES = {"open": "0x00000050", "close": "0x00000060"}\n'
+              'if len(sys.argv) != 3 or sys.argv[2] not in ADDRESSES:\n'
+              '    sys.exit("usage: task_modes_cases.py OUT_DIR MODE")\n'
+              'os.makedirs(sys.argv[1])\n'
+              'with open(os.path.join(sys.argv[1], "one.json"), "w") as f:\n'
+              '    json.dump({"schema": 1, "address": ADDRESSES[sys.argv[2]], "id": "one"}, f)\n')
+        source = capture_loop.replacement_sources(str(self.root))['kernel_task_close']
+        (self.captures / 'kernel_task_close').mkdir(parents=True)
+        generators = capture_loop.edge_generators(str(self.root), 'kernel_task_close', 'kernel', source)
+        self.assertIsNone(capture_loop.write_edge_cases('kernel_task_close', '0x00000060', generators,
+                                                        str(self.captures)))
+        self.assertEqual(self.edge_case_addresses('kernel_task_close'), [('one.json', '0x00000060')])
+
     def test_edge_cases_are_the_functions_own(self):
         source = self.shared_generator()
         for name, address in (('kernel_pool_take', '0x00000010'), ('kernel_pool_give', '0x00000020')):
@@ -195,6 +239,41 @@ class CaptureLoop(unittest.TestCase):
         self.assertIsNone(capture_status.last_capture(str(self.captures)))
         write(self.captures / '.capture-loop.json', json.dumps({'date': '2026-11-10'}))
         self.assertEqual(capture_status.last_capture(str(self.captures)), '2026-11-10')
+
+
+class PromoteQuarantine(unittest.TestCase):
+    """promote.py's check of an unreviewed function (no --record) counts failing cases listed in
+    symbols/quarantine.csv as quarantined, as a recorded run and tools/session_report.py do."""
+
+    def setUp(self):
+        import promote
+        self.promote = promote
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        write(self.root / 'symbols/quarantine.csv', 'function,cases,option,case,reason,date\n'
+              'kernel_thing,recorded,,old,recorded before the fix,2026-11-17\n')
+        self.cases = self.root / 'cases'
+        for case in ('new', 'old', 'other'):
+            write(self.cases / f'{case}.json', '{}')
+        old_root = promote.ROOT
+        promote.ROOT = str(self.root)
+        self.addCleanup(setattr, promote, 'ROOT', old_root)
+
+    def run_with(self, failing: list[str], kind: str = 'recorded'):
+        summary = {'cases': 3, 'passed': 3 - len(failing), 'failed': len(failing),
+                   'failures': [{'case': c} for c in failing]}
+        done = subprocess.CompletedProcess([], 1 if failing else 0, json.dumps(summary), '')
+        from unittest import mock
+        with mock.patch.object(self.promote.subprocess, 'run', return_value=done):
+            return self.promote.passes('kernel_thing', str(self.cases), kind, False)
+
+    def test_quarantined_failure_passes(self):
+        self.assertEqual(self.run_with([]), (True, '3/3 passed'))
+        self.assertEqual(self.run_with(['old']), (True, '2/3 passed, 1 quarantined'))
+        self.assertFalse(self.run_with(['old', 'other'])[0])
+        # The quarantine names one case set: the same case among the edge cases fails.
+        self.assertFalse(self.run_with(['old'], 'edge')[0])
 
 
 if __name__ == '__main__':
