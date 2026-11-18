@@ -1078,8 +1078,33 @@ static void constant_pixel_wqm(void)
     constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 0, "pixel_wqm_after_survey");
 }
 
+/* Instructions with this opcode in the module (after the five header words). */
+static unsigned opcode_count(const uint32_t *spirv, size_t words, uint32_t opcode)
+{
+    unsigned n = 0;
+    for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16) n += (spirv[at] & 0xffff) == opcode;
+    return n;
+}
+
+/* An s_load's span is checked against the guest memory once, not dword by dword. */
+static void scalar_load_spans(void)
+{
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[512];
+    static const uint32_t loaded[] = {0xc0c00904, 0xbf810000}; /* s_load_dwordx8 s[0:7], s[8:9], 4; s_endpgm */
+    gcn_compute_layout checked = layout;
+    checked.guest = (gcn_guest_memory){.base = 0x100000, .bytes = 0x100000, .sink = 0x9000};
+    checked.error_address = 0x2000;
+    CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 && opcode_count(spirv, words, SPV_OP_SELECT) == 1);
+    CHECK(validate(spirv, words, "scalar_load_spans") != 0);
+    free(spirv);
+}
+
 int main(void)
 {
+    scalar_load_spans();
     table_snapshots();
     submitted_table_snapshots();
     constant_pixel_wqm();

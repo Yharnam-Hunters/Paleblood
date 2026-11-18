@@ -1623,11 +1623,17 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
     if (!descriptor) {
+        /* The load's dwords are consecutive, so its whole span is checked against the guest memory once
+           (guest_reachable): inside, every dword is; outside, every dword reads the sink and the stop word
+           names the span's first page. Each dword's address then counts on from the checked start. */
         const gcn_table_entry *entry = table_entry_at(t);
         const int in_block = entry && t->layout->table_block_offset;
-        for (uint32_t i = 0; i < dwords_named(name); i++) {
-            const uint32_t guest = dword_address(t, base, byte_offset, i);
-            const uint32_t loaded = load_dword(t, uint_pointer(t, in_block ? snapshot_address(t, entry, i, guest) : guest));
+        const uint32_t dwords = dwords_named(name);
+        const uint32_t guest = guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, byte_offset)), dwords * BYTES_PER_DWORD);
+        const uint32_t start = in_block ? snapshot_address(t, entry, 0, guest) : guest;
+        for (uint32_t i = 0; i < dwords; i++) {
+            const uint32_t address = i ? value(t, SPV_OP_I_ADD, t_ulong(t), 2, start, ulong_constant(t, (uint64_t)i * BYTES_PER_DWORD)) : start;
+            const uint32_t loaded = load_dword(t, uint_pointer(t, address));
             write_sgpr(t, sdst + i, entry && !in_block ? snapshot_or(t, entry, i, loaded) : loaded, ins);
         }
         return;
