@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -47,6 +48,7 @@ inline unsigned result_layout(spv::Op op)
     case spv::OpSLessThan: case spv::OpSGreaterThan: case spv::OpSLessThanEqual: case spv::OpSGreaterThanEqual:
     case spv::OpFOrdLessThan: case spv::OpFOrdGreaterThan: case spv::OpFOrdLessThanEqual:
     case spv::OpFOrdGreaterThanEqual: case spv::OpFOrdEqual: case spv::OpFOrdNotEqual:
+    case spv::OpFUnordNotEqual:
     case spv::OpGroupNonUniformAny: case spv::OpGroupNonUniformAll:
     case spv::OpGroupNonUniformQuadSwap: case spv::OpGroupNonUniformQuadBroadcast:
     case spv::OpAtomicLoad: case spv::OpAtomicExchange: case spv::OpAtomicCompareExchange:
@@ -89,7 +91,8 @@ inline bool pure(spv::Op op)
     case spv::OpLogicalOr: case spv::OpLogicalEqual: case spv::OpLogicalNotEqual: case spv::OpSelect:
     case spv::OpFAdd: case spv::OpFSub: case spv::OpFMul: case spv::OpFOrdLessThan:
     case spv::OpFOrdGreaterThan: case spv::OpFOrdLessThanEqual: case spv::OpFOrdGreaterThanEqual:
-    case spv::OpFOrdEqual: case spv::OpFOrdNotEqual: case spv::OpIEqual: case spv::OpINotEqual:
+    case spv::OpFOrdEqual: case spv::OpFOrdNotEqual: case spv::OpFUnordNotEqual:
+    case spv::OpIEqual: case spv::OpINotEqual:
     case spv::OpULessThan: case spv::OpUGreaterThan: case spv::OpUGreaterThanEqual: case spv::OpULessThanEqual:
     case spv::OpSLessThan: case spv::OpSGreaterThan: case spv::OpSLessThanEqual: case spv::OpSGreaterThanEqual:
     case spv::OpGroupNonUniformAny: case spv::OpGroupNonUniformQuadSwap: case spv::OpGroupNonUniformQuadBroadcast:
@@ -292,7 +295,11 @@ struct MetalFragmentDce {
     size_t removed_stores = 0, removed_values = 0;
     std::vector<MetalFragmentRead> removed_reads;
 };
+using MetalFragmentReadCoverage = std::function<bool(const MetalFragmentRead &)>;
 namespace fragment_ir_detail {
+struct UnprovedReadAddress : std::runtime_error {
+    UnprovedReadAddress() : std::runtime_error("fragment WQM dead physical read lacks canonical descriptor coverage") {}
+};
 inline bool plain_memory(const MetalFragmentOp &op)
 {
     if (op.opcode != spv::OpLoad && op.opcode != spv::OpStore) return false;
@@ -388,8 +395,116 @@ struct DcePass {
     }
 };
 
-/* This proof concerns only host-prevalidated descriptor-table reads. It does not establish
-   arbitrary guest memory validity, nor does it invent resource origins from shader values. */
+/* Typed real CFG edges, shared by local liveness and address-capture provenance. No
+   dispatcher-PC pruning or inferred branch uniformity participates in these proofs. */
+class FunctionFlow {
+    struct Block {std::vector<size_t> instructions; std::vector<uint32_t> edges; bool ended = false;};
+    DcePass &pass;
+    std::unordered_map<uint32_t, Block> blocks;
+    uint32_t entry;
+    [[noreturn]] static void refuse() {throw std::runtime_error("fragment Function proof has unsupported control");}
+    const MetalFragmentOp &definition(uint32_t id) const
+    {
+        const auto *op = pass.ir.find(id); if (!op) refuse(); return *op;
+    }
+public:
+    FunctionFlow(DcePass &state, uint32_t function) : pass(state), entry(pass.entries.at(function))
+    {
+        for (size_t i = 0; i < pass.ir.ops.size(); ++i) {
+            const auto &op = pass.ir.ops[i]; const auto &a = op.operands;
+            if (op.removed || pass.functions[i] != function || !pass.blocks[i] || op.opcode == spv::OpFunctionEnd) continue;
+            const uint32_t label = pass.blocks[i];
+            if (op.opcode == spv::OpLabel && !blocks.emplace(label, Block{}).second) refuse();
+            auto &b = blocks.at(label); if (b.ended) refuse();
+            b.instructions.push_back(i);
+            if (op.opcode == spv::OpBranch) {
+                if (a.size() != 1) refuse();
+                b.edges = {a[0]}; b.ended = true;
+            } else if (op.opcode == spv::OpBranchConditional) {
+                if ((a.size() != 3 && a.size() != 5) ||
+                    definition(definition(a[0]).result_type()).opcode != spv::OpTypeBool) refuse();
+                b.edges = {a[1], a[2]}; b.ended = true;
+            } else if (op.opcode == spv::OpSwitch) {
+                if (a.size() < 2 || a.size() % 2) refuse();
+                const auto &type = definition(definition(a[0]).result_type());
+                if (type.opcode != spv::OpTypeInt || type.operands.size() != 3 || type.operands[1] != 32 || type.operands[2]) refuse();
+                b.edges.push_back(a[1]);
+                for (size_t j = 3; j < a.size(); j += 2) b.edges.push_back(a[j]);
+                b.ended = true;
+            } else if (op.opcode == spv::OpReturn || op.opcode == spv::OpKill || op.opcode == spv::OpUnreachable) {
+                if (!a.empty()) refuse();
+                b.ended = true;
+            } else if (op.opcode == spv::OpReturnValue || op.opcode == spv::OpFunctionCall ||
+                       op.opcode == spv::OpTerminateInvocation || op.opcode == spv::OpDemoteToHelperInvocation) refuse();
+        }
+        if (!blocks.count(entry)) refuse();
+        for (const auto &[label, b] : blocks) {
+            (void)label;
+            if (!b.ended) refuse();
+            for (const uint32_t target : b.edges) if (!blocks.count(target)) refuse();
+        }
+    }
+    bool reaches(uint32_t source, uint32_t target, bool nonempty = false) const
+    {
+        if (!blocks.count(source) || !blocks.count(target)) refuse();
+        std::vector<uint32_t> pending = nonempty ? blocks.at(source).edges : std::vector<uint32_t>{source};
+        std::unordered_set<uint32_t> seen;
+        while (!pending.empty()) {
+            const uint32_t label = pending.back(); pending.pop_back();
+            if (label == target) return true;
+            if (!seen.insert(label).second) continue;
+            const auto &next = blocks.at(label).edges; pending.insert(pending.end(), next.begin(), next.end());
+        }
+        return false;
+    }
+    bool entry_reaches(uint32_t label) const {return reaches(entry, label);}
+    bool overwritten_before_read(size_t store, uint32_t pointer, uint32_t type) const
+    {
+        enum Access {None, Read, Overwrite};
+        const auto access = [&](uint32_t label, bool initial) {
+            for (const size_t at : blocks.at(label).instructions) {
+                if (initial && at <= store) continue;
+                const auto &op = pass.ir.ops[at]; const auto &a = op.operands;
+                if (op.removed) continue;
+                if (op.opcode == spv::OpLoad && a.size() >= 3 && a[2] == pointer) return Read;
+                if (op.opcode == spv::OpStore && a.size() >= 2 && a[0] == pointer)
+                    return plain_memory(op) && definition(a[1]).result_type() == type ? Overwrite : Read;
+            }
+            return None;
+        };
+        const uint32_t source = pass.blocks[store];
+        const Access first = access(source, true);
+        if (first != None) return first == Overwrite;
+        std::vector<uint32_t> pending = blocks.at(source).edges;
+        std::unordered_set<uint32_t> seen, open;
+        while (!pending.empty()) {
+            const uint32_t label = pending.back(); pending.pop_back();
+            if (!seen.insert(label).second) continue;
+            const Access next = access(label, false);
+            if (next == Read) return false;
+            if (next == Overwrite) continue;
+            open.insert(label);
+            const auto &edges = blocks.at(label).edges; pending.insert(pending.end(), edges.begin(), edges.end());
+        }
+        // Retain a store if an unobserved path cycles without reaching an overwrite or exit.
+        // This keeps proof traversal bounded without assuming anything about loop execution.
+        std::unordered_map<uint32_t, size_t> degree;
+        for (const uint32_t label : open) degree[label] = 0;
+        for (const uint32_t label : open) for (const uint32_t next : blocks.at(label).edges)
+            if (open.count(next)) ++degree.at(next);
+        std::vector<uint32_t> ready;
+        for (const auto &[label, count] : degree) if (!count) ready.push_back(label);
+        size_t visited = 0;
+        while (!ready.empty()) {
+            const uint32_t label = ready.back(); ready.pop_back(); ++visited;
+            for (const uint32_t next : blocks.at(label).edges) if (open.count(next) && !--degree.at(next)) ready.push_back(next);
+        }
+        return visited == open.size();
+    }
+};
+
+/* Prove an entry user-SGPR pair plus the translation anchor and a constant byte offset.
+   Host coverage is a separate requirement; this never infers resource origins from values. */
 class DescriptorAddress {
     enum Kind { Constant, User, High16, WideUser, WideHigh16, HighWord, Pair48, Address };
     struct Value { Kind kind; uint32_t width = 0, user = 0; uint64_t number = 0, offset = 0; };
@@ -399,7 +514,7 @@ class DescriptorAddress {
     uint32_t push_offset;
     std::unordered_map<uint32_t, Value> cache;
     std::unordered_set<uint32_t> visiting;
-    [[noreturn]] static void refuse() {throw std::runtime_error("fragment WQM dead physical read lacks canonical descriptor coverage");}
+    [[noreturn]] static void refuse() {throw UnprovedReadAddress();}
     const MetalFragmentOp &definition(uint32_t id) const
     {
         const auto *op = ir.find(id);
@@ -486,6 +601,16 @@ class DescriptorAddress {
         }
         return {User, 32, uint32_t(index.number), 0, 0};
     }
+    /* A later store may be ignored only when actual CFG edges prove it cannot reach this
+       Function load. Query the capture load's program point, never its later consumer. */
+    bool store_reaches(size_t store, size_t load) const
+    {
+        FunctionFlow flow(pass, pass.functions[load]);
+        const uint32_t source = pass.blocks[store], target = pass.blocks[load];
+        if (!flow.entry_reaches(target)) refuse();
+        if (source == target && store < load) return true;
+        return flow.reaches(source, target, source == target);
+    }
     uint32_t stable_value(const MetalFragmentOp &load) const
     {
         const uint32_t pointer = load.operands[2];
@@ -501,8 +626,10 @@ class DescriptorAddress {
         for (const auto &[use, position] : pass.uses(pointer)) {
             const auto &op = ir.ops[use];
             if (op.opcode != spv::OpStore || position != 0) continue;
-            if (pass.blocks[use] != entry->second || op.operands.size() < 2) refuse();
-            if (use >= last) {selected = op.operands[1]; last = use;}
+            if (op.operands.size() < 2 || definition(op.operands[1]).result_type() != load.result_type()) refuse();
+            if (pass.blocks[use] != entry->second) {
+                if (store_reaches(use, load_index)) refuse();
+            } else if (use >= last) {selected = op.operands[1]; last = use;}
         }
         if (!selected || (pass.blocks[load_index] == entry->second && load_index <= last)) refuse();
         /* The entry assignment must not be revisited by a back edge. Opaque entry-label uses refuse. */
@@ -518,6 +645,7 @@ class DescriptorAddress {
         const auto found = cache.find(id);
         if (found != cache.end()) return found->second;
         if (visiting.size() >= 128 || !visiting.insert(id).second) refuse();
+        struct Visit {std::unordered_set<uint32_t> &ids; uint32_t id; ~Visit() {ids.erase(id);}} visit{visiting, id};
         const auto &op = definition(id);
         const auto &a = op.operands;
         Value result{Constant};
@@ -568,7 +696,7 @@ class DescriptorAddress {
                 } else refuse();
             }
         } else refuse();
-        visiting.erase(id); cache.emplace(id, result); return result;
+        cache.emplace(id, result); return result;
     }
 public:
     DescriptorAddress(DcePass &state, uint64_t address_offset, uint32_t member_offset)
@@ -587,25 +715,37 @@ public:
         return {address.user, address.offset, 4, load.offset};
     }
 };
-} // namespace fragment_ir_detail
-
-/* Transactional: an uncovered fault-capable read refuses without leaving a partially pruned module. */
-inline MetalFragmentDce metal_fragment_dce(MetalFragmentIR &ir, const std::vector<MetalDescriptorSpan> &spans,
-                                         uint64_t address_offset, uint32_t push_offset = 64)
+/* Transactional even when address proof is deferred: an unproved read is retained, never
+   erased. The final pass must prove every read it removes before publishing a prepared module. */
+inline MetalFragmentDce dce(MetalFragmentIR &ir, const std::vector<MetalDescriptorSpan> &spans,
+    uint64_t address_offset, uint32_t push_offset, const MetalFragmentReadCoverage &coverage,
+    bool defer_unproved_address)
 {
-    using namespace fragment_ir_detail;
     require_supported_memory_metadata(ir);
     MetalFragmentIR candidate = ir;
     MetalFragmentDce result;
     for (size_t iteration = 0; iteration <= candidate.ops.size(); ++iteration) {
         DcePass pass(candidate);
+        std::unordered_map<uint32_t, FunctionFlow> flows;
         bool changed = false;
         for (auto &op : candidate.ops) {
             if (op.removed || op.opcode != spv::OpStore || op.operands.size() < 2 || !pass.locals.count(op.operands[0])) continue;
             bool read = false;
             for (const auto &[use, position] : pass.uses(op.operands[0]))
                 read |= candidate.ops[use].opcode == spv::OpLoad && position == 2;
-            if (!read) {op.removed = true; ++result.removed_stores; changed = true;}
+            bool overwritten = false;
+            if (read) {
+                const size_t at = size_t(&op - candidate.ops.data());
+                const auto *type = pass.pointer_type(op.operands[0]);
+                const auto *stored = candidate.find(op.operands[1]);
+                if (type && stored && stored->result_type() == type->operands[2]) {
+                    const uint32_t function = pass.functions[at];
+                    auto [flow, inserted] = flows.try_emplace(function, pass, function);
+                    (void)inserted;
+                    overwritten = flow->second.overwritten_before_read(at, op.operands[0], type->operands[2]);
+                }
+            }
+            if (!read || overwritten) {op.removed = true; ++result.removed_stores; changed = true;}
         }
         if (changed) continue;
         DescriptorAddress addresses(pass, address_offset, push_offset);
@@ -623,12 +763,15 @@ inline MetalFragmentDce metal_fragment_dce(MetalFragmentIR &ir, const std::vecto
                 else if (storage == spv::StorageClassInput) removable = true;
                 else if (storage == spv::StorageClassPushConstant) removable = addresses.push_pointer(op.operands[2]);
                 else if (storage == spv::StorageClassPhysicalStorageBuffer) {
-                    const MetalFragmentRead read = addresses.read(op);
+                    MetalFragmentRead read{};
+                    try {read = addresses.read(op);}
+                    catch (const UnprovedReadAddress &) {if (defer_unproved_address) continue; else throw;}
                     bool covered = false;
                     for (const auto &span : spans)
                         if (span.from_memory && span.pointer_sgpr == read.pointer_sgpr && span.offset <= read.offset &&
                             span.offset <= UINT64_MAX - span.bytes && span.bytes >= read.bytes &&
                             read.offset - span.offset <= uint64_t(span.bytes - read.bytes)) covered = true;
+                    if (!covered && coverage) covered = coverage(read);
                     if (!covered) throw std::runtime_error("fragment WQM dead physical read is outside validated descriptor spans");
                     result.removed_reads.push_back(read); removable = true;
                 }
@@ -638,6 +781,13 @@ inline MetalFragmentDce metal_fragment_dce(MetalFragmentIR &ir, const std::vecto
         if (!changed) {candidate.reindex(); ir = std::move(candidate); return result;}
     }
     throw std::runtime_error("fragment DCE did not converge within its instruction bound");
+}
+} // namespace fragment_ir_detail
+
+inline MetalFragmentDce metal_fragment_dce(MetalFragmentIR &ir, const std::vector<MetalDescriptorSpan> &spans,
+    uint64_t address_offset, uint32_t push_offset = 64, const MetalFragmentReadCoverage &coverage = {})
+{
+    return fragment_ir_detail::dce(ir, spans, address_offset, push_offset, coverage, false);
 }
 } // namespace pb
 #endif

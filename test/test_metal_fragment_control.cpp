@@ -571,6 +571,9 @@ void tests(Results &results)
             }
         results.check(found, "live literal Any export not found");
     }
+    // The read captures both entry words before the later case overwrites the local.
+    // Actual CFG edges cannot revisit the entry, so this is now a proved positive.
+    (void)positive(results, "entry pair captured before later overwrite", make_module(Shape::PairRedefinition));
     (void)positive(results, "explicit nondefault push offset", make_module(Shape::WrongPushOffset), covered, 68);
     (void)positive(results, "volatile physical read preserved", make_module(Shape::VolatileRead));
     const auto guarded_store_module = make_module(Shape::UnvisitedStore, Layout::LiteralCollisions, false);
@@ -592,7 +595,6 @@ void tests(Results &results)
     refuse(results, "wrong address anchor", descriptor, address_diagnostic, covered, owned_anchor + 4);
     struct AddressCase { const char *name; Shape shape; };
     const AddressCase addresses[] = {
-        {"pair redefined outside entry", Shape::PairRedefinition},
         {"unmasked high address word", Shape::Noncanonical}, {"wrong high-word mask", Shape::WrongHighMask},
         {"unaligned physical offset", Shape::UnalignedOffset}, {"wrong push member offset", Shape::WrongPushOffset},
         {"wrong push array stride", Shape::WrongStride}

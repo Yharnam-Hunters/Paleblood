@@ -3,6 +3,7 @@
 #define PB_METAL_FRAGMENT_CONTROL_HPP
 
 #include "metal_fragment_ir.hpp"
+#include "GLSL.std.450.h"
 #include <map>
 #include <set>
 
@@ -41,6 +42,24 @@ inline bool number32(const MetalFragmentIR &ir, uint32_t type)
     const auto *op = ir.find(type);
     return integer_width(ir, type) == 32 ||
         (op && op->opcode == spv::OpTypeFloat && op->operands.size() == 2 && op->operands[1] == 32);
+}
+/* This conversion reads no neighboring invocation and has no memory effects. Keep
+   the exact imported grammar and UInt32 -> Float32x2 signature in the tail proof. */
+inline bool unpack_half_pair(const MetalFragmentIR &ir, const MetalFragmentOp &op)
+{
+    const auto &a = op.operands;
+    if (op.opcode != spv::OpExtInst || a.size() != 5 || a[3] != GLSLstd450UnpackHalf2x16) return false;
+    const auto *import = ir.find(a[2]);
+    if (!import || import->opcode != spv::OpExtInstImport || import->operands.size() != 5 ||
+        std::vector<uint32_t>(import->operands.begin() + 1, import->operands.end()) !=
+            std::vector<uint32_t>{0x4c534c47u, 0x6474732eu, 0x3035342eu, 0}) return false;
+    const auto *pair = ir.find(op.result_type());
+    if (!pair || pair->opcode != spv::OpTypeVector || pair->operands.size() != 3 || pair->operands[2] != 2) return false;
+    const auto *component = ir.find(pair->operands[1]);
+    if (!component || component->opcode != spv::OpTypeFloat ||
+        component->operands != std::vector<uint32_t>{pair->operands[1], 32}) return false;
+    const auto *input = ir.find(a[4]);
+    return input && integer_width(ir, input->result_type(), true) == 32;
 }
 inline uint64_t constant(const MetalFragmentIR &ir, uint32_t id, uint32_t width = 32, bool unsigned_only = true)
 {
@@ -665,14 +684,103 @@ class Control {
         }
         return result;
     }
+    struct Diamond {uint32_t exit = 0, condition = 0, yes = 0, no = 0, join = 0;};
+    Diamond optional_diamond() const
+    {
+        if (cases.size() != 3 || successors.at(0) != std::set<uint32_t>{1, 2} ||
+            successors.at(1) != std::set<uint32_t>{2} || !successors.at(2).empty() ||
+            regions.at(1) != std::set<uint32_t>{cases.at(1)})
+            refuse("fragment conditional control is not one closed forward diamond");
+        const uint32_t exit = instruction_block[pc_stores.at(0)];
+        const auto &tail = block(exit);
+        const auto &select = definition(ir, ir.ops[pc_stores.at(0)].operands[1]);
+        if (select.opcode != spv::OpSelect || select.operands.size() != 5 ||
+            !boolean(ir, definition(ir, select.operands[2]).result_type()) ||
+            instruction_block[size_t(&select - ir.ops.data())] != exit || tail.selection || tail.loop_merge ||
+            tail.edges != std::vector<uint32_t>{shared} || ir.ops[tail.terminator].opcode != spv::OpBranch)
+            refuse("fragment diamond needs its original Boolean decision at the common exit");
+        const auto scalar = [&](uint32_t type) {return boolean(ir, type) || number32(ir, type);};
+        const auto pointwise = [](spv::Op code) {
+            switch (code) {
+            case spv::OpCopyObject: case spv::OpBitcast: case spv::OpIAdd: case spv::OpISub: case spv::OpIMul:
+            case spv::OpBitwiseAnd: case spv::OpBitwiseOr: case spv::OpBitwiseXor: case spv::OpNot:
+            case spv::OpShiftLeftLogical: case spv::OpShiftRightLogical: case spv::OpShiftRightArithmetic:
+            case spv::OpLogicalNot: case spv::OpLogicalAnd: case spv::OpLogicalOr:
+            case spv::OpLogicalEqual: case spv::OpLogicalNotEqual: case spv::OpSelect:
+            case spv::OpFAdd: case spv::OpFSub: case spv::OpFMul: case spv::OpFOrdEqual:
+            case spv::OpFOrdNotEqual: case spv::OpFUnordNotEqual: case spv::OpFOrdLessThan:
+            case spv::OpFOrdGreaterThan: case spv::OpFOrdLessThanEqual: case spv::OpFOrdGreaterThanEqual:
+            case spv::OpIEqual: case spv::OpINotEqual: case spv::OpULessThan: case spv::OpUGreaterThan:
+            case spv::OpULessThanEqual: case spv::OpUGreaterThanEqual: case spv::OpSLessThan:
+            case spv::OpSGreaterThan: case spv::OpSLessThanEqual: case spv::OpSGreaterThanEqual: return true;
+            default: return false;
+            }
+        };
+        for (const size_t at : block(cases.at(1)).instructions) {
+            const auto &op = ir.ops[at]; const auto &a = op.operands;
+            if (op.opcode == spv::OpLabel || debug(op.opcode) || op.opcode == spv::OpBranch) continue;
+            if (op.opcode == spv::OpLoad || op.opcode == spv::OpStore) {
+                const size_t pointer = op.opcode == spv::OpLoad ? 2 : 0;
+                if (a.size() <= pointer || !pass.locals.count(a[pointer]) ||
+                    !fragment_ir_detail::plain_memory(op) || pass.observable(a[pointer]))
+                    refuse("fragment optional case requires only plain Function storage");
+                const uint32_t type = op.opcode == spv::OpLoad ? op.result_type() : definition(ir, a[1]).result_type();
+                if (!scalar(type)) refuse("fragment optional case needs scalar 32-bit local math");
+                continue;
+            }
+            if (op.opcode == spv::OpExtInst) {
+                if (a.size() != 5 || (a[3] != GLSLstd450Log2 && a[3] != GLSLstd450Exp2))
+                    refuse("fragment optional case has an unproved extended instruction");
+                const auto &import = definition(ir, a[2]);
+                const auto &type = definition(ir, op.result_type());
+                if (import.opcode != spv::OpExtInstImport || import.operands.size() != 5 ||
+                    std::vector<uint32_t>(import.operands.begin() + 1, import.operands.end()) !=
+                        std::vector<uint32_t>{0x4c534c47u, 0x6474732eu, 0x3035342eu, 0} ||
+                    type.opcode != spv::OpTypeFloat || type.operands != std::vector<uint32_t>{op.result_type(), 32} ||
+                    !value_type(ir, a[4], op.result_type()))
+                    refuse("fragment optional case needs scalar GLSL Log2 or Exp2");
+                continue;
+            }
+            if (!pointwise(op.opcode) || !scalar(op.result_type()))
+                refuse("fragment optional case has a nonlocal or convergent operation");
+            for (size_t pos = 2; pos < a.size(); ++pos) if (!scalar(definition(ir, a[pos]).result_type()))
+                refuse("fragment optional case needs scalar 32-bit local operands");
+        }
+        for (const uint32_t label : regions.at(2)) for (const size_t at : block(label).instructions) {
+            switch (ir.ops[at].opcode) {
+            case spv::OpExtInst:
+                if (!unpack_half_pair(ir, ir.ops[at]))
+                    refuse("fragment diamond tail has an unproved participation-dependent operation");
+                break;
+            case spv::OpSampledImage: case spv::OpImageRead: case spv::OpImageFetch:
+            case spv::OpImageSampleImplicitLod: case spv::OpImageSampleExplicitLod:
+            case spv::OpDPdx: case spv::OpDPdy: case spv::OpFwidth:
+            case spv::OpDPdxFine: case spv::OpDPdyFine: case spv::OpFwidthFine:
+            case spv::OpDPdxCoarse: case spv::OpDPdyCoarse: case spv::OpFwidthCoarse:
+                refuse("fragment diamond tail has an unproved participation-dependent operation");
+            default: break;
+            }
+        }
+        for (size_t at = 0; at < ir.ops.size(); ++at) {
+            const auto &op = ir.ops[at];
+            if (op.removed || op.opcode < spv::OpGroupNonUniformElect || op.opcode > spv::OpGroupNonUniformQuadSwap) continue;
+            const uint32_t label = instruction_block[at];
+            if (!owner.count(label) || owner.at(label) != 0 ||
+                reachable(cases.at(0), shared, label).count(exit))
+                refuse("fragment diamond requires all quad operations in its common prefix");
+        }
+        return {exit, select.operands[2], cases.at(uint32_t(constant(ir, select.operands[3]))),
+            cases.at(uint32_t(constant(ir, select.operands[4]))), cases.at(2)};
+    }
     void remove_dispatcher()
     {
         std::set<uint32_t> chain;
         uint32_t current = 0;
+        Diamond diamond;
         while (chain.insert(current).second) {
             const auto &next = successors.at(current);
             if (next.empty()) break;
-            if (next.size() != 1) refuse("fragment control still has a wave-dependent case edge");
+            if (next.size() != 1) {diamond = optional_diamond(); chain = {0, 1, 2}; current = 2; break;}
             current = *next.begin();
         }
         if (chain.size() != cases.size() || !successors.at(current).empty())
@@ -681,6 +789,13 @@ class Control {
         blocks.at(first).edges = {cases.at(0)};
         for (const auto &[number, labels] : regions) for (const uint32_t label : labels) {
             auto &b = blocks.at(label);
+            if (label == diamond.exit) {
+                auto &terminator = ir.ops[b.terminator];
+                terminator.opcode = spv::OpBranchConditional;
+                terminator.operands = {diamond.condition, diamond.yes, diamond.no};
+                b.edges = {diamond.yes, diamond.no}; b.selection = diamond.join;
+                continue;
+            }
             for (uint32_t &next : b.edges) if (next == shared) {
                 if (successors.at(number).size() != 1) refuse("fragment case exit lacks a fixed successor");
                 const uint32_t target = cases.at(*successors.at(number).begin());
@@ -720,7 +835,11 @@ class Control {
             if (instruction_block[i]) {
                 if (!inserted) {
                     for (const uint32_t label : schedule) for (const size_t at : block(label).instructions)
-                        if (!ir.ops[at].removed) ordered.push_back(ir.ops[at]);
+                        if (!ir.ops[at].removed) {
+                            if (label == diamond.exit && at == block(label).terminator)
+                                ordered.push_back({spv::OpSelectionMerge, {diamond.join, 0}, ir.ops[at].offset, false});
+                            ordered.push_back(ir.ops[at]);
+                        }
                     inserted = true;
                 }
             } else if (!ir.ops[i].removed) ordered.push_back(ir.ops[i]);
@@ -753,16 +872,17 @@ inline void append(MetalFragmentDce &to, const MetalFragmentDce &from)
    the need for a native wave vote. Removing the artificial loop then exposes the physical CFG
    to the separate quad-participation and per-lane-read admission checks. */
 inline MetalPreparedFragment prepare_metal_fragment(const uint32_t *words, size_t count,
-    const std::vector<MetalDescriptorSpan> &spans, uint64_t address_offset, uint32_t push_offset = 64)
+    const std::vector<MetalDescriptorSpan> &spans, uint64_t address_offset, uint32_t push_offset = 64,
+    const MetalFragmentReadCoverage &coverage = {})
 {
     using namespace fragment_control_detail;
     MetalFragmentIR ir(words, count);
     validate_metadata(ir); fold_constant_votes(ir);
     MetalPreparedFragment result;
-    result.dce = metal_fragment_dce(ir, spans, address_offset, push_offset);
+    result.dce = fragment_ir_detail::dce(ir, spans, address_offset, push_offset, coverage, true);
     Control control(ir);
     result.linearized = control.normalize(result.elided_skips);
-    append(result.dce, metal_fragment_dce(ir, spans, address_offset, push_offset));
+    append(result.dce, metal_fragment_dce(ir, spans, address_offset, push_offset, coverage));
     for (const auto &op : ir.ops) if (!op.removed && (op.opcode == spv::OpGroupNonUniformAny ||
         op.opcode == spv::OpSwitch || op.opcode == spv::OpLoopMerge))
         refuse("fragment control retains an observable wave vote or guest dispatcher");
