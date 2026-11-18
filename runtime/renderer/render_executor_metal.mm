@@ -1700,6 +1700,7 @@ extern "C" int rt_executor_submit(rt_executor *x, char *error, size_t error_size
 extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
 extern "C" uint64_t rt_executor_done_ticket(rt_executor *) { return UINT64_MAX; } /* each buffer has run when its call returns */
 extern "C" void rt_executor_set_wait_limit(rt_executor *, uint64_t) {}
+extern "C" int rt_executor_cpu_write_ready(rt_executor *, uint64_t, uint64_t) { return 1; } /* no work is left running */
 
 /* Metal runs each buffer to completion with its targets in memory and never guards them: nothing to resolve. */
 extern "C" int rt_executor_resolve(rt_executor *, uint64_t, uint64_t, char *, size_t) { return 0; }

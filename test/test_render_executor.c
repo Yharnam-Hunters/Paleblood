@@ -468,6 +468,24 @@ static void sampled_images(rt_executor *x)
             image_descriptor(table + 4, at(ZERO), 10, 0, WIDTH, HEIGHT);
             table[7] |= LINEAR_ALIGNED << 20;
         }
+        /* the table's image descriptor, which the executor read before recording the draw (the shader's own
+           load of it feeds only the image), may be written while the draw is still to run
+           (rt_executor_cpu_write_ready: the first ask watches the memory and answers 0) */
+        uint64_t ticket = 0;
+        size_t count = 0;
+        CHECK(!rt_executor_cpu_write_ready(x, at(TABLE) + 16, 32));
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(TWO_BUFFER, at(TEXEL_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(TWO_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 12 << 1, 0, 0x4, 0x302, 0x302,
+                                                       0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(TWO_BUFFER, offset, pixel, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(TWO_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(TWO_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 4, error, sizeof error) == 0);
+        const rt_render_call *calls = rt_render_submitted(TWO_BUFFER, record_triangle_draw(TWO_BUFFER, offset + 0x30), &count);
+        CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+        CHECK(rt_executor_cpu_write_ready(x, at(TABLE) + 16, 32));
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
     }
 
     /* 8_8 unorm (DATA_FORMAT 3), linear, DST_SEL x, y, 0, 1: red and green from the two bytes, blue 0,
@@ -2459,7 +2477,8 @@ static void depth_and_strips(rt_executor *x)
    (32_32_32_32 float, DST_SEL x, y, z, w); the triangle draws the reference image. */
 static void fetch_shader(rt_executor *x)
 {
-    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, FS_MOVED = 0x3780, TABLE = 0x11000, FETCH_TARGET = 0xc00000 };
+    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, FS_MOVED = 0x3780, TABLE = 0x32000, FETCH_TARGET = 0xc00000,
+           SNAPSHOT_TARGET = 0xc10000, TABLE_BYTES = 32 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(VS_CODE), vertex_calling_fetch, sizeof vertex_calling_fetch);
     memcpy((void *)(uintptr_t)at(FS_CODE), fetch_position_color, sizeof fetch_position_color);
@@ -2478,6 +2497,35 @@ static void fetch_shader(rt_executor *x)
     if (drawn) fprintf(stderr, "fetch shader: %s\n", error);
     CHECK(drawn == 0);
     check_triangle(x, at(FETCH_TARGET));
+    /* What the draw reads in place as the GPU runs it (rt_executor_cpu_write_ready, for the constant
+       engine's dumps): memory first asked about answers 0 and is watched from then on. With the draw
+       recorded and not yet run, the colours read through the descriptor table may not be written, but
+       memory past the vertex buffers' ranges (64 KB each: NUM_RECORDS of the stride) may; once the batch
+       has run, all may. The table (past those ranges) may be written at once: the draw took a copy of its
+       descriptors as it was recorded (gcn_spirv.h, Table snapshots), so the table is rewritten (zeroed,
+       null descriptors) before the batch runs, and the triangle, into a target of its own, still draws. */
+    {
+        uint64_t ticket = 0;
+        size_t count = 0;
+        CHECK(!rt_executor_cpu_write_ready(x, at(TABLE), TABLE_BYTES) && !rt_executor_cpu_write_ready(x, at(COLORS), 16));
+        CHECK(!rt_executor_cpu_write_ready(x, at(TABLE) + 0x20000, 16));
+        rt_render_forget();
+        memset((void *)(uintptr_t)at(SNAPSHOT_TARGET), 0, SIZE * SIZE * 4);
+        offset = record_setup(FETCH_BUFFER, at(SNAPSHOT_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_render_record_vertex_shader(FETCH_BUFFER, offset, vertex, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(FETCH_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 4, error, sizeof error) == 0);
+        const rt_render_call *calls = rt_render_submitted(FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), &count);
+        CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+        CHECK(rt_executor_cpu_write_ready(x, at(TABLE), TABLE_BYTES) && !rt_executor_cpu_write_ready(x, at(COLORS), 16));
+        CHECK(rt_executor_cpu_write_ready(x, at(TABLE) + 0x20000, 16));
+        uint32_t saved[TABLE_BYTES / 4];
+        memcpy(saved, table, sizeof saved);
+        memset(table, 0, sizeof saved);
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+        memcpy(table, saved, sizeof saved);
+        check_triangle(x, at(SNAPSHOT_TARGET));
+        CHECK(rt_executor_cpu_write_ready(x, at(TABLE), TABLE_BYTES) && rt_executor_cpu_write_ready(x, at(COLORS), 16));
+    }
     /* the same vertex shader with its fetch shader moved (the old place zeroed): the call goes where
        this draw's user data points, though which pair holds the address is kept from the first draw */
     memcpy((void *)(uintptr_t)at(FS_MOVED), fetch_position_color, sizeof fetch_position_color);

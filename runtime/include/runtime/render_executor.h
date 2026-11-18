@@ -119,6 +119,12 @@ int rt_executor_copy(rt_executor *executor, uint64_t to, int to_gds, uint64_t fr
 /* The latest ticket whose submission (and every one before it) has run, without waiting; 0 when not
    known. Like rt_executor_wait_ticket it may run on another thread. */
 uint64_t rt_executor_done_ticket(rt_executor *executor);
+/* Whether the CPU may write `bytes` of guest memory at `address` now, in stream order, while the GPU still
+   runs earlier work (a constant engine's dump): 1 when no batch, open or not yet run, reads that memory in
+   place as it runs (rather than the descriptors the executor read before recording it) or may store
+   there; 0 when the write must wait for the GPU. The first ask for memory starts noting the batches'
+   reads of it, and answers 0 (nothing earlier noted them). Not for another thread. */
+int rt_executor_cpu_write_ready(rt_executor *executor, uint64_t address, uint64_t bytes);
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
 int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
