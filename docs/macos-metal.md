@@ -215,7 +215,10 @@ it does not provide path-sensitive initialization analysis.
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.
 
-Readback is tightly packed BGRA, matching the display API. Sampled textures are separate
+Color targets also support the standard channel order for packed 10_11_11 FLOAT
+(Metal RG11B10Float) and 16_16_16_16 FLOAT (Metal RGBA16Float).
+Linear and tiled guest memory retain each format's native encoded bytes.
+Display readback is tightly packed BGRA and requires an 8_8_8_8 target. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
 Target0 supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA factors,
