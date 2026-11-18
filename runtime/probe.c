@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "runtime/guest.h"
+#include "runtime/memory.h"
 #include "runtime/probe.h"
 
 enum { MAX_PROBES = 4096, STUB_SIZE = 64, MAX_LEN = 32 };
@@ -94,8 +95,7 @@ int rt_probes_install(unsigned char *image, uint64_t image_size)
             unsigned char *hint = candidates[c];
             if (!within_2g(image, hint) || !within_2g(end, hint + region) || !within_2g(hint, image))
                 continue;
-            mem = mmap(hint, region, PROT_READ | PROT_WRITE | PROT_EXEC,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+            mem = rt_map_anonymous_at(hint, region, PROT_READ | PROT_WRITE | PROT_EXEC);
         }
     }
     if (mem == MAP_FAILED) {

@@ -1,0 +1,9 @@
+address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_checked,source,source_sha256,date
+0x0061f150,leaf_resets_first_qword_returning_object_0061f150,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16
+0x006a16d0,leaf_resets_first_qword_returning_object_006a16d0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16
+0x01b5dfb0,leaf_resets_first_qword_returning_object_01b5dfb0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16
+0x01b5ea60,leaf_resets_first_qword_returning_object_01b5ea60,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16
+0x01edaee0,leaf_resets_first_qword_returning_object_01edaee0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16
+0x01fa5fa0,leaf_resets_first_qword_returning_object_01fa5fa0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16
+0x01fd7c50,leaf_resets_first_qword_returning_object_01fd7c50,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16
+0x02bc7d40,leaf_resets_first_qword_returning_object_02bc7d40,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/leaf/resets_first_qword_returning_object.c,d3855b9a9fd8bf0e,2026-11-16

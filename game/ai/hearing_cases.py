@@ -137,6 +137,13 @@ def named_cases():
     yield case('far_end_on_sphere', ORIGIN, (0.0, 4.0, 0.0), 10.0, 6.0, tangent=0x3f800000)
     yield case('far_end_inside_sphere', ORIGIN, (0.0, 4.0, 0.0), 10.0, 6.5, tangent=0x3f800000)
     yield case('listener_inside_far_end_out', ORIGIN, (1.0, 3.0, 0.0), 8.0, 3.2)
+    # The listener exactly on the sphere (3-4-5: the squares are exact), the far end inside it:
+    # heard, since the listener does not lie inside.
+    yield case('listener_on_sphere', ORIGIN, (3.0, 4.0, 0.0), 4.0, 5.0)
+    # One step of float32 above the height angle's edge (a tangent scripted as given): beyond the
+    # angle, where a sphere that holds the whole short segment is not heard; a slope larger by
+    # one step would count the point as within the angle and hear it.
+    yield case('one_step_above_angle', ORIGIN, (1.0, TAN_30_UP, 0.0), 0.1, 10.0, tangent=TAN_30)
     yield case('past_the_far_end', ORIGIN, (30.0, 40.0, 0.0), 2.0, 49.0)
     yield case('past_the_far_end_short', ORIGIN, (30.0, 40.0, 0.0), 2.0, 45.0)
     yield case('negative_reach_behind', ORIGIN, (4.0, 5.0, 0.0), -6.0, 3.0)
@@ -168,6 +175,10 @@ def named_cases():
     yield case('w_lanes_unused', EAR, at(4.0, 5.0, 0.0), 6.0, 3.0, w_ear=NAN_A, w_point=-7.0)
     yield case('radius_upper_lanes', ORIGIN, (4.0, 5.0, 0.0), 6.0,
                f32(3.0) + f32(NAN_A) + f32(-1.0) + f32(9.0))
+
+
+TAN_30 = tangent_bits(as_float(as_float(30.0) * DEGREES_TO_RADIANS))
+TAN_30_UP = TAN_30 + 1           # the next float32 above it
 
 
 def random_cases(count=400, seed=0x6ea2):
@@ -247,6 +258,7 @@ def hearing_case(cid, ear, facing, sound, sound_range, row=None, owner_size=0.0,
 
 
 AHEAD = (0.0, 0.0, 1.0)
+TIE_RANGE = 0x40b33334            # 5.6000004f: (9 - 1.1f) - 2.3f
 NARROW = (300, 1, 60, 45)        # reach 3 per hearing scale, 1 m cut, 60 degrees high, 45 each side
 ALL_AROUND = (300, 1, 90, 180)
 
@@ -268,6 +280,9 @@ def hearing_named_cases():
     yield h('direct_with_sizes', ORIGIN, AHEAD, (0.0, 0.0, 9.0), 5.0, owner_size=2.0, source_size=2.5)
     yield h('direct_exact_gap', ORIGIN, AHEAD, (0.0, 0.0, 9.0), 5.0, owner_size=2.0, source_size=2.0)
     yield h('direct_behind_narrow', ORIGIN, AHEAD, (0.0, 0.0, -3.0), 6.0, row=NARROW)
+    # Sizes whose order of subtraction shows in the last bit: distance 9 less 1.1 and then 2.3 is
+    # 5.6000004f; less 2.3 first it would be 5.6f. A range of exactly 5.6000004f does not cover it.
+    yield h('direct_size_order_tie', ORIGIN, AHEAD, (0.0, 0.0, 9.0), TIE_RANGE, owner_size=1.1, source_size=2.3)
     yield h('direct_negative_sizes', ORIGIN, AHEAD, (0.0, 0.0, 3.0), 6.0, owner_size=-1.0, source_size=-1.5)
     # Remembering: a closer remembered position keeps its place; the id is always written.
     yield h('remember_replaces_farther', ORIGIN, AHEAD, (0.0, 0.0, 2.0), 5.0, remembers=1, remembered=(0.0, 0.0, 8.0))
@@ -275,6 +290,10 @@ def hearing_named_cases():
     yield h('remember_equal_keeps', ORIGIN, AHEAD, (0.0, 0.0, 4.0), 5.0, remembers=1, remembered=(4.0, 0.0, 0.0))
     yield h('remember_with_sizes', ORIGIN, AHEAD, (0.0, 0.0, 6.0), 5.0, owner_size=1.0, source_size=1.0,
             remembers=1, remembered=(0.0, 0.0, 4.5))
+    # The same sizes on the remember path: a remembered position 5.6000004f away is not farther than
+    # the gap, so it stays.
+    yield h('remember_size_order_tie', ORIGIN, AHEAD, (0.0, 0.0, 9.0), 7.0, owner_size=1.1, source_size=2.3,
+            remembers=1, remembered=(0.0, 0.0, TIE_RANGE))
     yield h('remember_nan_previous', ORIGIN, AHEAD, (0.0, 0.0, 2.0), 5.0, remembers=1, remembered=(NAN_A, 0.0, 0.0))
     yield h('remember_byte_flag', ORIGIN, AHEAD, (0.0, 0.0, 2.0), 5.0, remembers=0x80, remembered=(0.0, 0.0, 9.0))
     # No row, out of range: the ear has no reach.
@@ -309,6 +328,54 @@ def hearing_named_cases():
     yield h('edge_exact_range', ORIGIN, AHEAD, (3.0, 0.0, 4.0), 4.0, row=(500, 1, 60, 0))
     yield h('beside_left_heard', ORIGIN, AHEAD, (8.0, 0.0, 2.0), 7.0, row=NARROW)
     yield h('beside_right_heard', ORIGIN, AHEAD, (-8.0, 0.0, 2.0), 7.0, row=NARROW)
+    # A sound exactly behind the enemy (side == +0) with a diagonal facing: a zero side counts as
+    # the positive side (side >= 0), whose turned edge rounds differently from the other side's,
+    # and with the range on the off-edge threshold the answer flips with the edge picked.
+    yield h('behind_side_zero_007', ORIGIN, (0.9116608500480652, 0.0, -0.4109434187412262),
+            (-1.8233217000961304, 1.0, 0.8218868374824524), 1.0000001192092896,
+            row=(626, 0, 30, 30))
+    yield h('behind_side_zero_021', ORIGIN, (-0.9669652581214905, 0.0, 0.25490814447402954),
+            (15.471444129943848, 0.0, -4.078530311584473), 8.000001907348633,
+            row=(1089, 0, 5, 30))
+    yield h('behind_side_zero_029', ORIGIN, (0.3833701014518738, 0.0, -0.9235948324203491),
+            (-6.1339216232299805, 1.0, 14.777517318725586), 2.7783701419830322,
+            row=(1495, 0, 30, 170))
+    yield h('behind_side_zero_033', ORIGIN, (0.6286209225654602, 0.0, -0.7777118682861328),
+            (-1.2572418451309204, 1.0, 1.5554237365722656), 1.4142136573791504,
+            row=(73, 0, 30, 45))
+    yield h('behind_side_zero_125', ORIGIN, (0.4538443386554718, 0.0, 0.8910809755325317),
+            (-7.261509418487549, 1.0, -14.257295608520508), 11.31370735168457,
+            row=(132, 0, 5, 45))
+    yield h('behind_side_zero_145', ORIGIN, (-0.7347658276557922, 0.0, -0.6783208250999451),
+            (5.878126621246338, 1.0, 5.4265666007995605), 5.656853675842285,
+            row=(1437, 0, 60, 45))
+    yield h('behind_side_zero_153', ORIGIN, (-0.3166314661502838, 0.0, 0.9485486149787903),
+            (1.2665258646011353, -2.0, -3.794194459915161), 2.000000476837158,
+            row=(764, 0, 30, 30))
+    yield h('behind_side_zero_155', ORIGIN, (0.4076651334762573, 0.0, 0.9131314754486084),
+            (-0.8153302669525146, 0.0, -1.8262629508972168), 0.3472963571548462,
+            row=(294, 0, 30, 170))
+    yield h('behind_side_zero_171', ORIGIN, (-0.08354515582323074, 0.0, 0.996504008769989),
+            (0.1670903116464615, 0.0, -1.993008017539978), 0.3472963273525238,
+            row=(210, 0, 60, 170))
+    yield h('behind_side_zero_229', ORIGIN, (-0.7884993553161621, 0.0, -0.6150355935096741),
+            (12.615989685058594, 1.0, 9.840569496154785), 13.856406211853027,
+            row=(843, 0, 5, 60))
+    yield h('behind_side_zero_231', ORIGIN, (0.5295253396034241, 0.0, -0.8482941389083862),
+            (-8.472405433654785, 0.0, 13.57270622253418), 13.856406211853027,
+            row=(396, 0, 60, 60))
+    yield h('behind_side_zero_241', ORIGIN, (-0.7368876934051514, 0.0, 0.6760151982307434),
+            (11.790203094482422, 0.0, -10.816243171691895), 2.7783703804016113,
+            row=(659, 0, 60, 170))
+    yield h('behind_side_zero_245', ORIGIN, (0.9981465935707092, 0.0, -0.06085538864135742),
+            (-3.992586374282837, 0.0, 0.2434215545654297), 2.828427314758301,
+            row=(899, 0, 60, 135))
+    yield h('behind_side_zero_267', ORIGIN, (-0.9998212456703186, 0.0, 0.018906522542238235),
+            (7.998569965362549, 0.0, -0.15125218033790588), 5.656854152679443,
+            row=(615, 0, 5, 45))
+    yield h('behind_side_zero_295', ORIGIN, (0.48589590191841125, 0.0, 0.8740167021751404),
+            (-3.88716721534729, 1.0, -6.992133617401123), 1.3891851902008057,
+            row=(1454, 0, 5, 170))
     yield h('beside_far_from_edge', ORIGIN, AHEAD, (9.0, 0.0, -6.0), 4.0, row=NARROW)
     yield h('behind_far', ORIGIN, AHEAD, (0.0, 0.0, -9.0), 7.0, row=NARROW)
     yield h('behind_close_edge', ORIGIN, AHEAD, (1.0, 0.0, -8.5), 8.0, row=(300, 1, 60, 170))

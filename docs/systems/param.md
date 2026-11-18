@@ -7,7 +7,7 @@ Most of Bloodborne's numbers are not in its code. Weapon damage and scaling, arm
 **At a glance**
 
 - **Scope:** Paleblood's `game/param/`: the solo parameter repository, the per-table row lookups, the equipment, menu, map and return-point lookups, row names and rows by position, table walks, the attack and behavior pairs, gem searches and character creation's face tables.
-- **Verified:** Every replaced lookup is edge-verified against the original on invented tables. None is `verified` yet: none has been checked on frames recorded from a real game run.
+- **Verified:** Every replaced lookup is edge-verified against the original on invented tables. 23 of the plain row-by-id lookups are also `verified`: they pass on inputs recorded in the game, and an independent review approved each one ([#1119](https://github.com/Yharnam-Hunters/Paleblood/pull/1119)).
 - **Open:** The loader that reads the files and builds their search index; most header words; why the row-name lookups exist in the retail build.
 
 ## Summary
@@ -121,6 +121,14 @@ all built from a few templates, and Paleblood's replacements share one implement
   per upgrade level the row lists. Weapons can also be stepped through until one with a given
   property bit, and three set checks (goods, attire, weapons) build a small cache of set numbers on
   their first call.
+- **Lists of ids** ([#1013](https://github.com/Yharnam-Hunters/Paleblood/pull/1013), by
+  [@FFwLo](https://github.com/FFwLo)). The id lists the walks and map lookups build grow through
+  the engine's 32-bit id array `push_back`. The game has four compiled copies of it (one general,
+  one for attire ids, one for weapon ids, and a second general copy), which differ only in which
+  copy of the array's reallocation they call. All four now share one engine template (see
+  [Engine](engine.md#containers-and-their-copies)): a full array grows to one and a half times its
+  count, an item that sits inside the array is read again from the new buffer, and when growth
+  leaves no buffer nothing is stored but the end still moves on by one.
 - **Pairs of tables** ([#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733)). The attack lookup picks AtkParam_Npc or AtkParam_Pc, and the
   behavior lookup BehaviorParam or BehaviorParam_PC, by a 0/1 argument.
 - **Searches by content** ([#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733)). The gem effect for a group at a level (the highest rank up
@@ -145,9 +153,14 @@ on invented tables built by the fixtures beside it (synthetic cases, never game 
 are recorded as edge-verified in [#687](https://github.com/Yharnam-Hunters/Paleblood/pull/687),
 [#697](https://github.com/Yharnam-Hunters/Paleblood/pull/697),
 [#714](https://github.com/Yharnam-Hunters/Paleblood/pull/714), [#724](https://github.com/Yharnam-Hunters/Paleblood/pull/724), [#730](https://github.com/Yharnam-Hunters/Paleblood/pull/730),
-[#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733) and [#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823). None has been checked on frames
-recorded from a real game run, so none is `verified`. The row-name lookups did not run in the
-coverage boots #714 describes.
+[#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733), [#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823) and
+[#1013](https://github.com/Yharnam-Hunters/Paleblood/pull/1013). In
+[#1119](https://github.com/Yharnam-Hunters/Paleblood/pull/1119), 23 plain row-by-id lookups
+became `verified`: a capture run recorded each of them in the game, every recorded and edge case
+passes, and an independent review checked each one path by path and ran its own mutants. All
+those copies compile to the same lookup and differ only in their table slot (and the extra
+stores some make). The other lookups have not been checked on recordings, so they stay
+edge-verified. The row-name lookups did not run in the coverage boots #714 describes.
 
 </details>
 

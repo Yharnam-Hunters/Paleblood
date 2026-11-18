@@ -12,9 +12,10 @@ usage: goals_cases.py OUT_DIR reserve|no_update|update_time|no_interrupt|combo_c
   moves; and 200 seeded random schedulers. The scheduler's 0x6c bytes are compared.
 - no_update, update_time, no_interrupt, combo_cancel: a definition found (its bytes around the
   option filled with a pattern), none found, the manager missing (the fatal report is stubbed and
-  leaves it missing, so the lookup gets the null read again), ids with
+  leaves it missing, so the lookup gets the null read again, or sets it, so the lookup gets the
+  manager only when it is read again), ids with
   garbage in the upper half of the register, flag bytes with garbage above them, and float pairs
-  with NaN payloads, infinities and -0. The lookup (0x016dda50) is stubbed and compared.
+  with NaN payloads, infinities and -0. The lookup (0x016dda50) is stubbed and compared, with its manager argument.
 """
 import json
 import os
@@ -119,7 +120,8 @@ def definition_bytes():
 
 
 def option_case(variant, cid, goal_id, args, found=True, manager='present'):
-    """manager: 'present' or 'missing' (the stubbed report leaves it missing)."""
+    """manager: 'present', 'missing' (the stubbed report leaves it missing) or 'set_by_report' (the
+    stubbed report sets it, so only a function that reads the manager again passes it on)."""
     c = base(variant, cid)
     c['buffers'] = {'manager': {'size': 0x40}, 'definition': {'size': DEFINITION_SIZE, 'bytes': definition_bytes()}}
     if manager == 'present':
@@ -128,8 +130,13 @@ def option_case(variant, cid, goal_id, args, found=True, manager='present'):
         c['memory'].append({'addr': MANAGER_GLOBAL, 'bytes': '00' * 8})
         report = {'address': FATAL_ERROR, 'argc': 4,
                   'argi': [0, 2, 3], 'argu32': [1]}
+        if manager == 'set_by_report':
+            # A stub writes through an argument: the manager's name (argument 3) lies in the
+            # image at a fixed distance from the manager global.
+            report['writes'] = [{'arg': 3, 'offset': int(MANAGER_GLOBAL, 16) - int(MANAGER_NAME, 16),
+                                 'pointer': 'manager'}]
         c['stubs'].append(report)
-    c['stubs'].append({'address': FIND_DEFINITION, 'argc': 1, 'argu32': [1],
+    c['stubs'].append({'address': FIND_DEFINITION, 'argc': 1, 'argi': [0], 'argu32': [1],
                        'ret': 'buf:definition' if found else 0})
     c['args'] = {'rdi': goal_id, **args}
     return c
@@ -166,6 +173,7 @@ def option_cases(variant):
         out.append(option_case(variant, name, goal_id, args))
     out.append(option_case(variant, 'manager_missing', 2000, args, manager='missing'))
     out.append(option_case(variant, 'manager_missing_not_found', 2000, args, found=False, manager='missing'))
+    out.append(option_case(variant, 'manager_set_by_report', 2000, args, manager='set_by_report'))
     return out
 
 

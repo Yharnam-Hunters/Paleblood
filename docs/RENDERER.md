@@ -94,13 +94,18 @@ Instead:
        AMD's sizes (2 VGPRs per barycentric pair, 3 for the pull model, 1 for the rest), as AMD's
        register documentation and LLVM's AMDGPU backend have it.
      - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
-       data format is its descriptor's). The executor owns a 32-bit stop word for each translated
-       shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
+       data format is its descriptor's). The executor owns 8,192 32-bit stop words; a translated
+       shader's GPU address of one is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
-       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shaders
+       kept that write that word. Which word a shader writes follows from its kind and code address
+       (`stop_index`), never from the order the executor met it: numbered by order, the same shader
+       translated to different SPIR-V from one run to the next, so the driver's pipeline cache, which
+       knows a pipeline by its SPIR-V, missed, and every boot compiled its pipelines again (in
+       Iosefka's Clinic, minutes of compiles on the renderer's thread in each boot, November 2026).
        The words live in host-cached memory where the device has it: every finished batch reads
-       all 1,600 of them, and from write-combined memory each read crossed the bus (in Iosefka's
-       Clinic that scan was the renderer thread's largest single cost, 13 November 2026).
+       all of them, and from write-combined memory each read crossed the bus (in Iosefka's Clinic
+       that scan was the renderer thread's largest single cost, 13 November 2026).
      - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
        shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
        base plus its offsets) is first checked against the imported pool. An access outside goes to
@@ -594,7 +599,34 @@ Instead:
        (`rt_executor_snapshot_target`, a ring of four) and performs the flip on the completion thread
        once that copy has run, as the PS4's GPU goes on with the commands after a flip. Before, each
        flip waited for all work and then read the target back, so the GPU sat idle while the CPU
-       recorded the next frame. A submit returns only once the renderer's thread has taken a buffer
+       recorded the next frame. A fill (a `DMA_DATA` from the packet's own data into memory, a
+       `WRITE_DATA` of one repeated dword: `RT_GPU_STEP_FILLS`) is recorded into the open batch in
+       its place (`rt_executor_fill`, a `vkCmdFillBuffer` between barriers) instead of being performed
+       by the renderer's thread after waiting for all the work before it; the executor's own reads of
+       that memory wait for it as for a dispatch's stores, and the deferred steps after it wait for its
+       batch. The renderer still performs it itself for memory the executor keeps apart (a render or
+       depth target, a CMASK or HTILE) or outside the GPU-visible memory, and while a deferred step not
+       yet performed writes the same memory (it would land after the fill); a wait on memory a recorded
+       fill writes is not passed early. A `DMA_DATA` copy between memory and the GDS
+       (`RT_GPU_STEP_COPIES`) is recorded the same way (`rt_executor_copy`, a `vkCmdCopyBuffer`), on the
+       same terms, and not while a deferred step not yet performed writes its source; the renderer
+       performs one whose source and destination overlap in one buffer. A `WAIT_REG_MEM` whose compare
+       holds for any value (">= 0", the clinic's waits on labels it has just zeroed) is no step. A run
+       of the constant engine (its `DUMP_CONST_RAM`s into the descriptor ring the draws after it read)
+       is CPU work in stream order (`RT_GPU_STEP_CPU_ORDERED`), as on the console, where the command
+       processors run ahead of the shaders: the renderer performs it at once when no batch still to run
+       reads the dumped memory in place or may store there (`rt_executor_cpu_write_ready`). Each batch
+       notes what its work reads as the GPU runs it, within the memory such writes reach: a draw's
+       buffer descriptors' ranges, its index range, and the `s_load`s whose SGPRs the translated code
+       reads (the translator reports them, `sgprs_read`). An image or sampler descriptor loaded from
+       memory is read by the executor before it records the draw, so the shader's own load of it does
+       not count, and a later dump over it can land at once. A tessellated, geometry or indirect draw,
+       or work whose reads are not known, counts as reading all of it. The first dump to new memory
+       still waits for all the work (nothing noted reads there yet). `PB_CPU_ORDERED_STEPS=0` turns
+       this off for a same-binary A/B; `PB_STEP_COUNTS=1` prints how many went each way. An occlusion dump (`PIXEL_PIPE_STAT_DUMP`) is a deferrable step:
+       only the CPU reads a query block. In Iosefka's Clinic every occlusion query's 128-byte zero fill
+       and its two dumps, and a `WRITE_DATA` of 48 zero dwords the game repeats, had each waited for all
+       the GPU's work. A submit returns only once the renderer's thread has taken a buffer
        at most four before it (`RENDER_LAG_LIMIT`), except while that thread performs a wait step,
        which may wait for memory the submitting thread has yet to write; a held submit goes on as soon as the renderer's thread takes a buffer (before, it slept until that buffer had run, however long its steps took). The console's GPU starts on a
        buffer soon after it is submitted, and the game's per-frame GPU memory rings rely on that:
@@ -605,6 +637,39 @@ Instead:
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
        context when the main thread drew (found at the opening movie, 10 November 2026).
+     - **Tables a compute shader reads through its user data are copied when its buffer is submitted.**
+       The game hands some compute shaders a pointer (user data 2-3) to a 16-byte table in a per-frame
+       ring that holds a buffer descriptor, and writes that ring slot again soon after it submits the
+       buffer; the console's GPU has read it by then. The renderer's thread records a buffer up to four
+       submissions later, and about one clinic boot in six stopped on the LUT pass (compute shader
+       `0x20d1b00800`) reading another table's words, floats, as its descriptor ("a shader reached
+       outside the guest memory"). A copy taken when the dispatch was recorded did not help: logged
+       there, the last dispatch before such a stop already held the floats (14 November 2026). Now the
+       translator lists the shader's `s_load`s through user-data pointer pairs it does not write, at
+       constant offsets (`gcn_table_snapshot_plan`, up to 15 words); on the submitting thread the
+       renderer follows each queue's compute shader and user data across buffers, as the executor
+       does, and copies those words into each dispatch's call (`runtime/table_snapshot.h`); the
+       executor puts them in the push constants after the user data, and the loads take the copy. An
+       entry the calls have not set, or that open or submitted GPU work may store to when the dispatch
+       is recorded, is left out, and its loads read memory when the dispatch runs, as before. A tighter
+       bound on how far the GPU may trail (tried first, not merged) looked slower in an A/B on a loaded
+       machine.
+     - **A draw copies the tables its shaders read through their user data when it is recorded.** The
+       constant engine dumps the draws' buffer descriptors (the fetch shader's vertex buffers, the pixel
+       shader's constant buffers) into a ring that the next draws' shaders `s_load` from as they run, so
+       a dump could not land while any draw before it was still to run: after the GPU copies, these
+       dumps were about 95% of the steps that still waited for all the GPU's work (17 November 2026).
+       Now the translator plans a vertex shader's loads (its fetch shader's included,
+       `gcn_called_table_snapshot_plan`, at `GCN_TABLE_CALLEE_AT` plus the load's place in the fetch
+       shader) and a pixel shader's as for a compute shader, up to 255 words; as it records a draw,
+       the executor copies each entry's words from guest memory into a block of the open batch's own
+       buffer (the mask first, as for a dispatch; in device-local memory the CPU maps when the device
+       has it), and the push constants carry each stage's block address and mask after the user data
+       (bytes 128 and 144, on devices with at least 156 push-constant bytes; the stages then share one
+       range). A copied load picks its address from the push constants alone, the block's or memory's,
+       and reads once. Copied loads are left out of the reads the batch
+       notes, so the next dump lands at once; an entry that open or submitted work may store to keeps
+       reading memory as the draw runs, and so do loads of the same words through another pointer.
      - **A batch the GPU does not finish stops by name.** Each wait for submitted work gives the GPU
        20 seconds, far past any batch the game's frames make; then the run stops naming the oldest
        unfinished batch's draws (vertex and pixel shader, most vertices) and dispatches (shader, most
@@ -1016,6 +1081,20 @@ Neither changes what a normal run does.
   skips a draw, dispatch or register it cannot do instead of stopping. The frames such a run shows lack
   the skipped draws: it is for listing gaps, never for judging output.
 
+### What the emitted code costs
+
+`tools/spirv_stats.py DIR` measures the SPIR-V the translator emits, from a directory of `.spv` files
+named `<stage>-<address>[-...].spv` (a `BB_SHADER_SWEEP` directory, or any dump named the same way;
+the shaders stay outside the repository). For each shader it counts instructions, loads and stores of
+the variables that hold the GCN registers, guest memory loads and stores, push-constant loads,
+branches, selects and image instructions, and runs `spirv-val`. With `--opt` it also runs
+`spirv-opt -O` on each module and gives the same counts for the result: what the optimiser removes is
+code the translator spends for nothing. With `--counts FILE` (one line per shader: stage letter `v`,
+`p` or `c`, address in hexadecimal, calls) it ranks the shaders by calls times instructions. A survey
+translation (`BB_SHADER_SWEEP`, `pbgcn_survey`) differs from a normal run's in places (survey mode
+keeps no constant EXEC in pixel shaders), so figures meant for speed work come from normal-mode
+translations.
+
 
 ## Guest memory on the GPU
 
@@ -1191,17 +1270,46 @@ depth of field never reached the renderer (the scene behind the HUD stayed one f
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
 
+## Pipeline compiles
+
+Every pipeline the executor makes goes through the driver's shader compiler, a few thousand by
+Iosefka's Clinic, and in the clinic they took minutes on the renderer's thread in every boot. Two
+things keep that to the first run:
+
+- **The same SPIR-V in every run.** Nothing in a translation depends on the order the executor
+  meets shaders in: a shader's run-time stop word follows from its own code address
+  (`stop_index`). The driver knows a cached pipeline by its SPIR-V.
+- **A pipeline cache file of the executor's own.** The driver keeps a cache on disk, but only up
+  to its size limit (NVIDIA's is 1 GB by default, shared by every program; once it is full nothing
+  new is kept). The executor fills its Vulkan pipeline cache from a file when it opens and writes
+  the file back while pipelines are being made (every 20 seconds after new ones, from a thread of
+  its own) and when it closes. The file is `BB_PIPELINE_CACHE` (empty: none), else
+  `$XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin`, else `~/.cache/paleblood/vulkan-pipelines.bin`.
+  A file written for another device or driver, or larger than 512 MB, is not used and is replaced.
+  The unit tests set it empty unless a test asks for one.
+
 ## Measuring frame rate
 
 Two runs of one build differ: in Iosefka's Clinic the same build measured from 4.81 to 7.15 fps
 over a run, with other work on the machine. A speed change counts only when it is larger than that.
 `tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR` runs two builds alternately, two rounds each
-by default (A1 B1 A2 B2), and measures each over the same window: a fixed settle, then a fixed
-measure window, counted from the moment the run presents its anchor frame (`--anchor-frame`, a
-frame reached at the same point of the same save). Each build's spread over its rounds is its noise
-floor, and a difference counts only when it is larger than both builds' spreads (the rule of
-bbhost's area check). While a run plays, the load average and the CPUs busy with other work than
-the run's own processes are sampled every second; a run whose window met more than
-`--max-other-cpus` of other work is left out, with the reason. The run command builds before it
-starts the game and holds the GPU lock while it plays, so builds and other GPU work stay outside
-the window. `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
+by default (A1 B1 A2 B2), and measures every run over the same frames of the same save and input
+script: `--from-frame` to `--to-frame`, by default 1250 to 3000, the clinic walk after the load up
+to just before its first scripted stall. It reports each run's average fps, 1% low and worst frame
+over those frames. Each build's spread over its rounds is its noise floor, and a difference counts
+only when it is larger than both builds' spreads (the rule of bbhost's area check). While a run
+plays, the load average and the CPUs busy with other work than the run's own processes are
+sampled every second; a run that met more than `--max-other-cpus` of other work between its first
+and last measured frame is left out, with the reason, and so is a run that never reached
+`--to-frame`. The run command builds before it starts the game and holds the GPU lock while it
+plays, so builds and other GPU work stay outside the measured frames.
+
+Frames, not a stretch of time. The game stalls for 5 to 7 seconds at scripted points of the clinic
+walk (somewhere in frames 3050 to 3350, the frame moving with the build, and again in 4220 to
+4530). The tool once measured a fixed time window after an anchor frame; a slower build's window
+then ended at an earlier frame, before a stall that the faster build's window held, and the slower
+build's 1% low looked better. Over the same frames both builds meet the same stalls. To measure a
+range that holds one, `--skip-frames FIRST-LAST` leaves the intervals ending on those frames out of
+the figures and reports them apart (count, time, longest); make it wide enough for where both
+builds stall.
+`tools/ab_bench.py compare --out DIR` reports again from the logs a run left.

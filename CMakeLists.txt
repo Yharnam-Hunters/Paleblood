@@ -163,7 +163,8 @@ add_test(NAME tiling COMMAND test_tiling)
 add_executable(test_depth_layout test/test_depth_layout.c)
 target_link_libraries(test_depth_layout PRIVATE pbtiling)
 add_test(NAME depth_layout COMMAND test_depth_layout)
-add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c runtime/renderer/tile_copy.c)
+add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c runtime/renderer/tile_copy.c
+    runtime/renderer/table_snapshot.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
 add_executable(test_gcn_spirv test/test_gcn_spirv.c)
@@ -202,7 +203,7 @@ if(PB_TEST_VULKAN_FOUND)
 endif()
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
-set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>")
+set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_PIPELINE_CACHE=")
 add_test(NAME verify_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/verify.py --self-test)
 add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
@@ -210,6 +211,8 @@ add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/to
 # generated progress text this branch changes is current (main regenerates it: tools/progress_pr.py)
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check-touched)
 add_test(NAME source_files COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/source_files.py --check)
+# the function list is well formed and leaves no room for a function it does not name
+add_test(NAME function_bounds COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/function_bounds.py --check)
 
 # Compiled-SDK wire validation over the loader-owned process parameters.
 add_executable(test_compiled_sdk test/test_compiled_sdk.c
@@ -275,8 +278,13 @@ add_test(NAME sysmodule_ids COMMAND test_sysmodule_ids)
 set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 
 # Deliberately wrong replacements for the function families' mutation tests (tools/verify.py
-# family); a test library, never loaded by the runtime.
-add_library(bbfamily_mutants SHARED test/family_mutants.c)
+# family); a test library, never loaded by the runtime. The generic mutants are in test/, the
+# game-specific ones beside their system (game/<system>/tests/).
+add_library(bbfamily_mutants SHARED test/family_mutants.c game/engine/tests/family_mutants.c)
+target_include_directories(bbfamily_mutants PRIVATE runtime/include)
+target_compile_options(bbfamily_mutants PRIVATE -ffp-contract=off -fno-fast-math)
 
 include(cmake/DarwinBootTests.cmake)
 include(cmake/BootArenaTests.cmake)
+
+include(cmake/GameBridgeTests.cmake)

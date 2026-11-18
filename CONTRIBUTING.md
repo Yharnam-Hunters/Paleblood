@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 18137 of 157757 functions are verified (11.50%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 18713 of 179038 functions are verified (10.45%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -198,6 +198,21 @@ that every other one rewrites too:
   in the keyed tables row by row (a row only one side changed takes that side; a row both changed
   differently stops for you, except dated test records, where the newer one wins), rebuilds and
   validates before it commits. Anything else that conflicts is left for you to resolve.
+
+### Refactoring while pull requests are open
+
+Cleanups (recovering a shared helper, merging duplicate structs, naming raw offsets, splitting a
+big file) keep behaviour unchanged, but a cleanup that rewrites files other pull requests are
+changing makes them conflict. Before one, run `tools/refactor_map.py`: it lists, for every source
+file under `game/` and `runtime/`, the open pull requests touching it and the functions and
+verification rows it holds, and ranks the **quiet** subsystems (no open pull request touches them)
+by what a simple scan finds there: structs with identical members in different files or one name
+defined in several files, raw offset access, `unknown_` padding, and repeated runs of code lines.
+`--files` lists every file, `--json` prints the whole map, `--prs FILE` reads the pull requests
+from a saved `gh pr list --json number,title,author,files` instead of asking GitHub. The scan is a
+lead, not a finding: read the code first. Work in a quiet subsystem, keep each pull request to one
+theme, re-record the verification rows that go stale, and leave busy subsystems until their pull
+requests merge.
 
 ### Definition of done
 
