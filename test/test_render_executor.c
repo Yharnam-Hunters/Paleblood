@@ -3134,12 +3134,12 @@ static void tiled_target_memory(rt_executor *x)
 /* Records the tiled target's draw (tiled_target_memory's) into the target at TILED_TARGET without a
    submit (rt_executor_record_calls, as the renderer does) and runs the batch. */
 enum { TILED_TARGET = 0xec0000, RECORDED_BUFFER = 0xc0fa0000, RECORDED_TILING = 13 };
-static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error, size_t error_size)
+static int record_tiled_draw_into(rt_executor *x, uint64_t target, uint32_t blend, char *error, size_t error_size)
 {
     rt_render_forget(), rt_executor_reset(x);
-    uint32_t offset = record_setup(RECORDED_BUFFER, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t offset = record_setup(RECORDED_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     uint32_t words[RT_COLOR_TARGET_WORDS];
-    color_target(words, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD);
+    color_target(words, target, COLOR_8_8_8_8, SWAP_STD);
     words[5] = RECORDED_TILING;
     if (rt_render_record_color_target(RECORDED_BUFFER, offset, 0, words, error, error_size) ||
         rt_render_record_register(RECORDED_BUFFER, offset + 0x10, 0xa1e0, blend, error, error_size))
@@ -3148,6 +3148,11 @@ static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error
     const rt_render_call *calls = rt_render_submitted(RECORDED_BUFFER, record_triangle_draw(RECORDED_BUFFER, offset + 0x20), &count);
     uint64_t ticket = 0;
     return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
+}
+
+static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error, size_t error_size)
+{
+    return record_tiled_draw_into(x, at(TILED_TARGET), blend, error, error_size);
 }
 
 static int record_tiled_draw(rt_executor *x, char *error, size_t error_size) { return record_tiled_draw_blended(x, 0, error, error_size); }
@@ -3402,6 +3407,62 @@ static void guarded_target_fill(int fd)
     CHECK(all_filled);
     rt_executor_close(x);
     memset(&guarded, 0, sizeof guarded); /* the guard counts start again for the next test */
+}
+
+/* The game's whole-target copy (a linear copy, runtime/linear_copy.h) from a guarded drawn target: into
+   memory under no target (`into` 0), the copy takes the target's texels tiled as it lays them out without
+   writing the target back (its own memory still zero until rt_executor_resolve); into a drawn target of
+   the same shape (`into` 1), that target's image takes them, its memory written only at its own resolve.
+   Either way both memories end up holding the same bytes as the draw put in the source. */
+static void target_copy_test(int fd, int into)
+{
+    enum { COPY_BUFFER = 0xc0fa9000, COPY_CODE = 0x6c00, COPY_DEST = 0x3d00000, COPY_SAME = 0x3d40000, LANES = 64, USER_SGPRS = 16,
+           TGID_X_EN = 1u << 7, DFMT_32 = 4, NFMT_UINT = 4, SELECT_X = 4 };
+    /* the linear copy test_linear_copy.c takes apart: s[4:7] the source, s[12:15] the destination, s16 the workgroup */
+    static const uint32_t copy_program[] = {0x8f028610, 0x4a020002, 0xe0002000, 0x80010201, 0x7d88020e,
+                                            0xbe80246a, 0xbf8c0f70, 0xe0102000, 0x80030201, 0xbf810000};
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
+    const uint64_t span = rt_tiling_size(&layout, 1), destination = at(into ? COPY_SAME : COPY_DEST);
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    rt_executor *x = NULL;
+    CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
+    if (!x) return;
+    guarded.answer = 0;
+    uint8_t *source_memory = (uint8_t *)(uintptr_t)at(TILED_TARGET), *copied = (uint8_t *)(uintptr_t)destination;
+    memset(source_memory, 0, span), memset(copied, 0, span);
+    if (into) /* the destination has draws of its own: black (ZERO + ZERO blending), so only the copy puts the triangle there */
+        CHECK(record_tiled_draw_into(x, destination, 1u << 30, error, sizeof error) == 0);
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0 && tiled_memory_zero());
+    memcpy((void *)(uintptr_t)at(COPY_CODE), copy_program, sizeof copy_program);
+    const uint64_t code = at(COPY_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, USER_SGPRS << 1 | TGID_X_EN, LANES, 1, 1};
+    uint32_t user[USER_SGPRS] = {0};
+    const uint32_t format = SELECT_X | NFMT_UINT << 12 | DFMT_32 << 15;
+    descriptor(user + 4, at(TILED_TARGET), 4), user[6] = (uint32_t)(span / 4), user[7] = format;
+    descriptor(user + 12, destination, 4), user[14] = (uint32_t)(span / 4), user[15] = format;
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(COPY_BUFFER, shader) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+    const uint32_t groups[3] = {(uint32_t)((span / 4 + LANES - 1) / LANES), 1, 1};
+    CHECK(rt_render_record_dispatch(COPY_BUFFER, 0x30, groups, error, sizeof error) == 0);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(COPY_BUFFER, 0x40, &count);
+    uint64_t ticket = 0;
+    const int done = rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) || rt_executor_finish(x, error, sizeof error) ? -1 : 0;
+    if (done) fprintf(stderr, "target copy: %s\n", error);
+    CHECK(done == 0);
+    CHECK(tiled_memory_zero()); /* the source was not written back */
+    int destination_zero = 1;
+    for (uint64_t i = 0; i < span; i++) destination_zero &= copied[i] == 0;
+    CHECK(destination_zero == into); /* into memory: there now; into a target: in its image */
+    if (into) CHECK(rt_executor_resolve(x, destination, 4, error, sizeof error) == 0);
+    CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0);
+    CHECK(!tiled_memory_zero() && memcmp(source_memory, copied, span) == 0);
+    rt_executor_close(x);
+    memset(&guarded, 0, sizeof guarded);
 }
 
 /* A half (IEEE binary16) as a float. */
@@ -4622,6 +4683,8 @@ int main(void)
     guarded_depth_read(fd, 4);
     guarded_depth_read(fd, 2);
     guarded_target_fill(fd);
+    target_copy_test(fd, 0);
+    target_copy_test(fd, 1);
     float_targets(x);
     compressed_image(x);
     bc6h_image(x);
