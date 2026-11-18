@@ -29,6 +29,11 @@ enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
    the error, one a line after the dword it was first met at ("@dword reason\n"). Process-wide. */
 void gcn_spirv_set_survey(int on);
 
+/* Span checks (the Vulkan executor turns them on when it opens): an s_load, and a buffer load or
+   s_buffer_load wholly inside its descriptor's range, checks its whole span against the guest memory
+   once instead of dword by dword. Off (the default), every dword is checked on its own, the shape the
+   Metal fragment path's dead-read analysis reads (metal_fragment_ir.hpp). Process-wide. */
+void gcn_spirv_set_span_checks(int on);
 /* Structured control flow (the Vulkan executor turns it on when it opens): a program's blocks run in order
    as a chain of selections, each entered when the GCN program counter names it, and a branch back makes a
    structured loop around the blocks it spans. Off (the default), every program is one loop around a switch

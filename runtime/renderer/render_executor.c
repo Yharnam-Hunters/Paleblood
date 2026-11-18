@@ -1779,6 +1779,7 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
         rt_executor_close(x);
         return -1;
     }
+    gcn_spirv_set_span_checks(1); /* Vulkan takes whole-span guest checks (runtime/gcn_spirv.h) */
     gcn_spirv_set_structured_control(1); /* Vulkan takes structured programs (runtime/gcn_spirv.h) */
     *executor = x;
     return 0;
