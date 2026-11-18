@@ -69,7 +69,7 @@ def passes(name: str, directory: str, kind: str, record: bool) -> tuple[bool, st
     else:
         import verification
         listed = verification.quarantined(ROOT, name, kind, '')
-        failing = [f['case'] for f in r['failures']]
+        failing = [f['case'] for f in r.get('failures', [])]
         held = sum(case in listed for case in failing)
         failed = len(failing) - held
     # Without --record, verify.py exits 1 for any failing case, quarantined or not.
