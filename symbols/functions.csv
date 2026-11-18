@@ -461,7 +461,7 @@ address,size,name,system,status,notes
 0x01ea5e20,596,frame_timing_gate_pass_on_kind_1,frame_timing,edge-verified,"when ready (0x01ea5c90): clears the handle's +0x11c and +0x120; passes it on for the mode with kind 1 if its +0x50 is zero; then request 9"
 0x01ea6080,596,frame_timing_gate_pass_on_kind_2,frame_timing,edge-verified,as 0x01ea5e20 with kind 2
 0x01eb5390,183,frame_timing_dungeon_gate_step_init_for_channel_load,frame_timing,verified,"SprjDungeonGateIns::STEP_Init_forChannelLoad: when the gate state is idle in ChannelLoad; request 2 and advance it one fixed step (1/30 s; 1/60 s in the 60 FPS patches)"
-0x01eb5490,276,frame_timing_dungeon_gate_step_mode_switch,frame_timing,edge-verified,"SprjDungeonGateIns::STEP_ModeSwitch: advance the gate state one fixed step while busy; then go to the first step of its mode"
+0x01eb5490,276,frame_timing_dungeon_gate_step_mode_switch,frame_timing,verified,"SprjDungeonGateIns::STEP_ModeSwitch: advance the gate state one fixed step while busy; then go to the first step of its mode"
 0x01eb9020,304,frame_timing_dungeon_gate_on_event_0,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 0: request 1; then request 2; each advancing the gate state one fixed step"
 0x01ebb090,185,frame_timing_dungeon_gate_on_event_1000,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 1000: when idle in states 2..5; request 7 and advance the gate state one fixed step"
 0x01ebf060,177,frame_timing_dungeon_gate_on_event_3000,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 3000: when idle; request 10 and advance the gate state one fixed step"
@@ -893,7 +893,7 @@ address,size,name,system,status,notes
 0x024d7e50,309,loading_file_task_end_024d7e50,loading,verified,FileTransferTask end (once): manager hands over the info under its lock; completed -> info loaded + queue reports it; else info flag cleared
 0x024d8210,605,loading_file_task_prepare_024d8210,loading,verified,FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks)
 0x024d8470,756,loading_file_task_begin_read_024d8470,loading,verified,FileTransferTask read start: build the 0xb0-byte read request and queue it to the task reader under its lock; close status 3 for a held read object or info read flag bit 0
-0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,edge-verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
+0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
 0x024dd8a0,40,loading_transfer_task_cancel_024dd8a0,loading,edge-verified,Atomically sets bit 0 (and bit 1 with the flag) of the state at +0x160 unless bit 2 is set; returns true
 0x024dde50,200,loading_transfer_task_check_read_024dde50,loading,verified,TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4
 0x024ddf20,190,loading_transfer_task_check_close_024ddf20,loading,verified,TransferTask close step: free read object; closed and not cancelled -> request close; else finish once
