@@ -517,6 +517,7 @@ address,replacement,system,returns
 0x021d6ea0,bb_ai_draw_world_021d6ea0,ai,void
 0x02222210,bb_engine_list32_push_back_02222210,engine,void
 0x02224090,bb_ai_group_reset_02224090,ai,void
+0x02224a60,bb_ai_area_block_step_02224a60,ai,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
 0x02232a60,bb_ai_draw_layer_color_02232a60,ai,vec
 0x0223b420,bb_engine_array64_push_back_0223b420,engine,void
