@@ -64,6 +64,12 @@ int rt_tiling_depth_layout(uint32_t depth_info, uint32_t z_info, uint32_t stenci
                            uint32_t depth_size, uint32_t depth_slice, rt_depth_aspect aspect,
                            rt_depth_layout *output, char *error, size_t error_size);
 
+/* One tiled HTILE slice for P8_32x32_16x16 with 256-byte pipe interleave.
+   Each 8x8 depth tile has one 32-bit word. Offsets take pixel coordinates;
+   the size includes padding to whole 512x512 HTILE cache regions. */
+uint64_t rt_tiling_htile_size(uint32_t width, uint32_t height);
+uint64_t rt_tiling_htile_offset(uint32_t width, uint32_t x, uint32_t y);
+
 /* A mip-mapped image's levels (runtime/renderer/tiling.c, rt_tiling_mip_chain): each level's own
    layout, its offset from the image's base and its element counts. */
 enum { RT_TILING_MAX_LEVELS = 16 };

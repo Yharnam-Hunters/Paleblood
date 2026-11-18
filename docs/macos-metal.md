@@ -215,7 +215,10 @@ it does not provide path-sensitive initialization analysis.
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.
 
-Readback is tightly packed BGRA, matching the display API. Sampled textures are separate
+Color targets also support the standard channel order for packed 10_11_11 FLOAT
+(Metal RG11B10Float) and 16_16_16_16 FLOAT (Metal RGBA16Float).
+Linear and tiled guest memory retain each format's native encoded bytes.
+Display readback is tightly packed BGRA and requires an 8_8_8_8 target. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
 Target0 supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA factors,
@@ -223,6 +226,16 @@ using the color factors for alpha as well. Other factors or operations, separate
 ROP3 overrides, reserved fields, non-copy color operations and partial color masks stop with a reason.
 An enabled blend flag has no effect when target 0 is unbound, its channel mask is zero or the
 colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
+
+`CB_COLOR0..7_CLEAR_WORD0/1` writes retain each independent raw 32-bit word across
+submissions, in the persistent graphics state. Reset returns these words to zero.
+They specify formatted fast-clear texel bits; writing them does not clear a target.
+The admitted uncompressed draw path does not consume them. Active fast-clear or
+compression flags and unsupported colour modes still stop before shader work.
+Only the two documented words in each of the eight banks are admitted. The
+[AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
+specify their addresses and bank stride.
+
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
@@ -256,7 +269,13 @@ aspect-specific staging blits, then publishes completed writable texels back aft
 Selected slices retain their bank rotation; padding and other slices remain untouched. This first
 path allocates attachment resources per draw rather than keeping a dirty depth-image cache.
 
-HTILE and expanded clears stop when an active aspect depends on them. A stencil-only draw
+Metal resolves tiled eight-pipe HTILE for single-slice D32 without stencil metadata.
+A surface whose active tiles all carry clear tags loads the finite 0..1 value from
+`DB_DEPTH_CLEAR` across the full depth plane. After successful execution the depth bytes
+are published and those tiles become expanded. Expanded tiles use the existing guest
+depth bytes. The clear preserves metadata padding, each word's upper bits and stencil data.
+Mixed clear and expanded tiles, compressed tiles and expanded-clear register operations
+stop explicitly. A stencil-only draw
 with `DB_STENCIL_INFO.TILE_STENCIL_DISABLE` set uses the uncompressed S8 plane even when the
 inactive Z format retains HTILE or expanded-clear flags; it requires no Z base and does not
 read or modify Z metadata. Stencil expanded-clear flags still stop explicitly. Clear/copy/
@@ -588,6 +607,16 @@ formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logic
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, missing image/sampler descriptor guards, descriptors loaded from memory, fetch rendering through live target and
 program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip guards, depth/stencil admission, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and incomplete-rectangle refusals, readback bounds and mapping lifetime.
+
+`test_metal_color_clear_words` checks all eight banks and both words, arbitrary raw
+bits, single-bit walks, submission routes, masked draws and later submissions.
+Fresh vertex stores, literal pixels and whole-pool canaries distinguish completed
+draws from empty success. It also checks adjacent unknown registers and active
+fast-clear/compression/mode refusals before any writes, followed by recovery.
+Exact inactive raw storage, independence and zero-on-reset are source invariants;
+the public API cannot distinguish their values while fast clears are unsupported.
+No private state getter or original hardware equivalence is claimed.
+
 `test_metal_depth` additionally checks depth/stencil comparisons, operations and masks, both face
 orientations and viewport signs, native read-only behavior through overlapping triangles,
 scissored writes, padded selected slices, mixed attachment extents, null-pixel draws, retained

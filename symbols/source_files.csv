@@ -1761,7 +1761,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x0218e320,0x0218e320,1,755,engine,SPRJ/Gfx/Res/Tex/TpfResCap.cpp,direct,high
 0x0218e620,0x022432f0,3126,715830,engine,,range,low
 0x02243660,0x022436d0,2,1186,engine,SPRJ/Havok/PhysRigidToMdlMtx.cpp,direct,high
-0x02243b10,0x023380e0,3808,970064,engine,,range,low
+0x02243b10,0x023380e0,3808,970055,engine,,range,low
 0x023380f0,0x0233e8f0,116,25713,scaleform,,extent,medium
 0x0233e930,0x023b54a0,2490,465101,engine,,range,low
 0x023b54d0,0x023b5620,2,387,engine,SPRJ/Sys/Localize/CSLocalize.cpp,direct,high
@@ -2034,7 +2034,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x0277ac00,0x0277ac00,1,77,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/ExtendedHeader.cpp,direct,high
 0x0277ac50,0x0277aef0,13,651,engine,,range,low
 0x0277af40,0x0277af40,1,337,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/LoaderTemporaryData.cpp,direct,high
-0x02785580,0x028bf790,8895,1214834,scaleform,,extent,medium
+0x02785580,0x028bf790,8895,1214824,scaleform,,extent,medium
 0x028f3f50,0x028f3f50,1,1102,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high
 0x028f43a0,0x028f75c0,166,11226,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,range,medium
 0x028f75d0,0x028f75d0,1,305,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high
@@ -2263,7 +2263,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x02ec1300,0x02ec1300,1,2448,engine,Dantelion2/ApplicationLibrary/FFX/FXLibrary/Source/Particle/Impl/FXParticleAppearance_RadialBlur.cpp,direct,high
 0x02ec1c90,0x02ec47f0,12,11984,engine,,range,low
 0x02ec4bd0,0x02ec4bd0,1,3138,engine,Dantelion2/ApplicationLibrary/FFX/FXLibrary/Source/Particle/Impl/FXParticleAppearance_Tracer.cpp,direct,high
-0x02ec5820,0x02f8dbc0,3899,788674,engine,,range,low
+0x02ec5820,0x02f8dbc0,3899,788664,engine,,range,low
 0x02f8dca0,0x02f8e960,19,3298,engine,Dantelion2/ClassLibrary/Extended/Serialize/Source/detail/DLBinArchiveSaver.cpp,direct,high
 0x02f8ea40,0x02f8f220,20,2287,engine,Dantelion2/ClassLibrary/Extended/Serialize/Source/detail/DLBinArchiveSaver.cpp,range,medium
 0x02f8f3e0,0x02f8ff30,7,3029,engine,Dantelion2/ClassLibrary/Extended/Serialize/Source/detail/DLBinArchiveSaver.cpp,direct,high
