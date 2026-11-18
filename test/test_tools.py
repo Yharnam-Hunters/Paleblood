@@ -1685,7 +1685,7 @@ class Promotion(unittest.TestCase):
                                        stderr='')
 
             with mock.patch.object(promote.subprocess, 'run', side_effect=verify):
-                self.assertEqual(promote.passes('sample_function', capture_dir, None), (True, '2/2 passed'))
+                self.assertEqual(promote.passes('sample_function', capture_dir, 'recorded', False), (True, '2/2 passed'))
             self.assertEqual(observed['capture_dir'], capture_dir)
             self.assertNotEqual(os.path.commonpath([capture_dir, observed['out']]), capture_dir)
             self.assertFalse(os.path.exists(observed['out']))

@@ -49,13 +49,15 @@ static_assert(offsetof(LoadRequest, text_0xa0) == 0xa0 && offsetof(LoadRequest, 
 static_assert(offsetof(LoadRequest, data) == 0x110 && offsetof(LoadRequest, value_0x138) == 0x138);
 static_assert(offsetof(LoadRequest, word_0x140) == 0x140 && sizeof(LoadRequest) == 0x148);
 
-// A queued load event: two words copied as they are, then the request.
+// A queued load event: its kind, then a word copied as it is, then the request. The queue functions
+// write only the kind's four bytes; the next four are never set, and copies carry them along.
 struct LoadEvent {
-    uint64_t word_0x00;
+    int32_t kind;
+    uint8_t unknown_0x04[0x4];
     uint64_t word_0x08;
     LoadRequest request;
 };
-static_assert(offsetof(LoadEvent, request) == 0x10 && sizeof(LoadEvent) == 0x158);
+static_assert(offsetof(LoadEvent, word_0x08) == 0x08 && offsetof(LoadEvent, request) == 0x10 && sizeof(LoadEvent) == 0x158);
 
 using LoadEventArray = engine::Array<LoadEvent>;
 static_assert(sizeof(LoadEventArray) == 0x28);
