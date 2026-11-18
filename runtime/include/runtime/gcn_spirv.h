@@ -145,19 +145,79 @@ int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource
 
 /* The memory a program reads (not counting its images): each buffer descriptor its buffer and tbuffer
    loads, atomics and s_buffer_loads read through (pointer 0: the descriptor's range, found by origin as
-   above), and each s_load from a user-data pointer pair the program does not write, at an immediate or
-   literal offset (pointer 1: `bytes` from the pointer in s[origin.sgpr : origin.sgpr + 1] plus
-   `offset`; a descriptor loaded from memory is read this way too). A caller can then bound what a
-   dispatch reads, and write back only the render targets in that memory. *unknown is set when a load
-   has neither (or there are more than max reads, or the program reads memory some other way): it may
-   read any memory. 0, or -1 with the reason (code that does not decode). */
+   above), and each s_load (pointer 1 or 2, with the SGPRs it writes: sgprs from s[sgpr]). Pointer 1 is
+   one from a user-data pointer pair the program does not write, at an immediate or literal offset:
+   `bytes` from the pointer in s[origin.sgpr : origin.sgpr + 1] plus `offset`; a descriptor loaded from
+   memory is read this way too. Pointer 2 is any other s_load, whose address is not known before it runs
+   (an SGPR offset, a pointer loaded from memory): it may read any memory, unless nothing reads the SGPRs
+   it writes (SGPRs read, below). A caller can then bound what a dispatch reads, and write back only the
+   render targets in that memory. *unknown is set when a load is none of these (or there are more than
+   max reads, or the program reads memory some other way): it may read any memory. With a callee (a
+   vertex shader's fetch shader, gcn_call_sgpr), its reads count too, their origins as the caller's
+   SGPRs hold them at the call. 0, or -1 with the reason (code that does not decode). */
 typedef struct {
     int pointer;
     gcn_resource_origin origin;
     uint32_t offset, bytes;
+    unsigned sgpr, sgprs;
 } gcn_memory_read;
 int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, char *error,
                      size_t error_size);
+int gcn_called_memory_reads(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords, gcn_memory_read *reads,
+                            unsigned max, unsigned *count, int *unknown, char *error, size_t error_size);
+
+/* Table snapshots: the small tables a compute program reads with s_load through a user-data pointer
+   pair, at an immediate or literal offset, where no instruction before the load writes the pair and no
+   branch goes back over the load (a stricter test than gcn_memory_reads', made in linear time). The
+   game hands such shaders a pointer into a per-frame ring (a 16-byte table holding a buffer
+   descriptor) and rewrites the ring's slot soon after it submits the buffer: the console's GPU has
+   read it by then, as it starts on a buffer soon after its submission, but the renderer here may record
+   the buffer later, and the shader then read another table's words (a garbage descriptor). So each such table's
+   words are copied when the buffer is submitted (runtime/table_snapshot.h), the executor puts them in
+   the push constants after the user data (gcn_compute_layout's table_snapshot), and the translated
+   loads take the copy when the executor says it holds one: word 0 of the snapshot is a mask, bit k for
+   entry k; entry k's dwords follow from word 1 + first_word. An entry without a copy (its pointer not
+   set, or pending GPU work may store there) leaves its bit clear and the load reads memory as it runs,
+   as before.
+   uses[] lists each s_load's dword position with its entry. Entries take the loads in program order
+   while their words fit (GCN_TABLE_SNAPSHOT_WORDS); a load past that, or one whose pointer is not
+   such a pair, reads memory.
+
+   Vertex and pixel shaders take snapshots too, when the draw is recorded (gcn_vertex_layout's and
+   gcn_pixel_layout's table_snapshot): the game's constant engine dumps their buffer descriptors into a
+   ring the draws after the dump read in place, so without a copy each dump had to wait for every draw
+   before it to run. Their words do not fit in the push constants: the executor writes each draw's mask
+   and words to a block of its own, and the push constants hold GCN_TABLE_BLOCK_WORDS: the block's GPU
+   address (two words), then the mask again, so a load picks its address (the copy's or memory's) from
+   push constants alone and reads once. A vertex
+   shader's fetch shader is planned with it (gcn_called_table_snapshot_plan); a use in the fetch shader
+   is at GCN_TABLE_CALLEE_AT + its dword position there. */
+enum { GCN_TABLE_SNAPSHOT_WORDS = 15, GCN_DRAW_SNAPSHOT_WORDS = 255, GCN_TABLE_SNAPSHOT_ENTRIES = 32, GCN_TABLE_SNAPSHOT_USES = 128,
+       GCN_TABLE_BLOCK_WORDS = 3, GCN_TABLE_BLOCK_MASK_WORD = 2,
+       GCN_TABLE_BLOCK_PUSH_LIMIT = 256 /* table_block_offset + 12 within it: only on devices with that many push-constant bytes */ };
+#define GCN_TABLE_CALLEE_AT 0x80000000u
+typedef struct {
+    unsigned pointer_sgpr;   /* the user-data SGPR pair holding the pointer (48 bits) */
+    uint32_t offset, dwords; /* the bytes from the pointer, and how many dwords the load reads */
+    unsigned first_word;     /* where its dwords start among the snapshot's data words */
+    int every_load;          /* 1 when no s_load outside the entry's uses reads that many dwords at that offset:
+                                when it holds a copy, its memory is then not read in place through any pointer */
+} gcn_table_entry;
+typedef struct {
+    gcn_table_entry entries[GCN_TABLE_SNAPSHOT_ENTRIES];
+    unsigned entry_count;
+    struct {
+        uint32_t at;         /* the s_load's dword position in the program */
+        unsigned entry;
+    } uses[GCN_TABLE_SNAPSHOT_USES];
+    unsigned use_count;
+} gcn_table_snapshot;
+/* The snapshot plan of a program; 0, or -1 with the reason (code that does not decode). */
+int gcn_table_snapshot_plan(const uint32_t *code, size_t dwords, gcn_table_snapshot *plan, char *error, size_t error_size);
+/* The same for a program that may call a fetch shader (callee, callee_dwords long; NULL for none), its
+   entries' words at most max_words (GCN_DRAW_SNAPSHOT_WORDS at most). */
+int gcn_called_table_snapshot_plan(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords, unsigned max_words,
+                                   gcn_table_snapshot *plan, char *error, size_t error_size);
 
 /* A table-driven copy: a compute program that loads its workgroup's entry of three 32-bit words (x, y,
    count) from a table buffer, indexed by its workgroup's x index, and in each thread (lane id v0, its
@@ -255,14 +315,26 @@ typedef struct {
     const gcn_image_binding *images;
     unsigned image_count;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
     gcn_lds lds;              /* the workgroup's LDS (above) */
     uint64_t gds_address;     /* the GDS's GPU address (above), or 0 */
+    const gcn_table_snapshot *table_snapshot; /* when not NULL, the program's plan (gcn_table_snapshot_plan):
+                                                 its loads take the snapshot words after the user data, at
+                                                 push-constant byte push_constant_offset + 4 * GCN_USER_SGPR_MAX */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
    reads before it writes them, taking the instructions in program order (a read in one branch after a
    write in another counts as written). The caller can then refuse to run it on user data no call has
    set. */
+
+/* SGPRs read: a translation can also report every SGPR (s0 to s127, bit n % 32 of word n / 32) its
+   translated code reads, anywhere in the program, a callee's included. An SGPR an s_load writes and the
+   code never reads is a load whose value nothing uses: an image or sampler descriptor the caller binds
+   (images, samplers above) is such a load unless the code reads its words too (a sample's compare reads
+   its sampler's). A caller can then tell the memory the GPU reads as it runs (its pending reads) from
+   the descriptors it read itself before recording the work. */
+enum { GCN_SGPR_READ_WORDS = 4 };
 
 /* Translates the compute program at code (dwords long, through its s_endpgm). On success 0, and
    *spirv holds a SPIR-V module the caller frees; otherwise -1 and error says why. The push
@@ -297,6 +369,7 @@ typedef struct {
     unsigned image_count;
     unsigned first_binding;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
     /* a geometry shader's copy shader (Geometry shaders, below): its ring loads read the GSVS ring, here
        on the GPU; 0 for any other vertex shader */
     uint64_t gsvs_ring, gsvs_ring_bytes;
@@ -308,6 +381,11 @@ typedef struct {
     unsigned instance_vgprs;
     uint32_t step_rates[2];
     unsigned step_rates_set;
+    /* when not NULL, the program's plan (gcn_called_table_snapshot_plan, its fetch shader's included): its
+       loads take the draw's block, whose GPU address (64 bits) and mask (GCN_TABLE_BLOCK_WORDS) are at
+       push-constant byte table_block_offset (Table snapshots, above) */
+    const gcn_table_snapshot *table_snapshot;
+    uint32_t table_block_offset;
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
@@ -356,6 +434,9 @@ typedef struct {
     const uint32_t *input_controls; /* GCN_PIXEL_INPUTS SPI_PS_INPUT_CNTL words, or NULL (above) */
     uint32_t depth_export;    /* DB_SHADER_CONTROL's export enables (GCN_DEPTH_EXPORT_*), 0 when SPI_SHADER_Z_FORMAT exports nothing */
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
+    const gcn_table_snapshot *table_snapshot; /* as gcn_vertex_layout's */
+    uint32_t table_block_offset;
 } gcn_pixel_layout;
 
 /* DB_SHADER_CONTROL's export enables (AMD's gfx_7_2_sh_mask.h): Z_EXPORT_ENABLE bit 0,

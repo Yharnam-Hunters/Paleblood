@@ -9,6 +9,7 @@
    macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
 #include "runtime/rect_list.h"
+#include "runtime/table_snapshot.h"
 #include "runtime/tile_copy.h"
 
 #include "gcn_programs.h"
@@ -95,6 +96,7 @@ static const gcn_pixel_layout pixel_layout = {.user_sgprs = 8, .push_constant_of
 static uint32_t output_control; /* the vertex layout's, for the next translation */
 static gcn_lds compute_lds;     /* the compute layout's, for the next translation */
 static uint64_t compute_gds;    /* the compute layout's GDS address, for the next translation */
+static const gcn_table_snapshot *compute_tables; /* the compute layout's table snapshots, for the next translation */
 
 static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
 {
@@ -105,6 +107,7 @@ static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **sp
     gcn_compute_layout compute = layout;
     compute.lds = compute_lds;
     compute.gds_address = compute_gds;
+    compute.table_snapshot = compute_tables;
     return gcn_translate_compute(code, dwords, &compute, spirv, words, error, error_size);
 }
 
@@ -412,9 +415,64 @@ static void image_programs(void)
         }
 }
 
+/* Draw table snapshots (gcn_called_table_snapshot_plan): vertex_calling_fetch's fetch shader loads its
+   two buffer descriptors from the table at the caller's s[2:3], at bytes 0 and 16: two entries, their
+   uses at GCN_TABLE_CALLEE_AT plus the loads' dwords in the fetch shader, and no other load of their
+   offsets and sizes. A fetch-shader load through the call's return pair is no use; another load of an
+   entry's offset and size through a pointer the program writes leaves the entry's every_load clear.
+   The vertex shader translates with its block's address after the user data and validates; an
+   address over the user data is refused. */
+static void draw_table_snapshots(void)
+{
+    gcn_table_snapshot plan;
+    char error[300] = "";
+    const size_t fetch_dwords = sizeof fetch_position_color / 4;
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), fetch_position_color, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    CHECK(plan.entry_count == 2 && plan.entries[0].pointer_sgpr == 2 && plan.entries[0].offset == 0 && plan.entries[1].offset == 16 &&
+          plan.entries[1].first_word == 4 && plan.entries[0].every_load && plan.entries[1].every_load);
+    CHECK(plan.use_count == 2 && plan.uses[0].at == (GCN_TABLE_CALLEE_AT | 0) && plan.uses[1].at == (GCN_TABLE_CALLEE_AT | 1) &&
+          plan.uses[1].entry == 1);
+    CHECK(gcn_table_snapshot_plan(PROGRAM(vertex_calling_fetch), &plan, error, sizeof error) == 0 && plan.entry_count == 0); /* no callee given */
+    uint32_t through_return[sizeof fetch_position_color / 4];
+    memcpy(through_return, fetch_position_color, sizeof through_return);
+    through_return[0] = 0xc0820100; /* s_load_dwordx4 s[4:7], s[0:1], 0x0: the return address */
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), through_return, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].offset == 16 && plan.entries[0].every_load && plan.use_count == 1);
+    static const uint32_t copied_pointer[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe880402, /* s_mov_b64 s[8:9], s[2:3] */
+        0xc0860900, /* s_load_dwordx4 s[12:15], s[8:9], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(copied_pointer), NULL, 0, GCN_DRAW_SNAPSHOT_WORDS, &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && !plan.entries[0].every_load && plan.use_count == 1);
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), fetch_position_color, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    gcn_vertex_layout layout = vertex_layout;
+    layout.callee = fetch_position_color, layout.callee_dwords = fetch_dwords, layout.code_address = 0x1000, layout.error_address = 0x2000;
+    layout.table_snapshot = &plan, layout.table_block_offset = 2 * GCN_USER_SGPR_MAX * 4;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
+    if (translated) fprintf(stderr, "vertex_calling_fetch with snapshots: %s\n", error);
+    CHECK(translated == 0);
+    if (spirv) CHECK(validate(spirv, words, "vertex_calling_fetch_snapshot") != 0);
+    free(spirv);
+    spirv = NULL;
+    layout.table_block_offset = 8;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "block's address at push-constant byte 8"));
+    free(spirv);
+}
+
 /* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the
-   callee inlined and validates; a callee that branches or returns through another pair, and a call
-   through a pair written first, stop by name. */
+   callee inlined and validates, reporting the SGPRs its code reads (the inlined buffer loads read the
+   descriptors in s[4:11]; nothing reads s12); gcn_called_memory_reads lists the callee's two descriptor
+   loads from the caller's pointer s[2:3] and the buffer loads through those descriptors, as the
+   caller's SGPRs give them; a callee that branches or returns through another pair, and a call through
+   a pair written first, stop by name. */
 static void calls(void)
 {
     unsigned pair = 99;
@@ -426,11 +484,24 @@ static void calls(void)
     gcn_vertex_layout layout = vertex_layout;
     layout.callee = fetch_position_color, layout.callee_dwords = sizeof fetch_position_color / 4, layout.code_address = 0x1000;
     layout.error_address = 0x2000;
-    uint32_t *spirv = NULL;
+    uint32_t *spirv = NULL, read[GCN_SGPR_READ_WORDS] = {0};
     size_t words = 0;
+    layout.sgprs_read = read;
     const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
     if (translated) fprintf(stderr, "vertex_calling_fetch: %s\n", error);
     CHECK(translated == 0);
+    CHECK((read[0] >> 4 & 1) && (read[0] >> 8 & 1) && !(read[0] >> 12 & 1));
+    layout.sgprs_read = NULL;
+    gcn_memory_read reads[GCN_MAX_IMAGES];
+    unsigned read_count = 0;
+    int unknown = 1;
+    CHECK(gcn_called_memory_reads(PROGRAM(vertex_calling_fetch), fetch_position_color, sizeof fetch_position_color / 4, reads, GCN_MAX_IMAGES,
+                                  &read_count, &unknown, error, sizeof error) == 0);
+    CHECK(read_count == 4 && !unknown);
+    CHECK(reads[0].pointer == 1 && reads[0].origin.sgpr == 2 && reads[0].offset == 0 && reads[0].sgpr == 4 && reads[0].sgprs == 4);
+    CHECK(reads[1].pointer == 1 && reads[1].origin.sgpr == 2 && reads[1].offset == 16 && reads[1].sgpr == 8);
+    CHECK(!reads[2].pointer && reads[2].origin.from_memory && reads[2].origin.pointer_sgpr == 2 && reads[2].origin.offset == 0);
+    CHECK(!reads[3].pointer && reads[3].origin.from_memory && reads[3].origin.pointer_sgpr == 2 && reads[3].origin.offset == 16);
     if (spirv) {
         CHECK(validate(spirv, words, "vertex_calling_fetch") != 0);
         free(spirv);
@@ -518,8 +589,10 @@ static void store_resources(void)
 }
 
 /* What programs read (gcn_memory_reads): scale_add its user-data buffer s[0:3]; an s_load_dwordx4 at
-   dword 4 from the pointer in s[0:1] reads 16 bytes at 16, an s_buffer_load reads its descriptor
-   s[4:7]; a flat load may read anywhere (unknown). */
+   dword 4 from the pointer in s[0:1] reads 16 bytes at 16 into s[16:19], an s_buffer_load reads its
+   descriptor s[4:7]; an s_load at an SGPR offset is listed with its SGPRs as one whose address is not
+   known (pointer 2), not as unknown; the same table loaded into other SGPRs is one read; a flat load
+   may read anywhere (unknown). */
 static void memory_reads(void)
 {
     gcn_memory_read found[GCN_MAX_IMAGES];
@@ -535,13 +608,130 @@ static void memory_reads(void)
     };
     CHECK(gcn_memory_reads(PROGRAM(scalar), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 2 && !unknown);
-    CHECK(found[0].pointer && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(found[0].pointer == 1 && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(found[0].sgpr == 16 && found[0].sgprs == 4);
     CHECK(!found[1].pointer && found[1].origin.sgpr == 4);
+    static const uint32_t offset_in_sgpr[] = {
+        0xc0080002, /* s_load_dword s16, s[0:1], s2 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(offset_in_sgpr), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && found[0].pointer == 2 && found[0].sgpr == 16 && found[0].sgprs == 1);
+    /* the same table loaded twice into other SGPRs is one read, its SGPRs widened to cover both: a list
+       of one table's loads (past GCN_MAX_IMAGES) made a dispatch count as reading anywhere */
+    static const uint32_t same_table[] = {
+        0xc0880104, /* s_load_dwordx4 s[16:19], s[0:1], 0x4 */
+        0xc08c0104, /* s_load_dwordx4 s[24:27], s[0:1], 0x4 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(same_table), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && found[0].pointer == 1 && found[0].offset == 16 && found[0].sgpr == 16 && found[0].sgprs == 12);
     static const uint32_t flat[] = {0xdc300000, 0x01000002, /* flat_load_dword v1, v[2:3] */ 0xbf810000};
     CHECK(gcn_memory_reads(PROGRAM(flat), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(unknown);
     CHECK(gcn_memory_reads(PROGRAM(table_copy), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 2 && !unknown && found[0].origin.sgpr == 0 && found[1].origin.sgpr == 4);
+}
+
+/* Table snapshots (gcn_table_snapshot_plan): table_descriptor_store's s_load of 4 dwords at 0 from the
+   pointer in s[2:3] is one entry; s_load_dwordx4 at dword 4 from s[0:1] reads bytes 16-31; a load
+   through a pointer the program writes first is none; entries take loads while their words fit
+   (15: three 4-dword loads, not a fourth) and a second load of the same words shares its entry; a
+   loop back over the load, or a jump to a computed address, makes none. The
+   module the plan's loads translate to is valid, and a snapshot past the push constants is refused. */
+static void table_snapshots(void)
+{
+    gcn_table_snapshot plan;
+    char error[300] = "";
+    CHECK(gcn_table_snapshot_plan(PROGRAM(table_descriptor_store), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].pointer_sgpr == 2 && plan.entries[0].offset == 0 && plan.entries[0].dwords == 4 &&
+          plan.entries[0].first_word == 0 && plan.use_count == 1 && plan.uses[0].at == 0 && plan.uses[0].entry == 0);
+    static const uint32_t at_dword_four[] = {
+        0xc0880104, /* s_load_dwordx4 s[16:19], s[0:1], 0x4 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(at_dword_four), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].pointer_sgpr == 0 && plan.entries[0].offset == 16);
+    static const uint32_t written_pointer[] = {
+        0xbe820400, /* s_mov_b64 s[2:3], s[0:1] */
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(written_pointer), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 0 && plan.use_count == 0);
+    static const uint32_t four_tables[] = {
+        0xc0840100, /* s_load_dwordx4 s[8:11], s[0:1], 0x0 */
+        0xc0860104, /* s_load_dwordx4 s[12:15], s[0:1], 0x4 */
+        0xc0880108, /* s_load_dwordx4 s[16:19], s[0:1], 0x8 */
+        0xc08a010c, /* s_load_dwordx4 s[20:23], s[0:1], 0xc */
+        0xc08c0100, /* s_load_dwordx4 s[24:27], s[0:1], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(four_tables), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 3 && plan.entries[2].offset == 32 && plan.entries[2].first_word == 8 && plan.use_count == 4 &&
+          plan.uses[3].at == 4 && plan.uses[3].entry == 0);
+    static const uint32_t over_its_pointer[] = { /* the LUT pass's load, into the SGPRs of its own pointer */
+        0xc0800300, /* s_load_dwordx4 s[0:3], s[2:3], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(over_its_pointer), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].pointer_sgpr == 2 && plan.use_count == 1);
+    static const uint32_t looped[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe820404, /* s_mov_b64 s[2:3], s[4:5] */
+        0xbf82fffd, /* s_branch -3 (back to the load) */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(looped), &plan, error, sizeof error) == 0 && plan.entry_count == 0);
+    static const uint32_t returning[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe802000, /* s_setpc_b64 s[0:1] */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(returning), &plan, error, sizeof error) == 0 && plan.entry_count == 0);
+    CHECK(gcn_table_snapshot_plan(PROGRAM(table_descriptor_store), &plan, error, sizeof error) == 0);
+    compute_tables = &plan;
+    translates(PROGRAM(table_descriptor_store), "table_descriptor_store_snapshot");
+    compute_tables = NULL;
+    gcn_compute_layout past = layout;
+    past.table_snapshot = &plan, past.push_constant_offset = 4;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    CHECK(gcn_translate_compute(PROGRAM(table_descriptor_store), &past, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "past the 128 push-constant bytes"));
+    free(spirv);
+}
+
+/* Table snapshots at submission (runtime/table_snapshot.h): a dispatch on a queue takes the table its
+   shader (table_descriptor_store) reads through s[2:3] from the shader and user data earlier buffers set
+   on that queue; another queue's dispatch has no shader there; a pointer half set, or a table outside
+   the memory, takes nothing. */
+static void submitted_table_snapshots(void)
+{
+    static uint32_t memory_words[512];
+    const uint64_t base = (uint64_t)(uintptr_t)memory_words, table = base + 256 * 4;
+    memcpy(memory_words, table_descriptor_store, sizeof table_descriptor_store);
+    for (unsigned i = 0; i < 4; i++) memory_words[256 + i] = 0x1000 + i;
+    const rt_table_memory memory = {base, sizeof memory_words};
+    rt_table_snapshots *s = rt_table_snapshots_new();
+    CHECK(s != NULL);
+    if (!s) return;
+    rt_render_call setup[3] = {{.kind = RT_CALL_COMPUTE_SHADER}, {.kind = RT_CALL_USER_DATA}, {.kind = RT_CALL_DISPATCH}};
+    setup[0].u.compute_shader.code = base, setup[0].u.compute_shader.user_sgprs = 4;
+    setup[1].u.user_data.stage = RT_STAGE_COMPUTE, setup[1].u.user_data.slot = 2, setup[1].u.user_data.count = 2;
+    setup[1].u.user_data.words[0] = (uint32_t)table, setup[1].u.user_data.words[1] = (uint32_t)(table >> 32);
+    rt_table_words tables[3];
+    CHECK(rt_table_snapshots_take(s, 1, setup, 2, &memory, tables) == 0 && tables[0].words[0] == 0 && tables[1].words[0] == 0);
+    CHECK(rt_table_snapshots_take(s, 1, setup + 2, 1, &memory, tables) == 0); /* a later buffer on the same queue */
+    CHECK(tables[0].words[0] == 1 && tables[0].words[1] == 0x1000 && tables[0].words[4] == 0x1003);
+    const rt_render_call indirect = {.kind = RT_CALL_DISPATCH_INDIRECT};
+    CHECK(rt_table_snapshots_take(s, 2, &indirect, 1, &memory, tables) == 0 && tables[0].words[0] == 0); /* no shader on queue 2 */
+    rt_table_snapshots_free(s);
+    s = rt_table_snapshots_new();
+    setup[1].u.user_data.count = 1; /* s3, the pointer's high half, unset */
+    CHECK(rt_table_snapshots_take(s, 0, setup, 3, &memory, tables) == 0 && tables[2].words[0] == 0);
+    setup[1].u.user_data.count = 2, setup[1].u.user_data.words[0] = (uint32_t)(base + sizeof memory_words);
+    CHECK(rt_table_snapshots_take(s, 0, setup, 3, &memory, tables) == 0 && tables[2].words[0] == 0); /* outside the memory */
+    rt_table_snapshots_free(s);
 }
 
 /* Table-driven copies (gcn_table_copy_shape): the table in s[0:3] (read as dwords or through its
@@ -890,6 +1080,8 @@ static void constant_pixel_wqm(void)
 
 int main(void)
 {
+    table_snapshots();
+    submitted_table_snapshots();
     constant_pixel_wqm();
     survey_mode();
     tessellation();
@@ -903,6 +1095,7 @@ int main(void)
     vector_stores();
     image_programs();
     calls();
+    draw_table_snapshots();
     user_data_read();
     depth_exports();
     translates(PROGRAM(scale_add), "scale_add");
