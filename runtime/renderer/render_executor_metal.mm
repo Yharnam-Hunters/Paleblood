@@ -36,7 +36,8 @@
 
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION = 4096,
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
-enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1,
+enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc,
+       NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0, SWAP_ALT = 1,
        PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
        DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
@@ -453,10 +454,31 @@ extern "C" int rt_executor_open(const rt_executor_memory *memory, rt_executor **
     }
 }
 
+static MTLPixelFormat target_format(const rt_color_target &color, unsigned &element_bytes)
+{
+    element_bytes = 4;
+    if (color.format == COLOR_8_8_8_8 && color.component_swap <= SWAP_ALT) {
+        if (color.number_type == NUMBER_UNORM)
+            return color.component_swap == SWAP_STD ? MTLPixelFormatRGBA8Unorm : MTLPixelFormatBGRA8Unorm;
+        if (color.number_type == NUMBER_SRGB)
+            return color.component_swap == SWAP_STD ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm_sRGB;
+    }
+    if (color.number_type == NUMBER_FLOAT && color.component_swap == SWAP_STD) {
+        /* The 11-bit red/green channels occupy the low bits, as in the Vulkan mapping. */
+        if (color.format == COLOR_10_11_11) return MTLPixelFormatRG11B10Float;
+        if (color.format == COLOR_16_16_16_16) {
+            element_bytes = 8;
+            return MTLPixelFormatRGBA16Float;
+        }
+    }
+    return MTLPixelFormatInvalid;
+}
+
 static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, char *error, size_t size)
 {
-    if (color.format != COLOR_8_8_8_8 || (color.number_type != NUMBER_UNORM && color.number_type != NUMBER_SRGB) ||
-        color.component_swap > SWAP_ALT)
+    unsigned element_bytes;
+    const MTLPixelFormat format = target_format(color,element_bytes);
+    if (format == MTLPixelFormatInvalid)
         return failed(error, size, "render target format %#x, number type %u, swap %u is not drawn yet",
                       color.format, color.number_type, color.component_swap), nullptr;
     if (color.samples != 1 || color.first_slice || color.last_slice || color.fast_clear || color.compression)
@@ -464,15 +486,12 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
     if (!color.pitch || !color.height || color.pitch > MAX_DIMENSION || color.height > MAX_DIMENSION)
         return failed(error, size, "render target dimensions exceed the executor's 1..4096 profile"), nullptr;
     rt_tiling layout{}; char reason[256] = {};
-    if (rt_tiling_layout(color.tile_mode_index, sizeof(uint32_t), color.pitch, color.height, &layout, reason, sizeof reason))
+    if (rt_tiling_layout(color.tile_mode_index, element_bytes, color.pitch, color.height, &layout, reason, sizeof reason))
         return failed(error, size, "render target layout: %s", reason), nullptr;
     const uint64_t span = rt_tiling_size(&layout, 1);
     if (color.address < x->guest_base || color.address - x->guest_base > x->size ||
         span > x->size - (color.address - x->guest_base))
         return failed(error, size, "render target is outside the GPU-visible pool"), nullptr;
-    const MTLPixelFormat format = color.component_swap == SWAP_STD
-        ? (color.number_type == NUMBER_SRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm)
-        : (color.number_type == NUMBER_SRGB ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm);
     for (auto &target : x->targets) if (target.address == color.address) {
         if (target.width != color.pitch || target.height != color.height || target.format != format ||
             target.layout.tiling_index != color.tile_mode_index)
@@ -493,21 +512,23 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
 
 /* Every draw loads the guest memory it will preserve and publishes completed pixels back to
    that same memory. This synchronous path makes CPU, buffer, compute and overlapping-target
-   accesses observe one backing store without a second dirty-image lifetime. Encoded UNORM/sRGB
-   bytes keep the target's native channel order; the public readback API converts to BGRA. */
+   accesses observe one backing store without a second dirty-image lifetime. Encoded bytes
+   keep their native channel order and element width, including float attachments. */
 static void load_target(rt_executor *x, const MetalTarget &target)
 {
-    x->target_rows.resize(static_cast<size_t>(target.width) * target.height * sizeof(uint32_t));
+    const size_t row = static_cast<size_t>(target.width) * target.layout.element_bytes;
+    x->target_rows.resize(row * target.height);
     const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
     rt_tiling_detile(&target.layout, tiled, x->target_rows.data(), target.width, target.height, 1);
     [target.texture replaceRegion:MTLRegionMake2D(0, 0, target.width, target.height) mipmapLevel:0
-        withBytes:x->target_rows.data() bytesPerRow:static_cast<NSUInteger>(target.width) * sizeof(uint32_t)];
+        withBytes:x->target_rows.data() bytesPerRow:row];
 }
 
 static void store_target(rt_executor *x, const MetalTarget &target)
 {
-    x->target_rows.resize(static_cast<size_t>(target.width) * target.height * sizeof(uint32_t));
-    [target.texture getBytes:x->target_rows.data() bytesPerRow:static_cast<NSUInteger>(target.width) * sizeof(uint32_t)
+    const size_t row = static_cast<size_t>(target.width) * target.layout.element_bytes;
+    x->target_rows.resize(row * target.height);
+    [target.texture getBytes:x->target_rows.data() bytesPerRow:row
         fromRegion:MTLRegionMake2D(0, 0, target.width, target.height) mipmapLevel:0];
     auto *tiled = static_cast<uint8_t *>(x->view) + target.address - x->guest_base;
     rt_tiling_tile(&target.layout, x->target_rows.data(), tiled, target.width, target.height, 1);
@@ -1869,6 +1890,8 @@ extern "C" int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_
     for (const auto &target : x->targets) if (target.address == address) {
         if (!target.initialized || width > target.width || height > target.height)
             return failed(error, error_size, "read size is past the completed render target");
+        if (target.layout.element_bytes != sizeof(uint32_t) || target.format == MTLPixelFormatRG11B10Float)
+            return failed(error,error_size,"only 8_8_8_8 color targets can be read as BGRA");
         @try {
             const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
             rt_tiling_detile(&target.layout, tiled, reinterpret_cast<uint8_t *>(bgra), width, height, 1);
