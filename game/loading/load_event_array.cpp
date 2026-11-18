@@ -20,6 +20,7 @@
 // event queue's array (0x02a6cd90 appends to it): its events carry one more byte, which is copied
 // too, and a copied request gets the stream queue's vtable.
 #include <cstdint>
+#include <cstring>
 
 #include "../engine/transaction.h"
 #include "resource_queue.h"
@@ -30,7 +31,8 @@ namespace {
 
 void construct_copy(LoadEvent *slot, const LoadEvent &source, const uint8_t *request_vtable)
 {
-    slot->word_0x00 = source.word_0x00;
+    slot->kind = source.kind;
+    std::memcpy(slot->unknown_0x04, source.unknown_0x04, sizeof slot->unknown_0x04);
     slot->word_0x08 = source.word_0x08;
     load_request_copy(&slot->request, &source.request);
     slot->request.vtable = request_vtable + engine::vtable_address_point;
