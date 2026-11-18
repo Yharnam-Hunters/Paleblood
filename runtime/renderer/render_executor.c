@@ -713,7 +713,7 @@ struct rt_executor {
        found there and translated, and the time both took on the recording thread */
     translation_cache *translations;
     size_t translations_found, translations_made;
-    uint64_t translation_ns;
+    uint64_t translation_ns, translations_reported; /* the total, and when it was last reported */
     /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
     int async_pipelines;
     int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
@@ -3585,6 +3585,18 @@ static int find_translation(rt_executor *x, const translation_key *key, translat
     return 1;
 }
 
+/* Adds a translation's time (since started) to the executor's total, and while shaders are made
+   reports the totals on stderr (at most every 20 s), so runs that never close the executor still show them. */
+static void count_translation_time(rt_executor *x, uint64_t started)
+{
+    const uint64_t now = monotonic_ns();
+    x->translation_ns += now - started;
+    if (now - x->translations_reported < 20000000000ull) return;
+    x->translations_reported = now;
+    fprintf(stderr, "executor: translations so far: %zu from the cache, %zu translated, %.2f s\n", x->translations_found,
+            x->translations_made, (double)x->translation_ns / 1e9);
+}
+
 static void keep_translation(rt_executor *x, const translation_key *key, const translation_outputs *outputs, const uint32_t *spirv, size_t spirv_words)
 {
     unsigned char *value = malloc(sizeof *outputs + spirv_words * 4);
@@ -3795,7 +3807,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         }
     }
     translation_key_free(&key);
-    x->translation_ns += monotonic_ns() - started;
+    count_translation_time(x, started);
     sweep_shader(x, stage_name(stage), code, result ? reason : NULL, spirv, spirv_words);
     if (result) {
         failed(error, error_size, "%s shader at %#llx: %s", stage_name(stage),
@@ -5169,7 +5181,7 @@ static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_comput
         }
     }
     translation_key_free(&key);
-    x->translation_ns += monotonic_ns() - started;
+    count_translation_time(x, started);
     const uint32_t user_read = kept.user_read;
     const gcn_table_snapshot tables = kept.tables;
     sweep_shader(x, "compute", c->code, translated ? reason : NULL, spirv, words);
