@@ -63,12 +63,18 @@ enum { TRANSLATION_REASON_BYTES = 4096 };
 enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
 enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
-/* a draw's table snapshot blocks (gcn_spirv.h, Table snapshots): their GPU addresses after the user data,
-   the vertex shader's then the pixel shader's, on a device with that many push-constant bytes; each
-   batch's blocks in a buffer of their own, the first block empty (mask 0) */
-enum { VERTEX_TABLE_BLOCK = 2 * USER_DATA_BYTES, PIXEL_TABLE_BLOCK = VERTEX_TABLE_BLOCK + 8, DRAW_PUSH_BYTES = PIXEL_TABLE_BLOCK + 8,
+/* a draw's table snapshot blocks (gcn_spirv.h, Table snapshots): their GPU addresses and masks
+   (GCN_TABLE_BLOCK_WORDS, in 16 bytes) after the user data, the vertex shader's then the pixel shader's,
+   on a device with that many push-constant bytes; each batch's blocks in a buffer of their own, the
+   first block empty (mask 0) */
+enum { TABLE_BLOCK_PUSH = 16, VERTEX_TABLE_BLOCK = 2 * USER_DATA_BYTES, PIXEL_TABLE_BLOCK = VERTEX_TABLE_BLOCK + TABLE_BLOCK_PUSH,
+       DRAW_PUSH_BYTES = PIXEL_TABLE_BLOCK + GCN_TABLE_BLOCK_WORDS * 4,
        SNAPSHOT_BLOCK_ALIGN = 16, DRAW_SNAPSHOT_BYTES = 4 << 20 };
 _Static_assert((int)DRAW_PUSH_BYTES <= (int)GCN_TABLE_BLOCK_PUSH_LIMIT, "the block addresses fit the translator's push-constant bytes");
+/* gpu_buffer_make's mapped: 0 device-local memory, MAPPED host memory the CPU maps, MAPPED_LOCAL device-local memory the
+   CPU maps where the device has it (written by the CPU, read by the GPU without crossing the bus each
+   time), else as MAPPED */
+enum { MAPPED = 1, MAPPED_LOCAL = 2 };
 /* a compute shader's push constants: its user data, then its table snapshot's mask and words (gcn_spirv.h) */
 _Static_assert(RT_TABLE_WORDS == GCN_TABLE_SNAPSHOT_WORDS + 1, "a dispatch call holds the snapshot's mask and words");
 enum { TABLE_SNAPSHOT_BYTES = RT_TABLE_WORDS * 4, COMPUTE_PUSH_BYTES = USER_DATA_BYTES + TABLE_SNAPSHOT_BYTES };
@@ -574,6 +580,7 @@ struct rt_executor {
     /* draws take table snapshots (DRAW_PUSH_BYTES): the push constants are then one range for every
        stage, which each push names (draw_push_stages); otherwise a range a stage */
     int draw_snapshots;
+    int snapshot_memory;             /* the blocks' memory (gpu_buffer_make): MAPPED_LOCAL, or MAPPED with PB_SNAPSHOT_LOCAL=0 */
     VkShaderStageFlags draw_push_stages;
     unsigned push_range_count;
     gpu_buffer tess_lds, tess_factors;
@@ -1398,7 +1405,9 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     if (vkCreateCommandPool(x->device, &pool, NULL, &x->pool) != VK_SUCCESS) return failed(error, error_size, "no command pool");
     /* each stage's user data in the push constants: the vertex shader's at 0, the pixel shader's at 64;
        with table snapshots, their blocks' addresses after them, in one range for every stage */
-    x->draw_snapshots = properties.limits.maxPushConstantsSize >= DRAW_PUSH_BYTES;
+    const char *draw_snapshots = getenv("PB_DRAW_SNAPSHOTS"), *snapshot_local = getenv("PB_SNAPSHOT_LOCAL");
+    x->draw_snapshots = properties.limits.maxPushConstantsSize >= DRAW_PUSH_BYTES && !(draw_snapshots && !strcmp(draw_snapshots, "0"));
+    x->snapshot_memory = snapshot_local && !strcmp(snapshot_local, "0") ? MAPPED : MAPPED_LOCAL;
     x->draw_push_stages = x->vertex_stages | VK_SHADER_STAGE_FRAGMENT_BIT;
     x->push_range_count = x->draw_snapshots ? 1 : STAGES;
     const VkPushConstantRange ranges[STAGES] = {
@@ -2311,8 +2320,10 @@ static int gpu_buffer_make(rt_executor *x, gpu_buffer *b, VkDeviceSize bytes, in
     const VkMemoryPropertyFlags wanted = mapped ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                                                 : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    uint32_t type = mapped == MAPPED_LOCAL ? memory_type(x, need.memoryTypeBits, wanted | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) : UINT32_MAX;
+    if (type == UINT32_MAX) type = memory_type(x, need.memoryTypeBits, wanted);
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = need.size,
-                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits, wanted)};
+                                           .memoryTypeIndex = type};
     if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &b->memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, b->buffer, b->memory, 0) != VK_SUCCESS ||
         (mapped && vkMapMemory(x->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped) != VK_SUCCESS)) {
@@ -4472,7 +4483,7 @@ static uint64_t draw_snapshot(rt_executor *x, const gcn_table_snapshot *tables, 
     batch_slot *b = &x->slots[x->current];
     *taken = 0;
     if (!b->snapshots.buffer) {
-        if (gpu_buffer_make(x, &b->snapshots, DRAW_SNAPSHOT_BYTES, 1)) return 0;
+        if (gpu_buffer_make(x, &b->snapshots, DRAW_SNAPSHOT_BYTES, x->snapshot_memory)) return 0;
         memset(b->snapshots.mapped, 0, SNAPSHOT_BLOCK_ALIGN); /* the empty block */
     }
     if (!tables || !tables->entry_count) return b->snapshots.address;
@@ -4723,13 +4734,18 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
     uint32_t vertex_taken = 0, pixel_taken = 0; /* the entries whose words the draw's blocks hold */
     if (x->draw_snapshots) {
-        const uint64_t blocks[2] = {
-            draw_snapshot(x, tess || gs ? NULL : vertex_tables, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], &vertex_taken),
-            draw_snapshot(x, depth_only ? NULL : pixel_tables, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], &pixel_taken)};
-        if (!blocks[0] || !blocks[1]) return failed(error, error_size, "no buffer for the draws' table snapshots");
+        const uint64_t vertex_block =
+            draw_snapshot(x, tess || gs ? NULL : vertex_tables, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], &vertex_taken);
+        const uint64_t pixel_block =
+            draw_snapshot(x, depth_only ? NULL : pixel_tables, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], &pixel_taken);
+        if (!vertex_block || !pixel_block) return failed(error, error_size, "no buffer for the draws' table snapshots");
+        /* each stage's GCN_TABLE_BLOCK_WORDS: its block's address, then its mask */
+        const uint32_t blocks[2][TABLE_BLOCK_PUSH / 4] = {{(uint32_t)vertex_block, (uint32_t)(vertex_block >> 32), vertex_taken},
+                                                          {(uint32_t)pixel_block, (uint32_t)(pixel_block >> 32), pixel_taken}};
+        _Static_assert(GCN_TABLE_BLOCK_MASK_WORD == 2, "the mask follows the block's address");
         vkCmdPushConstants(commands, layout, x->draw_push_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
         vkCmdPushConstants(commands, layout, x->draw_push_stages, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
-        vkCmdPushConstants(commands, layout, x->draw_push_stages, VERTEX_TABLE_BLOCK, sizeof blocks, blocks);
+        vkCmdPushConstants(commands, layout, x->draw_push_stages, VERTEX_TABLE_BLOCK, DRAW_PUSH_BYTES - VERTEX_TABLE_BLOCK, blocks);
     } else {
         vkCmdPushConstants(commands, layout, x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
         vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);

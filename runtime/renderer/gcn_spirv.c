@@ -1518,11 +1518,22 @@ static uint32_t guest_reachable(translator *t, uint32_t address, uint32_t bytes)
     return value(t, SPV_OP_SELECT, t_ulong(t), 3, inside, address, ulong_constant(t, l->guest.sink));
 }
 
-static uint32_t dword_pointer(translator *t, uint32_t base, uint32_t byte_offset, uint32_t index)
+/* The GPU address (a ulong) of dword `index` of an access at base + byte_offset, kept inside the guest
+   memory (guest_reachable). */
+static uint32_t dword_address(translator *t, uint32_t base, uint32_t byte_offset, uint32_t index)
 {
     const uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, byte_offset, konst(t, index * BYTES_PER_DWORD));
-    const uint32_t address = guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, offset)), BYTES_PER_DWORD);
+    return guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, offset)), BYTES_PER_DWORD);
+}
+
+static uint32_t uint_pointer(translator *t, uint32_t address)
+{
     return value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address);
+}
+
+static uint32_t dword_pointer(translator *t, uint32_t base, uint32_t byte_offset, uint32_t index)
+{
+    return uint_pointer(t, dword_address(t, base, byte_offset, index));
 }
 
 static uint32_t load_dword(translator *t, uint32_t pointer)
@@ -1558,30 +1569,39 @@ static const gcn_table_entry *table_entry_at(const translator *t)
     return NULL;
 }
 
-/* Word `index` of the table snapshot: a compute shader's in the push constants (member 1 of the user data
-   block), a vertex or pixel shader's in its draw's block, whose address member 1 holds. */
-static uint32_t snapshot_word(translator *t, unsigned index)
+/* Word `index` of the push constants' member 1 after the user data: a compute shader's table snapshot
+   (its mask, then its words), or a vertex or pixel shader's TABLE_BLOCK_WORDS (runtime/gcn_spirv.h). */
+static uint32_t snapshot_push_word(translator *t, unsigned index)
 {
     const uint32_t push_uint = spirv_type_pointer(&t->m, SPV_STORAGE_PUSH_CONSTANT, t_uint(t));
-    if (!t->layout->table_block_offset)
-        return load(t, t_uint(t), value(t, SPV_OP_ACCESS_CHAIN, push_uint, 3, t->push_constants, konst(t, 1), konst(t, index)));
-    const uint32_t low = load(t, t_uint(t), value(t, SPV_OP_ACCESS_CHAIN, push_uint, 3, t->push_constants, konst(t, 1), konst(t, 0)));
-    const uint32_t high = load(t, t_uint(t), value(t, SPV_OP_ACCESS_CHAIN, push_uint, 3, t->push_constants, konst(t, 1), konst(t, 1)));
-    const uint32_t block = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, widen(t, low),
-                                 value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, widen(t, high), ulong_constant(t, 32)));
-    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, block, ulong_constant(t, (uint64_t)index * BYTES_PER_DWORD));
-    return load_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address));
+    return load(t, t_uint(t), value(t, SPV_OP_ACCESS_CHAIN, push_uint, 3, t->push_constants, konst(t, 1), konst(t, index)));
 }
 
-/* Dword i of a snapshot entry's load: the executor's copy when the mask's bit for the entry is set, else
-   what the load read from memory. */
-static uint32_t snapshot_or(translator *t, const gcn_table_entry *entry, uint32_t i, uint32_t loaded)
+/* Whether the executor took a copy of the entry's words: its bit in the mask. */
+static uint32_t snapshot_taken(translator *t, const gcn_table_entry *entry)
 {
     const gcn_table_snapshot *plan = t->layout->table_snapshot;
     const uint32_t bit = konst(t, 1u << (unsigned)(entry - plan->entries));
-    const uint32_t taken = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, snapshot_word(t, 0), bit),
-                                 konst(t, 0));
-    return value(t, SPV_OP_SELECT, t_uint(t), 3, taken, snapshot_word(t, 1 + entry->first_word + i), loaded);
+    const uint32_t mask = snapshot_push_word(t, t->layout->table_block_offset ? GCN_TABLE_BLOCK_MASK_WORD : 0);
+    return value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, mask, bit), konst(t, 0));
+}
+
+/* Dword i of a compute shader's snapshot entry's load: the executor's copy in the push constants when
+   the mask's bit for the entry is set, else what the load read from memory. */
+static uint32_t snapshot_or(translator *t, const gcn_table_entry *entry, uint32_t i, uint32_t loaded)
+{
+    return value(t, SPV_OP_SELECT, t_uint(t), 3, snapshot_taken(t, entry), snapshot_push_word(t, 1 + entry->first_word + i), loaded);
+}
+
+/* The address dword i of a vertex or pixel shader's snapshot entry's load reads: the copy in the
+   draw's block when the mask's bit for the entry is set, else `guest`, the address in memory. One load
+   either way, so a copied table costs no read of guest memory. */
+static uint32_t snapshot_address(translator *t, const gcn_table_entry *entry, uint32_t i, uint32_t guest)
+{
+    const uint32_t low = widen(t, snapshot_push_word(t, 0)), high = widen(t, snapshot_push_word(t, 1));
+    const uint32_t block = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, low, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, high, ulong_constant(t, 32)));
+    const uint32_t copy = value(t, SPV_OP_I_ADD, t_ulong(t), 2, block, ulong_constant(t, (uint64_t)(1 + entry->first_word + i) * BYTES_PER_DWORD));
+    return value(t, SPV_OP_SELECT, t_ulong(t), 3, snapshot_taken(t, entry), copy, guest);
 }
 
 static void scalar_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
@@ -1604,9 +1624,11 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
     if (!descriptor) {
         const gcn_table_entry *entry = table_entry_at(t);
+        const int in_block = entry && t->layout->table_block_offset;
         for (uint32_t i = 0; i < dwords_named(name); i++) {
-            const uint32_t loaded = load_dword(t, dword_pointer(t, base, byte_offset, i));
-            write_sgpr(t, sdst + i, entry ? snapshot_or(t, entry, i, loaded) : loaded, ins);
+            const uint32_t guest = dword_address(t, base, byte_offset, i);
+            const uint32_t loaded = load_dword(t, uint_pointer(t, in_block ? snapshot_address(t, entry, i, guest) : guest));
+            write_sgpr(t, sdst + i, entry && !in_block ? snapshot_or(t, entry, i, loaded) : loaded, ins);
         }
         return;
     }
@@ -2557,8 +2579,8 @@ static uint32_t user_data_block(translator *t)
     const uint32_t draw = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, 2)}, 2); /* the draw record's address */
     /* a compute shader's table snapshots (runtime/gcn_spirv.h): the mask, then the words (the same type
        as the user data's array while both hold 16 words, decorated once); a vertex or pixel shader's
-       block address, two words */
-    const uint32_t snapshot_words = t->layout->table_block_offset ? 2 : GCN_TABLE_SNAPSHOT_WORDS + 1;
+       TABLE_BLOCK_WORDS (its block's address, then the mask) */
+    const uint32_t snapshot_words = t->layout->table_block_offset ? GCN_TABLE_BLOCK_WORDS : GCN_TABLE_SNAPSHOT_WORDS + 1;
     const uint32_t snapshot =
         t->layout->table_snapshot ? spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, snapshot_words)}, 2) : 0;
     const uint32_t block = draw_words                 ? spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array, draw}, 2)
@@ -4868,7 +4890,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         fail(t, "table snapshots past the %d push-constant bytes", GCN_PUSH_CONSTANT_LIMIT);
     else if (layout->table_snapshot && layout->stage != STAGE_COMPUTE &&
              (layout->table_block_offset % 8 || layout->table_block_offset < layout->push_constant_offset + GCN_USER_SGPR_MAX * BYTES_PER_DWORD ||
-              layout->table_block_offset + 2 * BYTES_PER_DWORD > GCN_TABLE_BLOCK_PUSH_LIMIT))
+              layout->table_block_offset + GCN_TABLE_BLOCK_WORDS * BYTES_PER_DWORD > GCN_TABLE_BLOCK_PUSH_LIMIT))
         fail(t, "a table snapshot block's address at push-constant byte %u: not 8-byte aligned after the user data within %d bytes",
              layout->table_block_offset, GCN_TABLE_BLOCK_PUSH_LIMIT);
 

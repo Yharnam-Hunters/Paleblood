@@ -663,9 +663,11 @@ Instead:
        `gcn_called_table_snapshot_plan`, at `GCN_TABLE_CALLEE_AT` plus the load's place in the fetch
        shader) and a pixel shader's as for a compute shader, up to 255 words; as it records a draw,
        the executor copies each entry's words from guest memory into a block of the open batch's own
-       buffer (the mask first, as for a dispatch), and the push constants carry each stage's block
-       address after the user data (bytes 128 and 136, on devices with at least 144 push-constant
-       bytes; the stages then share one range). Copied loads are left out of the reads the batch
+       buffer (the mask first, as for a dispatch; in device-local memory the CPU maps when the device
+       has it), and the push constants carry each stage's block address and mask after the user data
+       (bytes 128 and 144, on devices with at least 156 push-constant bytes; the stages then share one
+       range). A copied load picks its address from the push constants alone, the block's or memory's,
+       and reads once. Copied loads are left out of the reads the batch
        notes, so the next dump lands at once; an entry that open or submitted work may store to keeps
        reading memory as the draw runs, and so do loads of the same words through another pointer.
      - **A batch the GPU does not finish stops by name.** Each wait for submitted work gives the GPU

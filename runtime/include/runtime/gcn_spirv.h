@@ -187,11 +187,14 @@ int gcn_called_memory_reads(const uint32_t *code, size_t dwords, const uint32_t 
    gcn_pixel_layout's table_snapshot): the game's constant engine dumps their buffer descriptors into a
    ring the draws after the dump read in place, so without a copy each dump had to wait for every draw
    before it to run. Their words do not fit in the push constants: the executor writes each draw's mask
-   and words to a block of its own, and the push constants hold the block's GPU address. A vertex
+   and words to a block of its own, and the push constants hold GCN_TABLE_BLOCK_WORDS: the block's GPU
+   address (two words), then the mask again, so a load picks its address (the copy's or memory's) from
+   push constants alone and reads once. A vertex
    shader's fetch shader is planned with it (gcn_called_table_snapshot_plan); a use in the fetch shader
    is at GCN_TABLE_CALLEE_AT + its dword position there. */
 enum { GCN_TABLE_SNAPSHOT_WORDS = 15, GCN_DRAW_SNAPSHOT_WORDS = 255, GCN_TABLE_SNAPSHOT_ENTRIES = 32, GCN_TABLE_SNAPSHOT_USES = 128,
-       GCN_TABLE_BLOCK_PUSH_LIMIT = 256 /* table_block_offset + 8 within it: only on devices with that many push-constant bytes */ };
+       GCN_TABLE_BLOCK_WORDS = 3, GCN_TABLE_BLOCK_MASK_WORD = 2,
+       GCN_TABLE_BLOCK_PUSH_LIMIT = 256 /* table_block_offset + 12 within it: only on devices with that many push-constant bytes */ };
 #define GCN_TABLE_CALLEE_AT 0x80000000u
 typedef struct {
     unsigned pointer_sgpr;   /* the user-data SGPR pair holding the pointer (48 bits) */
@@ -379,8 +382,8 @@ typedef struct {
     uint32_t step_rates[2];
     unsigned step_rates_set;
     /* when not NULL, the program's plan (gcn_called_table_snapshot_plan, its fetch shader's included): its
-       loads take the draw's block, whose GPU address (64 bits) is at push-constant byte table_block_offset
-       (Table snapshots, above) */
+       loads take the draw's block, whose GPU address (64 bits) and mask (GCN_TABLE_BLOCK_WORDS) are at
+       push-constant byte table_block_offset (Table snapshots, above) */
     const gcn_table_snapshot *table_snapshot;
     uint32_t table_block_offset;
 } gcn_vertex_layout;
