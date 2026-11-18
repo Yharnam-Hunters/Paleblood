@@ -227,6 +227,9 @@ def cases(address, slot):
         c('slot_without_holder', 5, holder=False),
         c('negative_id', -1, sorted_ids),
         c('most_negative_id', -0x80000000, sorted_ids),
+        # The table holds 0xffffffff (the last id, as ids compare unsigned): a search would find
+        # it, so only the negative-id exit keeps id -1 from returning that row.
+        c('negative_id_in_table', -1, [(1, 0), (3, 1), (0xffffffff, 2)]),
         # A negative id returns before the repository is read, so a missing one is fine.
         build(address, slot, 'negative_id_no_repository', -5, repository=False),
     ]

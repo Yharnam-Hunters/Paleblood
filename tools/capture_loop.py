@@ -167,13 +167,32 @@ def generator_doc(path: str) -> str:
     return m.group(1) if m else ''
 
 
-def generator_variants(path: str) -> list[str | None]:
+def generator_variants(path: str, address: int | None = None) -> list[str | None]:
     """The variants a generator's usage line offers, optional (usage: X_cases.py OUT_DIR [a|b|c])
     or required (OUT_DIR a|b|c, which may wrap onto the next line after a `|`), or the
-    generator's one default when it lists none."""
-    m = re.search(r'^usage:\s*\S+\s+OUT_DIR\s+\[?((?:[A-Za-z0-9_]+\|\s*)+[A-Za-z0-9_]+)\]?',
-                  generator_doc(path), re.M)
-    return [v.strip() for v in m.group(1).split('|')] if m else [None]
+    generator's one default when it lists none.
+
+    A usage line may name its variant instead (OUT_DIR MODE): ADDRESS takes the function's own
+    address; another name is listed after `NAME:` (a|b or a, b, wrapping until a blank line), or
+    else each variant is described as `name (0xADDR...)`, and those described with the
+    function's address come first (only those, when there are any)."""
+    doc = generator_doc(path)
+    m = re.search(r'^usage:\s*\S+\s+OUT_DIR\s+\[?((?:[A-Za-z0-9_]+\|\s*)+[A-Za-z0-9_]+)\]?', doc, re.M)
+    if m:
+        return [v.strip() for v in m.group(1).split('|')]
+    m = re.search(r'^usage:\s*\S+\s+OUT_DIR\s+([A-Z][A-Z_]*)\b', doc, re.M)
+    if not m:
+        return [None]
+    placeholder = m.group(1)
+    if placeholder == 'ADDRESS':
+        return [f'0x{address:08x}'] if address is not None else [None]
+    listed = re.search(r'^\s*' + placeholder + r':\s*(.*?)(?:\n\s*\n|\Z)', doc, re.M | re.S)
+    if listed:
+        # Remarks in brackets, such as "(fast small object allocators)", name no variant.
+        return list(dict.fromkeys(re.findall(r'[A-Za-z0-9_]+', re.sub(r'\([^)]*\)', ' ', listed.group(1)))))
+    described = [(v, int(a, 16)) for v, a in re.findall(r'\b([a-z][a-z0-9_]*)\s*\((0x[0-9a-fA-F]+)', doc)]
+    own = [v for v, a in described if a == address]
+    return list(dict.fromkeys(own or [v for v, _ in described])) or [None]
 
 
 def case_address(path: str) -> int | None:
@@ -198,7 +217,7 @@ def write_edge_cases(name: str, address: str, generators: list[str], captures: s
         fresh = os.path.join(scratch, 'edge')
         tried, failures = [], []
         for generator in generators:
-            for variant in generator_variants(generator):
+            for variant in generator_variants(generator, want):
                 # Generators make their output directory themselves: write a new one per run.
                 out = os.path.join(scratch, f'run{len(tried)}')
                 tried.append(os.path.relpath(generator, ROOT) + (f' {variant}' if variant else ''))
