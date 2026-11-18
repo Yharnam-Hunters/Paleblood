@@ -9,6 +9,9 @@
 #include <string.h>
 
 typedef int32_t (*submit_fn)(uint32_t, void **, uint32_t *, void **, uint32_t *);
+size_t rt_renderer_none_step_flags(uint32_t *flags, size_t capacity);              /* runtime/renderer/renderer_none.c */
+size_t rt_renderer_none_step_memory(uint64_t (*memory)[2], size_t capacity);
+enum { STEP_CPU_ORDERED = 16 };                                                    /* RT_GPU_STEP_CPU_ORDERED */
 
 enum {
     WAIT_ON_CE_COUNTER = 0xc0008600u,   /* PM4 type 3, opcode 0x86, one payload dword */
@@ -91,6 +94,20 @@ SYSLIB_TEST(gnm_constant_engine)
     constants_writing(values, 1);
     append_constants((const uint32_t[]){DUMP_CONST_RAM, SLOT_OFFSET, 1, (uint32_t)spare_at, (uint32_t)(spare_at >> 32)}, 5);
     CHECK(submit_both(1) == 0 && spare == 0x11111111u);
+    /* Each run of the CE is CPU work in stream order, its memory one range over its dumps: the run up to
+       the increment dumps the slot, the rest after the draw buffer the spare word. */
+    uint32_t flags[16] = {0};
+    uint64_t memory[16][2] = {{0}};
+    const size_t steps = rt_renderer_none_step_flags(flags, 16);
+    CHECK(rt_renderer_none_step_memory(memory, 16) == steps && steps <= 16);
+    unsigned constant_steps = 0;
+    const uint64_t slot_at = (uint64_t)(uintptr_t)&slot;
+    for (size_t i = 0; i < steps && i < 16; i++) {
+        if (flags[i] != STEP_CPU_ORDERED) continue;
+        CHECK(memory[i][0] == (constant_steps ? spare_at : slot_at) && memory[i][1] == 4);
+        constant_steps++;
+    }
+    CHECK(constant_steps == 2);
 
     /* A slot the CE dumps the wrong value into fails its wait (the check above means something). */
     slot = 0;

@@ -19,6 +19,7 @@
    A recorded state or operation outside the selected backend's profile stops with a reason. */
 
 #include "runtime/render_calls.h"
+#include "runtime/table_snapshot.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -80,12 +81,27 @@ int rt_executor_submit_calls(rt_executor *executor, const rt_render_call *calls,
    GPU work reads that memory (a dispatch, an image over it), when the CPU touches it
    (rt_executor_resolve), or when rt_executor_submit_calls writes every drawn target back. A target
    that cannot be guarded is written back at the buffer's end. Returns 0, or -1 with the reason. */
+/* The same, with each dispatch's table snapshot taken when the buffer was submitted (tables[i] for
+   calls[i], runtime/table_snapshot.h; NULL: none). The Metal executor translates without snapshots
+   and leaves them aside. */
+int rt_executor_record_calls_with_tables(rt_executor *executor, const rt_render_call *calls, const rt_table_words *tables, size_t count,
+                                         uint64_t *ticket, char *error, size_t error_size);
 int rt_executor_record_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
                              size_t error_size);
 /* Before the CPU touches `length` bytes at guest address `address` (a fault on a guarded page):
    writes back the render targets drawn into over them, waits for that to run, and lifts the guards of
    the targets there whose memory is now current. Returns 0, or -1 with the reason. */
 int rt_executor_resolve(rt_executor *executor, uint64_t address, uint64_t length, char *error, size_t error_size);
+/* Records into the open batch, after the work recorded so far and before the work after it, a fill of
+   `bytes` of guest memory at `address` with the 32-bit `word` (a fill the GPU's command processor makes
+   between its calls: DMA_DATA, WRITE_DATA), so that the CPU need not wait for that work to make it
+   itself; *ticket names the submission that will hold it. The CPU's reads through the executor wait for
+   it as for a dispatch's stores. Returns 0; 1 without recording anything when the GPU does not take it
+   (not whole aligned dwords, outside the GPU-visible memory, over a render or depth target or its
+   metadata, whose state the executor keeps apart: the caller fills the memory itself once the work has
+   run); -1 with the reason. */
+int rt_executor_fill(rt_executor *executor, uint64_t address, uint64_t bytes, uint32_t word, uint64_t *ticket, char *error,
+                     size_t error_size);
 /* Hands the open batch, if any, to the GPU without waiting. Returns 0, or -1 with the reason. */
 int rt_executor_submit(rt_executor *executor, char *error, size_t error_size);
 /* Waits until the submission `ticket` (and every one before it) has run; ticket 0 returns at once. Unlike
@@ -94,6 +110,21 @@ int rt_executor_submit(rt_executor *executor, char *error, size_t error_size);
    there. Run-time stops are reported by the next call on the recording thread. Returns 0, or -1 with
    the reason (the GPU failed). */
 int rt_executor_wait_ticket(rt_executor *executor, uint64_t ticket, char *error, size_t error_size);
+/* The same for a copy of `bytes` from `from` to `to`, each a guest address, or a byte offset into the
+   GDS (rt_executor_memory's gds) when from_gds or to_gds is set. Also declined (1) for a source or
+   destination over a render or depth target or its metadata, outside its memory, or for guest ranges
+   that overlap. */
+int rt_executor_copy(rt_executor *executor, uint64_t to, int to_gds, uint64_t from, int from_gds, uint64_t bytes, uint64_t *ticket,
+                     char *error, size_t error_size);
+/* The latest ticket whose submission (and every one before it) has run, without waiting; 0 when not
+   known. Like rt_executor_wait_ticket it may run on another thread. */
+uint64_t rt_executor_done_ticket(rt_executor *executor);
+/* Whether the CPU may write `bytes` of guest memory at `address` now, in stream order, while the GPU still
+   runs earlier work (a constant engine's dump): 1 when no batch, open or not yet run, reads that memory in
+   place as it runs (rather than the descriptors the executor read before recording it) or may store
+   there; 0 when the write must wait for the GPU. The first ask for memory starts noting the batches'
+   reads of it, and answers 0 (nothing earlier noted them). Not for another thread. */
+int rt_executor_cpu_write_ready(rt_executor *executor, uint64_t address, uint64_t bytes);
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
 int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
