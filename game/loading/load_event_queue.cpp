@@ -70,7 +70,7 @@ ResourceHandle *queue_request(ResourceHandle *result, LoadEventQueue *queue, Loa
     construct_handle(&held, info);
     lock(&queue->lock);
     LoadEvent event;
-    event.word_0x00 = static_cast<uint32_t>(kind);
+    event.kind = kind;
     event.word_0x08 = reinterpret_cast<uint64_t>(info);
     load_request_copy(&event.request, request);
     event.request.vtable = queued_request_vtable.address() + engine::vtable_address_point;
