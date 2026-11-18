@@ -16,7 +16,8 @@ record must then satisfy tools/validate_functions.py's rule for verified: no une
 failure in any case set or option, nothing stale. Nothing changes otherwise; a failure is printed and makes the exit code 1. Without a capture library or an executable it does nothing and says so.
 
 --check-unreviewed also runs the recorded and edge cases of functions that have recordings but no
-approved review yet, without recording anything, and lists those that pass as awaiting review
+approved review yet, without recording anything (their quarantined cases don't count either),
+and lists those that pass as awaiting review
 (the next step: an independent review, CONTRIBUTING.md); a failure among them makes the exit
 code 1 too.
 
@@ -47,10 +48,13 @@ def cases(directory: str) -> int:
     return len([p for p in glob.glob(os.path.join(directory, '*.json')) if os.path.basename(p) != 'abi.json'])
 
 
-def passes(name: str, directory: str, record: str | None) -> tuple[bool, str]:
+def passes(name: str, directory: str, kind: str, record: bool) -> tuple[bool, str]:
+    """Runs one case set (kind: recorded or edge) and records it when asked. Failing cases listed
+    in symbols/quarantine.csv for this function and case set do not count, recorded or not, as
+    verify.py --record and tools/session_report.py count them."""
     cmd = [sys.executable, os.path.join(ROOT, 'tools', 'verify.py'), 'run', '--function', name, '--captures', directory]
     if record:
-        cmd += ['--record', record]
+        cmd += ['--record', kind]
     # verify.py otherwise writes original/replacement result JSON under CAPTURES/results.
     # Keep comparison artifacts separate from the source cases in both normal and dry runs.
     with tempfile.TemporaryDirectory(prefix='paleblood-promote-') as output:
@@ -60,9 +64,17 @@ def passes(name: str, directory: str, record: str | None) -> tuple[bool, str]:
     except json.JSONDecodeError:
         return False, (p.stderr.strip().splitlines() or ['no output'])[-1]
     n = cases(directory)
-    failed = int(r['recorded']['failed']) if record else r['failed']
-    held = int(r['recorded']['quarantined']) if record else 0
-    ok = p.returncode == 0 and failed == 0 and r['cases'] == n
+    if record:
+        failed, held = int(r['recorded']['failed']), int(r['recorded']['quarantined'])
+    else:
+        import verification
+        listed = verification.quarantined(ROOT, name, kind, '')
+        failing = [f['case'] for f in r['failures']]
+        held = sum(case in listed for case in failing)
+        failed = len(failing) - held
+    # Without --record, verify.py exits 1 for any failing case, quarantined or not.
+    expected_exit = 1 if held and not record else 0
+    ok = p.returncode == expected_exit and failed == 0 and r['cases'] == n
     return ok, f"{r['passed']}/{n} passed" + (f', {held} quarantined' if held else '')
 
 
@@ -139,9 +151,9 @@ def main() -> int:
 
     def run(item):
         row, name, recorded, edge, reviewed = item
-        record = 'recorded' if reviewed and not a.dry_run else None
-        ok_r, msg_r = passes(name, recorded, record)
-        ok_e, msg_e = passes(name, edge, record and 'edge') if ok_r else (False, 'not run')
+        record = reviewed and not a.dry_run
+        ok_r, msg_r = passes(name, recorded, 'recorded', record)
+        ok_e, msg_e = passes(name, edge, 'edge', record) if ok_r else (False, 'not run')
         return ok_r, msg_r, ok_e, msg_e
 
     # Functions run side by side (--jobs); verify.py --record serializes its writes.
