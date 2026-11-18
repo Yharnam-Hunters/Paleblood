@@ -48,9 +48,13 @@
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16 };
-/* the run-time stop words (stop_slot): a power of two, well above the shaders kept at once so that two of
-   them seldom share one */
+/* the run-time stop words (stop_slot): a power of two, well above the distinct shaders a walk meets, so that
+   each shader has a word of its own */
 enum { STOP_SLOT_BITS = 13, STOP_SLOTS = 1 << STOP_SLOT_BITS };
+struct stop_owner { /* the shader a stop word was given to (stop_slot) */
+    uint64_t code;
+    int kind, given;
+};
 enum { IMAGE_BUCKETS = 4096, TABLE_BUCKETS = 2048 }; /* powers of two */
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
@@ -625,8 +629,10 @@ struct rt_executor {
     VkBuffer gds_buffer;
     VkDeviceMemory gds_memory;
     VkDeviceAddress gds_address;
-    volatile uint32_t *stop_words;   /* STOP_SLOTS, each written by the shaders stop_index picks */
+    volatile uint32_t *stop_words;   /* STOP_SLOTS, each written by the shader stop_slot gave it to */
     uint64_t stop_address;
+    struct stop_owner *stop_owners;  /* STOP_SLOTS: the shader each stop word was given to (stop_slot) */
+    int stop_words_shared;           /* every word was given: later shaders share their home words */
     /* What changed the guest memory, and when (memory_changed): each change counts one up, and each
        CHANGE_CHUNK of the memory keeps the count of the last change that reached it. The CPU's writes
        come from collect_cpu_writes at each buffer, the GPU's (dispatch stores, write-backs, fills) as
@@ -1548,6 +1554,8 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
         return failed(error, error_size, "no memory for the stop words");
     x->stop_words = mapped;
     memset(mapped, 0, STOP_SLOTS * sizeof(uint32_t));
+    x->stop_owners = calloc(STOP_SLOTS, sizeof *x->stop_owners);
+    if (!x->stop_owners) return failed(error, error_size, "no memory for the stop words' owners");
     const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = x->stop_buffer};
     x->stop_address = vkGetBufferDeviceAddress(x->device, &address);
     return 0;
@@ -1589,11 +1597,17 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
 
 /* Which stop word a translated shader writes (gcn_spirv.h's error_address): chosen from what the shader
    is, its kind (a graphics stage, compute, or a tessellation or geometry pass) and its code address,
-   never from the order the executor met it. Its SPIR-V holds that word's address, so a shader numbered
+   not from the order the executor met it. Its SPIR-V holds that word's address, so a shader numbered
    by order translated differently from one run to the next, and the driver's pipeline cache, which
    knows a pipeline by its SPIR-V, compiled it again in every run: in Iosefka's Clinic 150-230 s of
-   pipeline compiles on the renderer's thread in each boot (November 2026). Two shaders may share a
-   word; a stop then names each shader kept with that word. */
+   pipeline compiles on the renderer's thread in each boot (November 2026).
+
+   Each shader keeps its word for the executor's life, also after its translation is freed: its work
+   may still be in flight, and a stop must name the shader that wrote it. The word is the shader's
+   home word (stop_index), or, when another shader was given that one first, the next free word after
+   it: only those few shaders depend on the order they were met in. A word shared by two shaders made
+   a stop name every shader kept with it, and none that was freed: a stop of the LUT pass at
+   0x20d1b00800 could not be told from one of another shader with its word (November 2026). */
 enum { STOP_KIND_COMPUTE = 16, STOP_KIND_PASS = 32 }; /* graphics shaders use their stage number, below 16 */
 
 static size_t stop_index(int kind, uint64_t code)
@@ -1602,26 +1616,28 @@ static size_t stop_index(int kind, uint64_t code)
     return (size_t)(mixed >> (64 - STOP_SLOT_BITS));
 }
 
-static uint64_t stop_slot(const rt_executor *x, int kind, uint64_t code) { return x->stop_address + 4 * stop_index(kind, code); }
-
-/* The shaders that write one stop word, for its stop's reason: each kind and address once (a shader
-   kept in several translations, for other settings, writes the same word). */
-enum { STOPPED_NAMED = 4 };
-typedef struct {
-    const char *kinds[STOPPED_NAMED];
-    uint64_t codes[STOPPED_NAMED];
-    unsigned count;
-} stopped_shaders;
-
-static void add_stopped(stopped_shaders *named, const char *kind, uint64_t code)
+/* The GPU address of the stop word of the shader of `kind` at `code`, given to it on first use. With
+   every word given (more than STOP_SLOTS distinct shaders), it shares its home word. */
+static uint64_t stop_slot(rt_executor *x, int kind, uint64_t code)
 {
-    for (unsigned k = 0; k < named->count; k++)
-        if (named->codes[k] == code && !strcmp(named->kinds[k], kind)) return;
-    if (named->count < STOPPED_NAMED) named->kinds[named->count] = kind, named->codes[named->count++] = code;
+    const size_t home = stop_index(kind, code);
+    for (size_t probe = 0; probe < STOP_SLOTS; probe++) {
+        const size_t i = (home + probe) & (STOP_SLOTS - 1);
+        struct stop_owner *owner = &x->stop_owners[i];
+        if (!owner->given) *owner = (struct stop_owner){.code = code, .kind = kind, .given = 1};
+        if (owner->code == code && owner->kind == kind) return x->stop_address + 4 * i;
+    }
+    x->stop_words_shared = 1;
+    return x->stop_address + 4 * home;
+}
+
+static const char *stop_kind_name(int kind)
+{
+    return kind >= STOP_KIND_PASS ? pass_names[kind - STOP_KIND_PASS] : kind == STOP_KIND_COMPUTE ? "compute" : stage_name(kind);
 }
 
 /* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code, naming
-   the shaders kept that write that stop word (stop_index): almost always one. */
+   the shader its stop word was given to (stop_slot). */
 static int check_stop_words(rt_executor *x, char *error, size_t error_size)
 {
     const volatile uint64_t *pairs = (const volatile uint64_t *)x->stop_words; /* two words a read: the buffer is 8-byte aligned */
@@ -1633,25 +1649,12 @@ static int check_stop_words(rt_executor *x, char *error, size_t error_size)
         const uint32_t code = x->stop_words[i];
         if (!code) continue;
         x->stop_words[i] = 0;
-        char reason[512], names[STOPPED_NAMED * 48] = "";
+        char reason[512];
         stop_reason(code, reason, sizeof reason);
-        stopped_shaders named = {0};
-        for (size_t k = 0; k < x->shader_count; k++)
-            if (x->shaders[k].module && stop_index(x->shaders[k].stage, x->shaders[k].code) == i)
-                add_stopped(&named, stage_name(x->shaders[k].stage), x->shaders[k].code);
-        for (size_t k = 0; k < x->compute_count; k++)
-            if (stop_index(STOP_KIND_COMPUTE, x->computes[k].code) == i) add_stopped(&named, "compute", x->computes[k].code);
-        for (size_t k = 0; k < x->tess_pass_count; k++)
-            if (stop_index(STOP_KIND_PASS + x->tess_passes[k].kind, x->tess_passes[k].code) == i)
-                add_stopped(&named, pass_names[x->tess_passes[k].kind], x->tess_passes[k].code);
-        if (!named.count) return failed(error, error_size, "a shader no longer kept (stop word %zu): %s", i, reason);
-        size_t used = 0;
-        for (unsigned k = 0; k < named.count && used < sizeof names; k++) {
-            const int wrote = snprintf(names + used, sizeof names - used, "%sthe %s shader at %#llx", k ? " or " : "", named.kinds[k],
-                                       (unsigned long long)named.codes[k]);
-            used += wrote > 0 ? (size_t)wrote : 0;
-        }
-        return failed(error, error_size, "%s: %s", names, reason);
+        const struct stop_owner *owner = &x->stop_owners[i];
+        if (!owner->given) return failed(error, error_size, "a shader with stop word %zu, given to none: %s", i, reason);
+        return failed(error, error_size, "the %s shader at %#llx%s: %s", stop_kind_name(owner->kind), (unsigned long long)owner->code,
+                      x->stop_words_shared ? " (or a shader sharing its stop word: there were more shaders than words)" : "", reason);
     }
     return 0;
 }
@@ -6888,6 +6891,7 @@ void rt_executor_close(rt_executor *x)
         for (size_t i = 0; i < CALL_SLOTS; i++) free(x->calls[i].words);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
+        free(x->stop_owners);
         if (x->gds_buffer) vkDestroyBuffer(x->device, x->gds_buffer, NULL);
         if (x->gds_memory) vkFreeMemory(x->device, x->gds_memory, NULL);
         if (x->timeline) vkDestroySemaphore(x->device, x->timeline, NULL);
