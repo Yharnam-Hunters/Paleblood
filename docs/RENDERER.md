@@ -1313,3 +1313,18 @@ range that holds one, `--skip-frames FIRST-LAST` leaves the intervals ending on 
 the figures and reports them apart (count, time, longest); make it wide enough for where both
 builds stall.
 `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
+
+### Re-measured over frames 1250-3000 (November 2026)
+
+Two earlier speed changes were measured again with the frame range, because their first numbers
+came from the time window above.
+
+- **GPU fills (#1217).** The first claim, 1% low 3.01 to 6.09 fps, does not hold. Three rounds each
+  (the commit before #1217 against #1217, at most 3.9 CPUs of other work, one A run left out for more): average
+  10.90 to 10.82 fps (-0.08, noise floor 0.17: no change); 1% low 7.91 to 7.66 fps (-0.25, noise
+  floor 0.17: slightly worse, a difference of about one noise floor).
+- **GPU copies (#1232).** Not settled. Re-reading the first A/B's logs over the same frames gave an
+  average of 10.71 to 10.85 fps (+0.14, noise floor 0.14: on the floor) and the same 1% low (7.66).
+  A fresh three-round run (the commit before #1232 against main 0391d1fb) measured only one run of
+  #1232 (10.92 fps, 1% low 8.12): every other run was left out, for other work on the machine
+  (5.5-11.4 CPUs) or for ending before frame 3000. That is no result.
