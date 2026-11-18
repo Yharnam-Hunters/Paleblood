@@ -4143,13 +4143,24 @@ enum { MUBUF_OFFEN = 1u << 12, MUBUF_IDXEN = 1u << 13, MUBUF_ADDR64 = 1u << 15, 
 
 static unsigned mubuf_srsrc(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * 4; }
 
-/* Adds a read to the list unless it is there already; *unknown past max. */
+/* Adds a read to the list unless one of the same memory is there already; *unknown past max. A read
+   of the same memory into other SGPRs widens the entry's SGPRs to cover both (an s_load's value counts
+   as used when any of them is read: more, never less). Keeping such loads apart instead filled the list
+   (max) with one table's loads, so a dispatch counted as reading anywhere and wrote back every render
+   target. */
 static void add_read(gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, const gcn_memory_read *read)
 {
-    for (unsigned i = 0; i < *count; i++)
-        if (reads[i].pointer == read->pointer && same_origin(&reads[i].origin, &read->origin) && reads[i].offset == read->offset &&
-            reads[i].bytes == read->bytes && reads[i].sgpr == read->sgpr && reads[i].sgprs == read->sgprs)
+    for (unsigned i = 0; i < *count; i++) {
+        gcn_memory_read *r = &reads[i];
+        if (r->pointer == read->pointer && same_origin(&r->origin, &read->origin) && r->offset == read->offset && r->bytes == read->bytes) {
+            if (read->sgprs) {
+                const unsigned end = r->sgpr + r->sgprs > read->sgpr + read->sgprs ? r->sgpr + r->sgprs : read->sgpr + read->sgprs;
+                r->sgpr = r->sgprs && r->sgpr < read->sgpr ? r->sgpr : read->sgpr;
+                r->sgprs = end - r->sgpr;
+            }
             return;
+        }
+    }
     if (*count == max) *unknown = 1;
     else reads[(*count)++] = *read;
 }

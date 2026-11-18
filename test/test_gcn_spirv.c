@@ -591,7 +591,8 @@ static void store_resources(void)
 /* What programs read (gcn_memory_reads): scale_add its user-data buffer s[0:3]; an s_load_dwordx4 at
    dword 4 from the pointer in s[0:1] reads 16 bytes at 16 into s[16:19], an s_buffer_load reads its
    descriptor s[4:7]; an s_load at an SGPR offset is listed with its SGPRs as one whose address is not
-   known (pointer 2), not as unknown; a flat load may read anywhere (unknown). */
+   known (pointer 2), not as unknown; the same table loaded into other SGPRs is one read; a flat load
+   may read anywhere (unknown). */
 static void memory_reads(void)
 {
     gcn_memory_read found[GCN_MAX_IMAGES];
@@ -616,6 +617,15 @@ static void memory_reads(void)
     };
     CHECK(gcn_memory_reads(PROGRAM(offset_in_sgpr), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 1 && !unknown && found[0].pointer == 2 && found[0].sgpr == 16 && found[0].sgprs == 1);
+    /* the same table loaded twice into other SGPRs is one read, its SGPRs widened to cover both: a list
+       of one table's loads (past GCN_MAX_IMAGES) made a dispatch count as reading anywhere */
+    static const uint32_t same_table[] = {
+        0xc0880104, /* s_load_dwordx4 s[16:19], s[0:1], 0x4 */
+        0xc08c0104, /* s_load_dwordx4 s[24:27], s[0:1], 0x4 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(same_table), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && found[0].pointer == 1 && found[0].offset == 16 && found[0].sgpr == 16 && found[0].sgprs == 12);
     static const uint32_t flat[] = {0xdc300000, 0x01000002, /* flat_load_dword v1, v[2:3] */ 0xbf810000};
     CHECK(gcn_memory_reads(PROGRAM(flat), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(unknown);
