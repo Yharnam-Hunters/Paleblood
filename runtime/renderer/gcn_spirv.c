@@ -4956,6 +4956,17 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         if (branches(code + instructions[i].at, &instructions[i].ins, instructions[i].at, &target))
             t->constant_exec_enabled = 0, t->constant_exec = 0;
     }
+    /* Blocks whose branches all go forward run in program order, each at most once: they are emitted as a
+       chain of selections, each block entered when the PC names it, with no loop. A program with a branch
+       back (a loop) keeps the dispatch loop over every block. */
+    int forward = count > 0;
+    for (long i = 0, current = 0; forward && i < count; i++) {
+        if (starts[instructions[i].at]) current = (long)block_of[instructions[i].at];
+        const char *name = instructions[i].ins.name;
+        if (instructions[i].ins.encoding != GCN_SOPP || !is_branch_named(name)) continue;
+        const long target = (long)instructions[i].at + (long)instructions[i].ins.dwords + (int16_t)(code[instructions[i].at] & 0xffff);
+        if (target < 0 || target >= program || !starts[target] || (long)block_of[target] <= current) forward = 0;
+    }
     uint32_t *labels = calloc(block_count + 1, sizeof *labels);
     const uint32_t header = spirv_new_id(m), dispatch = spirv_new_id(m), switch_merge = spirv_new_id(m);
     const uint32_t continue_block = spirv_new_id(m), loop_merge = spirv_new_id(m), fallback = spirv_new_id(m);
@@ -4965,6 +4976,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     /* loop header, then the dispatch switch over every block */
     t->out = &t->blocks;
     spirv_emit(m, t->out, SPV_OP_LABEL, &header, 1);
+    if (forward) spirv_emit(m, t->out, SPV_OP_BRANCH, &labels[0], 1);
+    else {
     spirv_emit(m, t->out, SPV_OP_LOOP_MERGE, (const uint32_t[]){loop_merge, continue_block, SPV_LOOP_CONTROL_NONE}, 3);
     spirv_emit(m, t->out, SPV_OP_BRANCH, &dispatch, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &dispatch, 1);
@@ -4980,6 +4993,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
             free(cases);
         }
     }
+    }
 
     /* survey mode: what failed before the instructions (the layout, the program's decoding) is kept, and
        the instructions are still surveyed when they decoded */
@@ -4987,7 +5001,14 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     /* each block */
     for (long i = 0; !t->failed && i < count;) {
         const uint32_t b = block_of[instructions[i].at];
-        spirv_emit(m, t->out, SPV_OP_LABEL, &labels[b], 1);
+        /* the chain: block b after block 0 runs when the PC names it, and its selection merges into the next block */
+        const uint32_t chain_merge = forward ? labels[b + 1] ? labels[b + 1] : (labels[b + 1] = spirv_new_id(m)) : 0;
+        if (forward && b) {
+            const uint32_t named = equals(t, load(t, t_uint(t), t->pc), konst(t, b)), body = spirv_new_id(m);
+            spirv_emit(m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){chain_merge, SPV_SELECTION_CONTROL_NONE}, 2);
+            spirv_emit(m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){named, body, chain_merge}, 3);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &body, 1);
+        } else spirv_emit(m, t->out, SPV_OP_LABEL, &labels[b], 1);
         int ended = 0;
         for (;;) {
             const decoded *d = &instructions[i];
@@ -5028,8 +5049,13 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
                 break;
             }
         }
-        if (!ended) spirv_emit(m, t->out, SPV_OP_BRANCH, &switch_merge, 1);
+        if (!ended) spirv_emit(m, t->out, SPV_OP_BRANCH, forward ? &chain_merge : &switch_merge, 1);
+        if (forward) spirv_emit(m, t->out, SPV_OP_LABEL, &chain_merge, 1);
     }
+    if (forward) {
+        /* past the last block: every path through the chain ended at s_endpgm, so this is not reached */
+        spirv_emit(m, t->out, SPV_OP_UNREACHABLE, NULL, 0);
+    } else {
     spirv_emit(m, t->out, SPV_OP_LABEL, &fallback, 1);
     spirv_emit(m, t->out, SPV_OP_BRANCH, &switch_merge, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &switch_merge, 1);
@@ -5038,6 +5064,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_emit(m, t->out, SPV_OP_BRANCH, &header, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &loop_merge, 1);
     spirv_emit(m, t->out, SPV_OP_RETURN, NULL, 0);
+    }
 
     /* The entry function: variables, their zeroing, the starting registers, then the loop. */
     const uint32_t void_type = spirv_type_void(m);

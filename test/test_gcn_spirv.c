@@ -1078,8 +1078,42 @@ static void constant_pixel_wqm(void)
     constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 0, "pixel_wqm_after_survey");
 }
 
+/* Whether the module has an instruction with this opcode (after the five header words). */
+static int has_opcode(const uint32_t *spirv, size_t words, uint32_t opcode)
+{
+    for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16)
+        if ((spirv[at] & 0xffff) == opcode) return 1;
+    return 0;
+}
+
+/* A program whose branches all go forward is a chain of selections with no loop; one with a branch back
+   keeps the dispatch loop. */
+static void forward_blocks(void)
+{
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[512];
+    static const uint32_t forward[] = {0xbf840001, 0x7e020302, 0xbf810000};  /* s_cbranch_scc0 over v_mov_b32 v1, v2; s_endpgm */
+    static const uint32_t backward[] = {0x7e020302, 0xbf84fffe, 0xbf810000}; /* v_mov_b32 v1, v2; s_cbranch_scc0 back to it */
+    static const uint32_t straight[] = {0x7e020302, 0xbf810000};             /* one block */
+    CHECK(gcn_translate_compute(PROGRAM(forward), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && !has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && has_opcode(spirv, words, SPV_OP_SELECTION_MERGE));
+    CHECK(validate(spirv, words, "forward_blocks") != 0);
+    CHECK(to_metal(spirv, words, "forward_blocks") != 0);
+    free(spirv), spirv = NULL;
+    CHECK(gcn_translate_compute(PROGRAM(straight), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && !has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && !has_opcode(spirv, words, SPV_OP_SWITCH));
+    CHECK(validate(spirv, words, "straight_block") != 0);
+    free(spirv), spirv = NULL;
+    CHECK(gcn_translate_compute(PROGRAM(backward), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && has_opcode(spirv, words, SPV_OP_SWITCH));
+    CHECK(validate(spirv, words, "backward_block") != 0);
+    free(spirv);
+}
+
 int main(void)
 {
+    forward_blocks();
     table_snapshots();
     submitted_table_snapshots();
     constant_pixel_wqm();
