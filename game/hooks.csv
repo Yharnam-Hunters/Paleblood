@@ -28,6 +28,7 @@ address,replacement,system,returns
 0x00fb4ac0,bb_render_yebis_context_instantiate,render,i64
 0x00fb6c80,bb_render_yebis_release_interface,render,i32
 0x00fb6d20,bb_render_yebis_initialize_interface,render,void
+0x00fb6f20,bb_render_yebis_allocate_storage,render,i64
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
 0x01118300,bb_audio_fmod_thread_entry,audio,i64
