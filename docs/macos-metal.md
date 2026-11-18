@@ -201,8 +201,8 @@ miscellaneous and cull outputs are rejected. Shader interfaces may use up to 32 
 parameters. Declared vertex parameter and pixel interpolant capacities must cover the translated
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
-Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
+Pixel exports support RGBA as FP16_ABGR or 32_ABGR at their original locations in the eight
+color slots, perspective-center inputs and no depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
 and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
@@ -218,14 +218,14 @@ validate every instruction against its declared SGPR/VGPR allocation.
 Readback is tightly packed BGRA, matching the display API. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
-Target0 supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA factors,
-using the color factors for alpha as well. Other factors or operations, separate alpha,
-ROP3 overrides, reserved fields, non-copy color operations and partial color masks stop with a reason.
-An enabled blend flag has no effect when target 0 is unbound, its channel mask is zero or the
-colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
-A zero colour mask disables attachment writes while still executing the draw. The Metal test
-observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
-the write mask, and restoring it enables colour writes again.
+Each active color slot supports RGBA8/BGRA8 UNORM or sRGB attachments with matching extents
+and disjoint guest memory. Each has its own ADD blend state with ZERO, ONE, SRC_ALPHA or
+ONE_MINUS_SRC_ALPHA factors, using the color factors for alpha as well. Other factors or
+operations, separate alpha, ROP3 overrides, reserved fields, non-copy color operations and
+partial color masks stop with a reason. A slot without an export or with a zero target mask
+leaves its guest bytes intact. Shaders and depth/stencil operations still execute when color
+writes are disabled. The shader and pipeline caches preserve the original enabled output
+locations, and the pipeline includes each attachment's format and effective blend state.
 
 `DB_DEPTH_BOUNDS_MIN` and `_MAX` retain independent raw 32-bit words, including NaNs,
 infinities and signed zero, while depth-bounds testing is disabled. This register layout and
