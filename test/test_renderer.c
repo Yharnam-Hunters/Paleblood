@@ -610,6 +610,42 @@ int main(void)
         CHECK(steps_seen() == 2 && step_order[0] == 47 && step_order[1] == at(OUTPUT));
     }
 
+    /* A CPU-ordered step (RT_GPU_STEP_CPU_ORDERED, a constant engine's run) is performed at once on the
+       renderer's thread while earlier work is still to run, unless that work reads its memory in place:
+       the first for some memory waits for all the GPU's work (nothing has noted reads there yet). Then
+       one for that memory is performed while a held deferrable step still waits, but one for the memory
+       the compute queue's dispatch (scale_add) reads, recorded just before it in the same buffer, waits
+       for that work and the held step. */
+    {
+        enum { ORDERED = 0x36000, BYTES = 0x100, INPUT = 0x20000, SPARE = 0x24000, COMPUTE_QUEUE_ID = 3 };
+        char error[256] = "";
+        step_count = 0;
+        const rt_gpu_step firsts[] = {{note_step, "sceGnmSubmitCommandBuffers", 0, {50}, RT_GPU_STEP_CPU_ORDERED, NULL, {at(SPARE), 64}},
+                                      {note_step, "sceGnmSubmitCommandBuffers", 0, {51}, RT_GPU_STEP_CPU_ORDERED, NULL, {at(INPUT), 64}}};
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)at(ORDERED), BYTES, firsts, 2);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 2);
+        step_count = 0, gate_open = 0;
+        const rt_gpu_step held = {gate_step, "sceGnmSubmitCommandBuffers", 0, {52}, RT_GPU_STEP_DEFERRABLE, NULL, {at(SPARE) + 0x100, 4}};
+        const rt_gpu_step free_memory = {note_step, "sceGnmSubmitCommandBuffers", 0, {53}, RT_GPU_STEP_CPU_ORDERED, NULL, {at(SPARE), 64}};
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(at(ORDERED) + 0x1000), BYTES, &held, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)(at(ORDERED) + 0x2000), BYTES,
+                           &free_memory, 1);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(at(ORDERED) + 0x3000, 0x10, one, error, sizeof error) == 0);
+        const rt_gpu_step read_memory = {note_step, "sceGnmDingDong", 0x20, {54}, RT_GPU_STEP_CPU_ORDERED, NULL, {at(INPUT), 64}};
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(ORDERED) + 0x3000), BYTES, &read_memory, 1);
+        const struct timespec reach = {1, 0}; /* the renderer's thread meets both while the gate still holds */
+        nanosleep(&reach, NULL);
+        CHECK(steps_seen() == 1 && step_order[0] == 53);
+        pthread_mutex_lock(&step_lock);
+        gate_open = 1;
+        pthread_cond_broadcast(&step_changed);
+        pthread_mutex_unlock(&step_lock);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 3 && step_order[1] == 52 && step_order[2] == 54);
+    }
+
     rt_render_forget();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;

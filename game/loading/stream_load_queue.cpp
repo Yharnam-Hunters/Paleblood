@@ -74,7 +74,7 @@ extern "C" StreamHandle *bb_loading_stream_queue_request_02a6cd90(StreamHandle *
     stream_handle_construct(&held, info, queue);
     lock(&queue->lock);
     StreamLoadEvent event;
-    event.event.word_0x00 = static_cast<uint32_t>(stream_event_kind);
+    event.event.kind = stream_event_kind;
     event.event.word_0x08 = reinterpret_cast<uint64_t>(info);
     load_request_copy(&event.event.request, request);
     event.event.request.vtable = stream_request_vtable.address() + engine::vtable_address_point;

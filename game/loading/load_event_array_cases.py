@@ -74,7 +74,10 @@ class Case:
             if EVENT > STREAM_EXTRA_BYTE:
                 # The stream event's extra byte: distinct per buffer and event, so its copy shows.
                 e[STREAM_EXTRA_BYTE] = (sum(name.encode()) + 0x11 * i) & 0xff
-            e[0:16] = struct.pack('<QQ', 0x1000 + i, 0x2000 + i)
+            # The kind, then four bytes the queue functions never write: distinct per buffer and
+            # event, so a copy that drops or zeroes them shows.
+            e[0:16] = struct.pack('<IIQ', 0x1000 + i, 0x5a000000 | (sum(name.encode()) << 8) & 0xffff00 | i,
+                                  0x2000 + i)
             for base in STRINGS:
                 heap = base in heaps
                 if not heap:
