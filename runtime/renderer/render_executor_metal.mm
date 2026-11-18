@@ -687,8 +687,16 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
 {
     const char *stage = storage ? "compute" : "pixel";
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
-    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
-    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY)
+    const bool cube = !storage && d.type == RT_IMAGE_CUBE;
+    constexpr uint32_t cube_faces = 6;
+    /* As in the common sampled-cube path, the allocation describes the faces.
+       The advertised array range may extend beyond the six stored faces. */
+    if (cube && (d.depth != 1 || d.layers != cube_faces || d.width != d.height || d.pow2_pad ||
+                 d.base_array || d.last_array < cube_faces - 1 || d.base_level || d.last_level ||
+                 d.tiling_index != 13 || format.metal != MTLPixelFormatRGBA8Unorm))
+        return failed(error,size,"pixel cube requires one square tiled RGBA8 UNORM cube with a full base-level view"), nil;
+    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube;
+    if (!one_d && d.type != RT_IMAGE_2D && !arrayed)
         return failed(error, size, "only 1D/2D %s images and their arrays are modeled",stage), nil;
     constexpr uint32_t image_dimension_limit = 16384, image_layer_limit = 2048; /* Metal feature-table limits. */
     const uint32_t height = one_d ? 1 : d.height;
@@ -698,7 +706,7 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
     unsigned max_levels = 1;
     for (uint32_t extent = std::max(d.width, height); extent > 1; extent >>= 1) ++max_levels;
     if (d.base_level > d.last_level || d.last_level >= max_levels ||
-        (arrayed && (d.base_array > d.last_array || d.last_array >= d.layers)))
+        (arrayed && !cube && (d.base_array > d.last_array || d.last_array >= d.layers)))
         return failed(error, size, "%s image mip or array view exceeds its allocation",stage), nil;
     if (format.block > 1 && !x->device.supportsBCTextureCompression)
         return failed(error, size, "Metal device does not support BC textures"), nil;
@@ -745,7 +753,8 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         descriptor.storageMode = MTLStorageModeShared;
         id<MTLTexture> texture = [x->device newTextureWithDescriptor:descriptor];
         if (!texture) return failed(error,size,"Metal image allocation failed"), nil;
-        const uint32_t first = arrayed ? d.base_array : 0, slices = arrayed ? d.last_array - d.base_array + 1 : 1;
+        const uint32_t first = arrayed && !cube ? d.base_array : 0;
+        const uint32_t slices = cube ? cube_faces : arrayed ? d.last_array - d.base_array + 1 : 1;
         id<MTLTexture> view = [texture newTextureViewWithPixelFormat:format.metal textureType:descriptor.textureType
             levels:NSMakeRange(d.base_level,d.last_level - d.base_level + 1) slices:NSMakeRange(first,slices) swizzle:swizzle];
         if (!view) return failed(error,size,"Metal image view allocation failed"), nil;
@@ -757,11 +766,12 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         const auto &layout = levels[level];
         const uint32_t width = std::max(1u,d.width >> level), rows = std::max(1u,height >> level);
         const size_t row_bytes = static_cast<size_t>(layout.columns) * format.bytes, slice_bytes = row_bytes * layout.rows;
+        const size_t transfer_row_bytes = cube && rows == 1 ? 0 : row_bytes;
         x->image_rows.resize(slice_bytes * d.layers);
         rt_tiling_detile(&layout.layout,base + layout.offset,x->image_rows.data(),layout.columns,layout.rows,d.layers);
         for (uint32_t slice = 0; slice < d.layers; ++slice)
             [entry->texture replaceRegion:MTLRegionMake2D(0,0,width,rows) mipmapLevel:level slice:slice
-                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:0];
+                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:transfer_row_bytes bytesPerImage:0];
     }
     return entry->view;
 }
@@ -821,9 +831,10 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
         if (linear && (images[i].access & GCN_IMAGE_SAMPLE) &&
             (format->type != GCN_IMAGE_FLOAT || (float32 && !x->device.supports32BitFloatFiltering)))
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
+        const bool cube = descriptor.type == RT_IMAGE_CUBE;
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY || cube,format->type,format->components,1,cube,
             descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0, 0}; /* DST_SEL: for the texel a load outside the image reads */
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,error,size))) return -1;
     }
