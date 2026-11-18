@@ -1081,6 +1081,20 @@ Neither changes what a normal run does.
   skips a draw, dispatch or register it cannot do instead of stopping. The frames such a run shows lack
   the skipped draws: it is for listing gaps, never for judging output.
 
+### What the emitted code costs
+
+`tools/spirv_stats.py DIR` measures the SPIR-V the translator emits, from a directory of `.spv` files
+named `<stage>-<address>[-...].spv` (a `BB_SHADER_SWEEP` directory, or any dump named the same way;
+the shaders stay outside the repository). For each shader it counts instructions, loads and stores of
+the variables that hold the GCN registers, guest memory loads and stores, push-constant loads,
+branches, selects and image instructions, and runs `spirv-val`. With `--opt` it also runs
+`spirv-opt -O` on each module and gives the same counts for the result: what the optimiser removes is
+code the translator spends for nothing. With `--counts FILE` (one line per shader: stage letter `v`,
+`p` or `c`, address in hexadecimal, calls) it ranks the shaders by calls times instructions. A survey
+translation (`BB_SHADER_SWEEP`, `pbgcn_survey`) differs from a normal run's in places (survey mode
+keeps no constant EXEC in pixel shaders), so figures meant for speed work come from normal-mode
+translations.
+
 
 ## Guest memory on the GPU
 
