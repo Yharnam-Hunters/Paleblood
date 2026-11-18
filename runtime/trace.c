@@ -33,7 +33,7 @@ enum {
     DEAD_STACK = 1 << 20,               /* how far below the caller's rsp import changes are ignored */
     TRAP_FLAG = 0x100,
     DIRECTION_FLAG = 0x400,
-    IMPORT_CALL_LIMIT = 256,
+    IMPORT_CALL_LIMIT = 4096,
     WRITE_LIMIT = 4096,
     WRITE_BYTES = 1 << 20,
     SNAPSHOT = 4096,                       /* bytes compared behind each pointer argument */

@@ -1,51 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Frame timing: the two helpers the Chalice Dungeon gate's handle creations call
-// (fixed_step_states.cpp declares them as originals; it is left as it is).
+// (fixed_step_states.cpp calls them through their original addresses).
 // - frame_timing_fill_creation_part1_0231fbc0: packs a decimal number into one 32-bit word as four
 //   two-digit groups, highest first, one per byte (12345678 packs as 12 << 24 | 34 << 16 |
 //   56 << 8 | 78). The number is the source record's word at +0x18 when it is not negative; when it
 //   is, it is built from the record's 16-bit value at +2 and its count at +5 (one less, at most the
 //   caller's limit). With no record the word is left all ones. Returns the block.
 // - frame_timing_create_handle_from_levels_02265580: when FrpgNetMan's four bytes allow it, makes
-//   a handle object (0x130 bytes on the heap at 0x05940438) stamped with the local date, adds it to
-//   the list of FrpgNetMan's object at +0xca8, starts a new entry of that object with the handle and
-//   the four flag levels, and hands the caller a reference to it. Otherwise the caller gets null.
+//   a gate handle (dungeon_gate.h) whose id is a stamp of the local date, adds it to the list of
+//   FrpgNetMan's handle service, starts a new request of the service with the handle and the four
+//   flag levels, and hands the caller a reference to the handle. Otherwise the caller gets null.
 //   Returns the caller's slot.
-#include <cstddef>
 #include <cstdint>
 
 #include "../engine/allocator.h"
 #include "../engine/engine.h"
 #include "../engine/ref_object.h"
+#include "dungeon_gate.h"
 #include "runtime/original.h"
+
+using namespace frame_timing::dungeon_gate;
 
 namespace {
 
 // ---- fill_creation_part1 ------------------------------------------------------------------------
-
-// The record the source points at: a number at +0x18, used as it is when not negative, and the two
-// values a negative one is replaced with. What they stand for is not known.
-struct CreationRecord {
-    uint8_t unknown_0x000[0x2];
-    uint16_t value_002;
-    uint8_t unknown_0x004[0x1];
-    uint8_t count_005;
-    uint8_t unknown_0x006[0x12];
-    int32_t number;
-};
-static_assert(offsetof(CreationRecord, value_002) == 0x2 && offsetof(CreationRecord, count_005) == 0x5 &&
-              offsetof(CreationRecord, number) == 0x18);
-
-struct CreationSource {
-    uint8_t unknown_0x000[0x8];
-    const CreationRecord *record;  // may be null
-};
-static_assert(offsetof(CreationSource, record) == 0x8);
-
-// The block filled: one 32-bit word (the callers' slot is larger; nothing past the word is written).
-struct CreationPart1 {
-    uint32_t packed;
-};
 
 constexpr uint32_t no_record_packed = 0xffffffff;
 // A negative number is replaced with base + value_002 * scale + (count_005 - 1, at most the limit).
@@ -75,64 +53,10 @@ uint32_t pack_decimal_groups(uint32_t number)
 
 // ---- create_handle_from_levels ------------------------------------------------------------------
 
-// FrpgNetMan, the online manager: the four bytes that gate the creation (as fixed_step_states.cpp
-// reads them; their meaning is not known) and the object whose list and entries it uses.
-struct NetHandles;
-struct FrpgNetMan {
-    uint8_t unknown_0x000[0x8];
-    uint8_t flag_008;  // must be nonzero
-    uint8_t unknown_0x009[0x9ed];
-    uint8_t flag_9f6;  // must be zero
-    uint8_t unknown_0x9f7[0x1];
-    uint8_t flag_9f8;  // must be zero
-    uint8_t unknown_0x9f9[0x57];
-    uint8_t flag_a50;  // must be zero
-    uint8_t unknown_0xa51[0x257];
-    NetHandles *handles;
-};
-static_assert(offsetof(FrpgNetMan, flag_008) == 0x8 && offsetof(FrpgNetMan, flag_9f6) == 0x9f6 &&
-              offsetof(FrpgNetMan, flag_9f8) == 0x9f8 && offsetof(FrpgNetMan, flag_a50) == 0xa50 &&
-              offsetof(FrpgNetMan, handles) == 0xca8);
-RT_GLOBAL(0x0593b120, frpg_net_man_instance, FrpgNetMan *);
-RT_GLOBAL(0x04d3ad45, frpg_net_man_name, const char);
-
-// FrpgNetMan's object at +0xca8: a list of handle pointers at +0x50 (a vector: begin, end and
-// capacity from its +0x8).
-struct LevelHandle;
-struct HandleList {
-    uint8_t unknown_0x00[0x8];
-    LevelHandle **begin;
-    LevelHandle **end;
-    LevelHandle **capacity;
-};
-struct NetHandles {
-    uint8_t unknown_0x000[0x50];
-    HandleList list;
-};
-static_assert(offsetof(HandleList, begin) == 0x8 && offsetof(HandleList, capacity) == 0x18 &&
-              offsetof(NetHandles, list) == 0x50);
-
-// The four flag levels (fixed_step_states.cpp reads them); passed on as they are.
-constexpr size_t level_columns = 4;
-struct FlagLevels {
-    int32_t level[level_columns];
-};
-
-// The handle object: reference counted, with two words at +0x110 the creation sets to 1 (their
-// meaning is not known).
-struct LevelHandle {
-    engine::RefObject base;
-    uint8_t unknown_0x010[0x100];
-    uint32_t word_110;
-    uint32_t word_114;
-    uint8_t unknown_0x118[0x18];
-};
-static_assert(offsetof(LevelHandle, word_110) == 0x110 && sizeof(LevelHandle) == 0x130);
-constexpr uint64_t handle_alignment = 8;
+// What the creation sets the handle's words at +0x110 and +0x114 to (their meaning is not known).
 constexpr uint32_t handle_word_initial = 1;
-RT_GLOBAL(0x05940438, handle_heap, engine::Allocator *);
 
-// The date stamp the handle is made with: the top bit always set, below it the date packed by
+// The date stamp the handle is made with (as its id): the top bit always set, below it the date packed by
 // 0x024ee200 when the local clock could be read.
 constexpr uint64_t stamp_flag = 0x8000000000000000;
 // The date and time the clock fills (16 bytes, not read here) and the 16 bytes the packing fills
@@ -150,19 +74,9 @@ RT_ORIGINAL(0x02fbf7e8, rtc_get_tick, int32_t(const RtcDateTime *time, uint64_t 
 // Packs a tick into a date; false when the tick has no date in range (not replaced).
 RT_ORIGINAL(0x024ee200, pack_date, bool(PackedDate *out, uint64_t tick));
 
-// The handle's constructor (not replaced): it keeps the stamp at +0x10 and zeroes its count.
-RT_ORIGINAL(0x02267200, construct_level_handle, void(LevelHandle *handle, const uint64_t *stamp));
-// Appends the handle pointer to the list (a vector of pointers; not replaced).
-RT_ORIGINAL(0x02266b50, append_handle, void(HandleList *list, LevelHandle *const *handle));
-// Makes a new entry of FrpgNetMan's object (0xe0 bytes; not replaced, not analyzed further).
-RT_ORIGINAL(0x02264640, make_handles_entry, void *(NetHandles *handles));
-// Starts the entry with a reference to the handle and the levels (not replaced, not analyzed).
-RT_ORIGINAL(0x0226a130, start_entry, void(void *entry, engine::RefObject **handle, const FlagLevels *levels));
-
-bool net_allows(const FrpgNetMan *net)
-{
-    return net->flag_008 != 0 && net->flag_9f8 == 0 && net->flag_9f6 == 0 && net->flag_a50 == 0;
-}
+// Starts the request with a reference to the handle and the levels (not replaced, not analyzed).
+RT_ORIGINAL(0x0226a130, start_request,
+            void(HandleRequest *request, engine::RefObject **handle, const FlagLevels *levels));
 
 // The local date's stamp: only the flag when the clock fails, the tick is 0 or the packing fails.
 // A tick the clock call leaves unwritten counts as 0 (the original would read its stack).
@@ -195,28 +109,29 @@ extern "C" CreationPart1 *bb_frame_timing_fill_creation_part1_0231fbc0(CreationP
 extern "C" engine::RefObject **bb_frame_timing_create_handle_from_levels_02265580(engine::RefObject **out,
                                                                                   const FlagLevels *levels)
 {
-    FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
+    FrpgNetMan *net = require_frpg_net_man();
     if (!net_allows(net)) {
         *out = nullptr;
         return out;
     }
-    NetHandles *const handles = net->handles;
-    const uint64_t stamp = date_stamp();
+    HandleService *const service = net->handle_service;
+    const SessionId id{static_cast<int64_t>(date_stamp())};
 
     // A failed allocation is not checked past the constructor: the original then writes through null.
-    LevelHandle *handle = static_cast<LevelHandle *>(handle_heap.get()->allocate(sizeof(LevelHandle), handle_alignment));
-    if (handle) construct_level_handle(handle, &stamp);
+    void *const memory = gate_handle_heap.get()->allocate(sizeof(GateHandle), gate_handle_alignment);
+    GateHandle *handle = static_cast<GateHandle *>(memory);
+    if (handle) construct_gate_handle(handle, &id);
     handle->word_110 = handle_word_initial;
     handle->word_114 = handle_word_initial;
-    append_handle(&handles->list, &handle);
+    append_gate_handle(&service->handles, &handle);
 
-    // The entry gets its own reference for the call; the one dropped after it is the one taken,
+    // The request gets its own reference for the call; the one dropped after it is the one taken,
     // whatever the call leaves in the slot.
-    void *const entry = make_handles_entry(handles);
+    HandleRequest *const request = make_handle_request(service);
     engine::RefObject *const taken = handle ? &handle->base : nullptr;
     engine::RefObject *passed = taken;
     if (taken) engine::retain(taken);
-    start_entry(entry, &passed, levels);
+    start_request(request, &passed, levels);
     if (taken) engine::release(taken);
 
     engine::RefObject *const result = handle ? &handle->base : nullptr;
