@@ -9,6 +9,7 @@
    macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
 #include "runtime/rect_list.h"
+#include "runtime/table_snapshot.h"
 #include "runtime/tile_copy.h"
 
 #include "gcn_programs.h"
@@ -95,6 +96,7 @@ static const gcn_pixel_layout pixel_layout = {.user_sgprs = 8, .push_constant_of
 static uint32_t output_control; /* the vertex layout's, for the next translation */
 static gcn_lds compute_lds;     /* the compute layout's, for the next translation */
 static uint64_t compute_gds;    /* the compute layout's GDS address, for the next translation */
+static const gcn_table_snapshot *compute_tables; /* the compute layout's table snapshots, for the next translation */
 
 static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
 {
@@ -105,6 +107,7 @@ static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **sp
     gcn_compute_layout compute = layout;
     compute.lds = compute_lds;
     compute.gds_address = compute_gds;
+    compute.table_snapshot = compute_tables;
     return gcn_translate_compute(code, dwords, &compute, spirv, words, error, error_size);
 }
 
@@ -544,6 +547,107 @@ static void memory_reads(void)
     CHECK(count == 2 && !unknown && found[0].origin.sgpr == 0 && found[1].origin.sgpr == 4);
 }
 
+/* Table snapshots (gcn_table_snapshot_plan): table_descriptor_store's s_load of 4 dwords at 0 from the
+   pointer in s[2:3] is one entry; s_load_dwordx4 at dword 4 from s[0:1] reads bytes 16-31; a load
+   through a pointer the program writes first is none; entries take loads while their words fit
+   (15: three 4-dword loads, not a fourth) and a second load of the same words shares its entry; a
+   loop back over the load, or a jump to a computed address, makes none. The
+   module the plan's loads translate to is valid, and a snapshot past the push constants is refused. */
+static void table_snapshots(void)
+{
+    gcn_table_snapshot plan;
+    char error[300] = "";
+    CHECK(gcn_table_snapshot_plan(PROGRAM(table_descriptor_store), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].pointer_sgpr == 2 && plan.entries[0].offset == 0 && plan.entries[0].dwords == 4 &&
+          plan.entries[0].first_word == 0 && plan.use_count == 1 && plan.uses[0].at == 0 && plan.uses[0].entry == 0);
+    static const uint32_t at_dword_four[] = {
+        0xc0880104, /* s_load_dwordx4 s[16:19], s[0:1], 0x4 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(at_dword_four), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].pointer_sgpr == 0 && plan.entries[0].offset == 16);
+    static const uint32_t written_pointer[] = {
+        0xbe820400, /* s_mov_b64 s[2:3], s[0:1] */
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(written_pointer), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 0 && plan.use_count == 0);
+    static const uint32_t four_tables[] = {
+        0xc0840100, /* s_load_dwordx4 s[8:11], s[0:1], 0x0 */
+        0xc0860104, /* s_load_dwordx4 s[12:15], s[0:1], 0x4 */
+        0xc0880108, /* s_load_dwordx4 s[16:19], s[0:1], 0x8 */
+        0xc08a010c, /* s_load_dwordx4 s[20:23], s[0:1], 0xc */
+        0xc08c0100, /* s_load_dwordx4 s[24:27], s[0:1], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(four_tables), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 3 && plan.entries[2].offset == 32 && plan.entries[2].first_word == 8 && plan.use_count == 4 &&
+          plan.uses[3].at == 4 && plan.uses[3].entry == 0);
+    static const uint32_t over_its_pointer[] = { /* the LUT pass's load, into the SGPRs of its own pointer */
+        0xc0800300, /* s_load_dwordx4 s[0:3], s[2:3], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(over_its_pointer), &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].pointer_sgpr == 2 && plan.use_count == 1);
+    static const uint32_t looped[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe820404, /* s_mov_b64 s[2:3], s[4:5] */
+        0xbf82fffd, /* s_branch -3 (back to the load) */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(looped), &plan, error, sizeof error) == 0 && plan.entry_count == 0);
+    static const uint32_t returning[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe802000, /* s_setpc_b64 s[0:1] */
+    };
+    CHECK(gcn_table_snapshot_plan(PROGRAM(returning), &plan, error, sizeof error) == 0 && plan.entry_count == 0);
+    CHECK(gcn_table_snapshot_plan(PROGRAM(table_descriptor_store), &plan, error, sizeof error) == 0);
+    compute_tables = &plan;
+    translates(PROGRAM(table_descriptor_store), "table_descriptor_store_snapshot");
+    compute_tables = NULL;
+    gcn_compute_layout past = layout;
+    past.table_snapshot = &plan, past.push_constant_offset = 4;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    CHECK(gcn_translate_compute(PROGRAM(table_descriptor_store), &past, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "past the 128 push-constant bytes"));
+    free(spirv);
+}
+
+/* Table snapshots at submission (runtime/table_snapshot.h): a dispatch on a queue takes the table its
+   shader (table_descriptor_store) reads through s[2:3] from the shader and user data earlier buffers set
+   on that queue; another queue's dispatch has no shader there; a pointer half set, or a table outside
+   the memory, takes nothing. */
+static void submitted_table_snapshots(void)
+{
+    static uint32_t memory_words[512];
+    const uint64_t base = (uint64_t)(uintptr_t)memory_words, table = base + 256 * 4;
+    memcpy(memory_words, table_descriptor_store, sizeof table_descriptor_store);
+    for (unsigned i = 0; i < 4; i++) memory_words[256 + i] = 0x1000 + i;
+    const rt_table_memory memory = {base, sizeof memory_words};
+    rt_table_snapshots *s = rt_table_snapshots_new();
+    CHECK(s != NULL);
+    if (!s) return;
+    rt_render_call setup[3] = {{.kind = RT_CALL_COMPUTE_SHADER}, {.kind = RT_CALL_USER_DATA}, {.kind = RT_CALL_DISPATCH}};
+    setup[0].u.compute_shader.code = base, setup[0].u.compute_shader.user_sgprs = 4;
+    setup[1].u.user_data.stage = RT_STAGE_COMPUTE, setup[1].u.user_data.slot = 2, setup[1].u.user_data.count = 2;
+    setup[1].u.user_data.words[0] = (uint32_t)table, setup[1].u.user_data.words[1] = (uint32_t)(table >> 32);
+    rt_table_words tables[3];
+    CHECK(rt_table_snapshots_take(s, 1, setup, 2, &memory, tables) == 0 && tables[0].words[0] == 0 && tables[1].words[0] == 0);
+    CHECK(rt_table_snapshots_take(s, 1, setup + 2, 1, &memory, tables) == 0); /* a later buffer on the same queue */
+    CHECK(tables[0].words[0] == 1 && tables[0].words[1] == 0x1000 && tables[0].words[4] == 0x1003);
+    const rt_render_call indirect = {.kind = RT_CALL_DISPATCH_INDIRECT};
+    CHECK(rt_table_snapshots_take(s, 2, &indirect, 1, &memory, tables) == 0 && tables[0].words[0] == 0); /* no shader on queue 2 */
+    rt_table_snapshots_free(s);
+    s = rt_table_snapshots_new();
+    setup[1].u.user_data.count = 1; /* s3, the pointer's high half, unset */
+    CHECK(rt_table_snapshots_take(s, 0, setup, 3, &memory, tables) == 0 && tables[2].words[0] == 0);
+    setup[1].u.user_data.count = 2, setup[1].u.user_data.words[0] = (uint32_t)(base + sizeof memory_words);
+    CHECK(rt_table_snapshots_take(s, 0, setup, 3, &memory, tables) == 0 && tables[2].words[0] == 0); /* outside the memory */
+    rt_table_snapshots_free(s);
+}
+
 /* Table-driven copies (gcn_table_copy_shape): the table in s[0:3] (read as dwords or through its
    format), the source s[4:7], the destination s[8:11], the workgroup index s12. A store with an offset,
    or another program, is not one. */
@@ -890,6 +994,8 @@ static void constant_pixel_wqm(void)
 
 int main(void)
 {
+    table_snapshots();
+    submitted_table_snapshots();
     constant_pixel_wqm();
     survey_mode();
     tessellation();

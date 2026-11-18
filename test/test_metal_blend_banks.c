@@ -16,6 +16,8 @@ enum { POOL_BYTES = 64 << 10, VS_CODE = 0x1000, PS_CODE = 0x2000,
        BLEND0 = 0xa1e0, TARGET_MASK = 0xa08e, CANARY = 0x6d };
 static const uint64_t guest_base = UINT64_C(0x3000000000);
 static const uint32_t blend_enable = UINT32_C(1) << 30;
+/* AMD SRC_COLOR factor2 remains outside the bounded alpha-blend profile. */
+static const uint32_t unsupported_source_color_blend = (UINT32_C(1) << 30) | 2u;
 static const uint32_t vertex_marker = UINT32_C(0x13572468);
 /* Copied from the independently owned vertex_store_witness in test_metal_executor.c.
    LLVM GFX7 bonaire encodings: descriptors s[0:3]/s[4:7] load position/attribute;
@@ -241,7 +243,7 @@ static void ordering(Fixture *f)
     Calls c = {0}; reg(&c, BLEND0 + 1, UINT32_MAX);
     unchanged(f, "carry/higher-record", &c, RECORD, NULL);
     c = (Calls){0}; scene(&c, 0, 15); success(f, "carry/later-submission", &c, AUTO, 0, 0, SUBMIT);
-    c = (Calls){0}; reg(&c, BLEND0, blend_enable); unchanged(f, "carry/bank0-enable", &c, RUN, NULL);
+    c = (Calls){0}; reg(&c, BLEND0, unsupported_source_color_blend); unchanged(f, "carry/bank0-enable", &c, RUN, NULL);
     c = (Calls){0}; reg(&c, BLEND0 + 7, 0); reg(&c, BLEND0 + 1, UINT32_MAX);
     unchanged(f, "carry/higher-overwrites", &c, SUBMIT, NULL);
     for (unsigned route = AUTO; route <= LOGICAL16; ++route) {
@@ -250,7 +252,7 @@ static void ordering(Fixture *f)
     }
     c = (Calls){0}; reg(&c, BLEND0, 0); scene(&c, 1, 15);
     success(f, "bank0/overwrite-recovery", &c, AUTO, 1, 0, RUN);
-    c = (Calls){0}; reg(&c, BLEND0 + 2, 0); reg(&c, BLEND0, blend_enable);
+    c = (Calls){0}; reg(&c, BLEND0 + 2, 0); reg(&c, BLEND0, unsupported_source_color_blend);
     scene(&c, 0, 15); draw(&c, AUTO); unchanged(f, "bank0/inverse-order-refusal", &c, RUN, "blending");
     rt_executor_reset(f->executor);
     c = (Calls){0}; scene(&c, 0, 15); success(f, "bank0/reset-default-recovery", &c, AUTO, 0, 0, RUN);
