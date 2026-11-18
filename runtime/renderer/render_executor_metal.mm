@@ -139,6 +139,7 @@ struct MetalState {
     uint32_t depth_bounds[2] = {}; /* Independent raw DB_DEPTH_BOUNDS_MIN/MAX words. */
     uint32_t step_rates[2] = {}, step_rates_set = 0;
     uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
+    uint32_t clear_words[RT_COLOR_TARGETS][2] = {}; /* Raw CB_COLORn_CLEAR_WORD0/1, inert without fast clears. */
     uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
     bool depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t depth_words[9] = {}, depth_written = 0, depth_view = 0, render_control = 0;
@@ -211,6 +212,7 @@ enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009,
        CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, CB_BLEND0_CONTROL = 0xa1e0, CB_BLEND7_CONTROL = 0xa1e7,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
+       CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
        VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9,
        PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32,
        PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_VPORT_SCISSOR_0_BR = 0xa095, PA_SC_VPORT_SCISSOR_LAST = 0xa0b3, PA_SC_MODE_CNTL_0 = 0xa292, PA_CL_CLIP_CNTL = 0xa204 };
@@ -259,6 +261,14 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
         if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
             const unsigned slot = address - CB_BLEND0_CONTROL;
             state.blend_control[slot] = value; state.blend_set |= 1u << slot; return 0;
+        }
+        /* GFX7 has two formatted clear words per target, fifteen registers apart.
+           Retain them independently; target_for still refuses active fast clears. */
+        if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + static_cast<unsigned>(RT_COLOR_TARGETS) * CB_COLOR_REGISTER_STRIDE &&
+            (address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE < 2) {
+            const unsigned relative = address - CB_COLOR0_CLEAR_WORD0;
+            state.clear_words[relative / CB_COLOR_REGISTER_STRIDE][relative % CB_COLOR_REGISTER_STRIDE] = value;
+            return 0;
         }
         /* the other viewports' scissors: a draw uses viewport 0 */
         if (address > PA_SC_VPORT_SCISSOR_0_BR && address <= PA_SC_VPORT_SCISSOR_LAST) return 0;
