@@ -99,10 +99,10 @@ ai_group_reset_02224090,recorded,,1500,1500,0,0,e3c2894811c316e5,2026-11-14
 ai_group_reset_02224090,edge,,31,31,0,0,e3c2894811c316e5,2026-11-14
 ai_hearing_check_sound,recorded,,1505,1505,0,0,087a9d56378777b6,2026-11-14
 ai_hearing_check_sound,edge,,1642,1642,0,0,087a9d56378777b6,2026-11-14
-ai_hearing_in_ear_range,recorded,,1503,1503,0,0,087a9d56378777b6,2026-11-14
+ai_hearing_in_ear_range,recorded,,1503,1503,0,0,087a9d56378777b6,2026-11-17
 ai_hearing_in_ear_range,edge,,451,451,0,0,087a9d56378777b6,2026-11-14
-ai_hearing_test,recorded,,1501,1501,0,0,087a9d56378777b6,2026-11-14
-ai_hearing_test,edge,,563,563,0,0,087a9d56378777b6,2026-11-14
+ai_hearing_test,recorded,,1501,1501,0,0,087a9d56378777b6,2026-11-17
+ai_hearing_test,edge,,578,578,0,0,087a9d56378777b6,2026-11-17
 ai_hk_frame_update_0222bc10,recorded,,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,30,203,203,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,recorded,60,203,203,0,0,f6e94c85e455f408,2026-10-07
@@ -144,6 +144,7 @@ audio_fmod_string_copy_counted,recorded,,71,71,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_string_copy_counted,edge,,54,54,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_thread_affinity_lookup,recorded,,10,10,0,0,8abaccecd8e6ac90,2026-11-17
 audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-11-03
+audio_fmod_thread_entry,edge,,189,189,0,0,68c1bbca08873495,2026-11-17
 camera_axis_angle_quaternion_00848e80,recorded,,302,302,0,0,1bbcc2f491ba3af5,2026-11-17
 camera_axis_angle_quaternion_00848e80,edge,,866,866,0,0,1bbcc2f491ba3af5,2026-11-14
 camera_follow_pitch,edge,,32,32,0,0,b597553f9e6c9fc4,2026-11-03
@@ -164,6 +165,7 @@ character_ai_display_update_01cd92b0,recorded,,48,48,0,0,84ffbaaca95d946f,2026-1
 character_ai_display_update_01cd92b0,edge,,8,8,0,0,84ffbaaca95d946f,2026-11-13
 character_counters_refill_01e5c440,recorded,,117,117,0,0,84ffbaaca95d946f,2026-11-17
 character_counters_refill_01e5c440,edge,,18,18,0,0,84ffbaaca95d946f,2026-11-13
+character_event_request_update_01e59250,recorded,,188,188,0,0,84ffbaaca95d946f,2026-11-17
 character_event_request_update_01e59250,edge,,27,27,0,0,84ffbaaca95d946f,2026-11-13
 character_frame_update_01cbdb20,recorded,,457,457,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,recorded,30,457,457,0,0,b243fddb1ca6589a,2026-10-07
@@ -848,6 +850,7 @@ engine_segregated_bi_heap_is_consistent_02488cf0,edge,,39,39,0,0,2ec3498648c39dc
 engine_segregated_bi_heap_reset_02487dd0,edge,,4,4,0,0,871bfbf32aaca6ce,2026-11-12
 engine_segregated_regular_heap_allocate_02489620,recorded,,1524,1524,0,0,3e0bbdcd0dd77f4b,2026-11-17
 engine_segregated_regular_heap_allocate_02489620,edge,,21,21,0,0,3e0bbdcd0dd77f4b,2026-11-13
+engine_segregated_regular_heap_allocate_aligned_024898c0,recorded,,1744,1744,0,0,330b6354137a6429,2026-11-17
 engine_segregated_regular_heap_allocate_aligned_024898c0,edge,,25,25,0,0,330b6354137a6429,2026-11-17
 engine_segregated_regular_heap_allocate_aligned_top_02489fc0,edge,,16,16,0,0,2c6282bccb71803a,2026-11-13
 engine_segregated_regular_heap_allocate_top_02489d20,edge,,14,14,0,0,4dca96173b07b35e,2026-11-13
@@ -1130,6 +1133,7 @@ frame_timing_listener_list_notify_013daac0,recorded,,3,3,0,0,ef8ef3f096df299e,20
 frame_timing_listener_list_notify_013daac0,edge,,10,10,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_listener_list_prepare_013dab20,recorded,,125,125,0,0,d704f414255172fc,2026-11-14
 frame_timing_listener_list_prepare_013dab20,edge,,20,20,0,0,d704f414255172fc,2026-11-14
+frame_timing_listener_take_owner_013d6880,recorded,,686,686,0,0,abb51993bb79402d,2026-11-17
 frame_timing_listener_take_owner_013d6880,edge,,7,7,0,0,abb51993bb79402d,2026-11-14
 frame_timing_listener_take_resource_013d68b0,edge,,12,12,0,0,abb51993bb79402d,2026-11-14
 frame_timing_lookup_session_object_02265290,edge,,33,33,0,0,e19b24011b8a7938,2026-11-13
@@ -1372,6 +1376,7 @@ loading_file_load_slots_construct_02a6b520,recorded,,15,15,0,0,e6da123fd7dfc763,
 loading_file_load_slots_construct_02a6b520,edge,,3,3,0,0,e6da123fd7dfc763,2026-11-14
 loading_file_task_begin_read_024d8470,recorded,,362,362,0,0,0641f6933b329f81,2026-11-17
 loading_file_task_begin_read_024d8470,edge,,96,96,0,0,0641f6933b329f81,2026-11-14
+loading_file_task_check_read_024d6e20,recorded,,304,304,0,0,57fb66e79062e48d,2026-11-17
 loading_file_task_check_read_024d6e20,edge,,53,53,0,0,57fb66e79062e48d,2026-11-17
 loading_file_task_end_024d7e50,recorded,,103,103,0,0,7ef1cb4be8dde691,2026-11-17
 loading_file_task_end_024d7e50,edge,,23,23,0,0,7ef1cb4be8dde691,2026-11-14
@@ -1380,6 +1385,7 @@ loading_file_task_prepare_024d8210,recorded,,66,66,0,0,7ef1cb4be8dde691,2026-11-
 loading_file_task_prepare_024d8210,edge,,71,71,0,0,7ef1cb4be8dde691,2026-11-14
 loading_file_task_reset_024d6850,recorded,,335,335,0,0,7ef1cb4be8dde691,2026-11-17
 loading_file_task_reset_024d6850,edge,,12,12,0,0,7ef1cb4be8dde691,2026-11-14
+loading_file_task_start_024d7460,recorded,,303,303,0,0,57fb66e79062e48d,2026-11-17
 loading_file_task_start_024d7460,edge,,24,24,0,0,57fb66e79062e48d,2026-11-17
 loading_file_task_update_024d6950,edge,,14,14,0,0,57fb66e79062e48d,2026-11-14
 loading_finished_entry_assign_02aa4b90,recorded,,108,108,0,0,c80ba02b17a3eaa8,2026-11-17
@@ -1482,6 +1488,7 @@ loading_tagged_string_release_00836840,edge,,16,16,0,0,a6803c3e4220721d,2026-11-
 loading_tpfbnd_resource_construct_0181fb10,edge,,7,7,0,0,38f9be136672afff,2026-11-17
 loading_transfer_task_cancel_024dd8a0,recorded,,3,3,0,0,a6803c3e4220721d,2026-11-14
 loading_transfer_task_cancel_024dd8a0,edge,,45,45,0,0,a6803c3e4220721d,2026-11-14
+loading_transfer_task_check_close_024ddf20,recorded,,158,158,0,0,57fb66e79062e48d,2026-11-17
 loading_transfer_task_check_close_024ddf20,edge,,35,35,0,0,57fb66e79062e48d,2026-11-17
 loading_transfer_task_check_read_024dde50,recorded,,299,299,0,0,57fb66e79062e48d,2026-11-17
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,57fb66e79062e48d,2026-11-14
@@ -1611,7 +1618,9 @@ param_find_row_gem_drop_modify,recorded,,6,6,0,0,80e146de909c868f,2026-11-14
 param_find_row_gem_drop_modify,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_gem_effect,recorded,,2,2,0,0,80e146de909c868f,2026-11-14
 param_find_row_gem_effect,edge,,50,50,0,0,80e146de909c868f,2026-11-12
+param_find_row_gem_gen,recorded,,126,126,0,0,80e146de909c868f,2026-11-17
 param_find_row_gem_gen,edge,,50,50,0,0,80e146de909c868f,2026-11-12
+param_find_row_gem_gen_2,recorded,,112,112,0,0,80e146de909c868f,2026-11-17
 param_find_row_gem_gen_2,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_hit_mtrl,recorded,,97,97,0,0,80e146de909c868f,2026-11-14
 param_find_row_hit_mtrl,edge,,50,50,0,0,80e146de909c868f,2026-11-12
@@ -1735,6 +1744,7 @@ physics_shape_summary_00ac5e00,recorded,,35,35,0,0,a5c10a7e49b89454,2026-11-17
 physics_shape_summary_00ac5e00,edge,,12,12,0,0,a5c10a7e49b89454,2026-11-14
 physics_tracker_construct_00ae6d00,recorded,,16,16,0,0,a5c10a7e49b89454,2026-11-17
 physics_tracker_construct_00ae6d00,edge,,10,10,0,0,a5c10a7e49b89454,2026-11-14
+physics_tracker_setup_defaults_00ae6dc0,recorded,,34,34,0,0,a5c10a7e49b89454,2026-11-17
 physics_tracker_setup_defaults_00ae6dc0,edge,,3,3,0,0,a5c10a7e49b89454,2026-11-14
 physics_transform_from_frame_0083d6d0,recorded,,25,25,0,0,a5c10a7e49b89454,2026-11-17
 physics_transform_from_frame_0083d6d0,edge,,10,10,0,0,a5c10a7e49b89454,2026-11-14
@@ -1952,10 +1962,12 @@ render_record_step_user_pa_enabled,recorded,,84,84,0,0,1e2e46df29ae17bf,2026-11-
 render_record_step_user_pa_enabled,edge,,8,8,0,0,1e2e46df29ae17bf,2026-11-12
 render_record_translate_selector,recorded,,199,199,0,0,10c5ffcda30e8aaf,2026-11-14
 render_record_translate_selector,edge,,104,104,0,0,10c5ffcda30e8aaf,2026-11-07
+render_record_tuple_alternate_classification,recorded,,1009,1009,0,0,c3a9a383955e9e76,2026-11-17
 render_record_tuple_alternate_classification,edge,,28,28,0,0,c3a9a383955e9e76,2026-11-04
 render_record_tuple_classification_group,recorded,,350,350,0,0,317b9e3cf63cc18e,2026-11-14
 render_record_tuple_classification_group,edge,,20,20,0,0,317b9e3cf63cc18e,2026-11-04
 render_record_tuple_parameter_supported,edge,,47,47,0,0,9c55807eed261c9c,2026-11-04
+render_record_tuple_transform_classification,recorded,,550,550,0,0,7bed5f2b32298d75,2026-11-17
 render_record_tuple_transform_classification,edge,,507,507,0,0,7bed5f2b32298d75,2026-11-04
 render_reduce_record_parameter,recorded,,45,45,0,0,7bd0a3e9ef0efca8,2026-11-14
 render_reduce_record_parameter,edge,,20,20,0,0,7bd0a3e9ef0efca8,2026-11-10
@@ -2073,6 +2085,7 @@ render_translate_record_tertiary_02ab78a0,recorded,,45,45,0,0,cfe70ede045a3fa9,2
 render_translate_record_tertiary_02ab78a0,edge,,72,72,0,0,cfe70ede045a3fa9,2026-11-13
 render_update_gs_shader,edge,,145,145,0,0,61823ab0de1ac84a,2026-11-14
 render_update_hs_shader,edge,,245,245,0,0,1174a8774473cb56,2026-11-13
+render_update_model_wind,recorded,,50,50,0,0,4d23637bf11c299c,2026-11-17
 render_update_model_wind,edge,,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,60,120,120,0,0,4d23637bf11c299c,2026-11-10

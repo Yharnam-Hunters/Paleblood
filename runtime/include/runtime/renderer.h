@@ -54,17 +54,24 @@ void rt_renderer_configure(int enabled);
    it, or while an earlier deferrable step not yet performed writes that memory (it would land after
    the fill).
 
+   A step flagged RT_GPU_STEP_COPIES only copies words[4] bytes from words[0] to words[2]: guest
+   addresses, or byte offsets into the GDS (runtime/gpu_memory.h) where words[1] (the source) or
+   words[3] (the destination) is set (a DMA_DATA copy). The renderer may record it into the GPU's
+   work in its place (rt_executor_copy) as it does a fill, and performs it itself on the same terms,
+   or while an earlier deferrable step not yet performed writes its source.
+
    memory is the guest memory a step writes (a deferrable step, a fill) or reads (a wait): its address
    and bytes, 0 bytes for none, RT_GPU_STEP_ANY_MEMORY bytes when not known. The renderer orders
    recorded fills against it. */
-enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1, RT_GPU_STEP_SHOWS_TARGET = 2, RT_GPU_STEP_FILLS = 4 };
+enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1, RT_GPU_STEP_SHOWS_TARGET = 2, RT_GPU_STEP_FILLS = 4,
+       RT_GPU_STEP_COPIES = 8 };
 #define RT_GPU_STEP_ANY_MEMORY UINT64_MAX
 typedef struct rt_gpu_step {
     void (*perform)(const struct rt_gpu_step *step);
     const char *function; /* the submitting call, for stops by name */
     uint32_t offset;
     uint64_t words[6];
-    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_SHOWS_TARGET, RT_GPU_STEP_FILLS, or 0 */
+    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_SHOWS_TARGET, RT_GPU_STEP_FILLS, RT_GPU_STEP_COPIES, or 0 */
     int (*holds)(const struct rt_gpu_step *step, const struct rt_gpu_step *pending); /* a wait on memory (above); NULL for other steps */
     uint64_t memory[2];   /* the guest memory it writes or reads: address, bytes (above) */
 } rt_gpu_step;
@@ -81,9 +88,9 @@ enum { RT_RENDERER_GRAPHICS_QUEUE = 0 };
 void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,
                         size_t step_count);
 
-/* Waits until every submission so far has run and its steps have been performed, the fills the GPU
-   makes in their place included (at once when the display is off, and on the renderer's own threads,
-   which are always caught up with themselves). */
+/* Waits until every submission so far has run and its steps have been performed, the fills and
+   copies the GPU makes in their place included (at once when the display is off, and on the
+   renderer's own threads, which are always caught up with themselves). */
 void rt_renderer_wait_idle(void);
 
 /* A vertex, pixel or compute shader the title bound (sceGnmSetVsShader, sceGnmSetPsShader and their

@@ -607,7 +607,11 @@ Instead:
        batch. The renderer still performs it itself for memory the executor keeps apart (a render or
        depth target, a CMASK or HTILE) or outside the GPU-visible memory, and while a deferred step not
        yet performed writes the same memory (it would land after the fill); a wait on memory a recorded
-       fill writes is not passed early. An occlusion dump (`PIXEL_PIPE_STAT_DUMP`) is a deferrable step:
+       fill writes is not passed early. A `DMA_DATA` copy between memory and the GDS
+       (`RT_GPU_STEP_COPIES`) is recorded the same way (`rt_executor_copy`, a `vkCmdCopyBuffer`), on the
+       same terms, and not while a deferred step not yet performed writes its source; the renderer
+       performs one whose source and destination overlap in one buffer. A `WAIT_REG_MEM` whose compare
+       holds for any value (">= 0", the clinic's waits on labels it has just zeroed) is no step. An occlusion dump (`PIXEL_PIPE_STAT_DUMP`) is a deferrable step:
        only the CPU reads a query block. In Iosefka's Clinic every occlusion query's 128-byte zero fill
        and its two dumps, and a `WRITE_DATA` of 48 zero dwords the game repeats, had each waited for all
        the GPU's work. A submit returns only once the renderer's thread has taken a buffer

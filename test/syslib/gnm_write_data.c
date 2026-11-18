@@ -2,7 +2,8 @@
 /* WRITE_DATA (runtime/syslib/gnm.c): the packet's dwords go to memory as a step, in order with the
    work around it (a WAIT_REG_MEM after it sees them); writes to registers or to one address stop.
    With the display off, steps are performed at once, in order. One dword written three times is a
-   fill step (RT_GPU_STEP_FILLS: the renderer may have the GPU make it); others are not. */
+   fill step (RT_GPU_STEP_FILLS: the renderer may have the GPU make it); others are not. A wait whose
+   compare holds for any value (">= 0", "<= mask") is no step at all. */
 #include "../syslib_test.h"
 
 #include <stdint.h>
@@ -20,6 +21,8 @@ enum {
     ONE_ADDRESS = 1u << 16,
     WAIT_REG_MEM = 0xc0053c00u,
     WAIT_EQUAL_IN_MEMORY = 0x13u,
+    WAIT_AT_LEAST_IN_MEMORY = 0x15u,
+    WAIT_AT_MOST_IN_MEMORY = 0x12u,
 };
 
 static submit_fn submit;
@@ -31,6 +34,14 @@ static void submit_dwords(uint32_t control, uint32_t first, uint32_t second, uin
     const uint64_t last = at + 2 * sizeof(uint32_t);
     uint32_t packets[] = {WRITE_DATA_THREE, control, (uint32_t)at, (uint32_t)(at >> 32), first, second, third,
                           WAIT_REG_MEM, WAIT_EQUAL_IN_MEMORY, (uint32_t)last, (uint32_t)(last >> 32), third, 0xffffffffu, 10};
+    void *buffers[1] = {packets};
+    uint32_t bytes[1] = {sizeof packets};
+    submit(1, buffers, bytes, NULL, NULL);
+}
+static void submit_wait(uint32_t function, uint32_t reference, uint32_t mask)
+{
+    const uint64_t at = (uint64_t)(uintptr_t)target;
+    uint32_t packets[] = {WAIT_REG_MEM, function, (uint32_t)at, (uint32_t)(at >> 32), reference, mask, 10};
     void *buffers[1] = {packets};
     uint32_t bytes[1] = {sizeof packets};
     submit(1, buffers, bytes, NULL, NULL);
@@ -53,6 +64,13 @@ SYSLIB_TEST(gnm_write_data)
     CHECK(rt_renderer_none_step_flags(flags, 2) == 2 && flags[0] == STEP_FILLS && !(flags[1] & STEP_FILLS));
     submit_dwords(TO_MEMORY, 0x77u, 0x77u, 0x78u); /* the last differs: not a fill */
     CHECK(target[2] == 0x78u && rt_renderer_none_step_flags(flags, 2) == 2 && !(flags[0] & STEP_FILLS));
+    target[0] = 0x1234u;
+    submit_wait(WAIT_AT_LEAST_IN_MEMORY, 0, 0xffffffffu); /* holds for any value: no step */
+    CHECK(rt_renderer_none_step_flags(flags, 2) == 0);
+    submit_wait(WAIT_AT_MOST_IN_MEMORY, 0xffu, 0xffu); /* any masked value is at most the mask */
+    CHECK(rt_renderer_none_step_flags(flags, 2) == 0);
+    submit_wait(WAIT_AT_LEAST_IN_MEMORY, 0x1234u, 0xffffffffu); /* holds now, but only for this value: a step */
+    CHECK(rt_renderer_none_step_flags(flags, 2) == 1);
     memset((void *)target, 0, sizeof target);
     submit_write(2u << 8); /* through the L2 cache: the same memory */
     CHECK(target[2] == 0xc3u);

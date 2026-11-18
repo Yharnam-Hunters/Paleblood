@@ -122,6 +122,14 @@ static void pause_step(const rt_gpu_step *step)
     note_step(step);
 }
 
+/* A copy step's own perform (RT_GPU_STEP_COPIES, guest addresses only here): notes that the renderer
+   performed it on the CPU, and copies as gnm.c's does. */
+static void cpu_copy_step(const rt_gpu_step *step)
+{
+    memmove((void *)(uintptr_t)step->words[2], (const void *)(uintptr_t)step->words[0], step->words[4]);
+    note_step(step);
+}
+
 static int steps_seen(void)
 {
     pthread_mutex_lock(&step_lock);
@@ -555,6 +563,51 @@ int main(void)
         rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(FILLED) + 0x4000), BYTES, fill_then_wait, 2);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 1 && step_order[0] == 45 && step_saw_fill);
+    }
+
+    /* A copy (RT_GPU_STEP_COPIES) is recorded into the GPU's work like a fill: after the compute queue's
+       dispatch it copies the dispatch's results, and one from the GDS copies what the CPU put there;
+       neither perform runs. A copy whose guest ranges overlap is performed on the CPU, and so is one
+       while a held deferrable step writes its source, after that step. */
+    {
+        enum { COPIED = 0x35000, BYTES = 0x100, OUTPUT = 0x21000, COPY = 0x23000, LANES = 64, COMPUTE_QUEUE_ID = 3, GDS_AT = 0x40 };
+        char error[256] = "";
+        float *output = (float *)(uintptr_t)at(OUTPUT), *copy = (float *)(uintptr_t)at(COPY);
+        for (unsigned i = 0; i < 2 * LANES; i++) copy[i] = -1;
+        uint32_t *gds = (uint32_t *)(void *)rt_gpu_memory_gds();
+        for (unsigned i = 0; i < 4; i++) gds[GDS_AT / 4 + i] = 0xa0 + i;
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(at(COPIED), 0x10, one, error, sizeof error) == 0);
+        step_count = 0;
+        const rt_gpu_step copies[] = {
+            {cpu_copy_step, "sceGnmDingDong", 0x20, {at(OUTPUT), 0, at(COPY), 0, LANES * 4}, RT_GPU_STEP_COPIES, NULL, {at(COPY), LANES * 4}},
+            {cpu_copy_step, "sceGnmDingDong", 0x20, {GDS_AT, 1, at(COPY) + LANES * 4, 0, 16}, RT_GPU_STEP_COPIES, NULL, {at(COPY) + LANES * 4, 16}},
+        };
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)at(COPIED), BYTES, copies, 2);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 0);
+        int right = 1;
+        for (unsigned i = 0; i < LANES; i++) right &= copy[i] == output[i] && output[i] == 6.0f;
+        for (unsigned i = 0; i < 4; i++) right &= ((const uint32_t *)copy)[LANES + i] == 0xa0 + i;
+        CHECK(right);
+
+        const rt_gpu_step overlapping = {cpu_copy_step, "sceGnmDingDong", 0, {at(COPY), 0, at(COPY) + 8, 0, 64}, RT_GPU_STEP_COPIES, NULL, {at(COPY) + 8, 64}};
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(COPIED) + 0x1000), BYTES, &overlapping, 1);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 1);
+        step_count = 0, gate_open = 0;
+        const rt_gpu_step writer = {gate_step, "sceGnmDingDong", 0, {47}, RT_GPU_STEP_DEFERRABLE, NULL, {at(OUTPUT), 4}};
+        const rt_gpu_step reader = {cpu_copy_step, "sceGnmDingDong", 0, {at(OUTPUT), 0, at(COPY), 0, 16}, RT_GPU_STEP_COPIES, NULL, {at(COPY), 16}};
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(COPIED) + 0x2000), BYTES, &writer, 1);
+        rt_renderer_submit("sceGnmDingDong", COMPUTE_QUEUE_ID, (const void *)(uintptr_t)(at(COPIED) + 0x3000), BYTES, &reader, 1);
+        const struct timespec reach = {1, 0}; /* the renderer's thread meets the copy while the gate still holds */
+        nanosleep(&reach, NULL);
+        pthread_mutex_lock(&step_lock);
+        gate_open = 1;
+        pthread_cond_broadcast(&step_changed);
+        pthread_mutex_unlock(&step_lock);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 2 && step_order[0] == 47 && step_order[1] == at(OUTPUT));
     }
 
     rt_render_forget();

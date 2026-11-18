@@ -768,10 +768,28 @@ static void wait_step(const rt_gpu_step *step)
     }
 }
 
+/* Whether a WAIT_REG_MEM's compare holds whatever the memory holds: the masked value lies in
+   [0, mask], so "always", ">= 0", "<= mask", "< more than mask", and "!=" a reference with bits
+   outside the mask hold for every value (Iosefka's Clinic waits ">= 0" on labels it has just zeroed). */
+static int wait_holds_always(const wait_reg_mem_packet *packet)
+{
+    const uint32_t reference = packet->reference, mask = packet->mask;
+    switch (packet->control & WAIT_FUNCTION_MASK) {
+    case 0: return 1;
+    case 1: return reference > mask;
+    case 2: return reference >= mask;
+    case 3: return mask == 0 && reference == 0;
+    case 4: return (reference & ~mask) != 0;
+    case 5: return reference == 0;
+    default: return 0;
+    }
+}
+
 static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
 {
     if (!(packet->control & WAIT_ON_MEMORY)) rt_fatal(fn, "a GPU wait on a register: the stand-in has none");
     if (!(packet->address_low | (packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK))) rt_fatal(fn, "a GPU wait without an address");
+    if (wait_holds_always(packet)) return; /* the GPU passes it at once: no step, nothing waits */
     if (collecting) {
         const uint64_t words[6] = {packet->control, packet->address_low, packet->address_high, packet->reference, packet->mask,
                                    packet->poll_interval};
@@ -846,6 +864,18 @@ static void dma_data_step(const rt_gpu_step *step)
     memmove(to, from, bytes);
 }
 
+/* A step that copies (RT_GPU_STEP_COPIES, runtime/renderer.h): words[4] bytes from words[0] to
+   words[2], each a guest address, or a GDS byte offset where words[1] or words[3] is set. The renderer
+   records it into the GPU's work when it can, and performs it otherwise. */
+static void copy_step(const rt_gpu_step *step)
+{
+    const uint64_t *w = step->words;
+    const uint32_t bytes = (uint32_t)w[4];
+    uint8_t *const to = w[3] ? gds_bytes(step->function, (uint32_t)w[2], bytes) : (uint8_t *)(uintptr_t)w[2];
+    const uint8_t *const from = w[1] ? gds_bytes(step->function, (uint32_t)w[0], bytes) : (const uint8_t *)(uintptr_t)w[0];
+    memmove(to, from, bytes);
+}
+
 /* DMA_DATA: a read from memory into CP_DMA_READ_TAGS only brings the source into the GPU's cache,
    which the stand-in has none of: skipped. Copies and fills between memory (sources 0 and 3,
    destinations 0 and 3), the GDS (1) and the packet's data (source 2) become a step (shadPS4's
@@ -871,6 +901,18 @@ static void dma_data(const char *fn, const uint32_t *packet)
         const uint64_t to = destination_low | (uint64_t)destination_high << 32;
         if (!to && bytes) rt_fatal(fn, "a DMA_DATA without a destination address");
         collect_fill(fn, to, bytes, packet[2]); /* the packet's own 32-bit value, in every dword */
+        return;
+    }
+    if (collecting && source != DMA_DATA_FROM_DATA) { /* between memory and the GDS */
+        const int from_gds = source == DMA_DATA_FROM_GDS, to_gds = destination == DMA_DATA_TO_GDS;
+        const uint64_t from = from_gds ? packet[2] : packet[2] | (uint64_t)packet[3] << 32;
+        const uint64_t to = to_gds ? destination_low : destination_low | (uint64_t)destination_high << 32;
+        if (from_gds) gds_bytes(fn, (uint32_t)from, bytes);
+        if (to_gds) gds_bytes(fn, (uint32_t)to, bytes);
+        if ((!from_gds && !from && bytes) || (!to_gds && !to && bytes)) rt_fatal(fn, "a DMA_DATA without a source or destination address");
+        collect(fn, copy_step, (const uint64_t[6]){from, from_gds, to, to_gds, bytes, 0});
+        rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+        step->flags = RT_GPU_STEP_COPIES, step->memory[0] = to_gds ? 0 : to, step->memory[1] = to_gds ? 0 : bytes;
         return;
     }
     if (!collecting) {
