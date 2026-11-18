@@ -11,8 +11,9 @@
 // BB_TARGET_FPS (our option, not in the original; target_fps.h): unset keeps the original
 // behaviour exactly. 30, 60 and uncapped do what the community patches "30 FPS++", "60 FPS++" and
 // "Uncap FPS++" do to this function (checked against them: verify.py run --patch ... --env ...):
-// a fixed mode (interval 1/30, 1/60 or 1/240 s), no overrides, and the sync interval kept on late
-// frames. The frame step and the flipper constructor apply the rest of those patches.
+// a fixed mode (interval 1/30 s, 1/60 s, or 0 for uncapped, so the wait never runs), no
+// overrides, and the sync interval kept on late frames. The frame step and the flipper
+// constructor apply the rest of those patches.
 //
 // BB_LIMITER_WAIT=sleep (our option): use the sleeping wait the game carries but never selects,
 // instead of the spinning one: it sleeps until about 5 ms before the frame's end and spins only
@@ -58,7 +59,7 @@ constexpr float us_per_second = 1000000.0f, minus_us_per_second = -1000000.0f;
 constexpr double us_per_second_double = 1000000.0;
 constexpr float min_wait = 0.001f, sleep_threshold = 0.005f, sleep_margin = -0.005f;
 constexpr float thousand = 1000.0f, late_tolerance = 0.01f, history_frames = 16.0f;
-constexpr uint32_t interval_240_bits = 0x3b888889;   // 1/240 s: the Uncap FPS++ patch's interval
+constexpr uint32_t uncapped_interval_bits = 0;        // 0.0f: "Uncap FPS++" writes interval 0 (0x02434840)
 constexpr uint64_t min_budget_divisor = 3;            // catching up never cuts below a third
 constexpr uint32_t ring_mask = frame_ring_size - 1;
 
@@ -116,7 +117,7 @@ bool apply_mode(SprjFlipper *f, Target target)
         // while the real mode is in range), with no catch-up windows, and none of the overrides
         // below (the reset flag is neither honoured nor cleared).
         if (target == Target::uncapped)
-            set_mode(f, 1, 0, interval_240_bits, 0, 0);
+            set_mode(f, 1, 0, uncapped_interval_bits, 0, 0);
         else if (mode < flip_mode_count)
             set_mode(f, 1, 1, target == Target::fps30 ? k_interval_30 : k_interval_60, 0, 0);
         return false;

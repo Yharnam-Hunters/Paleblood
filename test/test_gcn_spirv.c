@@ -1088,6 +1088,36 @@ static unsigned opcode_count(const uint32_t *spirv, size_t words, uint32_t opcod
 
 static int has_opcode(const uint32_t *spirv, size_t words, uint32_t opcode) { return opcode_count(spirv, words, opcode) != 0; }
 
+/* An s_load's span is checked against the guest memory once, not dword by dword. */
+static void scalar_load_spans(void)
+{
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[512];
+    static const uint32_t loaded[] = {0xc0c00904, 0xbf810000}; /* s_load_dwordx8 s[0:7], s[8:9], 4; s_endpgm */
+    gcn_compute_layout checked = layout;
+    checked.guest = (gcn_guest_memory){.base = 0x100000, .bytes = 0x100000, .sink = 0x9000};
+    checked.error_address = 0x2000;
+    /* off (the default, the Metal fragment path's shape): dword by dword */
+    CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 8);
+    free(spirv), spirv = NULL;
+    gcn_spirv_set_span_checks(1);
+    CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 && opcode_count(spirv, words, SPV_OP_SELECT) == 1);
+    CHECK(validate(spirv, words, "scalar_load_spans") != 0);
+    free(spirv), spirv = NULL;
+    /* s_buffer_load_dwordx4 s[8:11], s[0:3], 0: the whole load in range takes one span check, beside the
+       dword-by-dword checks for a load partly in range */
+    static const uint32_t buffer_loaded[] = {0xc2840100, 0xbf810000};
+    CHECK(gcn_translate_compute(PROGRAM(buffer_loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 + 1 + 4 + 4);
+    CHECK(validate(spirv, words, "buffer_load_spans") != 0);
+    CHECK(to_metal(spirv, words, "buffer_load_spans") != 0);
+    free(spirv);
+    gcn_spirv_set_span_checks(0);
+}
+
 /* A program whose branches all go forward is a chain of selections with no loop; a branch back makes a
    structured loop around the blocks it spans. Neither needs the dispatch switch. */
 static void forward_blocks(void)
@@ -1133,6 +1163,7 @@ static void forward_blocks(void)
 
 int main(void)
 {
+    scalar_load_spans();
     forward_blocks();
     table_snapshots();
     submitted_table_snapshots();
