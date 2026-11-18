@@ -1080,6 +1080,27 @@ static void constant_step(const rt_gpu_step *step)
     }
 }
 
+/* Collects a step that runs the CE from dword `from` to `to` of the program (freeing it after, when
+   `last`). It is CPU work in stream order (RT_GPU_STEP_CPU_ORDERED): its memory is one range holding
+   every dump it makes, 0 bytes when it makes none. */
+static void collect_constant_step(const char *fn, constant_program *program, uint32_t from, uint32_t to, int last)
+{
+    collect(fn, constant_step, (const uint64_t[6]){(uintptr_t)program, from, to, (uint64_t)last, 0, 0});
+    uint64_t low = UINT64_MAX, high = 0;
+    for (uint32_t at = from; at < to;) {
+        const uint32_t *packet = program->words + at;
+        if (((packet[0] >> PM4_OPCODE_SHIFT) & PM4_OPCODE_MASK) == PM4_DUMP_CONST_RAM) {
+            const uint64_t address = packet[3] | (uint64_t)packet[4] << 32, bytes = (packet[2] & CONSTANT_DUMP_DWORDS_MASK) * sizeof(uint32_t);
+            if (bytes && address < low) low = address;
+            if (bytes && address + bytes > high) high = address + bytes;
+        }
+        at += packet_dwords(packet);
+    }
+    rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+    step->flags = RT_GPU_STEP_CPU_ORDERED;
+    step->memory[0] = high ? low : 0, step->memory[1] = high ? high - low : 0;
+}
+
 /* A WAIT_ON_CE_COUNTER: the CE runs up to the increment that puts its counter past the DE's. */
 static void wait_on_constant_engine(const char *fn)
 {
@@ -1088,7 +1109,7 @@ static void wait_on_constant_engine(const char *fn)
     if (program->de_count >= program->increments) rt_fatal(fn, "a WAIT_ON_CE_COUNTER the constant engine's counter never passes");
     const uint32_t to = program->increment_ends[program->de_count];
     if (to > program->ran_to) {
-        collect(fn, constant_step, (const uint64_t[6]){(uintptr_t)program, program->ran_to, to, 0, 0, 0});
+        collect_constant_step(fn, program, program->ran_to, to, 0);
         program->ran_to = to;
     }
 }
@@ -1104,7 +1125,7 @@ static void finish_constant_program(const char *fn)
 {
     constant_program *const program = submitted_constants;
     packet_offset = RT_GPU_STEP_AFTER_ALL;
-    collect(fn, constant_step, (const uint64_t[6]){(uintptr_t)program, program->ran_to, program->dwords, 1, 0, 0});
+    collect_constant_step(fn, program, program->ran_to, program->dwords, 1);
     submitted_constants = NULL;
 }
 

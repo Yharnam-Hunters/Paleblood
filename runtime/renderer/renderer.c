@@ -11,6 +11,7 @@
 #include "runtime/write_watch.h"
 
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -338,6 +339,31 @@ static int write_on_gpu(const rt_gpu_step *step)
     return taken == 0;
 }
 
+/* A CPU-ordered step (RT_GPU_STEP_CPU_ORDERED) performed here at once, in stream order, instead of
+   after all the GPU's work: 1 when it may be, so that no work still to run reads its memory in place or
+   may store there, and no deferred step or recorded fill or copy writes it. PB_CPU_ORDERED_STEPS=0
+   turns this off (one binary for an A/B run). PB_STEP_COUNTS=1 prints how many went each way. */
+static int cpu_ordered_now(const rt_gpu_step *step)
+{
+    static int enabled = -1, counting;
+    static uint64_t at_once, waited;
+    if (enabled < 0) {
+        const char *setting = getenv("PB_CPU_ORDERED_STEPS"), *counts = getenv("PB_STEP_COUNTS");
+        enabled = !(setting && !strcmp(setting, "0")), counting = counts && !strcmp(counts, "1");
+    }
+    const uint64_t address = step->memory[0], bytes = step->memory[1];
+    int ready = enabled && bytes != RT_GPU_STEP_ANY_MEMORY && !(bytes && (deferred_writes_over(address, bytes) || recorded_write_over(step)));
+    if (ready) {
+        lock_renderer();
+        ready = !executor || rt_executor_cpu_write_ready(executor, address, bytes);
+        unlock_renderer();
+    }
+    *(ready ? &at_once : &waited) += 1;
+    if (counting && (at_once + waited) % 4096 == 0)
+        fprintf(stderr, "renderer: CPU-ordered steps: %llu at once, %llu after the GPU\n", (unsigned long long)at_once, (unsigned long long)waited);
+    return ready;
+}
+
 /* Each step once the calls before its offset have run, and before the calls after it: a deferrable
    step is handed to the completion thread with the ticket of the work before it; a wait that holds
    already is performed at once, and one that a deferred step will satisfy is passed (the GPU runs the
@@ -381,6 +407,10 @@ static void run_batch(batch *b)
             continue;
         }
         if ((b->steps[i].flags & (RT_GPU_STEP_FILLS | RT_GPU_STEP_COPIES)) && write_on_gpu(&b->steps[i])) continue;
+        if ((b->steps[i].flags & RT_GPU_STEP_CPU_ORDERED) && cpu_ordered_now(&b->steps[i])) { /* CPU work in stream order */
+            perform_step(&b->steps[i]);
+            continue;
+        }
         const int early = b->steps[i].holds && !recorded_write_over(&b->steps[i]); /* a recorded write may change what it reads */
         if (early && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
             perform_step(&b->steps[i]);

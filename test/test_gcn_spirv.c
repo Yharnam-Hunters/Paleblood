@@ -415,9 +415,64 @@ static void image_programs(void)
         }
 }
 
+/* Draw table snapshots (gcn_called_table_snapshot_plan): vertex_calling_fetch's fetch shader loads its
+   two buffer descriptors from the table at the caller's s[2:3], at bytes 0 and 16: two entries, their
+   uses at GCN_TABLE_CALLEE_AT plus the loads' dwords in the fetch shader, and no other load of their
+   offsets and sizes. A fetch-shader load through the call's return pair is no use; another load of an
+   entry's offset and size through a pointer the program writes leaves the entry's every_load clear.
+   The vertex shader translates with its block's address after the user data and validates; an
+   address over the user data is refused. */
+static void draw_table_snapshots(void)
+{
+    gcn_table_snapshot plan;
+    char error[300] = "";
+    const size_t fetch_dwords = sizeof fetch_position_color / 4;
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), fetch_position_color, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    CHECK(plan.entry_count == 2 && plan.entries[0].pointer_sgpr == 2 && plan.entries[0].offset == 0 && plan.entries[1].offset == 16 &&
+          plan.entries[1].first_word == 4 && plan.entries[0].every_load && plan.entries[1].every_load);
+    CHECK(plan.use_count == 2 && plan.uses[0].at == (GCN_TABLE_CALLEE_AT | 0) && plan.uses[1].at == (GCN_TABLE_CALLEE_AT | 1) &&
+          plan.uses[1].entry == 1);
+    CHECK(gcn_table_snapshot_plan(PROGRAM(vertex_calling_fetch), &plan, error, sizeof error) == 0 && plan.entry_count == 0); /* no callee given */
+    uint32_t through_return[sizeof fetch_position_color / 4];
+    memcpy(through_return, fetch_position_color, sizeof through_return);
+    through_return[0] = 0xc0820100; /* s_load_dwordx4 s[4:7], s[0:1], 0x0: the return address */
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), through_return, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && plan.entries[0].offset == 16 && plan.entries[0].every_load && plan.use_count == 1);
+    static const uint32_t copied_pointer[] = {
+        0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+        0xbe880402, /* s_mov_b64 s[8:9], s[2:3] */
+        0xc0860900, /* s_load_dwordx4 s[12:15], s[8:9], 0x0 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(copied_pointer), NULL, 0, GCN_DRAW_SNAPSHOT_WORDS, &plan, error, sizeof error) == 0);
+    CHECK(plan.entry_count == 1 && !plan.entries[0].every_load && plan.use_count == 1);
+    CHECK(gcn_called_table_snapshot_plan(PROGRAM(vertex_calling_fetch), fetch_position_color, fetch_dwords, GCN_DRAW_SNAPSHOT_WORDS, &plan, error,
+                                         sizeof error) == 0);
+    gcn_vertex_layout layout = vertex_layout;
+    layout.callee = fetch_position_color, layout.callee_dwords = fetch_dwords, layout.code_address = 0x1000, layout.error_address = 0x2000;
+    layout.table_snapshot = &plan, layout.table_block_offset = 2 * GCN_USER_SGPR_MAX * 4;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
+    if (translated) fprintf(stderr, "vertex_calling_fetch with snapshots: %s\n", error);
+    CHECK(translated == 0);
+    if (spirv) CHECK(validate(spirv, words, "vertex_calling_fetch_snapshot") != 0);
+    free(spirv);
+    spirv = NULL;
+    layout.table_block_offset = 8;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "block's address at push-constant byte 8"));
+    free(spirv);
+}
+
 /* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the
-   callee inlined and validates; a callee that branches or returns through another pair, and a call
-   through a pair written first, stop by name. */
+   callee inlined and validates, reporting the SGPRs its code reads (the inlined buffer loads read the
+   descriptors in s[4:11]; nothing reads s12); gcn_called_memory_reads lists the callee's two descriptor
+   loads from the caller's pointer s[2:3] and the buffer loads through those descriptors, as the
+   caller's SGPRs give them; a callee that branches or returns through another pair, and a call through
+   a pair written first, stop by name. */
 static void calls(void)
 {
     unsigned pair = 99;
@@ -429,11 +484,24 @@ static void calls(void)
     gcn_vertex_layout layout = vertex_layout;
     layout.callee = fetch_position_color, layout.callee_dwords = sizeof fetch_position_color / 4, layout.code_address = 0x1000;
     layout.error_address = 0x2000;
-    uint32_t *spirv = NULL;
+    uint32_t *spirv = NULL, read[GCN_SGPR_READ_WORDS] = {0};
     size_t words = 0;
+    layout.sgprs_read = read;
     const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
     if (translated) fprintf(stderr, "vertex_calling_fetch: %s\n", error);
     CHECK(translated == 0);
+    CHECK((read[0] >> 4 & 1) && (read[0] >> 8 & 1) && !(read[0] >> 12 & 1));
+    layout.sgprs_read = NULL;
+    gcn_memory_read reads[GCN_MAX_IMAGES];
+    unsigned read_count = 0;
+    int unknown = 1;
+    CHECK(gcn_called_memory_reads(PROGRAM(vertex_calling_fetch), fetch_position_color, sizeof fetch_position_color / 4, reads, GCN_MAX_IMAGES,
+                                  &read_count, &unknown, error, sizeof error) == 0);
+    CHECK(read_count == 4 && !unknown);
+    CHECK(reads[0].pointer == 1 && reads[0].origin.sgpr == 2 && reads[0].offset == 0 && reads[0].sgpr == 4 && reads[0].sgprs == 4);
+    CHECK(reads[1].pointer == 1 && reads[1].origin.sgpr == 2 && reads[1].offset == 16 && reads[1].sgpr == 8);
+    CHECK(!reads[2].pointer && reads[2].origin.from_memory && reads[2].origin.pointer_sgpr == 2 && reads[2].origin.offset == 0);
+    CHECK(!reads[3].pointer && reads[3].origin.from_memory && reads[3].origin.pointer_sgpr == 2 && reads[3].origin.offset == 16);
     if (spirv) {
         CHECK(validate(spirv, words, "vertex_calling_fetch") != 0);
         free(spirv);
@@ -521,8 +589,10 @@ static void store_resources(void)
 }
 
 /* What programs read (gcn_memory_reads): scale_add its user-data buffer s[0:3]; an s_load_dwordx4 at
-   dword 4 from the pointer in s[0:1] reads 16 bytes at 16, an s_buffer_load reads its descriptor
-   s[4:7]; a flat load may read anywhere (unknown). */
+   dword 4 from the pointer in s[0:1] reads 16 bytes at 16 into s[16:19], an s_buffer_load reads its
+   descriptor s[4:7]; an s_load at an SGPR offset is listed with its SGPRs as one whose address is not
+   known (pointer 2), not as unknown; the same table loaded into other SGPRs is one read; a flat load
+   may read anywhere (unknown). */
 static void memory_reads(void)
 {
     gcn_memory_read found[GCN_MAX_IMAGES];
@@ -538,8 +608,24 @@ static void memory_reads(void)
     };
     CHECK(gcn_memory_reads(PROGRAM(scalar), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 2 && !unknown);
-    CHECK(found[0].pointer && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(found[0].pointer == 1 && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(found[0].sgpr == 16 && found[0].sgprs == 4);
     CHECK(!found[1].pointer && found[1].origin.sgpr == 4);
+    static const uint32_t offset_in_sgpr[] = {
+        0xc0080002, /* s_load_dword s16, s[0:1], s2 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(offset_in_sgpr), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && found[0].pointer == 2 && found[0].sgpr == 16 && found[0].sgprs == 1);
+    /* the same table loaded twice into other SGPRs is one read, its SGPRs widened to cover both: a list
+       of one table's loads (past GCN_MAX_IMAGES) made a dispatch count as reading anywhere */
+    static const uint32_t same_table[] = {
+        0xc0880104, /* s_load_dwordx4 s[16:19], s[0:1], 0x4 */
+        0xc08c0104, /* s_load_dwordx4 s[24:27], s[0:1], 0x4 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(same_table), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && found[0].pointer == 1 && found[0].offset == 16 && found[0].sgpr == 16 && found[0].sgprs == 12);
     static const uint32_t flat[] = {0xdc300000, 0x01000002, /* flat_load_dword v1, v[2:3] */ 0xbf810000};
     CHECK(gcn_memory_reads(PROGRAM(flat), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(unknown);
@@ -1009,6 +1095,7 @@ int main(void)
     vector_stores();
     image_programs();
     calls();
+    draw_table_snapshots();
     user_data_read();
     depth_exports();
     translates(PROGRAM(scale_add), "scale_add");

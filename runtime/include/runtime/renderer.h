@@ -60,18 +60,27 @@ void rt_renderer_configure(int enabled);
    work in its place (rt_executor_copy) as it does a fill, and performs it itself on the same terms,
    or while an earlier deferrable step not yet performed writes its source.
 
-   memory is the guest memory a step writes (a deferrable step, a fill) or reads (a wait): its address
-   and bytes, 0 bytes for none, RT_GPU_STEP_ANY_MEMORY bytes when not known. The renderer orders
-   recorded fills against it. */
+   A step flagged RT_GPU_STEP_CPU_ORDERED (a constant engine's run, whose dumps write memory the draws
+   after it read) is CPU work in stream order: the console's command processors run ahead of the
+   shaders, and the draws before it have been recorded, the descriptors they use read, by the time it
+   comes. It writes only the guest memory in `memory` (one range holding every write) and reads none
+   the GPU writes. The renderer performs it at once on its own thread when no work still to run reads
+   that memory in place or may store there (rt_executor_cpu_write_ready), and no earlier deferrable
+   step not yet performed, nor a fill or copy recorded into the GPU's work, writes it; otherwise as
+   any other step. PB_CPU_ORDERED_STEPS=0 in the environment performs them all as other steps.
+
+   memory is the guest memory a step writes (a deferrable step, a fill, a CPU-ordered step) or reads (a
+   wait): its address and bytes, 0 bytes for none, RT_GPU_STEP_ANY_MEMORY bytes when not known. The
+   renderer orders recorded fills against it. */
 enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1, RT_GPU_STEP_SHOWS_TARGET = 2, RT_GPU_STEP_FILLS = 4,
-       RT_GPU_STEP_COPIES = 8 };
+       RT_GPU_STEP_COPIES = 8, RT_GPU_STEP_CPU_ORDERED = 16 };
 #define RT_GPU_STEP_ANY_MEMORY UINT64_MAX
 typedef struct rt_gpu_step {
     void (*perform)(const struct rt_gpu_step *step);
     const char *function; /* the submitting call, for stops by name */
     uint32_t offset;
     uint64_t words[6];
-    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_SHOWS_TARGET, RT_GPU_STEP_FILLS, RT_GPU_STEP_COPIES, or 0 */
+    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_SHOWS_TARGET, RT_GPU_STEP_FILLS, RT_GPU_STEP_COPIES, RT_GPU_STEP_CPU_ORDERED, or 0 */
     int (*holds)(const struct rt_gpu_step *step, const struct rt_gpu_step *pending); /* a wait on memory (above); NULL for other steps */
     uint64_t memory[2];   /* the guest memory it writes or reads: address, bytes (above) */
 } rt_gpu_step;
