@@ -1810,6 +1810,8 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
     }
     x->async_pipelines = memory->async_pipelines;
     pipeline_workers_start(x);
+    gcn_spirv_set_span_checks(1); /* Vulkan takes whole-span guest checks (runtime/gcn_spirv.h) */
+    gcn_spirv_set_structured_control(1); /* Vulkan takes structured programs (runtime/gcn_spirv.h) */
     *executor = x;
     return 0;
 }

@@ -1078,8 +1078,93 @@ static void constant_pixel_wqm(void)
     constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 0, "pixel_wqm_after_survey");
 }
 
+/* Instructions with this opcode in the module (after the five header words). */
+static unsigned opcode_count(const uint32_t *spirv, size_t words, uint32_t opcode)
+{
+    unsigned n = 0;
+    for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16) n += (spirv[at] & 0xffff) == opcode;
+    return n;
+}
+
+static int has_opcode(const uint32_t *spirv, size_t words, uint32_t opcode) { return opcode_count(spirv, words, opcode) != 0; }
+
+/* An s_load's span is checked against the guest memory once, not dword by dword. */
+static void scalar_load_spans(void)
+{
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[512];
+    static const uint32_t loaded[] = {0xc0c00904, 0xbf810000}; /* s_load_dwordx8 s[0:7], s[8:9], 4; s_endpgm */
+    gcn_compute_layout checked = layout;
+    checked.guest = (gcn_guest_memory){.base = 0x100000, .bytes = 0x100000, .sink = 0x9000};
+    checked.error_address = 0x2000;
+    /* off (the default, the Metal fragment path's shape): dword by dword */
+    CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 8);
+    free(spirv), spirv = NULL;
+    gcn_spirv_set_span_checks(1);
+    CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 && opcode_count(spirv, words, SPV_OP_SELECT) == 1);
+    CHECK(validate(spirv, words, "scalar_load_spans") != 0);
+    free(spirv), spirv = NULL;
+    /* s_buffer_load_dwordx4 s[8:11], s[0:3], 0: the whole load in range takes one span check, beside the
+       dword-by-dword checks for a load partly in range */
+    static const uint32_t buffer_loaded[] = {0xc2840100, 0xbf810000};
+    CHECK(gcn_translate_compute(PROGRAM(buffer_loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 + 1 + 4 + 4);
+    CHECK(validate(spirv, words, "buffer_load_spans") != 0);
+    CHECK(to_metal(spirv, words, "buffer_load_spans") != 0);
+    free(spirv);
+    gcn_spirv_set_span_checks(0);
+}
+
+/* A program whose branches all go forward is a chain of selections with no loop; a branch back makes a
+   structured loop around the blocks it spans. Neither needs the dispatch switch. */
+static void forward_blocks(void)
+{
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[512];
+    static const uint32_t forward[] = {0xbf840001, 0x7e020302, 0xbf810000};  /* s_cbranch_scc0 over v_mov_b32 v1, v2; s_endpgm */
+    static const uint32_t backward[] = {0x7e020302, 0xbf84fffe, 0xbf810000}; /* v_mov_b32 v1, v2; s_cbranch_scc0 back to it */
+    static const uint32_t straight[] = {0x7e020302, 0xbf810000};             /* one block */
+    /* off (the default, the Metal fragment path's shape): the dispatch loop */
+    CHECK(gcn_translate_compute(PROGRAM(forward), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && has_opcode(spirv, words, SPV_OP_SWITCH));
+    free(spirv), spirv = NULL;
+    gcn_spirv_set_structured_control(1);
+    CHECK(gcn_translate_compute(PROGRAM(forward), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && !has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && has_opcode(spirv, words, SPV_OP_SELECTION_MERGE));
+    CHECK(validate(spirv, words, "forward_blocks") != 0);
+    CHECK(to_metal(spirv, words, "forward_blocks") != 0);
+    free(spirv), spirv = NULL;
+    CHECK(gcn_translate_compute(PROGRAM(straight), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && !has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && !has_opcode(spirv, words, SPV_OP_SWITCH));
+    CHECK(validate(spirv, words, "straight_block") != 0);
+    free(spirv), spirv = NULL;
+    CHECK(gcn_translate_compute(PROGRAM(backward), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && !has_opcode(spirv, words, SPV_OP_SWITCH));
+    CHECK(validate(spirv, words, "backward_block") != 0);
+    CHECK(to_metal(spirv, words, "backward_block") != 0);
+    free(spirv), spirv = NULL;
+    /* loops inside loops merge into one; a branch out of a loop goes past its last block */
+    static const uint32_t nested[] = {0x7e020302, 0x7e020302, 0xbf84fffe, 0xbf85fffc, 0xbf840001, 0x7e020302, 0xbf810000};
+    static const uint32_t leaving[] = {0x7e020302, 0xbf850002, 0x7e020302, 0xbf82fffc, 0xbf810000};
+    const uint32_t *looped[] = {nested, leaving};
+    const size_t looped_dwords[] = {sizeof nested / sizeof nested[0], sizeof leaving / sizeof leaving[0]};
+    for (int k = 0; k < 2; k++) {
+        CHECK(gcn_translate_compute(looped[k], looped_dwords[k], &layout, &spirv, &words, error, sizeof error) == 0);
+        CHECK(spirv && opcode_count(spirv, words, SPV_OP_LOOP_MERGE) == 1 && !has_opcode(spirv, words, SPV_OP_SWITCH));
+        CHECK(validate(spirv, words, k ? "leaving_loop" : "nested_loops") != 0);
+        free(spirv), spirv = NULL;
+    }
+    gcn_spirv_set_structured_control(0);
+}
+
 int main(void)
 {
+    scalar_load_spans();
+    forward_blocks();
     table_snapshots();
     submitted_table_snapshots();
     constant_pixel_wqm();
