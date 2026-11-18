@@ -1,0 +1,399 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Owned public-API color-clear-words admission tests; no game bytes or private state getter.
+   Exact inactive MIN/MAX storage is source-reviewed, not observable through this API. */
+#include "runtime/render_executor.h"
+#include "runtime/tiling.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+enum { POOL_BYTES = 64 << 10, VS_CODE = 0x1000, PS_CODE = 0x2000,
+       POSITIONS = 0x3000, ATTRIBUTES = 0x3100, INDICES16 = 0x4000, INDICES32 = 0x4100,
+       VERTEX_WRITES = 0x5000, TARGET = 0x8000, OTHER_TARGET = 0x9000,
+       WIDTH = 16, HEIGHT = 16, PIXELS = WIDTH * HEIGHT, TARGET_BYTES = PIXELS * 4,
+       WITNESS_WORDS = 8, CALL_LIMIT = 64,
+       CLEAR_WORD0 = 0xa323, COLOR_STRIDE = 15, COLOR_CONTROL = 0xa202, TARGET_MASK = 0xa08e, CANARY = 0x6d };
+static const uint64_t guest_base = UINT64_C(0x3000000000);
+static const uint32_t vertex_marker = UINT32_C(0x13572468);
+/* Copied from the independently owned vertex_store_witness in test_metal_executor.c.
+   LLVM GFX7 bonaire encodings: descriptors s[0:3]/s[4:7] load position/attribute;
+   s[8:11] receives one marker at byte4*vertex_id. */
+static const uint32_t vertex_program[] = {
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xebf32000, 0x80010500, /* tbuffer_load_format_xyzw v[5:8], v0, s[4:7], 0 idxen */
+    0xbf8c0f70,             /* s_waitcnt vmcnt(0) */
+    0x7e1202ff, 0x13572468, /* v_mov_b32 v9, 0x13572468 */
+    0x34140082,             /* v_lshlrev_b32 v10, 2, v0 */
+    0xe0701000, 0x8002090a, /* buffer_store_dword v9, v10, s[8:11], 0 offen */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+    0xbf810000,             /* s_endpgm */
+};
+/* Repo-owned pixel_user_float32 from metal_executor_programs.h: literal user RGBA. */
+static const uint32_t pixel_program[] = {
+    0x7e040200, 0x7e060201, 0x7e080202, 0x7e0a0203,
+    0xf800180f, 0x05040302, 0xbf810000,
+};
+static const struct {
+    uint32_t user[4], rgba, bgra;
+} colors[] = {
+    {{0x3f800000, 0, 0, 0x3f800000}, 0xff0000ff, 0xffff0000},
+    {{0, 0x3f800000, 0, 0x3f800000}, 0xff00ff00, 0xff00ff00},
+};
+static unsigned checks, failures, cases, api_calls, data_draws, refusals, pool_scans;
+static unsigned readbacks, ticket_waits, explicit_submits;
+#define CHECK(c) do { ++checks; if (!(c)) { ++failures; \
+    fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
+typedef struct { rt_render_call call[CALL_LIMIT]; size_t count; } Calls;
+typedef struct {
+    rt_executor *executor;
+    unsigned char *pool;
+    unsigned char expected[POOL_BYTES];
+} Fixture;
+typedef enum { AUTO, DIRECT16, OFFSET32, LOGICAL16 } Route;
+typedef enum { RUN, SUBMIT, RECORD } Method;
+static uint64_t at(unsigned offset) { return guest_base + offset; }
+static rt_render_call *append(Calls *c, rt_render_call_kind kind)
+{
+    if (c->count == CALL_LIMIT) { fputs("owned call inventory overflow\n", stderr); exit(1); }
+    rt_render_call *out = &c->call[c->count++];
+    memset(out, 0, sizeof *out); out->kind = kind; return out;
+}
+static void reg(Calls *c, uint32_t address, uint32_t value)
+{
+    rt_render_call *out = append(c, RT_CALL_REGISTER);
+    out->u.reg.address = address; out->u.reg.value = value;
+}
+static void descriptor(uint32_t words[4], uint64_t address, unsigned records, unsigned stride)
+{
+    words[0] = (uint32_t)address; words[1] = (uint32_t)(address >> 32) | stride << 16;
+    words[2] = records; words[3] = 4 | 5 << 3 | 6 << 6 | 7 << 9 | 7 << 12 | 14 << 15;
+}
+static void color_target(Calls *c, unsigned slot, int enabled)
+{
+    rt_render_call *out = append(c, RT_CALL_COLOR_TARGET);
+    out->u.color_target.slot = slot; out->u.color_target.enabled = enabled;
+    out->u.color_target.target = (rt_color_target){.address = at(slot ? OTHER_TARGET : TARGET),
+        .pitch = WIDTH, .height = HEIGHT, .format = 0xa, .tile_mode_index = 31, .samples = 1};
+}
+/* Deliberately leaves clear words alone: scene setup must not reject retained metadata. */
+static void scene(Calls *c, unsigned color, unsigned mask)
+{
+    color_target(c, 0, 1);
+    rt_render_call *out = append(c, RT_CALL_VIEWPORT);
+    out->u.viewport.zmax = 1;
+    out->u.viewport.scale[0] = out->u.viewport.translate[0] = WIDTH / 2;
+    out->u.viewport.scale[1] = out->u.viewport.translate[1] = HEIGHT / 2;
+    out->u.viewport.scale[2] = 1;
+    out = append(c, RT_CALL_VERTEX_SHADER);
+    out->u.vertex_shader = (rt_vertex_shader){.code = at(VS_CODE), .vgprs = 12, .sgprs = 16,
+        .user_sgprs = 12, .parameter_count = 1, .position_format = 4};
+    out = append(c, RT_CALL_PIXEL_SHADER);
+    out->u.pixel_shader = (rt_pixel_shader){.code = at(PS_CODE), .vgprs = 8, .sgprs = 8,
+        .user_sgprs = 4, .color_formats = 9, .input_enable = 2, .input_address = 2,
+        .interpolated = 1, .color_mask = 15};
+    out = append(c, RT_CALL_USER_DATA);
+    out->u.user_data.stage = RT_STAGE_VERTEX; out->u.user_data.count = 8;
+    descriptor(out->u.user_data.words, at(POSITIONS), 6, 16);
+    descriptor(out->u.user_data.words + 4, at(ATTRIBUTES), 6, 16);
+    out = append(c, RT_CALL_USER_DATA);
+    out->u.user_data.stage = RT_STAGE_VERTEX; out->u.user_data.slot = 8; out->u.user_data.count = 4;
+    descriptor(out->u.user_data.words, at(VERTEX_WRITES), WITNESS_WORDS, 4);
+    out = append(c, RT_CALL_USER_DATA);
+    out->u.user_data.stage = RT_STAGE_PIXEL; out->u.user_data.count = 4;
+    memcpy(out->u.user_data.words, colors[color].user, sizeof colors[color].user);
+    reg(c, TARGET_MASK, mask); reg(c, 0xa202, 0xcc0010); reg(c, 0xc242, 4);
+}
+static void draw(Calls *c, Route route)
+{
+    rt_render_call *out;
+    if (route == AUTO) {
+        out = append(c, RT_CALL_DRAW_AUTO); out->u.draw_auto.index_count = 3; return;
+    }
+    out = append(c, RT_CALL_INDEX_TYPE); out->u.index_type.type = route == OFFSET32 ? 1 : 0;
+    if (route == DIRECT16) {
+        out = append(c, RT_CALL_DRAW_INDEXED);
+        out->u.draw_indexed.header = 0xc0042700; out->u.draw_indexed.max_size = 3;
+        out->u.draw_indexed.address = at(INDICES16) + sizeof(uint16_t); out->u.draw_indexed.index_count = 3;
+        return;
+    }
+    out = append(c, RT_CALL_INDEX_BASE);
+    out->u.index_base.address = at(route == OFFSET32 ? INDICES32 : INDICES16);
+    out = append(c, RT_CALL_INDEX_SIZE); out->u.index_size.count = 4;
+    out = append(c, RT_CALL_DRAW_INDEX_OFFSET); out->u.draw_index.first = 1; out->u.draw_index.count = 3;
+    if (route == OFFSET32) {
+        out->u.draw_index.has_packet_fields = 1; out->u.draw_index.header = 0xc0033500; out->u.draw_index.max_size = 3;
+    }
+}
+static int invoke(Fixture *f, const char *id, const Calls *c, Method method, const char *reason)
+{
+    char error[512] = ""; uint64_t ticket = UINT64_MAX;
+    int result, handed = 0, waited = 0;
+    if (method == SUBMIT)
+        result = rt_executor_submit_calls(f->executor, c->call, c->count, &ticket, error, sizeof error);
+    else if (method == RECORD)
+        result = rt_executor_record_calls(f->executor, c->call, c->count, &ticket, error, sizeof error);
+    else result = rt_executor_run_calls(f->executor, c->call, c->count, error, sizeof error);
+    ++api_calls;
+    if (!result && method != RUN) {
+        CHECK(ticket != UINT64_MAX && ticket != 0);
+        if (method == RECORD) { handed = rt_executor_submit(f->executor, error, sizeof error); ++explicit_submits; CHECK(handed == 0); }
+        waited = rt_executor_wait_ticket(f->executor, ticket, error, sizeof error); ++ticket_waits; CHECK(waited == 0);
+    }
+    const int named = reason && strstr(error, reason) != NULL;
+    CHECK(reason ? result == -1 && named : result == 0);
+    if (reason) ++refusals;
+    if ((reason && (result != -1 || !named)) || (!reason && result))
+        fprintf(stderr, "color-clear-words %s: result%d, expected%s: %s\n", id, result, reason ? reason : "success", error);
+    printf("color-clear-words API id=%s method=%u calls=%zu expected=%d actual=%d named=%d ticket=%llu submit=%d wait=%d\n",
+        id, (unsigned)method, c->count, reason ? -1 : 0, result, named,
+        (unsigned long long)ticket, handed, waited);
+    return result;
+}
+static unsigned pool_bad(Fixture *f, const char *id)
+{
+    unsigned bad = 0, first = POOL_BYTES;
+    for (unsigned i = 0; i < POOL_BYTES; ++i) if (f->pool[i] != f->expected[i]) {
+        if (!bad) first = i;
+        ++bad;
+    }
+    printf("color-clear-words POOL id=%s bytes=%u bad=%u first=%u expected=%02x actual=%02x\n",
+        id, (unsigned)POOL_BYTES, bad, first,
+        first < POOL_BYTES ? f->expected[first] : 0, first < POOL_BYTES ? f->pool[first] : 0);
+    ++pool_scans; CHECK(bad == 0); return bad;
+}
+static void prepare(Fixture *f)
+{
+    /* New bytes for every draw: an empty draw or an old cached image cannot pass. */
+    memset(f->pool + TARGET, CANARY, TARGET_BYTES);
+    memset(f->pool + VERTEX_WRITES, 0, WITNESS_WORDS * sizeof(uint32_t));
+    memcpy(f->expected, f->pool, POOL_BYTES);
+}
+static void observe_draw(Fixture *f, const char *id, Route route, unsigned color, int masked)
+{
+    const uint32_t rgba = masked ? UINT32_C(0x6d6d6d6d) : colors[color].rgba;
+    const uint32_t bgra = masked ? UINT32_C(0x6d6d6d6d) : colors[color].bgra;
+    unsigned raw_bad = 0, read_bad = 0, vertex_bad = 0;
+    uint32_t raw_first = 0, raw_last = 0;
+    uint32_t actual[PIXELS], witness[WITNESS_WORDS];
+    for (unsigned i = 0; i < PIXELS; ++i) {
+        uint32_t raw; memcpy(&raw, f->pool + TARGET + 4 * i, sizeof raw);
+        if (!i) raw_first = raw;
+        raw_last = raw; if (raw != rgba) ++raw_bad;
+        memcpy(f->expected + TARGET + 4 * i, &rgba, sizeof rgba);
+    }
+    const unsigned first = route == AUTO ? 0 : 3;
+    for (unsigned i = 0; i < WITNESS_WORDS; ++i) {
+        const uint32_t expected = i >= first && i < first + 3 ? vertex_marker : 0;
+        memcpy(&witness[i], f->pool + VERTEX_WRITES + 4 * i, sizeof witness[i]);
+        if (witness[i] != expected) ++vertex_bad;
+        memcpy(f->expected + VERTEX_WRITES + 4 * i, &expected, sizeof expected);
+    }
+    memset(actual, 0, sizeof actual); char error[256] = "";
+    const int read = rt_executor_read_target(f->executor, at(TARGET), actual, WIDTH, HEIGHT, error, sizeof error);
+    ++readbacks; CHECK(read == 0);
+    for (unsigned i = 0; i < PIXELS; ++i) if (actual[i] != bgra) ++read_bad;
+    CHECK(raw_bad == 0); CHECK(read_bad == 0); CHECK(vertex_bad == 0);
+    const unsigned changed = pool_bad(f, id);
+    printf("color-clear-words DATA id=%s route=%u masked=%d expected_rgba=%08x expected_bgra=%08x raw_first=%08x raw_last=%08x first=%08x last=%08x raw_bad=%u read=%d read_bad=%u vertices=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x vertex_bad=%u pool_bad=%u\n",
+        id, (unsigned)route, masked, rgba, bgra, raw_first, raw_last, actual[0], actual[PIXELS - 1], raw_bad, read, read_bad,
+        witness[0], witness[1], witness[2], witness[3], witness[4], witness[5], witness[6], witness[7], vertex_bad, changed);
+    ++data_draws; ++cases;
+}
+static void success(Fixture *f, const char *id, Calls *c, Route route, unsigned color, int masked, Method method)
+{
+    prepare(f); draw(c, route); invoke(f, id, c, method, NULL); observe_draw(f, id, route, color, masked);
+}
+static void unchanged(Fixture *f, const char *id, Calls *c, Method method, const char *reason)
+{
+    /* A wrongly admitted draw must change fresh vertex canaries even with a zero color mask. */
+    if (reason) prepare(f);
+    memcpy(f->expected, f->pool, POOL_BYTES); invoke(f, id, c, method, reason);
+    const unsigned changed = pool_bad(f, id); uint32_t witness[WITNESS_WORDS];
+    memcpy(witness, f->pool + VERTEX_WRITES, sizeof witness);
+    printf("color-clear-words UNCHANGED id=%s bytes=%u pool_bad=%u vertices=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+        id, (unsigned)POOL_BYTES, changed, witness[0], witness[1], witness[2], witness[3],
+        witness[4], witness[5], witness[6], witness[7]); ++cases;
+}
+/* Clear words are formatted texel bits, not floats or a command to clear a target. */
+static const uint32_t patterns[] = {0, UINT32_MAX, 0x80000000, 0x7fc12345, 0x13572468, 0x2468ace0};
+static void words(Calls *c, unsigned pattern)
+{
+    for (unsigned bank = 0; bank < RT_COLOR_TARGETS; ++bank)
+        for (unsigned word = 0; word < 2; ++word)
+            reg(c, CLEAR_WORD0 + bank * COLOR_STRIDE + word,
+                patterns[(pattern + bank + word) % (sizeof patterns / sizeof patterns[0])]);
+}
+static void raw_words(Fixture *f)
+{
+    for (unsigned bank = 0; bank < RT_COLOR_TARGETS; ++bank)
+        for (unsigned word = 0; word < 2; ++word)
+            for (unsigned p = 0; p < sizeof patterns / sizeof patterns[0]; ++p) {
+                Calls c = {0}; const unsigned color = data_draws & 1;
+                scene(&c, color, 15); reg(&c, CLEAR_WORD0 + bank * COLOR_STRIDE + word, patterns[p]);
+                char id[96]; snprintf(id, sizeof id, "raw/bank%u/word%u/%08x", bank, word, patterns[p]);
+                success(f, id, &c, AUTO, color, 0, RUN);
+            }
+    for (unsigned word = 0; word < 2; ++word) for (unsigned bit = 0; bit < 32; ++bit) {
+        Calls c = {0}; const unsigned color = data_draws & 1;
+        scene(&c, color, 15); reg(&c, CLEAR_WORD0 + word, UINT32_C(1) << bit);
+        char id[96]; snprintf(id, sizeof id, "raw/walk/word%u/bit%u", word, bit);
+        success(f, id, &c, AUTO, color, 0, RUN);
+    }
+}
+static void routes(Fixture *f)
+{
+    for (unsigned method = RUN; method <= RECORD; ++method)
+        for (unsigned route = AUTO; route <= LOGICAL16; ++route)
+            for (unsigned masked = 0; masked < 2; ++masked) {
+                Calls c = {0}; const unsigned color = data_draws & 1;
+                words(&c, route + method); scene(&c, color, masked ? 0 : 15);
+                char id[96]; snprintf(id, sizeof id, "routes/method%u/route%u/masked%u", method, route, masked);
+                success(f, id, &c, (Route)route, color, masked, (Method)method);
+            }
+}
+static void ordering(Fixture *f)
+{
+    Calls c = {0}; words(&c, 0); unchanged(f, "carry/record-words", &c, RECORD, NULL);
+    c = (Calls){0}; scene(&c, 0, 15); success(f, "carry/later-submission", &c, AUTO, 0, 0, RUN);
+    c = (Calls){0}; words(&c, 3); unchanged(f, "carry/overwrite-words", &c, SUBMIT, NULL);
+    char error[256] = ""; CHECK(rt_executor_select_queue(f->executor, 1, error, sizeof error) == 0);
+    CHECK(rt_executor_select_queue(f->executor, RT_EXECUTOR_GRAPHICS_QUEUE, error, sizeof error) == 0);
+    c = (Calls){0}; scene(&c, 1, 15); success(f, "carry/queue-roundtrip", &c, AUTO, 1, 0, RUN);
+    rt_executor_reset(f->executor);
+    c = (Calls){0}; scene(&c, 0, 15); success(f, "reset/default-scene", &c, AUTO, 0, 0, RUN);
+}
+static void guards(Fixture *f)
+{
+    /* Only WORD0 and WORD1 are admitted: no inter-bank register or ninth bank. */
+    for (unsigned bank = 0; bank < RT_COLOR_TARGETS; ++bank) for (unsigned side = 0; side < 2; ++side) {
+        const uint32_t address = CLEAR_WORD0 + bank * COLOR_STRIDE + (side ? 2 : -1u);
+        Calls c = {0}; scene(&c, bank & 1, 15); words(&c, bank); reg(&c, address, 0); draw(&c, AUTO);
+        char id[96], reason[40]; snprintf(id, sizeof id, "unknown/bank%u/side%u/%04x", bank, side, address);
+        snprintf(reason, sizeof reason, "register %#x:", address); unchanged(f, id, &c, RUN, reason);
+    }
+    Calls c = {0}; scene(&c, 0, 15); reg(&c, CLEAR_WORD0 + RT_COLOR_TARGETS * COLOR_STRIDE, 0); draw(&c, AUTO);
+    unchanged(f, "unknown/ninth-bank", &c, RUN, "register 0xa39b:");
+    c = (Calls){0}; scene(&c, 1, 15); success(f, "unknown/recovery", &c, AUTO, 1, 0, RUN);
+    for (unsigned route = AUTO; route <= LOGICAL16; ++route) for (unsigned compressed = 0; compressed < 2; ++compressed) {
+        c = (Calls){0}; scene(&c, route & 1, 15); words(&c, route);
+        c.call[0].u.color_target.target.fast_clear = !compressed;
+        c.call[0].u.color_target.target.compression = compressed;
+        draw(&c, (Route)route);
+        char id[96]; snprintf(id, sizeof id, "active/route%u/compression%u", route, compressed);
+        unchanged(f, id, &c, RUN, compressed ? "multisample, layered or compressed render targets" : "CMASK range");
+        c = (Calls){0}; scene(&c, route & 1, 15);
+        snprintf(id, sizeof id, "active/route%u/compression%u/recovery", route, compressed);
+        success(f, id, &c, (Route)route, route & 1, 0, RUN);
+    }
+    /* Clear words cannot turn decompress/eliminate modes into ordinary draws. */
+    for (unsigned mode = 2; mode <= 4; ++mode) {
+        c = (Calls){0}; scene(&c, mode & 1, 15); words(&c, mode);
+        reg(&c, COLOR_CONTROL, 0xcc0000 | mode << 4); draw(&c, AUTO);
+        char id[96]; snprintf(id, sizeof id, "active/color-mode%u", mode);
+        unchanged(f, id, &c, RUN, "colour mode");
+    }
+    c = (Calls){0}; scene(&c, 0, 15); success(f, "active/mode-recovery", &c, AUTO, 0, 0, RUN);
+}
+static void cmask_cases(Fixture *f)
+{
+    enum { METADATA = 0xa000, BYTES = 128 };
+    static const uint32_t texel = 0xb5c72a13u;
+    rt_executor_reset(f->executor);
+    for (unsigned trial = 0; trial < 4; ++trial) {
+        const int expanded = trial == 2;
+        const int srgb = trial == 3;
+        const int masked = trial == 1;
+        const unsigned target = srgb ? OTHER_TARGET : TARGET;
+        memset(f->pool + METADATA,expanded ? 0xff : 0,BYTES);
+        memset(f->pool + target,CANARY,TARGET_BYTES);
+        prepare(f);
+        Calls c = {0};
+        scene(&c,0,masked ? 0 : 15);
+        rt_color_target *color = &c.call[0].u.color_target.target;
+        color->address = at(target); color->fast_clear = 1;
+        color->cmask_address = at(METADATA); color->cmask_bytes = BYTES;
+        color->number_type = srgb ? 6 : 0; color->component_swap = srgb;
+        color->tile_mode_index = srgb ? 13 : 31;
+        rt_tiling layout;
+        char error[256] = "";
+        const int layout_error = rt_tiling_layout(color->tile_mode_index,4,WIDTH,HEIGHT,&layout,error,sizeof error);
+        CHECK(layout_error == 0);
+        if (layout_error) return;
+        reg(&c,CLEAR_WORD0,texel);
+        reg(&c,CLEAR_WORD0 + 1,0x12345678);
+        reg(&c,CLEAR_WORD0 + COLOR_STRIDE,0xfedcba98);
+        reg(&c,0xa00c,3u << 16 | 2u); reg(&c,0xa00d,9u << 16 | 10u);
+        draw(&c,AUTO);
+        memset(f->expected + METADATA,0xff,BYTES);
+        for (unsigned y = 0; y < HEIGHT; ++y)
+            for (unsigned col = 0; col < WIDTH; ++col) {
+                const int covered = !masked && col >= 2 && col < 10 && y >= 3 && y < 9;
+                const uint32_t value = covered ? (srgb ? colors[0].bgra : colors[0].rgba) :
+                    expanded ? UINT32_C(0x6d6d6d6d) : texel;
+                memcpy(f->expected + target + rt_tiling_offset(&layout,col,y,0),&value,sizeof value);
+            }
+        for (unsigned i = 0; i < 3; ++i)
+            memcpy(f->expected + VERTEX_WRITES + i * sizeof vertex_marker,&vertex_marker,sizeof vertex_marker);
+        char id[64]; snprintf(id,sizeof id,"cmask/active/%u",trial);
+        invoke(f,id,&c,RUN,NULL); pool_bad(f,id); ++cases;
+        if (trial == 0) {
+            c = (Calls){0};
+            memset(f->pool + VERTEX_WRITES,0,WITNESS_WORDS * sizeof(uint32_t));
+            reg(&c,CLEAR_WORD0,0x875a513cu); reg(&c,TARGET_MASK,0); draw(&c,AUTO);
+            invoke(f,"cmask/consumed",&c,RUN,NULL); pool_bad(f,"cmask/consumed"); ++cases;
+        }
+    }
+
+    rt_executor_reset(f->executor);
+    for (unsigned trial = 0; trial < 4; ++trial) {
+        const char *const reason[] = {"CMASK range","partly cleared","unmodeled CMASK","CMASK overlaps"};
+        Calls c = {0};
+        scene(&c,0,15);
+        rt_color_target *color = &c.call[0].u.color_target.target;
+        color->fast_clear = 1; color->cmask_bytes = BYTES;
+        color->cmask_address = at(trial == 0 ? POOL_BYTES : trial == 3 ? TARGET : METADATA);
+        memset(f->pool + METADATA,trial == 2 ? 0x10 : 0,BYTES);
+        if (trial == 1) f->pool[METADATA + 4] = 0xff;
+        reg(&c,CLEAR_WORD0,texel); draw(&c,AUTO);
+        char id[64]; snprintf(id,sizeof id,"cmask/guard/%u",trial);
+        unchanged(f,id,&c,RUN,reason[trial]);
+    }
+}
+
+int main(void)
+{
+    char path[] = "/tmp/paleblood-metal-color-clear-words-XXXXXX"; const int fd = mkstemp(path);
+    CHECK(fd >= 0); if (fd < 0) return 1; unlink(path);
+    if (ftruncate(fd, POOL_BYTES)) { CHECK(0); close(fd); return 1; }
+    unsigned char *pool = mmap(NULL, POOL_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(pool != MAP_FAILED); if (pool == MAP_FAILED) { close(fd); return 1; }
+    Fixture *f = calloc(1, sizeof *f); CHECK(f != NULL);
+    if (!f) { munmap(pool, POOL_BYTES); close(fd); return 1; } f->pool = pool;
+    memset(pool, CANARY, POOL_BYTES);
+    memcpy(pool + VS_CODE, vertex_program, sizeof vertex_program); memcpy(pool + PS_CODE, pixel_program, sizeof pixel_program);
+    const float positions[6][4] = {{-1,-1,0,1},{3,-1,0,1},{-1,3,0,1},{-1,-1,0,1},{3,-1,0,1},{-1,3,0,1}};
+    const float attributes[6][4] = {{0,0,0,1},{0,0,0,1},{0,0,0,1},{0,0,0,1},{0,0,0,1},{0,0,0,1}};
+    const uint16_t indices16[4] = {0,3,4,5}; const uint32_t indices32[4] = {0,3,4,5};
+    memcpy(pool + POSITIONS, positions, sizeof positions); memcpy(pool + ATTRIBUTES, attributes, sizeof attributes);
+    memcpy(pool + INDICES16, indices16, sizeof indices16); memcpy(pool + INDICES32, indices32, sizeof indices32);
+    const rt_executor_memory memory = {.fd=fd, .size=POOL_BYTES, .guest_base=guest_base}; char error[512] = "";
+    const int opened = rt_executor_open(&memory, &f->executor, error, sizeof error);
+    printf("color-clear-words OPEN actual=%d\n", opened);
+    CHECK(opened == 0); if (opened) fprintf(stderr, "color-clear-words open: %s\n", error);
+    if (!opened) {
+        raw_words(f); routes(f); ordering(f); guards(f);
+        CHECK(cases == 227); CHECK(data_draws == 197); CHECK(refusals == 28);
+        CHECK(api_calls == cases); CHECK(pool_scans == cases); CHECK(readbacks == data_draws);
+        CHECK(ticket_waits == 18); CHECK(explicit_submits == 9);
+        cmask_cases(f);
+        CHECK(cases == 236); CHECK(api_calls == cases); CHECK(pool_scans == cases); CHECK(refusals == 32);
+        const int finished = rt_executor_finish(f->executor, error, sizeof error);
+        printf("color-clear-words FINISH actual=%d\n", finished); CHECK(finished == 0); rt_executor_close(f->executor);
+    }
+    printf("color-clear-words SUMMARY cases=%u primary_API=%u data_draws=%u refusals=%u pool_scans=%u readbacks=%u ticket_waits=%u explicit_submits=%u checks=%u failures=%u\n",
+        cases, api_calls, data_draws, refusals, pool_scans, readbacks, ticket_waits, explicit_submits, checks, failures);
+    free(f); munmap(pool, POOL_BYTES); close(fd); return failures ? 1 : 0;
+}
