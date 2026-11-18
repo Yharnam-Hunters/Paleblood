@@ -37,27 +37,33 @@ def read_log(path, port):
     return frames
 
 
-def frame_stats(frames, first=None, last=None):
-    """The figures (module docstring) for the frames numbered first to last (inclusive, None: open)."""
-    kept = [(n, t) for n, t in frames if (first is None or n >= first) and (last is None or n <= last)]
-    if len(kept) < 2:
-        raise ValueError('fewer than two frames in the range: no interval to measure')
-    intervals = [b[1] - a[1] for a, b in zip(kept, kept[1:])]
+def interval_figures(intervals):
+    """The average fps, 1% low fps and worst frame (module docstring) of a list of frame intervals in
+    nanoseconds, with their summed time in seconds. The intervals need not be consecutive: a caller
+    may leave some out (tools/ab_bench.py's skipped frames)."""
+    if not intervals:
+        raise ValueError('no interval to measure')
     if any(i < 0 for i in intervals):
         raise ValueError('the clock goes backwards between frames')
-    total = kept[-1][1] - kept[0][1]
+    total = sum(intervals)
     if total == 0:
         raise ValueError('every frame was presented at the same instant')
     slowest = sorted(intervals, reverse=True)[:max(1, math.ceil(len(intervals) / 100))]
     return {
-        'frames': len(kept),
-        'first_frame': kept[0][0],
-        'last_frame': kept[-1][0],
         'seconds': total / NANOSECONDS,
         'average_fps': len(intervals) * NANOSECONDS / total,
         'one_percent_low_fps': len(slowest) * NANOSECONDS / sum(slowest) if sum(slowest) else math.inf,
         'worst_frame_ms': max(intervals) / 1e6,
     }
+
+
+def frame_stats(frames, first=None, last=None):
+    """The figures (module docstring) for the frames numbered first to last (inclusive, None: open)."""
+    kept = [(n, t) for n, t in frames if (first is None or n >= first) and (last is None or n <= last)]
+    if len(kept) < 2:
+        raise ValueError('fewer than two frames in the range: no interval to measure')
+    figures = interval_figures([b[1] - a[1] for a, b in zip(kept, kept[1:])])
+    return {'frames': len(kept), 'first_frame': kept[0][0], 'last_frame': kept[-1][0], **figures}
 
 
 def main(argv=None):

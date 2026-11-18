@@ -207,8 +207,8 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
-and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
+depth export. Pixel-position X/Y inputs are rejected explicitly. Whole-quad mask expansion has
+the restricted fragment-control profile described below. Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
 against slots explicitly written for that stage since reset; writing zero establishes a value,
@@ -382,18 +382,39 @@ executor: reset cannot resume it. This does not roll back shader writes performe
 the draw. See the [Metal language specification, sections 6.10.3 and 6.11.1](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
 for active-lane reductions, helper invocations and discard behavior.
 
-Admission currently requires one inlined, straight-line guest block. Quad reads inside per-lane
-selections, prior invocation termination, guest loops and mutable or escaping dispatcher state
-are rejected. Literal Boolean subgroup votes are width independent; dynamic wave votes and
-whole-quad mask expansion still require a separate control-flow proof. Vertex quad operations
-remain rejected. This does not broaden the sampler's relative-mip-zero profile below.
+Ordinary numeric-only quad reads require one inlined, straight-line guest block. A separate
+fragment-control pass admits a finite forward chain of guest blocks when every live wave-wide
+vote can be removed by proof. It removes unread, nonvolatile, alias-free function state and
+only elides an EXECZ skip when always visiting its body with empty EXEC preserves all live state
+and external effects. It then removes the artificial dispatcher, exposing the actual physical
+control flow to the quad-read checks. Observable wave results, real loops, escaping locals,
+atomics, volatile or coherent memory decorations, extension instructions and unproved control
+remain explicit refusals. This does not
+emulate a GCN wave with the native SIMD-group width.
 
-`metal_quad_values_cpu` checks owned SPIR-V metadata, control-flow refusals, naming collisions
-and fresh-compiler reproducibility. `metal_quad_values` additionally executes full and one-pixel raster
-coverage with dynamic raw-bit patterns, plus deliberately divergent native packet callers that
-exercise the missing-source fault and discard. The latter callers are outside the adapter's
-admitted control-flow profile. These tests establish the stated numeric-read profile on the
-tested Metal device; they do not establish whole-quad execution or original-GPU equivalence.
+Removing an unused physical descriptor read additionally requires an exact typed address proof:
+an unchanged entry user-SGPR pair, the backend address offset and a bounded constant byte offset.
+Every removed read must fit a descriptor span already validated by the host. Descriptor origins
+are part of the shader cache key; their live pointers and complete spans are checked again before
+every draw, including cache hits. Uncovered or volatile reads are not silently discarded.
+
+Boolean quad swaps acquire all four participation bits and Boolean values in one `uint2 quad_or`
+reduction, then select the XOR peer from the acquired bits. The call is materialized before later
+selections. Incomplete quad participation records the same atomic fault and discards the fragment;
+successful execution requires all four physical invocations. The final control-flow checks still
+reject per-lane quad-read arms and prior termination. Vertex quad operations remain rejected.
+This does not broaden the sampler's relative-mip-zero profile below.
+
+`metal_quad_values_cpu` checks owned numeric SPIR-V metadata, control-flow refusals, naming
+collisions and fresh-compiler reproducibility. `metal_quad_values` also executes full and one-pixel
+raster coverage, raw-bit patterns and deliberately divergent native callers that observe the
+missing-source fault. `metal_fragment_control` checks independently owned preparation cases and
+refusals. `metal_boolean_quads` checks all Boolean truth tables, swap directions and incomplete
+participation. `metal_fragment_runtime` exercises an independently assembled GFX7 shader through
+the public executor, comparing masked EXEC and whole-quad expansion with a mathematical pixel
+oracle across user-data changes, retained state, resets and cached shaders. Device qualification
+establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
+comparison.
 
 The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling
 modes through `rt_tiling_mip_chain`. SPIRV-Cross lowers 1D textures as 2D with height one. Native
