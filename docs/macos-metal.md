@@ -256,7 +256,13 @@ aspect-specific staging blits, then publishes completed writable texels back aft
 Selected slices retain their bank rotation; padding and other slices remain untouched. This first
 path allocates attachment resources per draw rather than keeping a dirty depth-image cache.
 
-HTILE and expanded clears stop when an active aspect depends on them. A stencil-only draw
+Metal resolves tiled eight-pipe HTILE for single-slice D32 without stencil metadata.
+A surface whose active tiles all carry clear tags loads the finite 0..1 value from
+`DB_DEPTH_CLEAR` across the full depth plane. After successful execution the depth bytes
+are published and those tiles become expanded. Expanded tiles use the existing guest
+depth bytes. The clear preserves metadata padding, each word's upper bits and stencil data.
+Mixed clear and expanded tiles, compressed tiles and expanded-clear register operations
+stop explicitly. A stencil-only draw
 with `DB_STENCIL_INFO.TILE_STENCIL_DISABLE` set uses the uncompressed S8 plane even when the
 inactive Z format retains HTILE or expanded-clear flags; it requires no Z base and does not
 read or modify Z metadata. Stencil expanded-clear flags still stop explicitly. Clear/copy/
