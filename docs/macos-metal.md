@@ -225,15 +225,15 @@ An enabled blend flag has no effect when target 0 is unbound, its channel mask i
 colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
 
 `CB_COLOR0..7_CLEAR_WORD0/1` writes retain each independent raw 32-bit word across
-submissions, in the persistent graphics state. Reset returns these words to zero.
-They specify formatted fast-clear texel bits; writing them does not clear a target.
-The admitted uncompressed draw path does not consume them. Active fast-clear or
-compression flags and unsupported colour modes still stop before shader work.
-Only the two documented words in each of the eight banks are admitted. The
-[AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
-specify their addresses and bank stride.
+submissions. The current 8_8_8_8 color target resolves a CMASK whose declared range
+is entirely zero by loading `CLEAR_WORD0` into every texel. The subsequent draw
+may update a subset of those texels. Once the completed target bytes are published,
+the CMASK becomes all ones. An already expanded CMASK loads the existing bytes.
+Partial clears, other compression codes and overlapping memory stop explicitly.
+The register addresses and bank stride follow the
+[AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h).
 
-A zero colour mask disables attachment writes while still executing the draw. The Metal test
+A zero colour mask disables raster color writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
 
@@ -604,9 +604,8 @@ bits, single-bit walks, submission routes, masked draws and later submissions.
 Fresh vertex stores, literal pixels and whole-pool canaries distinguish completed
 draws from empty success. It also checks adjacent unknown registers and active
 fast-clear/compression/mode refusals before any writes, followed by recovery.
-Exact inactive raw storage, independence and zero-on-reset are source invariants;
-the public API cannot distinguish their values while fast clears are unsupported.
-No private state getter or original hardware equivalence is claimed.
+Active CMASK cases compare the entire guest pool after a clipped draw, a masked
+draw, reuse of expanded metadata, an sRGB clear and rejected metadata values or ranges.
 
 `test_metal_depth` additionally checks depth/stencil comparisons, operations and masks, both face
 orientations and viewport signs, native read-only behavior through overlapping triangles,

@@ -2,6 +2,7 @@
 /* Owned public-API color-clear-words admission tests; no game bytes or private state getter.
    Exact inactive MIN/MAX storage is source-reviewed, not observable through this API. */
 #include "runtime/render_executor.h"
+#include "runtime/tiling.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -282,7 +283,7 @@ static void guards(Fixture *f)
         c.call[0].u.color_target.target.compression = compressed;
         draw(&c, (Route)route);
         char id[96]; snprintf(id, sizeof id, "active/route%u/compression%u", route, compressed);
-        unchanged(f, id, &c, RUN, "multisample, layered or compressed render targets");
+        unchanged(f, id, &c, RUN, compressed ? "multisample, layered or compressed render targets" : "CMASK range");
         c = (Calls){0}; scene(&c, route & 1, 15);
         snprintf(id, sizeof id, "active/route%u/compression%u/recovery", route, compressed);
         success(f, id, &c, (Route)route, route & 1, 0, RUN);
@@ -296,6 +297,72 @@ static void guards(Fixture *f)
     }
     c = (Calls){0}; scene(&c, 0, 15); success(f, "active/mode-recovery", &c, AUTO, 0, 0, RUN);
 }
+static void cmask_cases(Fixture *f)
+{
+    enum { METADATA = 0xa000, BYTES = 128 };
+    static const uint32_t texel = 0xb5c72a13u;
+    rt_executor_reset(f->executor);
+    for (unsigned trial = 0; trial < 4; ++trial) {
+        const int expanded = trial == 2;
+        const int srgb = trial == 3;
+        const int masked = trial == 1;
+        const unsigned target = srgb ? OTHER_TARGET : TARGET;
+        memset(f->pool + METADATA,expanded ? 0xff : 0,BYTES);
+        memset(f->pool + target,CANARY,TARGET_BYTES);
+        prepare(f);
+        Calls c = {0};
+        scene(&c,0,masked ? 0 : 15);
+        rt_color_target *color = &c.call[0].u.color_target.target;
+        color->address = at(target); color->fast_clear = 1;
+        color->cmask_address = at(METADATA); color->cmask_bytes = BYTES;
+        color->number_type = srgb ? 6 : 0; color->component_swap = srgb;
+        color->tile_mode_index = srgb ? 13 : 31;
+        rt_tiling layout;
+        char error[256] = "";
+        const int layout_error = rt_tiling_layout(color->tile_mode_index,4,WIDTH,HEIGHT,&layout,error,sizeof error);
+        CHECK(layout_error == 0);
+        if (layout_error) return;
+        reg(&c,CLEAR_WORD0,texel);
+        reg(&c,CLEAR_WORD0 + 1,0x12345678);
+        reg(&c,CLEAR_WORD0 + COLOR_STRIDE,0xfedcba98);
+        reg(&c,0xa00c,3u << 16 | 2u); reg(&c,0xa00d,9u << 16 | 10u);
+        draw(&c,AUTO);
+        memset(f->expected + METADATA,0xff,BYTES);
+        for (unsigned y = 0; y < HEIGHT; ++y)
+            for (unsigned col = 0; col < WIDTH; ++col) {
+                const int covered = !masked && col >= 2 && col < 10 && y >= 3 && y < 9;
+                const uint32_t value = covered ? (srgb ? colors[0].bgra : colors[0].rgba) :
+                    expanded ? UINT32_C(0x6d6d6d6d) : texel;
+                memcpy(f->expected + target + rt_tiling_offset(&layout,col,y,0),&value,sizeof value);
+            }
+        for (unsigned i = 0; i < 3; ++i)
+            memcpy(f->expected + VERTEX_WRITES + i * sizeof vertex_marker,&vertex_marker,sizeof vertex_marker);
+        char id[64]; snprintf(id,sizeof id,"cmask/active/%u",trial);
+        invoke(f,id,&c,RUN,NULL); pool_bad(f,id); ++cases;
+        if (trial == 0) {
+            c = (Calls){0};
+            memset(f->pool + VERTEX_WRITES,0,WITNESS_WORDS * sizeof(uint32_t));
+            reg(&c,CLEAR_WORD0,0x875a513cu); reg(&c,TARGET_MASK,0); draw(&c,AUTO);
+            invoke(f,"cmask/consumed",&c,RUN,NULL); pool_bad(f,"cmask/consumed"); ++cases;
+        }
+    }
+
+    rt_executor_reset(f->executor);
+    for (unsigned trial = 0; trial < 4; ++trial) {
+        const char *const reason[] = {"CMASK range","partly cleared","unmodeled CMASK","CMASK overlaps"};
+        Calls c = {0};
+        scene(&c,0,15);
+        rt_color_target *color = &c.call[0].u.color_target.target;
+        color->fast_clear = 1; color->cmask_bytes = BYTES;
+        color->cmask_address = at(trial == 0 ? POOL_BYTES : trial == 3 ? TARGET : METADATA);
+        memset(f->pool + METADATA,trial == 2 ? 0x10 : 0,BYTES);
+        if (trial == 1) f->pool[METADATA + 4] = 0xff;
+        reg(&c,CLEAR_WORD0,texel); draw(&c,AUTO);
+        char id[64]; snprintf(id,sizeof id,"cmask/guard/%u",trial);
+        unchanged(f,id,&c,RUN,reason[trial]);
+    }
+}
+
 int main(void)
 {
     char path[] = "/tmp/paleblood-metal-color-clear-words-XXXXXX"; const int fd = mkstemp(path);
@@ -321,6 +388,8 @@ int main(void)
         CHECK(cases == 227); CHECK(data_draws == 197); CHECK(refusals == 28);
         CHECK(api_calls == cases); CHECK(pool_scans == cases); CHECK(readbacks == data_draws);
         CHECK(ticket_waits == 18); CHECK(explicit_submits == 9);
+        cmask_cases(f);
+        CHECK(cases == 236); CHECK(api_calls == cases); CHECK(pool_scans == cases); CHECK(refusals == 32);
         const int finished = rt_executor_finish(f->executor, error, sizeof error);
         printf("color-clear-words FINISH actual=%d\n", finished); CHECK(finished == 0); rt_executor_close(f->executor);
     }
