@@ -4956,23 +4956,39 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         if (branches(code + instructions[i].at, &instructions[i].ins, instructions[i].at, &target))
             t->constant_exec_enabled = 0, t->constant_exec = 0;
     }
-    /* Blocks whose branches all go forward run in program order, each at most once: they are emitted as a
-       chain of selections, each block entered when the PC names it, with no loop. A program with a branch
-       back (a loop) keeps the dispatch loop over every block. */
+    /* The blocks run in program order as a chain of selections, each entered when the PC names it. A
+       branch back makes a loop: the blocks from its target to the branch, merged with any loop they
+       overlap, form a structured loop whose body is their chain and which goes round while the PC names
+       one of its blocks (every branch out of it goes forward, past its last block). A program with a
+       branch the chain cannot follow (a target outside the program or not a block start) keeps the
+       dispatch loop over every block. */
     int forward = count > 0;
+    uint8_t *loop_first = calloc(block_count + 1, 1), *loop_last = calloc(block_count + 1, 1);
+    uint32_t *reach = calloc(block_count + 1, sizeof *reach); /* for a branch back's target block: 1 + the last block branching to it */
+    if (!loop_first || !loop_last || !reach) forward = 0;
     for (long i = 0, current = 0; forward && i < count; i++) {
         if (starts[instructions[i].at]) current = (long)block_of[instructions[i].at];
         const char *name = instructions[i].ins.name;
         if (instructions[i].ins.encoding != GCN_SOPP || !is_branch_named(name)) continue;
         const long target = (long)instructions[i].at + (long)instructions[i].ins.dwords + (int16_t)(code[instructions[i].at] & 0xffff);
-        if (target < 0 || target >= program || !starts[target] || (long)block_of[target] <= current) forward = 0;
+        if (target < 0 || target >= program || !starts[target]) forward = 0;
+        else if ((long)block_of[target] <= current && reach[block_of[target]] < (uint32_t)current + 1)
+            reach[block_of[target]] = (uint32_t)current + 1;
     }
+    for (uint32_t b = 0, end = 0; forward && b < block_count; b++) { /* overlapping loops merge into one */
+        if (b >= end && reach[b]) loop_first[b] = 1;
+        if (reach[b] > end) end = reach[b];
+        if (end && b + 1 == end) loop_last[b] = 1;
+    }
+    free(reach);
     uint32_t *labels = calloc(block_count + 1, sizeof *labels);
     const uint32_t header = spirv_new_id(m), dispatch = spirv_new_id(m), switch_merge = spirv_new_id(m);
     const uint32_t continue_block = spirv_new_id(m), loop_merge = spirv_new_id(m), fallback = spirv_new_id(m);
     if (!labels) fail(t, "no memory");
     for (uint32_t b = 0; labels && b < block_count; b++) labels[b] = spirv_new_id(m);
 
+    uint32_t chain_label = 0, loop_header = 0, loop_continue = 0, loop_exit = 0; /* the chain's current label and open loop */
+    int in_loop = 0;
     /* loop header, then the dispatch switch over every block */
     t->out = &t->blocks;
     spirv_emit(m, t->out, SPV_OP_LABEL, &header, 1);
@@ -5001,14 +5017,24 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     /* each block */
     for (long i = 0; !t->failed && i < count;) {
         const uint32_t b = block_of[instructions[i].at];
-        /* the chain: block b after block 0 runs when the PC names it, and its selection merges into the next block */
-        const uint32_t chain_merge = forward ? labels[b + 1] ? labels[b + 1] : (labels[b + 1] = spirv_new_id(m)) : 0;
-        if (forward && b) {
+        /* the chain: block b runs when the PC names it (block 0 at the start without asking), and its
+           selection merges into the next block, or into the loop's tail for a loop's last block */
+        const uint32_t chain_merge = !forward ? 0 : loop_last[b] ? spirv_new_id(m) : labels[b + 1] ? labels[b + 1] : (labels[b + 1] = spirv_new_id(m));
+        if (forward && !b) spirv_emit(m, t->out, SPV_OP_LABEL, &labels[0], 1), chain_label = labels[0];
+        if (forward && loop_first[b]) {
+            loop_header = chain_label, loop_continue = spirv_new_id(m), loop_exit = spirv_new_id(m);
+            const uint32_t body = spirv_new_id(m);
+            spirv_emit(m, t->out, SPV_OP_LOOP_MERGE, (const uint32_t[]){loop_exit, loop_continue, SPV_LOOP_CONTROL_NONE}, 3);
+            spirv_emit(m, t->out, SPV_OP_BRANCH, &body, 1);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &body, 1);
+            in_loop = 1;
+        }
+        if (forward && (b || in_loop)) {
             const uint32_t named = equals(t, load(t, t_uint(t), t->pc), konst(t, b)), body = spirv_new_id(m);
             spirv_emit(m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){chain_merge, SPV_SELECTION_CONTROL_NONE}, 2);
             spirv_emit(m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){named, body, chain_merge}, 3);
             spirv_emit(m, t->out, SPV_OP_LABEL, &body, 1);
-        } else spirv_emit(m, t->out, SPV_OP_LABEL, &labels[b], 1);
+        } else if (!forward) spirv_emit(m, t->out, SPV_OP_LABEL, &labels[b], 1);
         int ended = 0;
         for (;;) {
             const decoded *d = &instructions[i];
@@ -5050,8 +5076,18 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
             }
         }
         if (!ended) spirv_emit(m, t->out, SPV_OP_BRANCH, forward ? &chain_merge : &switch_merge, 1);
-        if (forward) spirv_emit(m, t->out, SPV_OP_LABEL, &chain_merge, 1);
+        if (forward) spirv_emit(m, t->out, SPV_OP_LABEL, &chain_merge, 1), chain_label = chain_merge;
+        if (forward && loop_last[b]) { /* round again while the PC names one of the loop's blocks */
+            spirv_emit(m, t->out, SPV_OP_BRANCH, &loop_continue, 1);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &loop_continue, 1);
+            const uint32_t again = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, load(t, t_uint(t), t->pc), konst(t, b));
+            spirv_emit(m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){again, loop_header, loop_exit}, 3);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &loop_exit, 1);
+            chain_label = loop_exit, in_loop = 0;
+        }
     }
+    free(loop_first);
+    free(loop_last);
     if (forward) {
         /* past the last block: every path through the chain ended at s_endpgm, so this is not reached */
         spirv_emit(m, t->out, SPV_OP_UNREACHABLE, NULL, 0);
