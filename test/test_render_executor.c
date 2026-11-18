@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 /* What the executor records, for orderings the pixels cannot show (this device may order the work
@@ -3053,7 +3054,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -3211,7 +3212,7 @@ static void guarded_targets(int fd, rt_executor *shared)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3302,7 +3303,7 @@ static void guarded_depth_read(int fd, unsigned bytes)
     enum { DEPTH_BUFFER = 0xc0f48000, GD_Z = 0x2700000, GD_HTILE = 0x2780000, GD_COLOUR = 0x2790000, GD_SAMPLED = 0x27a0000, GD_SIZE = 256,
            GD_WORDS = (GD_SIZE / 8) * (GD_SIZE / 8) };
     char error[256] = "";
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3376,7 +3377,7 @@ static void guarded_target_fill(int fd)
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     const uint64_t span = rt_tiling_size(&layout, 1);
     uint32_t *memory = (uint32_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3609,7 +3610,7 @@ static void collect_when_due(int fd)
 {
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "executor with a due check: %s\n", error);
@@ -3646,7 +3647,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -3702,7 +3703,7 @@ static void copied_image_after_write_back(int fd)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&watched_guarded, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3730,7 +3731,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3887,9 +3888,47 @@ static void pipeline_cache_file(const rt_executor_memory *memory)
     rmdir(directory);
 }
 
+/* With async_pipelines, the first draw with a pipeline neither made nor cached is left out while a worker
+   thread makes the pipeline (the target keeps its zeroed memory), and a later run of the same buffer
+   draws it. */
+static void async_pipelines(int fd)
+{
+    enum { ASYNC_BUFFER = 0xc0e10000, ASYNC_TARGET = 0x3600000 };
+    const int attempts = 3000;
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1};
+    rt_executor *x = NULL;
+    char error[256] = "";
+    const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+    if (opened) fprintf(stderr, "async pipelines: %s\n", error);
+    CHECK(opened == 0);
+    if (!x) return;
+    rt_render_forget(), rt_executor_reset(x);
+    memset((void *)(uintptr_t)at(ASYNC_TARGET), 0, SIZE * SIZE * 4);
+    const uint32_t size = record_draw(ASYNC_BUFFER, at(ASYNC_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_executor_run(x, ASYNC_BUFFER, size, error, sizeof error) == 0);
+    uint32_t bgra[SIZE * SIZE];
+    int lit = 0; /* the target as loaded from its zeroed memory: the draw left out */
+    if (rt_executor_read_target(x, at(ASYNC_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0)
+        for (unsigned i = 0; i < SIZE * SIZE; i++) lit += bgra[i] != 0;
+    CHECK(lit == 0);
+    int drawn = 0;
+    for (int i = 0; i < attempts && !drawn; i++) { /* the pipeline is waited for a second after it was queued at the latest */
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(record_draw(ASYNC_BUFFER, at(ASYNC_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER) == size);
+        CHECK(rt_executor_run(x, ASYNC_BUFFER, size, error, sizeof error) == 0);
+        drawn = rt_executor_read_target(x, at(ASYNC_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0 && bgra[SIZE * SIZE / 2 + SIZE / 2];
+        if (!drawn) usleep(1000);
+    }
+    CHECK(drawn);
+    if (drawn) check_triangle_pixels(bgra);
+    rt_executor_close(x);
+}
+
 int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
+    /* nor the drivers' own shader caches on disk: async_pipelines needs a pipeline the compiler must make */
+    setenv("__GL_SHADER_DISK_CACHE", "0", 0), setenv("MESA_SHADER_CACHE_DISABLE", "true", 0);
     const int fd = map_guest_memory();
     if (fd < 0) {
         fprintf(stderr, "cannot map the guest memory at %#llx\n", GUEST_BASE);
@@ -3897,12 +3936,13 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
     }
     enum { BUFFER = 0xc0de0000, SECOND = 0xc0df0000, THIRD = 0xc0e00000 };
+    async_pipelines(fd); /* first: before any draw has made its pipeline */
 
     /* A triangle into an R8G8B8A8 target (SWAP_STD), through guest addresses and the pool's GPU buffer. */
     rt_render_forget(), rt_executor_reset(x);

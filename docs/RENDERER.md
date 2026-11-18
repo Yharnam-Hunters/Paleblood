@@ -1303,6 +1303,18 @@ things keep that to the first run:
   `$XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin`, else `~/.cache/paleblood/vulkan-pipelines.bin`.
   A file written for another device or driver, or larger than 512 MB, is not used and is replaced.
   The unit tests set it empty unless a test asks for one.
+- **Pipelines made off the recording thread.** The file only helps from the second run on. On a
+  first launch, or after a translator change gives the shaders new SPIR-V, the compiles are still
+  there: in the clinic walk with no cache (frames 1350-2900) they took 5.2 s on the renderer's
+  thread, in single frames of up to 1.15 s. So a draw whose pipeline the cache does not hold
+  hands it to one of two worker threads and is left out until the pipeline is made, for a second
+  at most; then it waits for it. A pipeline the cache holds is made at once on the recording thread
+  (`VK_EXT_pipeline_creation_cache_control`: the driver says when a pipeline needs its compiler), so
+  a warm run leaves nothing out. Only a draw whose absence changes nothing but its own targets is
+  left out: it stores nothing, is not indirect, tessellated or a geometry-shader draw, and its depth
+  target has been drawn before (a later test reading depth no draw wrote would stop). Dispatches
+  and every other draw still wait for their pipelines. `PB_ASYNC_PIPELINES=0` turns this off (one
+  binary for an A/B run); the renderer's own test runs with it off, the executor's test checks it.
 
 ## Measuring frame rate
 
