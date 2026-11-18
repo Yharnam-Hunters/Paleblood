@@ -1008,6 +1008,7 @@ frame_timing_dungeon_gate_on_event_3000,edge,60,22,22,0,0,cd53367af0bda73a,2026-
 frame_timing_dungeon_gate_step_init_for_channel_load,recorded,,28,28,0,0,cd53367af0bda73a,2026-11-14
 frame_timing_dungeon_gate_step_init_for_channel_load,edge,,8,8,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_step_init_for_channel_load,edge,60,8,8,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_dungeon_gate_step_mode_switch,recorded,,285,224,0,61,cd53367af0bda73a,2026-11-17
 frame_timing_dungeon_gate_step_mode_switch,edge,,15,15,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_step_mode_switch,edge,60,15,15,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_fill_creation_part1_0231fbc0,edge,,223,223,0,0,a3a0cba6b12c8685,2026-11-14
@@ -1439,6 +1440,7 @@ loading_transfer_task_cancel_024dd8a0,edge,,45,45,0,0,6a63eebaaf35e894,2026-11-1
 loading_transfer_task_check_close_024ddf20,edge,,35,35,0,0,ea73e2a3e23c210b,2026-11-17
 loading_transfer_task_check_read_024dde50,recorded,,299,299,0,0,ea73e2a3e23c210b,2026-11-17
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,ea73e2a3e23c210b,2026-11-17
+loading_transfer_task_initialize_024dd540,recorded,,306,245,0,61,ea73e2a3e23c210b,2026-11-17
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,ea73e2a3e23c210b,2026-11-17
 loading_transfer_task_list_push_back_02a6b340,recorded,,308,308,0,0,874f9cc7a2892e77,2026-11-17
 loading_transfer_task_list_push_back_02a6b340,edge,,17,17,0,0,874f9cc7a2892e77,2026-11-17
