@@ -37,11 +37,20 @@ inline uint32_t integer_width(const MetalFragmentIR &ir, uint32_t type, bool uns
         (unsigned_only && op->operands[2]) || (op->operands[1] != 32 && op->operands[1] != 64)) return 0;
     return op->operands[1];
 }
-inline bool number32(const MetalFragmentIR &ir, uint32_t type)
+inline bool float32(const MetalFragmentIR &ir, uint32_t type)
 {
     const auto *op = ir.find(type);
-    return integer_width(ir, type) == 32 ||
-        (op && op->opcode == spv::OpTypeFloat && op->operands.size() == 2 && op->operands[1] == 32);
+    return op && op->opcode == spv::OpTypeFloat && op->operands.size() == 2 && op->operands[1] == 32;
+}
+inline bool number32(const MetalFragmentIR &ir, uint32_t type)
+{
+    return integer_width(ir, type) == 32 || float32(ir, type);
+}
+inline bool glsl450_import(const MetalFragmentIR &ir, uint32_t id)
+{
+    const auto *op = ir.find(id);
+    return op && op->opcode == spv::OpExtInstImport &&
+        op->operands == std::vector<uint32_t>{id, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0};
 }
 /* This conversion reads no neighboring invocation and has no memory effects. Keep
    the exact imported grammar and UInt32 -> Float32x2 signature in the tail proof. */
@@ -49,15 +58,10 @@ inline bool unpack_half_pair(const MetalFragmentIR &ir, const MetalFragmentOp &o
 {
     const auto &a = op.operands;
     if (op.opcode != spv::OpExtInst || a.size() != 5 || a[3] != GLSLstd450UnpackHalf2x16) return false;
-    const auto *import = ir.find(a[2]);
-    if (!import || import->opcode != spv::OpExtInstImport || import->operands.size() != 5 ||
-        std::vector<uint32_t>(import->operands.begin() + 1, import->operands.end()) !=
-            std::vector<uint32_t>{0x4c534c47u, 0x6474732eu, 0x3035342eu, 0}) return false;
+    if (!glsl450_import(ir, a[2])) return false;
     const auto *pair = ir.find(op.result_type());
     if (!pair || pair->opcode != spv::OpTypeVector || pair->operands.size() != 3 || pair->operands[2] != 2) return false;
-    const auto *component = ir.find(pair->operands[1]);
-    if (!component || component->opcode != spv::OpTypeFloat ||
-        component->operands != std::vector<uint32_t>{pair->operands[1], 32}) return false;
+    if (!float32(ir, pair->operands[1])) return false;
     const auto *input = ir.find(a[4]);
     return input && integer_width(ir, input->result_type(), true) == 32;
 }
@@ -484,8 +488,8 @@ class Control {
         return result;
     }
     /* Only total scalar operations are needed on the newly visited empty path. Integer shifts
-       require a literal in range; division, conversions from float, extinsts, in-bounds address
-       promises and all memory/image/synchronization operations remain outside this proof. */
+       require a literal in range. Division, conversions from float, in-bounds address promises
+       and arbitrary extended instructions remain outside this proof. */
     void pure_operation(const MetalFragmentOp &op) const
     {
         const auto &a = op.operands;
@@ -530,12 +534,15 @@ class Control {
             if (!output_width || input_width != output_width) refuse("fragment empty path has an unsupported bitcast");
             break;
         }
-        case spv::OpFAdd: case spv::OpFSub: case spv::OpFMul: {
-            same(4); const auto &type = definition(ir, op.result_type());
-            if (type.opcode != spv::OpTypeFloat || type.operands.size() != 2 || type.operands[1] != 32)
-                refuse("fragment empty path needs scalar float arithmetic");
+        case spv::OpFNegate: case spv::OpFAdd: case spv::OpFSub: case spv::OpFMul:
+            same(op.opcode == spv::OpFNegate ? 3 : 4);
+            if (!float32(ir, op.result_type())) refuse("fragment empty path needs scalar float arithmetic");
             break;
-        }
+        case spv::OpExtInst:
+            if (a.size() != 6 || a[3] != GLSLstd450NMax || !glsl450_import(ir, a[2]) || !float32(ir, op.result_type()) ||
+                !value_type(ir, a[4], op.result_type()) || !value_type(ir, a[5], op.result_type()))
+                refuse("fragment empty path needs scalar GLSL NMax");
+            break;
         case spv::OpCompositeConstruct: {
             const auto &type = definition(ir, op.result_type());
             if (type.opcode != spv::OpTypeVector || type.operands.size() != 3 || type.operands[2] < 2 || type.operands[2] > 4 ||
@@ -731,13 +738,7 @@ class Control {
             if (op.opcode == spv::OpExtInst) {
                 if (a.size() != 5 || (a[3] != GLSLstd450Log2 && a[3] != GLSLstd450Exp2))
                     refuse("fragment optional case has an unproved extended instruction");
-                const auto &import = definition(ir, a[2]);
-                const auto &type = definition(ir, op.result_type());
-                if (import.opcode != spv::OpExtInstImport || import.operands.size() != 5 ||
-                    std::vector<uint32_t>(import.operands.begin() + 1, import.operands.end()) !=
-                        std::vector<uint32_t>{0x4c534c47u, 0x6474732eu, 0x3035342eu, 0} ||
-                    type.opcode != spv::OpTypeFloat || type.operands != std::vector<uint32_t>{op.result_type(), 32} ||
-                    !value_type(ir, a[4], op.result_type()))
+                if (!glsl450_import(ir, a[2]) || !float32(ir, op.result_type()) || !value_type(ir, a[4], op.result_type()))
                     refuse("fragment optional case needs scalar GLSL Log2 or Exp2");
                 continue;
             }
