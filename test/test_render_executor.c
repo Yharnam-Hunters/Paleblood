@@ -1691,11 +1691,16 @@ static int draw_with_vertex_code(rt_executor *x, uint64_t buffer, uint64_t code,
     return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset + 0x10), error, error_size);
 }
 
+/* The home stop word of a vertex shader (render_executor.c's stop_index, repeated here): 13 bits of a
+   Fibonacci hash of the shader's kind (0, a vertex shader) and code address. */
+static size_t vertex_stop_home(uint64_t code) { return (size_t)(code * 0x9e3779b97f4a7c15ull >> (64 - 13)); }
+
 /* More shaders than the 1024 kept (walking a scene brings more): the vertex shader copied to 1100
    places, each drawn once, all draw, the least recently used giving its entry. The first, freed by
    then, draws again (translated again). A shader that then stops at run time (it reads VCC as a lane
-   mask after writing its halves as scalars) is named by its own address: it took a freed entry, and
-   its stop word follows from its own address (stop_index). */
+   mask after writing its halves as scalars) is named by its own address, and by no other: it took a
+   freed entry, and it is placed where its home stop word is that of a shader still kept (stop_slot
+   gives it the next free word; sharing the word, the stop named both). */
 static void shaders_past_the_limit(rt_executor *x)
 {
     enum { MANY_SHADERS_BUFFER = 0xc0fd7000, SHADER_CODES = 0x3b00000, CODE_STRIDE = 0x100, SHADERS_DRAWN = 1100,
@@ -1715,7 +1720,17 @@ static void shaders_past_the_limit(rt_executor *x)
     memset((void *)(uintptr_t)at(SHADERS_TARGET), 0, SIZE * SIZE * 4);
     CHECK(draw_with_vertex_code(x, MANY_SHADERS_BUFFER, at(SHADER_CODES), at(SHADERS_TARGET), error, sizeof error) == 0);
     check_triangle(x, at(SHADERS_TARGET));
-    const uint64_t stopping = at(SHADER_CODES + (uint64_t)SHADERS_DRAWN * CODE_STRIDE);
+    enum { FIRST_KEPT = SHADERS_DRAWN - 900 }; /* well inside the 1024 most recently drawn */
+    uint64_t stopping = 0, sharing_home = 0;
+    for (uint64_t place = SHADERS_DRAWN; !stopping && at(SHADER_CODES + (place + 1) * CODE_STRIDE) <= at(SHADERS_TARGET); place++) {
+        const uint64_t candidate = at(SHADER_CODES + place * CODE_STRIDE);
+        for (unsigned k = FIRST_KEPT; k < SHADERS_DRAWN && !stopping; k++) {
+            const uint64_t kept = at(SHADER_CODES + (uint64_t)k * CODE_STRIDE);
+            if (vertex_stop_home(kept) == vertex_stop_home(candidate)) stopping = candidate, sharing_home = kept;
+        }
+    }
+    CHECK(stopping != 0);
+    if (!stopping) return;
     uint32_t *reads_vcc = (uint32_t *)(uintptr_t)stopping;
     reads_vcc[0] = 0xbeeb0380; /* s_mov_b32 vcc_hi, 0 */
     reads_vcc[1] = 0x00121280; /* v_cndmask_b32_e32 v9, 0, v9, vcc */
@@ -1725,6 +1740,9 @@ static void shaders_past_the_limit(rt_executor *x)
     snprintf(named, sizeof named, "the vertex shader at %#llx", (unsigned long long)stopping);
     if (!strstr(error, named)) fprintf(stderr, "shader past the limit stop: %s\n", error);
     CHECK(strstr(error, named) != NULL);
+    snprintf(named, sizeof named, "the vertex shader at %#llx", (unsigned long long)sharing_home);
+    if (strstr(error, named)) fprintf(stderr, "shader past the limit stop also names %#llx: %s\n", (unsigned long long)sharing_home, error);
+    CHECK(strstr(error, named) == NULL);
 }
 
 /* The pipelines kept after render targets are freed (many_targets leaves all 512 kept): each round draws
