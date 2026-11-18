@@ -27,9 +27,11 @@ struct Pair32 {
     int32_t b;
 };
 
+// Original `cmp eax, 0xfe; jl` resets wait_frames and transitions to idle once waited >= 0xfe.
 constexpr int32_t load_wait_limit = 0xfe;
+// Original step_unloading steps backward by 8 objects (`lea r12d, [rbx - 8]`, `cmp ebx, 8`).
 constexpr int32_t unload_batch_size = 8;
-constexpr uint32_t unload_batch_unsigned_limit = 8;
+// Original substate 2 caps object setup per step to 8 while loading, or 1000 (0x3e8) otherwise.
 constexpr uint32_t setup_batch_loading = 8;
 constexpr uint32_t setup_batch_normal = 1000;
 constexpr uint32_t object_pool_mask = 0x3ff;
@@ -162,24 +164,37 @@ void init_link_node(NavLinkNode &node, uint32_t part_id, uint32_t target_id)
     node.target_id = target_id;
 }
 
+// Computes the intermediate local-frame columns (c0, c1, c2) from a local rotation and position,
+// preserving the original's SIMD operand order so NaN payloads match.
+Transform3x3 compute_local_frame(const Transform3x3 &rot, Vec4 pos)
+{
+    const Vec4 zero = Vec4::zero();
+    const Vec4 w_one = block_point_w.get();
+    Transform3x3 frame;
+    frame.rows[row_x] = ops::add_in_order(
+        ops::multiply_in_order(ops::broadcast<lane_x>(pos), w_one),
+        ops::add_in_order(ops::multiply_in_order(rot.rows[row_z], zero),
+                          ops::add_in_order(rot.rows[row_x], ops::multiply_in_order(rot.rows[row_y], zero))));
+    frame.rows[row_y] = ops::add_in_order(
+        ops::multiply_in_order(ops::broadcast<lane_y>(pos), w_one),
+        ops::add_in_order(ops::add_in_order(ops::multiply_in_order(rot.rows[row_x], zero), rot.rows[row_y]),
+                          ops::multiply_in_order(rot.rows[row_z], zero)));
+    frame.rows[row_z] = ops::add_in_order(
+        ops::multiply_in_order(ops::broadcast<lane_z>(pos), w_one),
+        ops::add_in_order(rot.rows[row_z], ops::add_in_order(ops::multiply_in_order(rot.rows[row_x], zero),
+                                                             ops::multiply_in_order(rot.rows[row_y], zero))));
+    return frame;
+}
+
 // Composes a parent 3x3 basis with a local rotation and translation (preserving the original's
 // SIMD operand order so NaN payloads match).
 Transform3x3 compose_setup_transform(const Transform3x3 &parent, const Transform3x3 &rot, Vec4 pos)
 {
-    const Vec4 zero = Vec4::zero();
+    const Transform3x3 local = compute_local_frame(rot, pos);
+    const Vec4 c0 = local.rows[row_x];
+    const Vec4 c1 = local.rows[row_y];
+    const Vec4 c2 = local.rows[row_z];
     const Vec4 w_one = block_point_w.get();
-    const Vec4 c0 = ops::add_in_order(
-        ops::multiply_in_order(ops::broadcast<lane_x>(pos), w_one),
-        ops::add_in_order(ops::multiply_in_order(rot.rows[row_z], zero),
-                          ops::add_in_order(rot.rows[row_x], ops::multiply_in_order(rot.rows[row_y], zero))));
-    const Vec4 c1 = ops::add_in_order(
-        ops::multiply_in_order(ops::broadcast<lane_y>(pos), w_one),
-        ops::add_in_order(ops::add_in_order(ops::multiply_in_order(rot.rows[row_x], zero), rot.rows[row_y]),
-                          ops::multiply_in_order(rot.rows[row_z], zero)));
-    const Vec4 c2 = ops::add_in_order(
-        ops::multiply_in_order(ops::broadcast<lane_z>(pos), w_one),
-        ops::add_in_order(rot.rows[row_z], ops::add_in_order(ops::multiply_in_order(rot.rows[row_x], zero),
-                                                             ops::multiply_in_order(rot.rows[row_y], zero))));
 
     const Vec4 p0 = parent.rows[row_x];
     const Vec4 p1 = parent.rows[row_y];
@@ -205,20 +220,11 @@ Transform3x3 compose_setup_transform(const Transform3x3 &parent, const Transform
 
 Transform4x4 compose_connect_transform4(const Transform3x3 &parent, const Transform3x3 &rot, Vec4 pos)
 {
-    const Vec4 zero = Vec4::zero();
+    const Transform3x3 local = compute_local_frame(rot, pos);
+    const Vec4 c0 = local.rows[row_x];
+    const Vec4 c1 = local.rows[row_y];
+    const Vec4 c2 = local.rows[row_z];
     const Vec4 w_one = block_point_w.get();
-    const Vec4 c0 = ops::add_in_order(
-        ops::multiply_in_order(ops::broadcast<lane_x>(pos), w_one),
-        ops::add_in_order(ops::multiply_in_order(rot.rows[row_z], zero),
-                          ops::add_in_order(rot.rows[row_x], ops::multiply_in_order(rot.rows[row_y], zero))));
-    const Vec4 c1 = ops::add_in_order(
-        ops::multiply_in_order(ops::broadcast<lane_y>(pos), w_one),
-        ops::add_in_order(ops::add_in_order(ops::multiply_in_order(rot.rows[row_x], zero), rot.rows[row_y]),
-                          ops::multiply_in_order(rot.rows[row_z], zero)));
-    const Vec4 c2 = ops::add_in_order(
-        ops::multiply_in_order(ops::broadcast<lane_z>(pos), w_one),
-        ops::add_in_order(rot.rows[row_z], ops::add_in_order(ops::multiply_in_order(rot.rows[row_x], zero),
-                                                             ops::multiply_in_order(rot.rows[row_y], zero))));
 
     auto mul_row = [&](Vec4 row) {
         return ops::add_in_order(
@@ -385,7 +391,7 @@ void step_clear_and_rebuild_links(AreaBlock *block)
             const uint64_t *src = idx < parts->data_b_count ? &parts->data_b[idx] : nullptr;
             const int32_t old_b = node.array_b.size;
             reserve_hk_array(node.array_b, old_b + link->data_b_count);
-            auto *slots = reinterpret_cast<NavLinkSlotB *>(node.array_b.data);
+            NavLinkSlotB *slots = node.array_b.data;
             for (int32_t k = 0; k < link->data_b_count; k++) nav_link_slot_init(&slots[node.array_b.size + k]);
             node.array_b.size += link->data_b_count;
             if (slots && src && link->data_b_count != 0) {
@@ -738,8 +744,9 @@ void step_unloading(AreaBlock *block)
         // check; perform the subtraction in uint32_t so signed extremes [INT32_MIN, INT32_MIN + 7]
         // match without signed overflow UB. Valid callers supply 0 <= step_index < object_count.
         const uint32_t wrapped_start = static_cast<uint32_t>(end) - static_cast<uint32_t>(unload_batch_size);
-        const int32_t start =
-            static_cast<uint32_t>(end) < unload_batch_unsigned_limit ? 0 : static_cast<int32_t>(wrapped_start);
+        const int32_t start = static_cast<uint32_t>(end) < static_cast<uint32_t>(unload_batch_size)
+                                  ? 0
+                                  : static_cast<int32_t>(wrapped_start);
         for (int64_t i = end; i >= start; i--) {
             BlockAiObject *object = block->objects[i];
             if (object) block_object_unload(object);

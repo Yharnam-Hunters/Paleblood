@@ -78,8 +78,12 @@ struct WorldAreaManager {
 };
 static_assert(offsetof(WorldAreaManager, table) == 0x10);
 
-// Nav-mesh link node stored inside NvmSection's graph_a (+0x40) and graph_b (+0x68).
+// Nav-mesh link slot and node stored in NavLinkGraphA::nodes (+0x40) and NavLinkGraphB::nodes (+0x68).
 struct NavLinkSlotB {
+    // Initialized by nav_link_slot_init (0x00ce2660); field_a/field_b are overwritten in
+    // step_clear_and_rebuild_links from the two 32-bit halves of each PartsContainer::data_b entry.
+    // Semantic meaning of field_a..field_d is not established here; field_c/field_d are not
+    // directly accessed by 0x02224a60.
     int32_t field_a;
     int32_t field_b;
     uint32_t field_c;
@@ -91,8 +95,12 @@ static_assert(sizeof(NavLinkSlotB) == 0x10);
 struct NavLinkNode {
     uint32_t part_id;
     uint32_t target_id;
+    // Populated in graph_a nodes from PartsContainer::data_a; cleared/freed in clear_link_nodes.
     HkArray<Vec4> array_a;
-    HkArray<Vec4> array_b;
+    // Populated in graph_b nodes via nav_link_slot_init and PartsContainer::data_b; cleared/freed
+    // in clear_link_nodes.
+    HkArray<NavLinkSlotB> array_b;
+    // Initialized empty and freed first in clear_link_nodes; element meaning is not established.
     HkArray<uint64_t> array_c;
 };
 static_assert(sizeof(NavLinkNode) == 0x38 && offsetof(NavLinkNode, array_a) == 0x08 &&
@@ -112,6 +120,9 @@ static_assert(offsetof(NavLinkGraphB, nodes) == 0x68);
 
 struct NvmSection {
     uint8_t unknown_0x00[0x88];
+    // Indirect pointers to two node graphs: passed to world_nvm_connect_parts when rebuilding
+    // links, or cleared and rebuilt in substate 0 from links_a (graph_a from data_a, graph_b from
+    // data_b).
     NavLinkGraphA **graph_a;
     void *unknown_0x90;
     NavLinkGraphB **graph_b;
@@ -172,9 +183,11 @@ struct PartsContainer {
     uint8_t unknown_0x00[0x78];
     PartsEntry *entries;
     uint8_t unknown_0x80[0x18];
+    // Consumed in substate 0 (step_clear_and_rebuild_links) to rebuild graph_a/graph_b nodes.
     PartsLinkA *links_a;
     Vec4 *data_a;
     uint64_t *data_b;
+    // Consumed in substate 4 (step_substate_attach_links) to attach cross-block object links.
     PartsLinkB *links_b;
     uint8_t unknown_0xb8[0x8];
     uint32_t entry_count;
@@ -209,13 +222,14 @@ struct ObjectModel {
 static_assert(offsetof(ObjectModel, bounds_min) == 0x70 && offsetof(ObjectModel, bounds_max) == 0x80 &&
               offsetof(ObjectModel, id) == 0x98);
 
-// Matches HkAi's 0x750-byte object slot in SprjHkAiManager::object_pool.
+// 0x750-byte object slot in WorldNvmManager::object_pool.
 struct BlockAiObject {
     uint8_t unknown_0x000[0x30];
     int32_t kind;
     uint8_t unknown_0x034[0x14];
     ObjectModel *model;
     uint8_t unknown_0x050[0xe4];
+    // Confirmed use here: != -1 is required by is_object_active (specific index meaning unconfirmed).
     int32_t index_0x134;
     uint8_t unknown_0x138[0x608];
     uint8_t debug_flags;

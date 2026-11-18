@@ -367,7 +367,7 @@ def build_cases():
     setup_shape_heap(c)
     c.ptr(NVM_MANAGER, None, c.buf('nvm_mgr', 8))
     c.ptr(AI_MANAGER, None, c.buf('ai_mgr', 8))
-    c.bytes(REBUILD_LINKS_FLAG, None, '01' if False else '00')
+    c.bytes(REBUILD_LINKS_FLAG, None, '00')
     parts_res = setup_res(c, 'parts_res', 4)
     nvm_res = setup_res(c, 'nvm_res', 4)
     c.ptr('block', 0x48, parts_res)
@@ -432,11 +432,108 @@ def build_cases():
     ])
     cases.append(c)
 
+    # Substate 0: link rebuild boundary where data_a_index == data_a_count (must leave src null).
+    c = Case('sub0_rebuild_data_a_index_eq_count')
+    set_block_fields(c, state=1, substate=0)
+    setup_shape_heap(c)
+    c.ptr(NVM_MANAGER, None, c.buf('nvm_mgr', 8))
+    c.ptr(AI_MANAGER, None, c.buf('ai_mgr', 8))
+    c.bytes(REBUILD_LINKS_FLAG, None, '00')
+    parts_res = setup_res(c, 'parts_res', 4)
+    nvm_res = setup_res(c, 'nvm_res', 4)
+    c.ptr('block', 0x48, parts_res)
+    c.ptr('block', 0x40, nvm_res)
+    parts = c.buf('parts', 0xe0)
+    c.ptr(parts_res, 0x88, parts)
+    c.buf('entries', 0x90)
+    c.bytes('entries', 0x30, u32s(100, 7))
+    c.ptr(parts, 0x78, 'entries')
+    c.bytes(parts, 0xc0, u32s(1))
+    c.buf('links_a', 0x20)
+    c.bytes('links_a', 0x00, u32s(100, 500, 1, 0))
+    c.bytes('links_a', 0x10, u64s(3, 0))
+    c.ptr(parts, 0x98, 'links_a')
+    c.buf('data_a', 0x10 * 4, f32s(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 99, 98, 97, 96))
+    c.ptr(parts, 0xa0, 'data_a')
+    c.bytes(parts, 0xd0, u32s(1, 3, 0, 0))
+    sec = c.buf('sec', 0xd0)
+    c.bytes(sec, 0xc0, u32s(7))
+    c.buf('secs', 8)
+    c.ptr('secs', 0, sec)
+    c.bytes(nvm_res, 0x88, u32s(1))
+    c.ptr(nvm_res, 0x90, 'secs')
+    ga_p = c.buf('ga_p', 8)
+    c.ptr(sec, 0x88, ga_p)
+    ga = c.buf('ga', 0x50)
+    c.ptr(ga_p, 0, ga)
+    c.bytes(ga, 0x48, u32s(0, 0x80000000))
+    c.buf('ga_nodes_buf', 0x38)
+    c.buf('ga_a_buf', 0x10, 'aa' * 0x10)
+    c.stub(HK_ARRAY_RESERVE, 4, writes=[
+        {'arg': 1, 'offset': 0x0, 'pointer': 'ga_nodes_buf+0x0'},
+        {'arg': 1, 'offset': 0xc, 'bytes': u32s(1)},
+    ])
+    c.stub(HK_ARRAY_RESERVE, 4, writes=[
+        {'arg': 1, 'offset': 0x0, 'pointer': 'ga_a_buf+0x0'},
+        {'arg': 1, 'offset': 0xc, 'bytes': u32s(1)},
+    ])
+    cases.append(c)
+
+    # Substate 0: node array full at capacity 2 growing to 4 via capacity doubling.
+    c = Case('sub0_rebuild_node_cap_2_to_4')
+    set_block_fields(c, state=1, substate=0)
+    setup_shape_heap(c)
+    c.ptr(NVM_MANAGER, None, c.buf('nvm_mgr', 8))
+    c.ptr(AI_MANAGER, None, c.buf('ai_mgr', 8))
+    c.bytes(REBUILD_LINKS_FLAG, None, '00')
+    parts_res = setup_res(c, 'parts_res', 4)
+    nvm_res = setup_res(c, 'nvm_res', 4)
+    c.ptr('block', 0x48, parts_res)
+    c.ptr('block', 0x40, nvm_res)
+    parts = c.buf('parts', 0xe0)
+    c.ptr(parts_res, 0x88, parts)
+    c.buf('entries', 0x90)
+    c.bytes('entries', 0x30, u32s(100, 7))
+    c.ptr(parts, 0x78, 'entries')
+    c.bytes(parts, 0xc0, u32s(1))
+    c.buf('links_a', 0x20 * 3)
+    for idx in range(3):
+        c.bytes('links_a', idx * 0x20 + 0x00, u32s(100, 500 + idx, 0, 0))
+    c.ptr(parts, 0x98, 'links_a')
+    c.bytes(parts, 0xd0, u32s(3, 0, 0, 0))
+    sec = c.buf('sec', 0xd0)
+    c.bytes(sec, 0xc0, u32s(7))
+    c.buf('secs', 8)
+    c.ptr('secs', 0, sec)
+    c.bytes(nvm_res, 0x88, u32s(1))
+    c.ptr(nvm_res, 0x90, 'secs')
+    ga_p = c.buf('ga_p', 8)
+    c.ptr(sec, 0x88, ga_p)
+    ga = c.buf('ga', 0x50)
+    c.ptr(ga_p, 0, ga)
+    c.buf('ga_nodes_init', 0x38 * 2)
+    for n_idx in range(2):
+        base = n_idx * 0x38
+        c.bytes('ga_nodes_init', base + 0x14, u32s(0x80000000))
+        c.bytes('ga_nodes_init', base + 0x24, u32s(0x80000000))
+        c.bytes('ga_nodes_init', base + 0x34, u32s(0x80000000))
+    c.ptr(ga, 0x40, 'ga_nodes_init')
+    c.bytes(ga, 0x48, u32s(2, 0x80000002))
+    c.buf('ga_nodes_4', 0x38 * 4)
+    c.stub(HK_ARRAY_RESERVE, 4, writes=[
+        {'arg': 1, 'offset': 0x0, 'pointer': 'ga_nodes_4+0x0'},
+        {'arg': 1, 'offset': 0xc, 'bytes': u32s(4)},
+    ])
+    cases.append(c)
+
     # ---- State 1, Substate 0: connect parts (rebuild_links_on_step != 0) ----
     for tag, src_mode, n_entries, nan_test in (
         ('owner_src_3entries', 'owner', 3, False),
         ('owner_null_src_1entry', 'owner_null', 1, False),
+        ('owner_null_src_2entries', 'owner_null', 2, False),
         ('area_mgr_2entries_nan', 'area_mgr', 2, True),
+        ('area_mgr_absent_2entries', 'area_absent', 2, False),
+        ('area_mgr_index_eq_count', 'area_eq_count', 2, False),
         ('area_mgr_oob', 'area_oob', 0, False),
     ):
         c = Case(f'sub0_connect_{tag}')
@@ -462,6 +559,20 @@ def build_cases():
             src = c.buf('t_src', 0x450)
             c.bytes(src, 0x420, u32s(NAN_A, 0, 0, NAN_B, 0, 0x3f800000, 0, NEG_ZERO, 0, 0, 0x3f800000, NAN_C))
             c.ptr(ents, 0x38, src)
+            c.bytes(tbl, 0x18, u32s(1))
+            c.ptr(tbl, 0x20, ents)
+            c.ptr(am, 0x10, tbl)
+            c.ptr(WORLD_AREA_MANAGER, None, am)
+        elif src_mode == 'area_absent':
+            c.bytes(WORLD_AREA_MANAGER, None, u64s(0))
+        elif src_mode == 'area_eq_count':
+            c.bytes('block', 0x34, u32s(1))
+            am = c.buf('am', 0x18)
+            tbl = c.buf('tbl', 0x28)
+            ents = c.buf('am_ents', 0xa0 * 2)
+            bad_src = c.buf('t_src_invalid_row', 0x450)
+            c.bytes(bad_src, 0x420, f32s(2, 0, 0, 100, 0, 3, 0, 200, 0, 0, 4, 300))
+            c.ptr(ents, 0xa0 + 0x38, bad_src)
             c.bytes(tbl, 0x18, u32s(1))
             c.ptr(tbl, 0x20, ents)
             c.ptr(am, 0x10, tbl)
@@ -508,18 +619,38 @@ def build_cases():
         cases.append(c)
 
     # ---- State 1, Substate 1: allocate objects ----
-    for tag, has_data, count, alloc_ok in (
-        ('null_data', False, 0, True),
-        ('zero_entries', True, 0, True),
-        ('three_entries', True, 3, True),
-        ('alloc_fail', True, 3, False),
+    for tag, has_data, count, alloc_ok, src_mode in (
+        ('null_data', False, 0, True, None),
+        ('zero_entries', True, 0, True, None),
+        ('three_entries', True, 3, True, None),
+        ('alloc_fail', True, 3, False, None),
+        ('owner_transform', True, 1, True, 'owner'),
+        ('area_table_transform', True, 1, True, 'area_mgr'),
     ):
         c = Case(f'sub1_alloc_{tag}')
-        set_block_fields(c, state=1, substate=1, step_index=9, object_count=5)
+        set_block_fields(c, state=1, substate=1, block_index=1 if src_mode == 'area_mgr' else 0,
+                         step_index=9, object_count=5)
         parts_res = setup_res(c, 'parts_res', 4)
         nvm_res = setup_res(c, 'nvm_res', 4)
         c.ptr('block', 0x48, parts_res)
         c.ptr('block', 0x40, nvm_res)
+        if src_mode == 'owner':
+            own = c.buf('t_owner', 0x90)
+            src = c.buf('t_src', 0x450)
+            c.bytes(src, 0x420, f32s(2.0, 0.5, -1.0, 10.0, 0.0, 3.0, 0.25, 20.0, -0.5, 0.0, 4.0, 30.0))
+            c.ptr(own, 0x88, src)
+            c.ptr('block', 0x50, own)
+        elif src_mode == 'area_mgr':
+            am = c.buf('am', 0x18)
+            tbl = c.buf('tbl', 0x28)
+            ents = c.buf('am_ents', 0xa0 * 2)
+            src = c.buf('t_src', 0x450)
+            c.bytes(src, 0x420, f32s(-1.5, 0.25, 0.5, 40.0, 0.0, 2.5, -0.75, 50.0, 1.0, 0.0, 3.5, 60.0))
+            c.ptr(ents, 0xa0 + 0x38, src)
+            c.bytes(tbl, 0x18, u32s(2))
+            c.ptr(tbl, 0x20, ents)
+            c.ptr(am, 0x10, tbl)
+            c.ptr(WORLD_AREA_MANAGER, None, am)
         if has_data:
             parts = c.buf('parts', 0xe0)
             c.bytes(parts, 0xc0, u32s(count))
@@ -665,6 +796,12 @@ def build_cases():
            writes=[{'arg': 2, 'offset': 0, 'bytes': f32s(4.0, 5.0, 6.0, 1.0)}])
     cases.append(c)
 
+    c = Case('sub4_attach_null_data')
+    set_block_fields(c, state=1, substate=4)
+    c.ptr('block', 0x48, setup_res(c, 'parts_res', 4))
+    c.ptr('block', 0x40, setup_res(c, 'nvm_res', 4))
+    cases.append(c)
+
     # ---- State 1, Substate 6: register menu ----
     c = Case('sub6_area_not_ready')
     set_block_fields(c, state=1, substate=6)
@@ -725,14 +862,7 @@ def build_cases():
                 c.ptr(DEFAULT_ALLOCATOR, None, dalloc)
                 c.buf('theap_arena', 0x20000)
                 c.stub(BLOCK_ALLOC_SLOT, 2, ret='buf:theap_arena+0x0')
-                # Note: 0x0247d250 initializes theap_arena's own allocator vtable at +0x28,
-                # so WIDE_FORMAT sees a real DLTemporaryHeap allocator (flags & 0x20 == 0x20)!
-                if label_heap:
-                    c.buf('label_heap_buf', 0x40, u16_bytes('World Block Nvm[BlockNo:07]'))
-                    c.stub(WIDE_FORMAT, 3, writes=[
-                        {'arg': 0, 'offset': 0x8, 'pointer': 'label_heap_buf+0x0'},
-                        {'arg': 0, 'offset': 0x18, 'bytes': u64s(29, 32)},
-                    ])
+                # 0x0247d250 initializes theap_arena's allocator vtable at +0x28 so WIDE_FORMAT sees flags & 0x20.
             else:
                 c.ptr('tls', TLS_THREAD_OFF + TLS_HEAP_SLOT, theap)
                 c.stub(HEAP_INFO_SLOT, 3, writes=[{'arg': 0, 'offset': 0, 'bytes': '20' if heap_ok else '00'}])
@@ -775,14 +905,6 @@ def build_cases():
                     c.ptr(nalloc, 0, nvt)
                     c.guest(nvt, 0x70, NODE_FREE_SLOT)
                     c.stub(HEAP_OWNING, 1, ret='buf:node_alloc+0x0')
-                    # Note: original overwrites node->vtable to 0x056f1f80 which is in .data.rel.ro,
-                    # so our case cannot stub an unknown slot inside 0x056f1f80 unless we avoid it,
-                    # OR let's check: wait — 0x056f1f80 is 0x2d865c0 in the ELF!
-                    # Let's avoid stubbing unknown guest code by overwriting node->vtable inside MENU_ITEM_CONSTRUCT? No,
-                    # 0x02226160 overwrites [rbx] AFTER MENU_ITEM_CONSTRUCT! So slot 0 of 0x056f1f80 = 0x2d865c0!
-                    # Wait: we can stub 0x02d865c0! Wait — let's check in case 0x02d865c0 is a real vtable function!
-                    # Actually, let's stub 0x02d865c0 in this case ONLY if we check its address in ELF, or skip?
-                    # Even better: check 0x02d865c0 in disasm (it's 0x056f1f80+0)!
                 if add_item_ok:
                     c.buf('prop4', 0x30, 'cc' * 0x30)
                     c.buf('prop5', 0x30, 'dd' * 0x30)
@@ -800,7 +922,7 @@ def build_cases():
             c.buf('bmenu2', 0x10)
             c.stub(OBJECT_ADD_MENU, 2)
         if tag == 'add_item_fails_frees_node':
-            # 0x056f1f80[0] in ELF is 0x02d865c0
+            # Original overwrites node->vtable with 0x056f1f80 after construction; slot 0 destroys at 0x02d865c0.
             c.stub('0x02d865c0', 1)
             c.stub(NODE_FREE_SLOT, 2)
         cases.append(c)

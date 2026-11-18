@@ -1,5 +1,5 @@
 function,cases,option,total,passed,failed,quarantined,source,date
-ai_area_block_step_02224a60,edge,,57,57,0,0,220b4ee5eb58f950,2026-11-18
+ai_area_block_step_02224a60,edge,,65,65,0,0,849967d344b6e5eb,2026-11-18
 ai_character_flag_module_set,recorded,,46,46,0,0,f963cbb2620dee66,2026-11-13
 ai_character_flag_module_set,edge,,20,20,0,0,f963cbb2620dee66,2026-11-13
 ai_character_gather_effect_states,recorded,,40,40,0,0,f963cbb2620dee66,2026-11-13
