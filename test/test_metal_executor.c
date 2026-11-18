@@ -558,7 +558,7 @@ static void check_constant_wqm(const rt_executor_memory *memory, unsigned char *
                 CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
                 if (negative) {
                     memcpy(before, pool, POOL_SIZE);
-                    expect_error(executor, buffer, size, "whole-quad shader operations are outside the Metal draw profile");
+                    expect_error(executor, buffer, size, "SPIR-V to MSL: fragment live wave vote is not an empty-mask forward skip");
                     const int changed = memcmp(before, pool, POOL_SIZE) != 0;
                     CHECK(!changed);
                     printf("WQM refusal: %s, pool_changed=%d\n", program->name, changed);
