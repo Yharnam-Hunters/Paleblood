@@ -1299,6 +1299,21 @@ things keep that to the first run:
   `$XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin`, else `~/.cache/paleblood/vulkan-pipelines.bin`.
   A file written for another device or driver, or larger than 512 MB, is not used and is replaced.
   The unit tests set it empty unless a test asks for one.
+- **Translations kept on disk.** Translating the shaders a boot meets took 1.35 to 1.57 s of the
+  renderer's thread in the clinic walk, in single frames of up to 33 ms, the same shaders in every
+  run. The executor keeps each translation (its SPIR-V, the user data and SGPRs it reads, its table
+  snapshot plan) in a file, under a key holding everything the translation depends on: the stage,
+  the program's code through its end (`gcn_program_dwords`, which is all the translator reads) and
+  a vertex shader's fetch shader the same way, their addresses, every layout value (user SGPRs,
+  settings, images, samplers, input controls, instancing, tessellation settings, the guest memory's
+  place on the GPU, the run-time stop word), and the translator's version: a hash the build makes of
+  the translator's and the executor's sources (`PB_TRANSLATOR_VERSION`, CMakeLists.txt), so any change
+  to them starts the file again. Keys are compared byte for byte. A record is appended as soon as it
+  is made, with a checksum: a torn last record (a run killed while writing) is dropped when the file
+  is read. The file is `BB_TRANSLATION_CACHE` (empty: none), else
+  `$XDG_CACHE_HOME/paleblood/translations.bin`, else `~/.cache/paleblood/translations.bin`; one larger
+  than 256 MB is started again (`runtime/translation_cache.h`). The executor prints how many shaders
+  it found there and translated when it closes.
 - **Pipelines made off the recording thread.** The file only helps from the second run on. On a
   first launch, or after a translator change gives the shaders new SPIR-V, the compiles are still
   there: in the clinic walk with no cache (frames 1350-2900) they took 5.2 s on the renderer's
