@@ -168,6 +168,9 @@ static int survey_mode; /* gcn_spirv_set_survey */
 
 void gcn_spirv_set_survey(int on) { survey_mode = on != 0; }
 
+static int structured_control; /* gcn_spirv_set_structured_control */
+void gcn_spirv_set_structured_control(int on) { structured_control = on != 0; }
+
 static void fail(translator *t, const char *format, ...)
 {
     if (t->failed) return;
@@ -4959,10 +4962,10 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     /* The blocks run in program order as a chain of selections, each entered when the PC names it. A
        branch back makes a loop: the blocks from its target to the branch, merged with any loop they
        overlap, form a structured loop whose body is their chain and which goes round while the PC names
-       one of its blocks (every branch out of it goes forward, past its last block). A program with a
-       branch the chain cannot follow (a target outside the program or not a block start) keeps the
-       dispatch loop over every block. */
-    int forward = count > 0;
+       one of its blocks (every branch out of it goes forward, past its last block). Without structured
+       control (gcn_spirv_set_structured_control), or for a program with a branch the chain cannot
+       follow (a target outside the program or not a block start), the dispatch loop runs every block. */
+    int forward = structured_control && count > 0;
     uint8_t *loop_first = calloc(block_count + 1, 1), *loop_last = calloc(block_count + 1, 1);
     uint32_t *reach = calloc(block_count + 1, sizeof *reach); /* for a branch back's target block: 1 + the last block branching to it */
     if (!loop_first || !loop_last || !reach) forward = 0;

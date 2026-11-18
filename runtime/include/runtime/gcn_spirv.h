@@ -29,6 +29,13 @@ enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
    the error, one a line after the dword it was first met at ("@dword reason\n"). Process-wide. */
 void gcn_spirv_set_survey(int on);
 
+/* Structured control flow (the Vulkan executor turns it on when it opens): a program's blocks run in order
+   as a chain of selections, each entered when the GCN program counter names it, and a branch back makes a
+   structured loop around the blocks it spans. Off (the default), every program is one loop around a switch
+   on the program counter, the shape the Metal fragment path normalizes (metal_fragment_control.hpp).
+   Process-wide. */
+void gcn_spirv_set_structured_control(int on);
+
 /* Every layout below also says where the shader finds its data:
      push_constant_offset  the byte offset of its user data (GCN_USER_SGPR_MAX words) in the push
                            constants, so that the stages of one draw keep theirs apart (a vertex

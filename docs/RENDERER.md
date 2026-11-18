@@ -1256,6 +1256,18 @@ depth of field never reached the renderer (the scene behind the HUD stayed one f
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
 
+## Control flow in translated shaders
+
+GCN code branches by moving its program counter; SPIR-V needs structured control flow. With
+structured control on (the Vulkan executor sets it when it opens, `gcn_spirv_set_structured_control`),
+a program's blocks run in program order as a chain of selections, each entered when the program
+counter names it. A branch back makes a structured loop around the blocks from its target to the
+branch, merged with any loop they overlap, which goes round while the program counter names one of
+its blocks. Off, every program is one loop around a switch on the program counter: the Metal fragment
+path normalizes that shape (`metal_fragment_control.hpp`), so Metal keeps it. The driver's compiler
+sees ordinary forward code instead of a loop around every block, and folds more of it: over the
+clinic's shaders `spirv-opt -O` keeps 11.5% fewer instructions, weighted by calls.
+
 ## Pipeline compiles
 
 Every pipeline the executor makes goes through the driver's shader compiler, a few thousand by

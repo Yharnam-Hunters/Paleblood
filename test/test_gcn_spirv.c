@@ -1098,6 +1098,11 @@ static void forward_blocks(void)
     static const uint32_t forward[] = {0xbf840001, 0x7e020302, 0xbf810000};  /* s_cbranch_scc0 over v_mov_b32 v1, v2; s_endpgm */
     static const uint32_t backward[] = {0x7e020302, 0xbf84fffe, 0xbf810000}; /* v_mov_b32 v1, v2; s_cbranch_scc0 back to it */
     static const uint32_t straight[] = {0x7e020302, 0xbf810000};             /* one block */
+    /* off (the default, the Metal fragment path's shape): the dispatch loop */
+    CHECK(gcn_translate_compute(PROGRAM(forward), &layout, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && has_opcode(spirv, words, SPV_OP_SWITCH));
+    free(spirv), spirv = NULL;
+    gcn_spirv_set_structured_control(1);
     CHECK(gcn_translate_compute(PROGRAM(forward), &layout, &spirv, &words, error, sizeof error) == 0);
     CHECK(spirv && !has_opcode(spirv, words, SPV_OP_LOOP_MERGE) && has_opcode(spirv, words, SPV_OP_SELECTION_MERGE));
     CHECK(validate(spirv, words, "forward_blocks") != 0);
@@ -1123,6 +1128,7 @@ static void forward_blocks(void)
         CHECK(validate(spirv, words, k ? "leaving_loop" : "nested_loops") != 0);
         free(spirv), spirv = NULL;
     }
+    gcn_spirv_set_structured_control(0);
 }
 
 int main(void)
