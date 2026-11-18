@@ -208,6 +208,13 @@ int self_test()
               log.addr[i] >= reinterpret_cast<uintptr_t>(image + 0x1808), "import: its slot is not an input");
     rt_trace_log_free(&log);
 
+    /* Thousands of import calls in one trace are all scripted (a physics instance's construction
+       makes about 2,000). */
+    filled = 0;
+    r = trace(0x900, arguments(reinterpret_cast<uint64_t>(&filled), 2100), log);
+    check(!log.incomplete && r.rax == 5 * 2100 && log.import_count == 2100, "import: 2,100 calls in one trace");
+    rt_trace_log_free(&log);
+
     /* The call's own frame is never dead, even when its private stack lies just below the caller's
        rsp: here the caller's rsp is put right above where the frame was on the previous call. */
     trace(0x380, arguments(), log);
