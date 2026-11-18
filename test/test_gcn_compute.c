@@ -86,7 +86,10 @@ static uint32_t bits(float f)
 int main(int argc, char **argv)
 {
     const int wave64_only = argc == 2 && strcmp(argv[1], "--wave64") == 0;
-    if (argc != 1 && !wave64_only) return 2;
+    /* --structured: every program with structured control flow, as the Vulkan executor translates them */
+    const int structured = argc == 2 && strcmp(argv[1], "--structured") == 0;
+    if (argc != 1 && !wave64_only && !structured) return 2;
+    gcn_spirv_set_structured_control(structured);
     gpu g = {0};
     if (open_gpu(&g)) {
         fprintf(stderr, "no Vulkan 1.2 device with buffer device addresses: skipped\n");
