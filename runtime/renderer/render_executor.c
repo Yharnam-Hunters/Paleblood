@@ -275,6 +275,9 @@ typedef struct {
     VkFramebuffer framebuffer;
 } pass_entry;
 
+/* Worker threads making pipelines a draw meets for the first time (pipeline_job). */
+enum { PIPELINE_WORKERS = 2 };
+
 typedef struct {
     VkShaderModule vertex, geometry, pixel; /* geometry: the rect-list stage, or none */
     VkRenderPass pass;
@@ -287,6 +290,7 @@ typedef struct {
     VkShaderModule control;          /* a tessellated draw's control shader (its vertex shader then the domain shader), or VK_NULL_HANDLE */
     uint32_t patch_points;           /* its control points a patch */
     VkPipeline pipeline;
+    struct pipeline_job *job;        /* while a worker thread makes it (pipeline_settle), else NULL */
     uint32_t bucket_next;            /* the next pipeline of its bucket (pipeline_buckets), index + 1; 0 none */
     uint64_t used_ticket;            /* the submission that last draws with it (pipeline_slot_to_free) */
 } pipeline_entry;
@@ -704,6 +708,15 @@ struct rt_executor {
     int saver_started, saver_stop;
     pthread_mutex_t saver_lock;
     pthread_cond_t saver_wake;
+    /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
+    int async_pipelines;
+    int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
+    pthread_t pipeline_workers[PIPELINE_WORKERS];
+    unsigned pipeline_worker_count;
+    pthread_mutex_t job_lock;
+    pthread_cond_t job_queued, job_done;
+    struct pipeline_job *job_head, *job_tail;
+    int jobs_stop, jobs_ready;  /* jobs_ready: the lock and conditions made (pipeline_workers_start) */
     VkPipeline tile_copies[TILE_COPY_SIZES][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
@@ -1354,9 +1367,9 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
        AMD's hardware does, as Mesa's RADV driver exposes it by default with no shader-side bounds code,
        radv_physical_device.c; an NVIDIA device already defaults to it), and the diagnostics that name
        the work a lost or stuck device was running (rt_executor's set_checkpoint, fault_info). */
-    const char *extensions[4] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+    const char *extensions[5] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
     uint32_t extension_count = 1;
-    int robustness2 = 0, checkpoints = 0, device_fault = 0;
+    int robustness2 = 0, checkpoints = 0, device_fault = 0, cache_control = 0;
     {
         uint32_t offered = 0;
         vkEnumerateDeviceExtensionProperties(x->physical, NULL, &offered, NULL);
@@ -1366,12 +1379,16 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                 robustness2 |= !strcmp(names[i].extensionName, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
                 checkpoints |= !strcmp(names[i].extensionName, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
                 device_fault |= !strcmp(names[i].extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+                cache_control |= !strcmp(names[i].extensionName, VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME);
             }
         free(names);
     }
     VkPhysicalDeviceRobustness2FeaturesEXT robust = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     VkPhysicalDeviceFaultFeaturesEXT fault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
-    if (robustness2 || device_fault) {
+    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT cached = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT};
+    if (robustness2 || device_fault || cache_control) {
+        fault.pNext = &cached;
         robust.pNext = &fault;
         VkPhysicalDeviceFeatures2 offered = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &robust};
         vkGetPhysicalDeviceFeatures2(x->physical, &offered);
@@ -1389,6 +1406,16 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
         enable12.pNext = &enable_fault;
     } else device_fault = 0;
     if (checkpoints) extensions[extension_count++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+    /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache already holds is made at once, and one
+       that needs the compiler is reported as such instead (pipeline_for, async_pipelines) */
+    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT enable_cached = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT, .pipelineCreationCacheControl = VK_TRUE};
+    x->cache_control = cache_control && cached.pipelineCreationCacheControl;
+    if (x->cache_control) {
+        extensions[extension_count++] = VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME;
+        enable_cached.pNext = enable12.pNext;
+        enable12.pNext = &enable_cached;
+    }
     const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable, .queueCreateInfoCount = 1,
                                        .pQueueCreateInfos = &queue, .enabledExtensionCount = extension_count, .ppEnabledExtensionNames = extensions};
     if (vkCreateDevice(x->physical, &device, NULL, &x->device) != VK_SUCCESS)
@@ -1768,6 +1795,8 @@ static int sweep_skip(rt_executor *x, const char *what, char *error)
     return 1;
 }
 
+static void pipeline_workers_start(rt_executor *x);
+
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
 {
     rt_executor *x = calloc(1, sizeof *x);
@@ -1779,6 +1808,8 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
         rt_executor_close(x);
         return -1;
     }
+    x->async_pipelines = memory->async_pipelines;
+    pipeline_workers_start(x);
     *executor = x;
     return 0;
 }
@@ -3510,6 +3541,8 @@ static long shader_to_free(rt_executor *x)
     return pick;
 }
 
+static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait);
+
 /* The entry a new shader takes: the next unused one, a slot freed before, or, with all MAX_SHADERS kept
    (walking a scene brings more shaders than that), the least recently used shader's once no unfinished
    batch draws with it, waiting for the GPU's work when every one is in use. That shader's module goes
@@ -3531,6 +3564,7 @@ static long shader_slot(rt_executor *x, char *error, size_t error_size)
             k++;
             continue;
         }
+        pipeline_settle(x, &x->pipelines[k], 1); /* a worker making it reads the module */
         vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
         x->pipelines[k] = x->pipelines[--x->pipeline_count];
     }
@@ -3662,7 +3696,8 @@ static long pipeline_to_free(rt_executor *x)
     if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return -1;
     long pick = -1;
     for (size_t i = 0; i < x->pipeline_count; i++)
-        if (x->pipelines[i].used_ticket <= done && (pick < 0 || x->pipelines[i].used_ticket < x->pipelines[pick].used_ticket)) pick = (long)i;
+        if (!x->pipelines[i].job && x->pipelines[i].used_ticket <= done && (pick < 0 || x->pipelines[i].used_ticket < x->pipelines[pick].used_ticket))
+            pick = (long)i;
     return pick;
 }
 
@@ -3682,30 +3717,42 @@ static int free_pipeline_slot(rt_executor *x, char *error, size_t error_size)
     return 0;
 }
 
+/* A pipeline's description, kept until the driver has made it (on a worker thread when async_pipelines is
+   set): the create info and everything it points to. */
+typedef struct pipeline_job {
+    VkGraphicsPipelineCreateInfo info;
+    VkPipelineShaderStageCreateInfo stages[4];
+    VkPipelineVertexInputStateCreateInfo input;
+    VkPipelineInputAssemblyStateCreateInfo assembly;
+    VkPipelineTessellationStateCreateInfo tessellation;
+    VkPipelineViewportStateCreateInfo viewport;
+    VkPipelineRasterizationStateCreateInfo raster;
+    VkPipelineMultisampleStateCreateInfo samples;
+    VkPipelineColorBlendAttachmentState writes[RT_COLOR_TARGETS];
+    VkStencilOpState faces[2];
+    VkPipelineDepthStencilStateCreateInfo depth_stencil;
+    VkPipelineColorBlendStateCreateInfo blend;
+    VkPipelineDynamicStateCreateInfo dynamic;
+    uint64_t queued_ns;              /* when it went to the workers (ASYNC_SKIP_NS) */
+    VkPipeline pipeline;             /* job_lock: set with done */
+    VkResult result;
+    int done;
+    struct pipeline_job *next;
+} pipeline_job;
+
 /* With control set, a tessellation pipeline: the empty vertex shader, control, then vertex (the domain shader)
-   as the evaluation shader, over patches of patch_points points. */
-static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
-                               VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
-                               int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
-                               char *error, size_t error_size)
+   as the evaluation shader, over patches of patch_points points. 0, or -1 with the reason. */
+static int describe_pipeline(pipeline_job *j, VkShaderModule tess_vertex, VkShaderModule vertex, VkShaderModule geometry,
+                             VkShaderModule pixel, VkRenderPass pass, VkPipelineLayout layout, uint32_t colours,
+                             const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks, int strip, const depth_plan *depth,
+                             int has_depth, VkShaderModule control, uint32_t patch_points, char *error, size_t error_size)
 {
-    const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
-    for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
-        pipeline_entry *p = &x->pipelines[i - 1];
-        if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
-            p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
-            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points) {
-            p->used_ticket = x->submitted + 1;
-            return p->pipeline;
-        }
-    }
-    if (x->pipeline_count == MAX_PIPELINES && free_pipeline_slot(x, error, error_size)) return VK_NULL_HANDLE;
     /* the vertex stage, then the pixel stage unless the draw has none (a depth-only pass), then the
        rect-list geometry stage if any */
-    VkPipelineShaderStageCreateInfo stages[4];
+    VkPipelineShaderStageCreateInfo *stages = j->stages;
     uint32_t stage_count = 0;
     stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = control ? x->tess_vertex : vertex,
+                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = control ? tess_vertex : vertex,
                                                              .pName = "main"};
     if (control) {
         stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -3719,65 +3766,212 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     if (geometry)
         stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                                  .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"};
-    const VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    const VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+    j->input = (VkPipelineVertexInputStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    j->assembly = (VkPipelineInputAssemblyStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                              .topology = control ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
                                                                          : strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
                                                                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                                                              .primitiveRestartEnable = strip == STRIP_RESTART};
-    const VkPipelineTessellationStateCreateInfo tessellation = {.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+    j->tessellation = (VkPipelineTessellationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
                                                                 .patchControlPoints = patch_points};
-    const VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+    j->viewport = (VkPipelineViewportStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                         .viewportCount = 1, .scissorCount = 1};
-    const VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+    j->raster = (VkPipelineRasterizationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                            .depthClampEnable = depth->depth_clamp ? VK_TRUE : VK_FALSE,
                                                            .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                            .lineWidth = 1.0f};
-    const VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+    j->samples = (VkPipelineMultisampleStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                           .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
     /* one blend attachment per colour attachment, up to the last slot drawn; a slot between drawn ones
        is an unused attachment and writes nothing */
-    VkPipelineColorBlendAttachmentState writes[RT_COLOR_TARGETS];
+    VkPipelineColorBlendAttachmentState *writes = j->writes;
     unsigned slots = 0;
     for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
         writes[i] = (VkPipelineColorBlendAttachmentState){0};
         if (!(colours >> i & 1)) continue;
-        if (blend_state(blend_control[i], &writes[i], error, error_size)) return VK_NULL_HANDLE;
+        if (blend_state(blend_control[i], &writes[i], error, error_size)) return -1;
         writes[i].colorWriteMask = write_masks >> (4 * i) & CHANNELS_MASK; /* x, y, z, w: Vulkan's R, G, B, A bits */
         slots = i + 1;
     }
     /* stencil reference and masks are dynamic: the draw sets them from DB_STENCILREFMASK */
-    VkStencilOpState faces[2];
+    VkStencilOpState *faces = j->faces;
     for (unsigned f = 0; f < 2; f++)
         faces[f] = (VkStencilOpState){.failOp = (VkStencilOp)depth->stencil_ops[f][0], .passOp = (VkStencilOp)depth->stencil_ops[f][1],
                                       .depthFailOp = (VkStencilOp)depth->stencil_ops[f][2], .compareOp = (VkCompareOp)depth->stencil_ops[f][3]};
-    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+    j->depth_stencil = (VkPipelineDepthStencilStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = depth->depth_test != 0,
         .depthWriteEnable = depth->depth_write != 0, .depthCompareOp = (VkCompareOp)depth->depth_compare,
         .stencilTestEnable = depth->stencil_test != 0, .front = faces[0], .back = faces[1], .depthBoundsTestEnable = depth->depth_bounds != 0};
-    const VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+    j->blend = (VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                                        .attachmentCount = slots, .pAttachments = writes};
-    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+    static const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
                                              VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_DEPTH_BOUNDS};
-    const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+    j->dynamic = (VkPipelineDynamicStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                                       .dynamicStateCount = depth->depth_bounds ? 7 : 6, .pDynamicStates = dynamic_states};
-    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
-                                               .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
-                                               .pTessellationState = control ? &tessellation : NULL,
-                                               .pViewportState = &viewport, .pRasterizationState = &raster,
-                                               .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
-                                               .pDepthStencilState = has_depth ? &depth_stencil : NULL, .layout = layout, .renderPass = pass};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
-        failed(error, error_size, "the device refused a pipeline");
+    j->info = (VkGraphicsPipelineCreateInfo){.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
+                                               .pStages = stages, .pVertexInputState = &j->input, .pInputAssemblyState = &j->assembly,
+                                               .pTessellationState = control ? &j->tessellation : NULL,
+                                               .pViewportState = &j->viewport, .pRasterizationState = &j->raster,
+                                               .pMultisampleState = &j->samples, .pColorBlendState = &j->blend, .pDynamicState = &j->dynamic,
+                                               .pDepthStencilState = has_depth ? &j->depth_stencil : NULL, .layout = layout, .renderPass = pass};
+    return 0;
+}
+
+/* The workers: each takes the oldest queued job, has the driver make its pipeline, and marks it done. They
+   end once stopped with the queue empty. */
+static void *pipeline_worker(void *argument)
+{
+    rt_executor *x = argument;
+    pthread_mutex_lock(&x->job_lock);
+    for (;;) {
+        while (!x->job_head && !x->jobs_stop) pthread_cond_wait(&x->job_queued, &x->job_lock);
+        pipeline_job *j = x->job_head;
+        if (!j) break;
+        x->job_head = j->next;
+        if (!x->job_head) x->job_tail = NULL;
+        pthread_mutex_unlock(&x->job_lock);
+        VkPipeline made = VK_NULL_HANDLE;
+        const VkResult result = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &made);
+        pthread_mutex_lock(&x->job_lock);
+        j->pipeline = made, j->result = result, j->done = 1;
+        pthread_cond_broadcast(&x->job_done);
+    }
+    pthread_mutex_unlock(&x->job_lock);
+    return NULL;
+}
+
+/* Starts the workers when async_pipelines asks for them; without any, every pipeline is made at its draw. */
+static void pipeline_workers_start(rt_executor *x)
+{
+    pthread_mutex_init(&x->job_lock, NULL);
+    pthread_cond_init(&x->job_queued, NULL);
+    pthread_cond_init(&x->job_done, NULL);
+    x->jobs_ready = 1;
+    if (!x->async_pipelines) return;
+    while (x->pipeline_worker_count < PIPELINE_WORKERS &&
+           pthread_create(&x->pipeline_workers[x->pipeline_worker_count], NULL, pipeline_worker, x) == 0)
+        x->pipeline_worker_count++;
+}
+
+/* Lets the workers finish the queued jobs, and ends them. */
+static void pipeline_workers_stop(rt_executor *x)
+{
+    if (!x->jobs_ready) return;
+    pthread_mutex_lock(&x->job_lock);
+    x->jobs_stop = 1;
+    pthread_cond_broadcast(&x->job_queued);
+    pthread_mutex_unlock(&x->job_lock);
+    for (unsigned i = 0; i < x->pipeline_worker_count; i++) pthread_join(x->pipeline_workers[i], NULL);
+    x->pipeline_worker_count = 0;
+}
+
+/* A pipeline a worker is making: once its job is done, the pipeline in its entry. With wait set, waits
+   for the job. 0 when the entry holds its pipeline, 1 while it is still being made, -1 when the driver
+   refused it (the entry then holds none). */
+static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait)
+{
+    pipeline_job *const j = p->job;
+    if (!j) return p->pipeline ? 0 : -1;
+    pthread_mutex_lock(&x->job_lock);
+    while (wait && !j->done) pthread_cond_wait(&x->job_done, &x->job_lock);
+    const int done = j->done;
+    pthread_mutex_unlock(&x->job_lock);
+    if (!done) return 1;
+    p->pipeline = j->result == VK_SUCCESS ? j->pipeline : VK_NULL_HANDLE;
+    p->job = NULL;
+    free(j);
+    if (!p->pipeline) return -1;
+    atomic_fetch_add(&x->pipelines_made, 1);
+    return 0;
+}
+
+/* How long a draw may be left out while its pipeline is being made: past that the draw waits for it, so
+   a slow compile leaves a draw out for a second at most (LanternEngine's compile notes skip scene draws
+   for up to a second the same way; facts only, engine/docs/pipeline_compiles.md). */
+#define ASYNC_SKIP_NS (UINT64_C(1000000000))
+
+static uint64_t monotonic_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
+
+/* The draw's pipeline (see describe_pipeline). With may_skip set and worker threads running, a pipeline
+   not made yet goes to the workers and *pending is set, VK_NULL_HANDLE returned: the draw is left out
+   until it is made. Otherwise the pipeline is made (or waited for) here. VK_NULL_HANDLE with *pending
+   clear: the reason is in error. */
+static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
+                               VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
+                               int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
+                               int may_skip, int *pending, char *error, size_t error_size)
+{
+    *pending = 0;
+    may_skip = may_skip && x->pipeline_worker_count;
+    const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
+    for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
+        pipeline_entry *p = &x->pipelines[i - 1];
+        if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
+            p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
+            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points) {
+            p->used_ticket = x->submitted + 1;
+            const int settled = pipeline_settle(x, p, !may_skip || (p->job && monotonic_ns() - p->job->queued_ns >= ASYNC_SKIP_NS));
+            if (settled > 0) *pending = 1;
+            if (settled < 0) failed(error, error_size, "the device refused a pipeline");
+            return settled ? VK_NULL_HANDLE : p->pipeline;
+        }
+    }
+    if (x->pipeline_count == MAX_PIPELINES && free_pipeline_slot(x, error, error_size)) return VK_NULL_HANDLE;
+    pipeline_job *const j = calloc(1, sizeof *j);
+    if (!j) {
+        failed(error, error_size, "no memory for a pipeline");
         return VK_NULL_HANDLE;
     }
-    atomic_fetch_add(&x->pipelines_made, 1);
+    if (describe_pipeline(j, x->tess_vertex, vertex, geometry, pixel, pass, layout, colours, blend_control, write_masks, strip, depth,
+                          has_depth, control, patch_points, error, error_size)) {
+        free(j);
+        return VK_NULL_HANDLE;
+    }
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (may_skip && x->cache_control) { /* one the pipeline cache holds is made here, at once, and drawn now */
+        j->info.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+        const VkResult cached = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
+        j->info.flags &= ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+        if (cached != VK_SUCCESS) pipeline = VK_NULL_HANDLE;
+        may_skip = cached == VK_PIPELINE_COMPILE_REQUIRED_EXT;
+        if (cached != VK_SUCCESS && !may_skip) { /* refused outright */
+            free(j);
+            failed(error, error_size, "the device refused a pipeline");
+            return VK_NULL_HANDLE;
+        }
+    }
+    if (pipeline) {
+        free(j);
+        atomic_fetch_add(&x->pipelines_made, 1);
+    } else if (!may_skip) {
+        const VkResult made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
+        free(j);
+        if (made != VK_SUCCESS) {
+            failed(error, error_size, "the device refused a pipeline");
+            return VK_NULL_HANDLE;
+        }
+        atomic_fetch_add(&x->pipelines_made, 1);
+    } else {
+        j->queued_ns = monotonic_ns();
+        pthread_mutex_lock(&x->job_lock);
+        if (x->job_tail) x->job_tail->next = j;
+        else x->job_head = j;
+        x->job_tail = j;
+        pthread_cond_signal(&x->job_queued);
+        pthread_mutex_unlock(&x->job_lock);
+        *pending = 1;
+    }
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
-                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket], .used_ticket = x->submitted + 1};
+                         .pipeline = pipeline, .job = may_skip ? j : NULL, .bucket_next = x->pipeline_buckets[bucket],
+                         .used_ticket = x->submitted + 1};
     memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
     x->pipeline_buckets[bucket] = (uint32_t)x->pipeline_count;
     return pipeline;
@@ -4662,16 +4856,22 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     VkPipelineLayout layout = x->layout;
     if (has_set && graphics_layout_for(x, image_count, sampler_count, vertex_image_count, &set_layout, &layout, error, error_size)) return -1;
     const int strip = gs ? STRIP_RESTART : !tess && s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
+    int stores = 0;
+    if (draw_stores(x, s, depth_only, &stores, error, error_size)) return -1;
+    /* A draw whose pipeline is still being made may be left out (pipeline_for) when leaving it out
+       changes nothing but its targets: it stores nothing, records no work of its own first, and its depth
+       target has been drawn already (a later test reading depth no draw wrote would stop). */
+    const int may_skip = !stores && !indirect && !tess && !gs && (!z || z->drawn);
+    int pending = 0;
     const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
-                                             plan, z != NULL, control, tess ? s->hull.input_points : 0, error, error_size);
+                                             plan, z != NULL, control, tess ? s->hull.input_points : 0, may_skip, &pending, error, error_size);
+    if (pending) return 0; /* left out this time */
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (has_set && image_set(x, set_layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count, samplers, sampler_count, vertex_views,
                              vertex_image_count, &set, error, error_size))
         return -1;
 
-    int stores = 0;
-    if (draw_stores(x, s, depth_only, &stores, error, error_size)) return -1;
     /* Since the last draw's barrier only draws that store nothing were recorded: what earlier work wrote
        is visible to this draw already, and a draw into the same targets goes on in the same render pass
        (its targets' accesses are in order there; across passes the pass's dependency orders them). A
@@ -6818,9 +7018,13 @@ void rt_executor_close(rt_executor *x)
 {
     if (!x) return;
     sweep_close(x);
+    pipeline_workers_stop(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);
-        for (size_t i = 0; i < x->pipeline_count; i++) vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
+        for (size_t i = 0; i < x->pipeline_count; i++) {
+            pipeline_settle(x, &x->pipelines[i], 1);
+            vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
+        }
         for (size_t i = 0; i < x->shader_count; i++) vkDestroyShaderModule(x->device, x->shaders[i].module, NULL);
         for (size_t i = 0; i < x->rect_stage_count; i++) vkDestroyShaderModule(x->device, x->rect_stages[i].module, NULL);
         for (size_t i = 0; i < x->compute_count; i++) {
