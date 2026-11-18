@@ -389,6 +389,39 @@ def record_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
+COUNTER_VALUES = (0, 1, 0xff, 0x100, 0xffff, 0x10000, 0x7ffffffe, 0x7fffffff,
+                  0x80000000, 0xfffffffe, 0xffffffff, 0x12345678)
+
+def increment_cases(address: str, value: int | None) -> list[dict]:
+    """DWORD increment and zero-extended result, with adjacent bytes and arithmetic edges.
+
+    Each object has a distinct prefix and tail. Shifted starts preserve DWORD alignment;
+    exact twelve-byte objects separately bound the final DWORD. No flags are compared.
+    """
+    out = []
+    for start, seed in ((0, 11), (4, 73), (0x10, 151)):
+        for count in COUNTER_VALUES:
+            pattern = bytearray.fromhex(probe_bytes(seed, PROBE_SIZE))
+            pattern[start + 8:start + 12] = count.to_bytes(4, 'little')
+            case = base_case(address, f'counter_{count:08x}_at_{start:x}', 'i64')
+            case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': pattern.hex()},
+                               'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
+            case['args'] = {reg: f'buf:probe+0x{8 * i:x}'
+                            for i, reg in enumerate(ARGUMENT_REGISTERS)}
+            case['args']['rdi'] = f'buf:object+0x{start:x}'
+            case['args']['rax'] = hex(RAX_SEED)
+            out.append(case)
+    for count in (0, 0x7fffffff, 0xffffffff):
+        pattern = bytearray.fromhex(probe_bytes(29, 12))
+        pattern[8:12] = count.to_bytes(4, 'little')
+        case = base_case(address, f'exact_object_{count:08x}', 'i64')
+        case['buffers'] = {'object': {'size': 12, 'bytes': pattern.hex()}}
+        case['args'] = {'rdi': 'buf:object+0x0', 'rax': hex(RAX_SEED)}
+        out.append(case)
+    return out
+
+
+
 XMM0_SEED = '1e1fe00f3cc3a55a8899aabbccddeeff'
 XMM1_SEED = '00112233445566778899aabbccddeeff'
 
@@ -452,6 +485,7 @@ def signed_field_cases(address: str, value: int | None) -> list[dict]:
 
 
 CASES = {
+    'increments_dword_field': increment_cases,
     'returns_nothing': returns_nothing,
     'returns_zero': returns_a_value,
     'returns_constant': returns_a_value,
@@ -523,6 +557,8 @@ CASES = {
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
 MUTANTS = {
+    'increments_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                               'bb_mutant_writes_first_argument'],
     'returns_nothing': ['bb_mutant_writes_first_argument', 'bb_mutant_returns_zero',
                         'bb_mutant_clobbers_second_argument'],
     'returns_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_one', 'bb_mutant_returns_zero_clobbers_second_argument'],

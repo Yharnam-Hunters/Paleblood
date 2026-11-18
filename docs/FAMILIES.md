@@ -37,7 +37,10 @@ extents in `symbols/ghidra_functions.csv`. A function is a member only when:
 - every byte after it up to the next function is the compiler's NOP padding, and that extent is
   at least 14 bytes, so the hook's absolute jump overwrites only padding (QUIRKS.md: a hook is a
   14-byte jump; a member shorter than that is hooked across its own padding, never into the next
-  function);
+  function). The next function is the next one in `symbols/ghidra_functions.csv`, or an earlier
+  address after the member that a relative relocation points at: Ghidra misses functions only
+  reached through a pointer, such as the `.init_array` entry that often follows a static
+  initializer;
 - no relocation writes into its extent, no community patch line (`--patches`) does, it has no row
   in `symbols/functions.csv` and no source file under `game/` names its address (a declared
   original or an observe hook).
@@ -195,6 +198,7 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_low_ten_bits_of_first_dword` | 18 exact bytes | set bits 0..9 of the first dword |
 | `packs_first_dword_from_two_bit_fields` | 14 exact bytes | set the first dword to two bit fields (bits 0..9 and 28..31), the rest clear |
 | `returns_second_argument` | `48 89 f0 c3` | return the second argument |
+| `increments_dword_field` | `8b 47 08 ff c0 89 47 08 c3` | increment the DWORD at offset eight modulo 2^32, store it and return the zero-extended result; this family compares the defined machine result, while the original C++ declarations are unknown |
 | `atomically_increments_dword_at_8` | `b8 01 00 00 00 f0 0f c1 47 08 c3` | atomic increments of the 32-bit count 8 bytes into the object, returning the old count |
 | `reads_pointer_without_low_bit` | `48 8b 47 {d8} 48 83 e0 fe c3` | getters of a 64-bit field with its low bit (a tag) cleared |
 | `clears_first_two_qwords` | 16 exact bytes | clear the first 16 bytes of the object |
@@ -289,6 +293,27 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `frees_layout_block_align_4` | 147 bytes, two `{rel:...}` | the packed variant |
 | `allocates_layout_block_for_stored_count` | 150 bytes, two `{rel:...}` | allocate the block sized by the layout kind |
 | `allocates_layout_block_for_count` | 154 bytes, two `{rel:...}` | the same, storing a new count first |
+| `reallocates_array_of_4_byte_elements` | relative, 218 bytes (0x016da780's), five `{rel:...}` | an engine array's reallocation to a given capacity, 4-byte elements (`engine/array_reserve.h`) |
+| `reallocates_array_of_12_byte_elements` | relative, 279 bytes (0x01af3170's), five `{rel:...}` | the same for 12-byte elements |
+| `grows_full_array_of_16_byte_elements` | relative, 325 bytes (0x024bbfd0's), five `{rel:...}` | a full engine array of 16-byte elements grown as push_back grows it (`engine/array_push_back.h`); one with room is left alone |
+| `takes_and_erases_map_entry_at_0x3b0` | relative, 221 bytes (0x022a54d0's), three `{rel:...}` | take the counted object under an id out of the map at +0x3b0, with a new reference, and erase the entry |
+| `releases_slot_blocks_at_0x38` | relative, 331 bytes (0x02af24e0's), two `{rel:...}` | free the blocks of a table of parallel slot arrays, keeping the slots or moving the later ones down |
+| `sets_property_0x3ea_or_0x3eb_from_variant` | relative, 161 bytes, two `{rel:...}` | set an int property from a variant, holding an object variant meanwhile (`engine/variant_string_pool_families.cpp`) |
+| `copies_wide_string_at_0x28_on_thread_heap` | relative, 192 bytes, seven `{rel:...}` | copy a wide string member on the thread's temporary heap (`engine/variant_string_pool_families.cpp`) |
+| `appends_blocks_to_pool_slot_5_or_16` | relative, 248 bytes, seven `{rel:...}` | append two blocks of 4-byte elements to a pool slot and map each block to its copy (`engine/variant_string_pool_families.cpp`) |
+| `assigns_created_string_unless_exception` | relative, 207 bytes, seven `{rel:...}` | a scaleform thunk: make a string and assign it to the result unless the VM raised an exception (`engine/variant_string_pool_families.cpp`) |
+| `destroys_heap_buffer_owner_directly` | relative, 100 bytes (0x006d0c30's), three `{rel:...}` | a destructor body: store the vtable (0x055b5be0's address point), free the buffer at +0x20 to the heap the global at 0x057e7320 points at (slot 0x68), then drop the handle at +0x8, read after the free (null: nothing; low bit set: step it down by one; otherwise drop the low 22-bit count at +0x20 of the object it points at and call 0x027ee1e0, unless the count is zero) |
+| `destroys_heap_buffer_owner_through_base_at_0x38` | relative, 101 bytes (0x006d7f80's), three `{rel:...}` | the same destructor body entered through a pointer to a base 0x38 bytes into the owner |
+| `destroys_heap_buffer_owner_through_base_at_0x48` | relative, 101 bytes (0x006d7ff0's), three `{rel:...}` | the same entered through a base 0x48 bytes into the owner |
+| `frees_to_global_heap` | relative, 25 bytes (0x0278b7d0's), one `{rel:...}` | free the argument to the heap the global at 0x057e7320 points at (slot 0x68, a tail jump) |
+| `destroys_with_0x010f6190_then_deletes` | relative, 28 bytes (0x02bc7e50's), two `{rel:...}` | a deleting destructor: destroy through 0x010f6190, then delete |
+| `destroys_with_0x02af2b00_then_deletes` | relative, 28 bytes (0x02af1990's), two `{rel:...}` | a deleting destructor: destroy through 0x02af2b00, then delete |
+| `destroys_with_0x02af4240_then_deletes` | relative, 28 bytes (0x02af3290's), two `{rel:...}` | a deleting destructor: destroy through 0x02af4240, then delete |
+| `destroys_with_0x02af6d40_then_deletes` | relative, 28 bytes (0x02af5dd0's), two `{rel:...}` | a deleting destructor: destroy through 0x02af6d40, then delete |
+| `destroys_with_0x02af8220_then_deletes` | relative, 28 bytes (0x02af74a0's), two `{rel:...}` | a deleting destructor: destroy through 0x02af8220, then delete |
+| `destroys_with_0x02af9940_then_deletes` | relative, 28 bytes (0x02af89a0's), two `{rel:...}` | a deleting destructor: destroy through 0x02af9940, then delete |
+| `destroys_with_0x02afc240_then_deletes` | relative, 28 bytes (0x02afb2d0's), two `{rel:...}` | a deleting destructor: destroy through 0x02afc240, then delete |
+| `destroys_with_0x02afee40_then_deletes` | relative, 28 bytes (0x02afdea0's), two `{rel:...}` | a deleting destructor: destroy through 0x02afee40, then delete |
 
 A parameterized family's source is generated by `tools/family_emit.py FAMILY` from its member
 table and a template (one named constant and one replacement per value); the validator refuses a
