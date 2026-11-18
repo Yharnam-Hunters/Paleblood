@@ -1251,12 +1251,23 @@ things keep that to the first run:
 Two runs of one build differ: in Iosefka's Clinic the same build measured from 4.81 to 7.15 fps
 over a run, with other work on the machine. A speed change counts only when it is larger than that.
 `tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR` runs two builds alternately, two rounds each
-by default (A1 B1 A2 B2), and measures each over the same window: a fixed settle, then a fixed
-measure window, counted from the moment the run presents its anchor frame (`--anchor-frame`, a
-frame reached at the same point of the same save). Each build's spread over its rounds is its noise
-floor, and a difference counts only when it is larger than both builds' spreads (the rule of
-bbhost's area check). While a run plays, the load average and the CPUs busy with other work than
-the run's own processes are sampled every second; a run whose window met more than
-`--max-other-cpus` of other work is left out, with the reason. The run command builds before it
-starts the game and holds the GPU lock while it plays, so builds and other GPU work stay outside
-the window. `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
+by default (A1 B1 A2 B2), and measures every run over the same frames of the same save and input
+script: `--from-frame` to `--to-frame`, by default 1250 to 3000, the clinic walk after the load up
+to just before its first scripted stall. It reports each run's average fps, 1% low and worst frame
+over those frames. Each build's spread over its rounds is its noise floor, and a difference counts
+only when it is larger than both builds' spreads (the rule of bbhost's area check). While a run
+plays, the load average and the CPUs busy with other work than the run's own processes are
+sampled every second; a run that met more than `--max-other-cpus` of other work between its first
+and last measured frame is left out, with the reason, and so is a run that never reached
+`--to-frame`. The run command builds before it starts the game and holds the GPU lock while it
+plays, so builds and other GPU work stay outside the measured frames.
+
+Frames, not a stretch of time. The game stalls for 5 to 7 seconds at scripted points of the clinic
+walk (somewhere in frames 3050 to 3350, the frame moving with the build, and again in 4220 to
+4530). The tool once measured a fixed time window after an anchor frame; a slower build's window
+then ended at an earlier frame, before a stall that the faster build's window held, and the slower
+build's 1% low looked better. Over the same frames both builds meet the same stalls. To measure a
+range that holds one, `--skip-frames FIRST-LAST` leaves the intervals ending on those frames out of
+the figures and reports them apart (count, time, longest); make it wide enough for where both
+builds stall.
+`tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
