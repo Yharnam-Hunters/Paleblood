@@ -168,6 +168,9 @@ static int survey_mode; /* gcn_spirv_set_survey */
 
 void gcn_spirv_set_survey(int on) { survey_mode = on != 0; }
 
+static int span_checks; /* gcn_spirv_set_span_checks */
+void gcn_spirv_set_span_checks(int on) { span_checks = on != 0; }
+
 static void fail(translator *t, const char *format, ...)
 {
     if (t->failed) return;
@@ -1622,10 +1625,20 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
                                            : load(t, t_uint(t), sgpr(t, offset_field));
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
+    if (!descriptor && !span_checks) {
+        const gcn_table_entry *entry = table_entry_at(t);
+        const int in_block = entry && t->layout->table_block_offset;
+        for (uint32_t i = 0; i < dwords_named(name); i++) {
+            const uint32_t guest = dword_address(t, base, byte_offset, i);
+            const uint32_t loaded = load_dword(t, uint_pointer(t, in_block ? snapshot_address(t, entry, i, guest) : guest));
+            write_sgpr(t, sdst + i, entry && !in_block ? snapshot_or(t, entry, i, loaded) : loaded, ins);
+        }
+        return;
+    }
     if (!descriptor) {
-        /* The load's dwords are consecutive, so its whole span is checked against the guest memory once
-           (guest_reachable): inside, every dword is; outside, every dword reads the sink and the stop word
-           names the span's first page. Each dword's address then counts on from the checked start. */
+        /* With span checks, the load's dwords being consecutive, its whole span is checked against the guest
+           memory once (guest_reachable): inside, every dword is; outside, every dword reads the sink and the
+           stop word names the span's first page. Each dword's address then counts on from the checked start. */
         const gcn_table_entry *entry = table_entry_at(t);
         const int in_block = entry && t->layout->table_block_offset;
         const uint32_t dwords = dwords_named(name);
@@ -1649,14 +1662,15 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
                                            konst(t, VSHARP_STRIDE_MASK)));
     const uint32_t size = value(t, SPV_OP_SELECT, t_ulong(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, stride, ulong_constant(t, 0)), records,
                                 value(t, SPV_OP_I_MUL, t_ulong(t), 2, records, stride));
-    /* With the whole load in range, its span is checked against the guest memory once (as an s_load's);
-       otherwise each dword in range is read on its own. */
+    /* With span checks and the whole load in range, its span is checked against the guest memory once (as
+       an s_load's); otherwise each dword in range is read on its own. */
     const uint32_t dwords = dwords_named(name);
     uint32_t slots[16];
     for (uint32_t i = 0; i < dwords; i++) slots[i] = function_variable(t, t_uint(t), konst(t, 0));
     const uint32_t load_end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)dwords * BYTES_PER_DWORD));
     const uint32_t whole = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, load_end, size);
-    if (dwords > 1) {
+    const int whole_first = span_checks && dwords > 1;
+    if (whole_first) {
         const uint32_t whole_merge = begin_if(t, whole);
         const uint32_t start = guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, byte_offset)), dwords * BYTES_PER_DWORD);
         for (uint32_t i = 0; i < dwords; i++) {
@@ -1665,7 +1679,7 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
         }
         end_if(t, whole_merge);
     }
-    const uint32_t split_merge = dwords > 1 ? begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, whole)) : 0;
+    const uint32_t split_merge = whole_first ? begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, whole)) : 0;
     for (uint32_t i = 0; i < dwords; i++) {
         const uint32_t end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)(i + 1) * BYTES_PER_DWORD));
         const uint32_t in_range = begin_if(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, end, size));
@@ -1903,7 +1917,7 @@ static uint32_t checked_load_dword(translator *t, const buffer_range *r, uint32_
 static void checked_load_dwords(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t first, uint32_t count,
                                 uint32_t *values)
 {
-    if (count < 2 || count > 4) {
+    if (!span_checks || count < 2 || count > 4) {
         for (uint32_t i = 0; i < count; i++) values[i] = checked_load_dword(t, r, base, offset, first + i);
         return;
     }

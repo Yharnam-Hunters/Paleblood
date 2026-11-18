@@ -1096,6 +1096,11 @@ static void scalar_load_spans(void)
     gcn_compute_layout checked = layout;
     checked.guest = (gcn_guest_memory){.base = 0x100000, .bytes = 0x100000, .sink = 0x9000};
     checked.error_address = 0x2000;
+    /* off (the default, the Metal fragment path's shape): dword by dword */
+    CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 8);
+    free(spirv), spirv = NULL;
+    gcn_spirv_set_span_checks(1);
     CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
     CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 && opcode_count(spirv, words, SPV_OP_SELECT) == 1);
     CHECK(validate(spirv, words, "scalar_load_spans") != 0);
@@ -1108,6 +1113,7 @@ static void scalar_load_spans(void)
     CHECK(validate(spirv, words, "buffer_load_spans") != 0);
     CHECK(to_metal(spirv, words, "buffer_load_spans") != 0);
     free(spirv);
+    gcn_spirv_set_span_checks(0);
 }
 
 int main(void)
