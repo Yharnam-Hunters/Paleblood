@@ -9,7 +9,10 @@ being worked around. The tracks run in parallel; claim a target in its issue bef
 
 - **Runtime.** Every system import the executable uses is implemented (686 of 686, 219 of them by
   the game's own bundled modules). The recorded boot (`tools/boot.py`, `symbols/boot.json`, 30 s,
-  no display) reaches the first flip and no call stops it. Longer local boots from a save at the
+  no display) reaches the first flip and no call stops it. A new game goes through character
+  creation with the renderer on: the Contract screen with the hunter in its preview, the name
+  typed in, and the finalise dialog (`game/routes/new_game.route`, which saves the new hunter;
+  frames from 10 and 11 November). Longer local boots from a save at the
   clinic's start, driven by a scripted controller (`tools/boot.py --input-script`), play the
   clinic's first encounter: the beast attacks, the hunter dies, the loading screen, and the hunter
   wakes in the Hunter's Dream (STATUS.md, "Recent results").
