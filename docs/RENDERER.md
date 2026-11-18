@@ -97,9 +97,13 @@ Instead:
        data format is its descriptor's). The executor owns 8,192 32-bit stop words; a translated
        shader's GPU address of one is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
-       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shaders
-       kept that write that word. Which word a shader writes follows from its kind and code address
-       (`stop_index`), never from the order the executor met it: numbered by order, the same shader
+       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the one
+       shader the word was given to. Each shader keeps its word for the executor's life, also after
+       its translation is freed, since its work may still be in flight (`stop_slot`): a word shared
+       by two shaders named every shader kept with it and none that was freed, so a stop could be
+       pinned on the wrong shader. Which word a shader writes follows from its kind and code address
+       (`stop_index`, its home word), not from the order the executor met it; only a shader whose
+       home word another shader took first gets the next free one. Numbered by order, the same shader
        translated to different SPIR-V from one run to the next, so the driver's pipeline cache, which
        knows a pipeline by its SPIR-V, missed, and every boot compiled its pipelines again (in
        Iosefka's Clinic, minutes of compiles on the renderer's thread in each boot, November 2026).
@@ -1290,7 +1294,7 @@ things keep that to the first run:
 
 - **The same SPIR-V in every run.** Nothing in a translation depends on the order the executor
   meets shaders in: a shader's run-time stop word follows from its own code address
-  (`stop_index`). The driver knows a cached pipeline by its SPIR-V.
+  (`stop_index`), save for the rare shader whose home word another took first. The driver knows a cached pipeline by its SPIR-V.
 - **A pipeline cache file of the executor's own.** The driver keeps a cache on disk, but only up
   to its size limit (NVIDIA's is 1 GB by default, shared by every program; once it is full nothing
   new is kept). The executor fills its Vulkan pipeline cache from a file when it opens and writes
