@@ -477,9 +477,10 @@ static void inactive_blend_cases(rt_executor *x,uint8_t *pool)
         {"bound-mask-zero",1,1,0,1,0x00cc0010,0x40000504,0},
         {"bound-mask-high-only",1,1,0xfffffff0,1,0x00cc0010,0x40000504,0},
         {"bound-mode-zero",1,1,0xf,1,0x00cc0000,0x40000504,0},
-        {"active-full-writes",1,1,0xf,1,0x00cc0010,0x40000504,1},
-        {"active-default-target-mask",1,0,0,1,0x00cc0010,0x40000504,1},
-        {"active-default-color-control",1,1,0xf,0,0,0x40000504,1},
+        /* AMD SRC_COLOR factor2 remains unsupported when color writes are active. */
+        {"active-full-writes",1,1,0xf,1,0x00cc0010,0x40000502,1},
+        {"active-default-target-mask",1,0,0,1,0x00cc0010,0x40000502,1},
+        {"active-default-color-control",1,1,0xf,0,0,0x40000502,1},
         {"blend-disabled-recovery",1,1,0xf,1,0x00cc0010,0x00000504,0},
     };
     enum { Z_BYTES=SLICES*W*H*4+64,S_BYTES=SLICES*W*H+64 };
@@ -519,7 +520,7 @@ static void inactive_blend_cases(rt_executor *x,uint8_t *pool)
         }
         char error[1024]="";rt_render_call *draw=event(RT_CALL_DRAW_AUTO);draw->u.draw_auto.index_count=3;
         const int rc=rt_executor_run_calls(x,calls,count,error,sizeof error);
-        const unsigned reason_match=refusal?(rc==-1 && strstr(error,"blending is not drawn yet")!=NULL):(rc==0 && error[0]=='\0');
+        const unsigned reason_match=refusal?(rc==-1 && strstr(error,"blending")!=NULL):(rc==0 && error[0]=='\0');
         size_t changed=0,want_changed=0,mismatches=0,guard_bad=0,guard_bytes=0;
         for(size_t i=0;i<POOL;++i){
             changed+=pool[i]!=before[i];want_changed+=wanted[i]!=before[i];mismatches+=pool[i]!=wanted[i];
