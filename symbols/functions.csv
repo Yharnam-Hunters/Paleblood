@@ -29,13 +29,14 @@ address,size,name,system,status,notes
 0x00fb4ac0,89,render_yebis_context_instantiate,render,verified,YEBIS IPfxContext::Instantiate allocates a context; initializes its base; publishes its vtable then constructs the GNM shim; returns the allocation pointer
 0x00fb6c80,90,render_yebis_release_interface,render,verified,Decrements the DWORD reference count; asserts and rereads zero input; cleans up and frees on zero; returns the cached count
 0x00fb6d20,30,render_yebis_initialize_interface,render,verified,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
-0x00fb6f50,15,render_yebis_free_storage,render,replaced,Decrements the allocation DWORD before allocator slot 0x20; forwards the full allocator and storage pointers; the known consumers discard the method result
+0x00fb6f50,15,render_yebis_free_storage,render,edge-verified,Decrements the allocation DWORD before allocator slot 0x20; forwards the full allocator and storage pointers; the known consumers discard the method result
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,84,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
 0x01118300,149,audio_fmod_thread_entry,audio,edge-verified,FMOD Thread entry: sets running; signals startup; waits and dispatches the routine or virtual slot zero; re-reads fields after calls; applies callback delay; signals exit and returns null
 0x011183b0,98,audio_fmod_initialize_thread,audio,verified,FMOD Thread initialization; publish the relocated vtable and clear selected fields; preserve all other bytes
 0x01118420,377,audio_fmod_start_thread,audio,verified,FMOD Thread startup; initialize parameters and semaphores; create the native thread and wait; clean up saved semaphore handles on failure
 0x011185a0,269,audio_fmod_stop_thread,audio,edge-verified,FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status
+0x011186c0,24,audio_fmod_wake_thread,audio,edge-verified,Signal the optional FMOD Thread wakeup semaphore; absent handles return zero; otherwise preserve the helper DWORD status
 0x0111a620,130,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
 0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads
