@@ -990,7 +990,7 @@ int main(void)
         {0, 6, 1 << 21, "misc or cull"}, {0, 6, 1 << 8, "misc or cull"}, {0, 6, 1, "without their export vector"},
         {0, 6, 1 << 4, "without their export vector"},
         {1, 4, 1, "pixel depth exports"},
-        {1, 5, 0, "SPI_SHADER_COL_FORMAT"}, {1, 5, 3, "SPI_SHADER_COL_FORMAT"}, {1, 5, 0x44, "SPI_SHADER_COL_FORMAT"},
+        {1, 5, 0, "CB_SHADER_MASK"}, {1, 5, 3, "SPI_SHADER_COL_FORMAT"}, {1, 5, 0x44, "CB_SHADER_MASK"},
         {1, 6, 6, "pixel-shader inputs"}, {1, 7, 0, "pixel-shader inputs"},
         {1, 8, 0, "pixel interpolant allocation"}, {1, 8, 33, "parameter range"},
         {1, 9, 1, "SPI_BARYC_CNTL"}, {1, 9, 0x80000000, "SPI_BARYC_CNTL"},
@@ -1292,8 +1292,10 @@ int main(void)
     extra[0] = (uint32_t)(at(0x380000) >> 8); extra[1] = 1; extra[2] = 3; extra[4] = 0xa << 2; extra[5] = 31;
     CHECK(rt_render_record_color_target(12, 0x70, 1, extra, error, sizeof error) == 0);
     CHECK(rt_render_record_draw_auto(12, 0x80, 3, error, sizeof error) == 0);
-    expect_error(x, 12, 0x90, "beyond slot 0");
-    /* Repair the retained extra slot before the next draw, without resetting other state. */
+    if (!run(x, 12, 0x90)) check_gradient(x, at(0x370000), 16, 16, 0);
+    CHECK(rt_executor_read_target(x, at(0x380000), guard, 1, 1, error, sizeof error) == -1);
+    CHECK(guard[0] == 0xdeadbeef);
+    /* Explicit disable of the retained extra slot preserves the normal draw. */
     size = record_setup(12, at(0x370000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_color_target(12, 0x70, 1, extra, error, sizeof error) == 0);
     CHECK(rt_render_record_color_target(12, 0x80, 1, NULL, error, sizeof error) == 0);
