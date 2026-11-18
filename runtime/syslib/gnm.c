@@ -578,6 +578,7 @@ static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const 
     }
     rt_gpu_step *const step = &list->steps[list->count++];
     step->perform = perform, step->function = fn, step->offset = packet_offset, step->flags = 0, step->holds = NULL;
+    step->memory[0] = 0, step->memory[1] = RT_GPU_STEP_ANY_MEMORY; /* the steps the renderer orders fills against say theirs */
     memcpy(step->words, words, sizeof step->words);
 }
 
@@ -611,7 +612,10 @@ static void write_completion(const char *fn, uint32_t data_size, uint32_t addres
         const uint64_t words[6] = {data_size, address_low, address_high, data_low, data_high,
                                    interrupt.select | (uint64_t)interrupt.number << INTERRUPT_NUMBER_SHIFT};
         collect(fn, completion_step, words);
-        collecting->steps[collecting->count - 1].flags = RT_GPU_STEP_DEFERRABLE; /* a write after work: may come later, in order */
+        rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+        step->flags = RT_GPU_STEP_DEFERRABLE; /* a write after work: may come later, in order */
+        step->memory[0] = address_low | (uint64_t)(address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32;
+        step->memory[1] = data_size == RELEASE_MEM_DATA_32_BITS ? sizeof(uint32_t) : data_size == RELEASE_MEM_DATA_64_BITS ? sizeof(uint64_t) : 0;
         return;
     }
     perform_completion(fn, data_size, address_low, address_high, data_low, data_high, interrupt);
@@ -647,6 +651,23 @@ static void write_completion_value(const char *fn, uint32_t data_size, uint32_t 
         rt_fatal(fn, "a completion writing a value other than the packet's own data");
 }
 
+/* A step that fills memory with one 32-bit word (RT_GPU_STEP_FILLS, runtime/renderer.h): memory[1]
+   bytes, whole dwords, at memory[0] with words[0]. The renderer records it into the GPU's work when
+   it can, and performs it otherwise. */
+static void fill_step(const rt_gpu_step *step)
+{
+    uint8_t *const to = (uint8_t *)(uintptr_t)step->memory[0];
+    const uint32_t value = (uint32_t)step->words[0];
+    for (uint64_t at = 0; at < step->memory[1]; at += sizeof value) memcpy(to + at, &value, sizeof value);
+}
+
+static void collect_fill(const char *fn, uint64_t address, uint64_t bytes, uint32_t value)
+{
+    collect(fn, fill_step, (const uint64_t[6]){value});
+    rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+    step->flags = RT_GPU_STEP_FILLS, step->memory[0] = address, step->memory[1] = bytes;
+}
+
 /* A WRITE_DATA's dwords and where they go, copied at submission (the title may reuse the buffer). */
 typedef struct {
     uint32_t *address;
@@ -675,6 +696,13 @@ static void write_data(const char *fn, const uint32_t *packet, uint32_t length)
     uint32_t *const address = (uint32_t *)(uintptr_t)(packet[2] | (uint64_t)packet[3] << 32);
     const uint32_t dwords = length - WRITE_DATA_HEADER_DWORDS;
     if (!address && dwords) rt_fatal(fn, "a WRITE_DATA without an address");
+    const uint32_t *const data = packet + WRITE_DATA_HEADER_DWORDS;
+    uint32_t repeated = dwords;
+    while (repeated > 1 && data[repeated - 1] == data[0]) repeated--;
+    if (collecting && dwords && repeated == 1) { /* one dword over and over (Iosefka's Clinic: 48 zeros), a fill */
+        collect_fill(fn, (uintptr_t)address, (uint64_t)dwords * sizeof(uint32_t), data[0]);
+        return;
+    }
     data_write *const write = malloc(sizeof *write + dwords * sizeof(uint32_t));
     if (!write) rt_fatal(fn, "no memory for a WRITE_DATA");
     write->address = address, write->dwords = dwords;
@@ -740,15 +768,36 @@ static void wait_step(const rt_gpu_step *step)
     }
 }
 
+/* Whether a WAIT_REG_MEM's compare holds whatever the memory holds: the masked value lies in
+   [0, mask], so "always", ">= 0", "<= mask", "< more than mask", and "!=" a reference with bits
+   outside the mask hold for every value (Iosefka's Clinic waits ">= 0" on labels it has just zeroed). */
+static int wait_holds_always(const wait_reg_mem_packet *packet)
+{
+    const uint32_t reference = packet->reference, mask = packet->mask;
+    switch (packet->control & WAIT_FUNCTION_MASK) {
+    case 0: return 1;
+    case 1: return reference > mask;
+    case 2: return reference >= mask;
+    case 3: return mask == 0 && reference == 0;
+    case 4: return (reference & ~mask) != 0;
+    case 5: return reference == 0;
+    default: return 0;
+    }
+}
+
 static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
 {
     if (!(packet->control & WAIT_ON_MEMORY)) rt_fatal(fn, "a GPU wait on a register: the stand-in has none");
     if (!(packet->address_low | (packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK))) rt_fatal(fn, "a GPU wait without an address");
+    if (wait_holds_always(packet)) return; /* the GPU passes it at once: no step, nothing waits */
     if (collecting) {
         const uint64_t words[6] = {packet->control, packet->address_low, packet->address_high, packet->reference, packet->mask,
                                    packet->poll_interval};
         collect(fn, wait_step, words);
-        collecting->steps[collecting->count - 1].holds = wait_step_holds;
+        rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+        step->holds = wait_step_holds;
+        step->memory[0] = packet->address_low | (uint64_t)(packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32;
+        step->memory[1] = sizeof(uint32_t);
         return;
     }
     if (!wait_holds(fn, packet)) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
@@ -815,6 +864,18 @@ static void dma_data_step(const rt_gpu_step *step)
     memmove(to, from, bytes);
 }
 
+/* A step that copies (RT_GPU_STEP_COPIES, runtime/renderer.h): words[4] bytes from words[0] to
+   words[2], each a guest address, or a GDS byte offset where words[1] or words[3] is set. The renderer
+   records it into the GPU's work when it can, and performs it otherwise. */
+static void copy_step(const rt_gpu_step *step)
+{
+    const uint64_t *w = step->words;
+    const uint32_t bytes = (uint32_t)w[4];
+    uint8_t *const to = w[3] ? gds_bytes(step->function, (uint32_t)w[2], bytes) : (uint8_t *)(uintptr_t)w[2];
+    const uint8_t *const from = w[1] ? gds_bytes(step->function, (uint32_t)w[0], bytes) : (const uint8_t *)(uintptr_t)w[0];
+    memmove(to, from, bytes);
+}
+
 /* DMA_DATA: a read from memory into CP_DMA_READ_TAGS only brings the source into the GPU's cache,
    which the stand-in has none of: skipped. Copies and fills between memory (sources 0 and 3,
    destinations 0 and 3), the GDS (1) and the packet's data (source 2) become a step (shadPS4's
@@ -835,6 +896,25 @@ static void dma_data(const char *fn, const uint32_t *packet)
         rt_fatal(fn, "a DMA_DATA with register addresses, addresses that do not advance or byte swaps: the stand-in does not copy those");
     if (destination == DMA_DATA_DESTINATION_RESERVED) rt_fatal(fn, "a DMA_DATA to destination select 2, which the format does not define");
     const uint64_t words[6] = {control, packet[2], packet[3], destination_low, destination_high, command};
+    const uint32_t bytes = command & DMA_DATA_BYTE_COUNT_MASK;
+    if (collecting && source == DMA_DATA_FROM_DATA && destination != DMA_DATA_TO_GDS && bytes % sizeof(uint32_t) == 0) {
+        const uint64_t to = destination_low | (uint64_t)destination_high << 32;
+        if (!to && bytes) rt_fatal(fn, "a DMA_DATA without a destination address");
+        collect_fill(fn, to, bytes, packet[2]); /* the packet's own 32-bit value, in every dword */
+        return;
+    }
+    if (collecting && source != DMA_DATA_FROM_DATA) { /* between memory and the GDS */
+        const int from_gds = source == DMA_DATA_FROM_GDS, to_gds = destination == DMA_DATA_TO_GDS;
+        const uint64_t from = from_gds ? packet[2] : packet[2] | (uint64_t)packet[3] << 32;
+        const uint64_t to = to_gds ? destination_low : destination_low | (uint64_t)destination_high << 32;
+        if (from_gds) gds_bytes(fn, (uint32_t)from, bytes);
+        if (to_gds) gds_bytes(fn, (uint32_t)to, bytes);
+        if ((!from_gds && !from && bytes) || (!to_gds && !to && bytes)) rt_fatal(fn, "a DMA_DATA without a source or destination address");
+        collect(fn, copy_step, (const uint64_t[6]){from, from_gds, to, to_gds, bytes, 0});
+        rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+        step->flags = RT_GPU_STEP_COPIES, step->memory[0] = to_gds ? 0 : to, step->memory[1] = to_gds ? 0 : bytes;
+        return;
+    }
     if (!collecting) {
         const rt_gpu_step step = {.function = fn, .words = {words[0], words[1], words[2], words[3], words[4], words[5]}};
         dma_data_step(&step);
@@ -857,7 +937,13 @@ static void dma_data(const char *fn, const uint32_t *packet)
    The stand-in counts no samples yet: each dump stores one running count that grows by
    OCCLUSION_COUNT_STEP per dump, the same in every DB, so every query reads visible (end > begin):
    what the game tests is drawn, never hidden by a wrong "occluded". The dump is a step, in order with
-   the work and the DMA_DATA that zeroed the block. */
+   the work and the DMA_DATA that zeroed the block.
+
+   Both are deferrable (RT_GPU_STEP_DEFERRABLE): only the CPU reads a query block (the stand-in has no
+   predication, whose packet stops by name), so they need the work before them done, not the work
+   after them held. Performed on the renderer's thread they each waited for all the GPU's work: in
+   Iosefka's Clinic a zero fill, two dumps and a wait for every occlusion-tested draw. The zero fill
+   is a fill step (fill_step), which the renderer records into the GPU's work ahead of the dumps. */
 enum { OCCLUSION_DEPTH_BLOCKS = 8, OCCLUSION_PAIR_BYTES = 16, OCCLUSION_COUNT_STEP = 0x10000 };
 #define OCCLUSION_COUNT_VALID (UINT64_C(1) << 63)
 
@@ -888,6 +974,9 @@ static void event_write_with_memory(const char *fn, const uint32_t *packet)
         return;
     }
     collect(fn, occlusion_dump_step, words);
+    rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+    step->flags = RT_GPU_STEP_DEFERRABLE;
+    step->memory[0] = address, step->memory[1] = OCCLUSION_DEPTH_BLOCKS * OCCLUSION_PAIR_BYTES;
 }
 
 /* The constant engine (CE): a second command processor beside the draw engine (DE), with its own
@@ -1221,7 +1310,9 @@ static void collect_flip(const char *fn, step_list *steps, const flip_request *f
     collecting = steps;
     packet_offset = RT_GPU_STEP_AFTER_ALL; /* after every call of the last buffer */
     collect(fn, flip_step, words);
-    steps->steps[steps->count - 1].flags = RT_GPU_STEP_SHOWS_TARGET;
+    rt_gpu_step *const step = &steps->steps[steps->count - 1];
+    step->flags = RT_GPU_STEP_SHOWS_TARGET;
+    step->memory[1] = 0; /* it shows the target's copy and writes no guest memory */
     collecting = saved;
 }
 
