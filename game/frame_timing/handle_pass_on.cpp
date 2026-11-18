@@ -16,28 +16,12 @@
 #include "../engine/allocator.h"
 #include "../engine/engine.h"
 #include "../engine/ref_object.h"
+#include "dungeon_gate.h"
 #include "runtime/original.h"
 
+using namespace frame_timing::dungeon_gate;
+
 namespace {
-
-// One item of the list: the ritual slot reset fills it with a slot's key, its index and the
-// caller's value for that index.
-struct SlotItem {
-    uint32_t key;
-    uint32_t index;
-    uint32_t value;
-};
-static_assert(sizeof(SlotItem) == 12);
-
-// The engine's growable list of slot items (its first 8 bytes are not read here).
-struct SlotItemList {
-    uint64_t unknown_0x000;
-    SlotItem *begin;
-    SlotItem *end;
-    SlotItem *capacity;
-    engine::Allocator *heap;
-};
-static_assert(offsetof(SlotItemList, begin) == 0x8 && offsetof(SlotItemList, heap) == 0x20);
 
 // The largest count of items the list's size arithmetic allows; a full list grows by a half.
 constexpr size_t max_slot_items = std::numeric_limits<size_t>::max() / sizeof(SlotItem);
@@ -45,26 +29,6 @@ constexpr size_t growth_divisor = 2;
 
 // Moves the list to a block for `capacity` items from its heap (0x01e9da70, not replaced).
 RT_ORIGINAL(0x01e9da70, grow_slot_items, void(SlotItemList *list, size_t capacity));
-RT_ORIGINAL(0x01e9d960, append_slot_item, void(SlotItemList *list, const SlotItem *item));
-
-// The handle object as passing it on reads it: its items, 16 bytes apart, of which the first 12
-// are copied.
-struct HandleItem {
-    SlotItem item;
-    uint8_t unknown_0x00c[0x4];
-};
-static_assert(sizeof(HandleItem) == 0x10);
-struct HandleObject {
-    engine::RefObject base;
-    uint8_t unknown_0x010[0x60];
-    HandleItem *items_begin;
-    HandleItem *items_end;
-};
-static_assert(offsetof(HandleObject, items_begin) == 0x70 && offsetof(HandleObject, items_end) == 0x78);
-
-struct FrpgNetMan;
-RT_GLOBAL(0x0593b120, frpg_net_man_instance, FrpgNetMan *);
-RT_GLOBAL(0x04d3ad45, frpg_net_man_name, const char);
 
 // The heap the list is built on.
 RT_GLOBAL(0x05940428, item_list_heap, engine::Allocator *);
@@ -105,7 +69,7 @@ bool pass_handle_on(engine::RefObject **handle, SlotItemList *items)
 
     SlotItemList list{};
     list.heap = heap;
-    const auto *source = reinterpret_cast<const HandleObject *>(object);
+    const GateHandle *source = as_gate_handle(object);
     const size_t count = static_cast<size_t>(source->items_end - source->items_begin);
     for (size_t index = 0; index != count; ++index) {
         const SlotItem item = source->items_begin[index].item;
