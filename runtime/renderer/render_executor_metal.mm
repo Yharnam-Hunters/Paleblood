@@ -36,7 +36,8 @@
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION = 4096,
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1,
-       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
+       PERSP_CENTER_ENA = 2, FRONT_FACE_ENA = 0x1000, FRONT_FACE_ALL_BITS = 1u << 24,
+       PIXEL_BARYCENTRIC_VGPRS = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
        DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
@@ -75,7 +76,7 @@ struct MetalVertexInstancing {
 };
 struct MetalShader {
     uint64_t code, callee;
-    unsigned user, output;
+    unsigned user, interface_control;
     unsigned required_parameters;
     uint32_t user_read;
     bool vertex, flip_y, color_output, capture, vertex_only;
@@ -351,8 +352,12 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (state.vertex.position_format != position_format)
         return failed(error, size, "SPI_SHADER_POS_FORMAT must declare float4 position and enabled clip vectors");
     if (!state.pixel.code) return 0;
-    if (state.pixel.input_enable != PERSP_CENTER_ENA || state.pixel.input_address != PERSP_CENTER_ENA)
-        return failed(error, size, "pixel-shader inputs beyond perspective-center barycentrics are not modeled");
+    const uint32_t inputs = state.pixel.input_address;
+    if (state.pixel.input_enable != inputs || !(inputs & PERSP_CENTER_ENA) ||
+        (inputs & ~(PERSP_CENTER_ENA | FRONT_FACE_ENA)))
+        return failed(error,size,"pixel-shader inputs must match perspective-center with optional front face");
+    if ((inputs & FRONT_FACE_ENA) && state.pixel.vgprs < PIXEL_BARYCENTRIC_VGPRS + 1)
+        return failed(error,size,"pixel shader front face requires a VGPR after the barycentric pair");
     if (state.pixel.depth_format) return failed(error, size, "pixel depth exports are not modeled");
     if (state.pixel.color_formats != SPI_SHADER_FP16_ABGR && state.pixel.color_formats != SPI_SHADER_32_ABGR)
         return failed(error, size, "SPI_SHADER_COL_FORMAT must select FP16_ABGR or 32_ABGR for target 0 only");
@@ -360,7 +365,9 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
         return failed(error, size, "CB_SHADER_MASK must select RGBA on target 0 only");
     if (state.pixel.interpolated > PARAMETER_LIMIT)
         return failed(error, size, "SPI_PS_IN_CONTROL exceeds the modeled parameter range");
-    if (state.pixel.barycentric_control) return failed(error, size, "nonzero SPI_BARYC_CNTL is not modeled");
+    if ((state.pixel.barycentric_control & ~FRONT_FACE_ALL_BITS) ||
+        (state.pixel.barycentric_control && !(inputs & FRONT_FACE_ENA)))
+        return failed(error,size,"SPI_BARYC_CNTL requires a modeled front-face encoding");
     if (state.pixel.depth_control) return failed(error, size, "nonzero DB_SHADER_CONTROL is not modeled");
     return 0;
 }
@@ -829,7 +836,9 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
     return 0;
 }
 
-static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
+/* Stage-specific interface controls are disjoint within each stage: VS output
+   control, or PS input address with SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS. */
+static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned interface_control,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
                                  const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
                                  MetalRectangleShader *rectangle = nullptr, const MetalVertexInstancing &instancing = {},
@@ -839,7 +848,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
-        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
+        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.interface_control == interface_control && shader.flip_y == flip_y &&
             shader.color_output == color_output && shader.capture == (rectangle != nullptr) && shader.vertex_only == vertex_only &&
             shader.instancing == instancing &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
@@ -856,7 +865,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     int result;
     if (vertex) {
         gcn_vertex_layout layout{};
-        layout.user_sgprs = user; layout.output_control = output;
+        layout.user_sgprs = user; layout.output_control = interface_control;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.callee = callee.words; layout.callee_dwords = callee.dwords; layout.code_address = code;
@@ -865,9 +874,12 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.step_rates_set = instancing.step_rates_set;
         result = gcn_translate_vertex(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     } else {
-        /* Only perspective-center barycentrics occupy VGPR0/1. Resources use the common origins. */
         gcn_pixel_layout layout{};
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
+        /* The enabled face input immediately follows the perspective-center pair. */
+        layout.front_face = (interface_control & FRONT_FACE_ENA) != 0;
+        layout.front_face_all_bits = (interface_control & FRONT_FACE_ALL_BITS) != 0;
+        layout.front_face_vgpr = PIXEL_BARYCENTRIC_VGPRS;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.images = pixel->images; layout.image_count = pixel->image_count;
@@ -920,7 +932,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         if (!function) return nil;
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
-        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, color_output,
+        x->shaders.push_back({code, callee.address, user, interface_control, required_parameters, user_read, vertex, flip_y, color_output,
             rectangle != nullptr, vertex_only, rectangle ? *rectangle : MetalRectangleShader{}, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
@@ -1479,7 +1491,8 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
                                       state.user[0], state.user_set[0], nullptr, vertex_read, error, size, raster_rectangle ? &rectangle_shader : nullptr, instancing, true, vertex_only);
     if (!vertex) return -1;
-    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
+    const uint32_t pixel_control = state.pixel.input_address | state.pixel.barycentric_control;
+    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, pixel_control,
                                              state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size, nullptr, {}, state.color_enabled) : nil;
     if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||

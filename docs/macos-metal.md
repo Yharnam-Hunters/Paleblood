@@ -202,8 +202,11 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
-and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
+depth export. The optional front-face input follows the perspective-center pair in VGPR2.
+Metal supplies its winding through the native fragment built-in. The common translator encodes
+the result as signed floating-point one or integer zero/one according to
+`SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS`. Pixel-position X/Y inputs and whole-quad mask expansion
+are outside this profile and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
 against slots explicitly written for that stage since reset; writing zero establishes a value,
