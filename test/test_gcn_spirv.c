@@ -1099,6 +1099,14 @@ static void scalar_load_spans(void)
     CHECK(gcn_translate_compute(PROGRAM(loaded), &checked, &spirv, &words, error, sizeof error) == 0);
     CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 && opcode_count(spirv, words, SPV_OP_SELECT) == 1);
     CHECK(validate(spirv, words, "scalar_load_spans") != 0);
+    free(spirv), spirv = NULL;
+    /* s_buffer_load_dwordx4 s[8:11], s[0:3], 0: the whole load in range takes one span check, beside the
+       dword-by-dword checks for a load partly in range */
+    static const uint32_t buffer_loaded[] = {0xc2840100, 0xbf810000};
+    CHECK(gcn_translate_compute(PROGRAM(buffer_loaded), &checked, &spirv, &words, error, sizeof error) == 0);
+    CHECK(spirv && opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL) == 1 + 1 + 4 + 4);
+    CHECK(validate(spirv, words, "buffer_load_spans") != 0);
+    CHECK(to_metal(spirv, words, "buffer_load_spans") != 0);
     free(spirv);
 }
 

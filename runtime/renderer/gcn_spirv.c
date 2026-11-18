@@ -1649,14 +1649,31 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
                                            konst(t, VSHARP_STRIDE_MASK)));
     const uint32_t size = value(t, SPV_OP_SELECT, t_ulong(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, stride, ulong_constant(t, 0)), records,
                                 value(t, SPV_OP_I_MUL, t_ulong(t), 2, records, stride));
-    for (uint32_t i = 0; i < dwords_named(name); i++) {
-        const uint32_t end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)(i + 1) * BYTES_PER_DWORD));
-        const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
-        const uint32_t in_range = begin_if(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, end, size));
-        store(t, t->out, slot, load_dword(t, dword_pointer(t, base, byte_offset, i)));
-        end_if(t, in_range);
-        write_sgpr(t, sdst + i, load(t, t_uint(t), slot), ins);
+    /* With the whole load in range, its span is checked against the guest memory once (as an s_load's);
+       otherwise each dword in range is read on its own. */
+    const uint32_t dwords = dwords_named(name);
+    uint32_t slots[16];
+    for (uint32_t i = 0; i < dwords; i++) slots[i] = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t load_end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)dwords * BYTES_PER_DWORD));
+    const uint32_t whole = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, load_end, size);
+    if (dwords > 1) {
+        const uint32_t whole_merge = begin_if(t, whole);
+        const uint32_t start = guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, byte_offset)), dwords * BYTES_PER_DWORD);
+        for (uint32_t i = 0; i < dwords; i++) {
+            const uint32_t address = i ? value(t, SPV_OP_I_ADD, t_ulong(t), 2, start, ulong_constant(t, (uint64_t)i * BYTES_PER_DWORD)) : start;
+            store(t, t->out, slots[i], load_dword(t, uint_pointer(t, address)));
+        }
+        end_if(t, whole_merge);
     }
+    const uint32_t split_merge = dwords > 1 ? begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, whole)) : 0;
+    for (uint32_t i = 0; i < dwords; i++) {
+        const uint32_t end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)(i + 1) * BYTES_PER_DWORD));
+        const uint32_t in_range = begin_if(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, end, size));
+        store(t, t->out, slots[i], load_dword(t, dword_pointer(t, base, byte_offset, i)));
+        end_if(t, in_range);
+    }
+    if (split_merge) end_if(t, split_merge);
+    for (uint32_t i = 0; i < dwords; i++) write_sgpr(t, sdst + i, load(t, t_uint(t), slots[i]), ins);
 }
 
 /* Typed buffer formats (MTBUF dfmt and nfmt; the numbers are those LLVM's GFX7 assembler gives
@@ -1877,6 +1894,37 @@ static uint32_t checked_load_dword(translator *t, const buffer_range *r, uint32_
     store(t, t->out, slot, load_dword(t, dword_pointer(t, base, offset, index)));
     end_if(t, in_range);
     return load(t, t_uint(t), slot);
+}
+
+/* Dwords first to first + count - 1 of a load that reads 0 out of range, into values. When the last
+   is in range all are (buffer_in_range is monotonic in the byte), and the span is checked against the
+   guest memory once and read dword by dword from its checked start; otherwise each dword is checked
+   on its own (checked_load_dword). */
+static void checked_load_dwords(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t first, uint32_t count,
+                                uint32_t *values)
+{
+    if (count < 2 || count > 4) {
+        for (uint32_t i = 0; i < count; i++) values[i] = checked_load_dword(t, r, base, offset, first + i);
+        return;
+    }
+    uint32_t slots[4];
+    for (uint32_t i = 0; i < count; i++) slots[i] = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t whole = buffer_in_range(t, r, (first + count - 1) * BYTES_PER_DWORD);
+    const uint32_t whole_merge = begin_if(t, whole);
+    {
+        const uint32_t at = value(t, SPV_OP_I_ADD, t_ulong(t), 2, base,
+                                  widen(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, konst(t, first * BYTES_PER_DWORD))));
+        const uint32_t start = guest_reachable(t, at, count * BYTES_PER_DWORD);
+        for (uint32_t i = 0; i < count; i++) {
+            const uint32_t address = i ? value(t, SPV_OP_I_ADD, t_ulong(t), 2, start, ulong_constant(t, (uint64_t)i * BYTES_PER_DWORD)) : start;
+            store(t, t->out, slots[i], load_dword(t, uint_pointer(t, address)));
+        }
+    }
+    end_if(t, whole_merge);
+    const uint32_t split_merge = begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, whole));
+    for (uint32_t i = 0; i < count; i++) store(t, t->out, slots[i], checked_load_dword(t, r, base, offset, first + i));
+    end_if(t, split_merge);
+    for (uint32_t i = 0; i < count; i++) values[i] = load(t, t_uint(t), slots[i]);
 }
 
 /* A dword store that writes nothing out of range. */
@@ -2332,7 +2380,9 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     }
     const uint32_t merge = begin_if(t, exec_bit(t));
     if (load_op) {
-        for (uint32_t i = 0; i < dwords; i++) write_vgpr(t, vdata + i, checked_load_dword(t, &range, base, offset, i));
+        uint32_t values[4];
+        checked_load_dwords(t, &range, base, offset, 0, dwords, values);
+        for (uint32_t i = 0; i < dwords; i++) write_vgpr(t, vdata + i, values[i]);
     } else {
         uint32_t words[4] = {0};
         for (uint32_t i = 0; i < dwords; i++) words[i] = load(t, t_uint(t), vgpr(t, vdata + i));
