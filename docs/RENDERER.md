@@ -827,7 +827,11 @@ Instead:
           code's by construction. Each group of 64 takes one micro tile with its lanes in memory order,
           so neighbouring lanes touch neighbouring guest memory (taken in row order instead, the copies
           cost about twice the GPU time, as host memory is read and written across PCIe). Nothing waits for them: the batch notes the memory each write-back
-          stores to, and the CPU waits only before reading that memory itself. A target is loaded
+          stores to, and the CPU waits only before reading that memory itself. Each target and image
+          keeps its copy plan (the table and linear rows as large as the surface, one per mip level)
+          while it is kept; when the device's memory has no room for a new plan, the plans of images
+          no unfinished batch uses are freed and made again at their next load (`free_idle_image_plans`;
+          before, a long walk stopped with "no GPU memory for copying a 1920x1080 image"). A target is loaded
           again, and such an image too, whenever the memory may have changed (the memory epoch: a new
           buffer, a dispatch, a write-back over it), without comparing bytes: reading it on the GPU
           costs less than comparing it on the CPU. Images of 8- and 16-bit elements need the device's 8-
