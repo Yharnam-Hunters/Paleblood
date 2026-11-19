@@ -311,3 +311,4 @@ include(cmake/DarwinBootTests.cmake)
 include(cmake/BootArenaTests.cmake)
 
 include(cmake/GameBridgeTests.cmake)
+include(cmake/ComputeThreadIdTests.cmake)
