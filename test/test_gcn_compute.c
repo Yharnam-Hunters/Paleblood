@@ -86,7 +86,10 @@ static uint32_t bits(float f)
 int main(int argc, char **argv)
 {
     const int wave64_only = argc == 2 && strcmp(argv[1], "--wave64") == 0;
-    if (argc != 1 && !wave64_only) return 2;
+    /* --structured: every program with structured control flow, as the Vulkan executor translates them */
+    const int structured = argc == 2 && strcmp(argv[1], "--structured") == 0;
+    if (argc != 1 && !wave64_only && !structured) return 2;
+    gcn_spirv_set_structured_control(structured);
     gpu g = {0};
     if (open_gpu(&g)) {
         fprintf(stderr, "no Vulkan 1.2 device with buffer device addresses: skipped\n");
@@ -379,15 +382,19 @@ int main(int argc, char **argv)
         for (int lane = 0; lane < LANES; lane++)
             for (int k = 0; k < 4; k++) inside &= out_words[lane * 4 + k] == in_words[k];
         CHECK(inside);
+        /* with span checks (gcn_spirv_set_span_checks, the Vulkan executor's choice), the whole span goes to
+           the sink: dword k reads the sink's dword k */
         const uint64_t outside_bases[] = {high + (UINT64_C(1) << 36), 0};
+        for (int spans = 0; spans < 2; spans++)
         for (int b = 0; b < 2; b++) {
+            gcn_spirv_set_span_checks(spans);
             range_user[0] = (uint32_t)outside_bases[b], range_user[1] = (uint32_t)(outside_bases[b] >> 32) & 0xff;
             memset(out.mapped, 0, BUFFER_BYTES);
             for (int k = 0; k < 4; k++) sink[k] = 0x5a5a0000u + (uint32_t)k;
             CHECK(run(&g, scalar_buffer_quad, sizeof scalar_buffer_quad / sizeof scalar_buffer_quad[0], range_user) == 0);
             int sunk = 1;
             for (int lane = 0; lane < LANES; lane++)
-                for (int k = 0; k < 4; k++) sunk &= out_words[lane * 4 + k] == 0x5a5a0000u;
+                for (int k = 0; k < 4; k++) sunk &= out_words[lane * 4 + k] == 0x5a5a0000u + (spans ? (uint32_t)k : 0u);
             if (!sunk) fprintf(stderr, "guest range: lane 0 read %08x %08x %08x %08x\n", out_words[0], out_words[1], out_words[2], out_words[3]);
             CHECK(sunk);
             const uint32_t expected = (uint32_t)GCN_RUNTIME_STOP_GUEST_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT |
@@ -395,6 +402,7 @@ int main(int argc, char **argv)
             if (*stop != expected) fprintf(stderr, "guest range stop: %#x, expected %#x\n", *stop, expected);
             CHECK(*stop == expected);
         }
+        gcn_spirv_set_span_checks(0);
         guest = (gcn_guest_memory){0};
         error_address = stop_before;
     }

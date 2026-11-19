@@ -54,6 +54,10 @@ typedef struct {
     /* Whether collect_cpu_writes may report anything now; NULL: always. The executor asks it first, so
        that it builds and sorts the ranges only for a collect that happens. */
     int (*cpu_writes_due)(void);
+    /* Whether worker threads make the pipelines draws meet for the first time, the draw skipped while its
+       pipeline is being made (for at most a second), instead of the recording thread waiting for the
+       driver's compiler. Off: every pipeline is made at its first draw. */
+    int async_pipelines;
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no

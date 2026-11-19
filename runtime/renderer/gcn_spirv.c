@@ -168,6 +168,12 @@ static int survey_mode; /* gcn_spirv_set_survey */
 
 void gcn_spirv_set_survey(int on) { survey_mode = on != 0; }
 
+static int span_checks; /* gcn_spirv_set_span_checks */
+void gcn_spirv_set_span_checks(int on) { span_checks = on != 0; }
+
+static int structured_control; /* gcn_spirv_set_structured_control */
+void gcn_spirv_set_structured_control(int on) { structured_control = on != 0; }
+
 static void fail(translator *t, const char *format, ...)
 {
     if (t->failed) return;
@@ -1622,12 +1628,28 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
                                            : load(t, t_uint(t), sgpr(t, offset_field));
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
-    if (!descriptor) {
+    if (!descriptor && !span_checks) {
         const gcn_table_entry *entry = table_entry_at(t);
         const int in_block = entry && t->layout->table_block_offset;
         for (uint32_t i = 0; i < dwords_named(name); i++) {
             const uint32_t guest = dword_address(t, base, byte_offset, i);
             const uint32_t loaded = load_dword(t, uint_pointer(t, in_block ? snapshot_address(t, entry, i, guest) : guest));
+            write_sgpr(t, sdst + i, entry && !in_block ? snapshot_or(t, entry, i, loaded) : loaded, ins);
+        }
+        return;
+    }
+    if (!descriptor) {
+        /* With span checks, the load's dwords being consecutive, its whole span is checked against the guest
+           memory once (guest_reachable): inside, every dword is; outside, every dword reads the sink and the
+           stop word names the span's first page. Each dword's address then counts on from the checked start. */
+        const gcn_table_entry *entry = table_entry_at(t);
+        const int in_block = entry && t->layout->table_block_offset;
+        const uint32_t dwords = dwords_named(name);
+        const uint32_t guest = guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, byte_offset)), dwords * BYTES_PER_DWORD);
+        const uint32_t start = in_block ? snapshot_address(t, entry, 0, guest) : guest;
+        for (uint32_t i = 0; i < dwords; i++) {
+            const uint32_t address = i ? value(t, SPV_OP_I_ADD, t_ulong(t), 2, start, ulong_constant(t, (uint64_t)i * BYTES_PER_DWORD)) : start;
+            const uint32_t loaded = load_dword(t, uint_pointer(t, address));
             write_sgpr(t, sdst + i, entry && !in_block ? snapshot_or(t, entry, i, loaded) : loaded, ins);
         }
         return;
@@ -1643,14 +1665,32 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
                                            konst(t, VSHARP_STRIDE_MASK)));
     const uint32_t size = value(t, SPV_OP_SELECT, t_ulong(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, stride, ulong_constant(t, 0)), records,
                                 value(t, SPV_OP_I_MUL, t_ulong(t), 2, records, stride));
-    for (uint32_t i = 0; i < dwords_named(name); i++) {
-        const uint32_t end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)(i + 1) * BYTES_PER_DWORD));
-        const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
-        const uint32_t in_range = begin_if(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, end, size));
-        store(t, t->out, slot, load_dword(t, dword_pointer(t, base, byte_offset, i)));
-        end_if(t, in_range);
-        write_sgpr(t, sdst + i, load(t, t_uint(t), slot), ins);
+    /* With span checks and the whole load in range, its span is checked against the guest memory once (as
+       an s_load's); otherwise each dword in range is read on its own. */
+    const uint32_t dwords = dwords_named(name);
+    uint32_t slots[16];
+    for (uint32_t i = 0; i < dwords; i++) slots[i] = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t load_end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)dwords * BYTES_PER_DWORD));
+    const uint32_t whole = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, load_end, size);
+    const int whole_first = span_checks && dwords > 1;
+    if (whole_first) {
+        const uint32_t whole_merge = begin_if(t, whole);
+        const uint32_t start = guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, byte_offset)), dwords * BYTES_PER_DWORD);
+        for (uint32_t i = 0; i < dwords; i++) {
+            const uint32_t address = i ? value(t, SPV_OP_I_ADD, t_ulong(t), 2, start, ulong_constant(t, (uint64_t)i * BYTES_PER_DWORD)) : start;
+            store(t, t->out, slots[i], load_dword(t, uint_pointer(t, address)));
+        }
+        end_if(t, whole_merge);
     }
+    const uint32_t split_merge = whole_first ? begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, whole)) : 0;
+    for (uint32_t i = 0; i < dwords; i++) {
+        const uint32_t end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)(i + 1) * BYTES_PER_DWORD));
+        const uint32_t in_range = begin_if(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, end, size));
+        store(t, t->out, slots[i], load_dword(t, dword_pointer(t, base, byte_offset, i)));
+        end_if(t, in_range);
+    }
+    if (split_merge) end_if(t, split_merge);
+    for (uint32_t i = 0; i < dwords; i++) write_sgpr(t, sdst + i, load(t, t_uint(t), slots[i]), ins);
 }
 
 /* Typed buffer formats (MTBUF dfmt and nfmt; the numbers are those LLVM's GFX7 assembler gives
@@ -1871,6 +1911,37 @@ static uint32_t checked_load_dword(translator *t, const buffer_range *r, uint32_
     store(t, t->out, slot, load_dword(t, dword_pointer(t, base, offset, index)));
     end_if(t, in_range);
     return load(t, t_uint(t), slot);
+}
+
+/* Dwords first to first + count - 1 of a load that reads 0 out of range, into values. When the last
+   is in range all are (buffer_in_range is monotonic in the byte), and the span is checked against the
+   guest memory once and read dword by dword from its checked start; otherwise each dword is checked
+   on its own (checked_load_dword). */
+static void checked_load_dwords(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t first, uint32_t count,
+                                uint32_t *values)
+{
+    if (!span_checks || count < 2 || count > 4) {
+        for (uint32_t i = 0; i < count; i++) values[i] = checked_load_dword(t, r, base, offset, first + i);
+        return;
+    }
+    uint32_t slots[4];
+    for (uint32_t i = 0; i < count; i++) slots[i] = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t whole = buffer_in_range(t, r, (first + count - 1) * BYTES_PER_DWORD);
+    const uint32_t whole_merge = begin_if(t, whole);
+    {
+        const uint32_t at = value(t, SPV_OP_I_ADD, t_ulong(t), 2, base,
+                                  widen(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, konst(t, first * BYTES_PER_DWORD))));
+        const uint32_t start = guest_reachable(t, at, count * BYTES_PER_DWORD);
+        for (uint32_t i = 0; i < count; i++) {
+            const uint32_t address = i ? value(t, SPV_OP_I_ADD, t_ulong(t), 2, start, ulong_constant(t, (uint64_t)i * BYTES_PER_DWORD)) : start;
+            store(t, t->out, slots[i], load_dword(t, uint_pointer(t, address)));
+        }
+    }
+    end_if(t, whole_merge);
+    const uint32_t split_merge = begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, whole));
+    for (uint32_t i = 0; i < count; i++) store(t, t->out, slots[i], checked_load_dword(t, r, base, offset, first + i));
+    end_if(t, split_merge);
+    for (uint32_t i = 0; i < count; i++) values[i] = load(t, t_uint(t), slots[i]);
 }
 
 /* A dword store that writes nothing out of range. */
@@ -2326,7 +2397,9 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     }
     const uint32_t merge = begin_if(t, exec_bit(t));
     if (load_op) {
-        for (uint32_t i = 0; i < dwords; i++) write_vgpr(t, vdata + i, checked_load_dword(t, &range, base, offset, i));
+        uint32_t values[4];
+        checked_load_dwords(t, &range, base, offset, 0, dwords, values);
+        for (uint32_t i = 0; i < dwords; i++) write_vgpr(t, vdata + i, values[i]);
     } else {
         uint32_t words[4] = {0};
         for (uint32_t i = 0; i < dwords; i++) words[i] = load(t, t_uint(t), vgpr(t, vdata + i));
@@ -4956,15 +5029,44 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         if (branches(code + instructions[i].at, &instructions[i].ins, instructions[i].at, &target))
             t->constant_exec_enabled = 0, t->constant_exec = 0;
     }
+    /* The blocks run in program order as a chain of selections, each entered when the PC names it. A
+       branch back makes a loop: the blocks from its target to the branch, merged with any loop they
+       overlap, form a structured loop whose body is their chain and which goes round while the PC names
+       one of its blocks (every branch out of it goes forward, past its last block). Without structured
+       control (gcn_spirv_set_structured_control), or for a program with a branch the chain cannot
+       follow (a target outside the program or not a block start), the dispatch loop runs every block. */
+    int forward = structured_control && count > 0;
+    uint8_t *loop_first = calloc(block_count + 1, 1), *loop_last = calloc(block_count + 1, 1);
+    uint32_t *reach = calloc(block_count + 1, sizeof *reach); /* for a branch back's target block: 1 + the last block branching to it */
+    if (!loop_first || !loop_last || !reach) forward = 0;
+    for (long i = 0, current = 0; forward && i < count; i++) {
+        if (starts[instructions[i].at]) current = (long)block_of[instructions[i].at];
+        const char *name = instructions[i].ins.name;
+        if (instructions[i].ins.encoding != GCN_SOPP || !is_branch_named(name)) continue;
+        const long target = (long)instructions[i].at + (long)instructions[i].ins.dwords + (int16_t)(code[instructions[i].at] & 0xffff);
+        if (target < 0 || target >= program || !starts[target]) forward = 0;
+        else if ((long)block_of[target] <= current && reach[block_of[target]] < (uint32_t)current + 1)
+            reach[block_of[target]] = (uint32_t)current + 1;
+    }
+    for (uint32_t b = 0, end = 0; forward && b < block_count; b++) { /* overlapping loops merge into one */
+        if (b >= end && reach[b]) loop_first[b] = 1;
+        if (reach[b] > end) end = reach[b];
+        if (end && b + 1 == end) loop_last[b] = 1;
+    }
+    free(reach);
     uint32_t *labels = calloc(block_count + 1, sizeof *labels);
     const uint32_t header = spirv_new_id(m), dispatch = spirv_new_id(m), switch_merge = spirv_new_id(m);
     const uint32_t continue_block = spirv_new_id(m), loop_merge = spirv_new_id(m), fallback = spirv_new_id(m);
     if (!labels) fail(t, "no memory");
     for (uint32_t b = 0; labels && b < block_count; b++) labels[b] = spirv_new_id(m);
 
+    uint32_t chain_label = 0, loop_header = 0, loop_continue = 0, loop_exit = 0; /* the chain's current label and open loop */
+    int in_loop = 0;
     /* loop header, then the dispatch switch over every block */
     t->out = &t->blocks;
     spirv_emit(m, t->out, SPV_OP_LABEL, &header, 1);
+    if (forward) spirv_emit(m, t->out, SPV_OP_BRANCH, &labels[0], 1);
+    else {
     spirv_emit(m, t->out, SPV_OP_LOOP_MERGE, (const uint32_t[]){loop_merge, continue_block, SPV_LOOP_CONTROL_NONE}, 3);
     spirv_emit(m, t->out, SPV_OP_BRANCH, &dispatch, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &dispatch, 1);
@@ -4980,6 +5082,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
             free(cases);
         }
     }
+    }
 
     /* survey mode: what failed before the instructions (the layout, the program's decoding) is kept, and
        the instructions are still surveyed when they decoded */
@@ -4987,7 +5090,24 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     /* each block */
     for (long i = 0; !t->failed && i < count;) {
         const uint32_t b = block_of[instructions[i].at];
-        spirv_emit(m, t->out, SPV_OP_LABEL, &labels[b], 1);
+        /* the chain: block b runs when the PC names it (block 0 at the start without asking), and its
+           selection merges into the next block, or into the loop's tail for a loop's last block */
+        const uint32_t chain_merge = !forward ? 0 : loop_last[b] ? spirv_new_id(m) : labels[b + 1] ? labels[b + 1] : (labels[b + 1] = spirv_new_id(m));
+        if (forward && !b) spirv_emit(m, t->out, SPV_OP_LABEL, &labels[0], 1), chain_label = labels[0];
+        if (forward && loop_first[b]) {
+            loop_header = chain_label, loop_continue = spirv_new_id(m), loop_exit = spirv_new_id(m);
+            const uint32_t body = spirv_new_id(m);
+            spirv_emit(m, t->out, SPV_OP_LOOP_MERGE, (const uint32_t[]){loop_exit, loop_continue, SPV_LOOP_CONTROL_NONE}, 3);
+            spirv_emit(m, t->out, SPV_OP_BRANCH, &body, 1);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &body, 1);
+            in_loop = 1;
+        }
+        if (forward && (b || in_loop)) {
+            const uint32_t named = equals(t, load(t, t_uint(t), t->pc), konst(t, b)), body = spirv_new_id(m);
+            spirv_emit(m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){chain_merge, SPV_SELECTION_CONTROL_NONE}, 2);
+            spirv_emit(m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){named, body, chain_merge}, 3);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &body, 1);
+        } else if (!forward) spirv_emit(m, t->out, SPV_OP_LABEL, &labels[b], 1);
         int ended = 0;
         for (;;) {
             const decoded *d = &instructions[i];
@@ -5028,8 +5148,23 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
                 break;
             }
         }
-        if (!ended) spirv_emit(m, t->out, SPV_OP_BRANCH, &switch_merge, 1);
+        if (!ended) spirv_emit(m, t->out, SPV_OP_BRANCH, forward ? &chain_merge : &switch_merge, 1);
+        if (forward) spirv_emit(m, t->out, SPV_OP_LABEL, &chain_merge, 1), chain_label = chain_merge;
+        if (forward && loop_last[b]) { /* round again while the PC names one of the loop's blocks */
+            spirv_emit(m, t->out, SPV_OP_BRANCH, &loop_continue, 1);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &loop_continue, 1);
+            const uint32_t again = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, load(t, t_uint(t), t->pc), konst(t, b));
+            spirv_emit(m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){again, loop_header, loop_exit}, 3);
+            spirv_emit(m, t->out, SPV_OP_LABEL, &loop_exit, 1);
+            chain_label = loop_exit, in_loop = 0;
+        }
     }
+    free(loop_first);
+    free(loop_last);
+    if (forward) {
+        /* past the last block: every path through the chain ended at s_endpgm, so this is not reached */
+        spirv_emit(m, t->out, SPV_OP_UNREACHABLE, NULL, 0);
+    } else {
     spirv_emit(m, t->out, SPV_OP_LABEL, &fallback, 1);
     spirv_emit(m, t->out, SPV_OP_BRANCH, &switch_merge, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &switch_merge, 1);
@@ -5038,6 +5173,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_emit(m, t->out, SPV_OP_BRANCH, &header, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &loop_merge, 1);
     spirv_emit(m, t->out, SPV_OP_RETURN, NULL, 0);
+    }
 
     /* The entry function: variables, their zeroing, the starting registers, then the loop. */
     const uint32_t void_type = spirv_type_void(m);

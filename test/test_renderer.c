@@ -216,6 +216,7 @@ static int stops(uint64_t buffer, uint32_t size)
 int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
+    setenv("PB_ASYNC_PIPELINES", "0", 0); /* each draw drawn when its buffer runs (the executor's test checks async pipelines) */
     guest_fd = map_guest_memory();
     if (guest_fd < 0) {
         fprintf(stderr, "cannot map the guest memory at %#llx\n", GUEST_BASE);
@@ -224,7 +225,7 @@ int main(void)
     { /* skipped without a device that can run the executor */
         rt_executor *probe = NULL;
         char error[256];
-        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL};
+        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 0};
         if (rt_executor_open(&memory, &probe, error, sizeof error)) {
             fprintf(stderr, "skipped: %s\n", error);
             return 77;

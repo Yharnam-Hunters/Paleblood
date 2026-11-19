@@ -139,9 +139,12 @@ struct MetalState {
     uint32_t depth_bounds[2] = {}; /* Independent raw DB_DEPTH_BOUNDS_MIN/MAX words. */
     uint32_t step_rates[2] = {}, step_rates_set = 0;
     uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
+    uint32_t clear_words[RT_COLOR_TARGETS][2] = {}; /* Raw CB_COLORn_CLEAR_WORD0/1, inert without fast clears. */
     uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
     bool depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t depth_words[9] = {}, depth_written = 0, depth_view = 0, render_control = 0;
+    uint32_t htile_base = 0, htile_surface = 0, depth_clear = 0;
+    bool htile_base_set = false, depth_clear_set = false;
     uint32_t stencil_control = 0, stencil_reference[2] = {};
     bool depth_view_set = false, stencil_control_set = false, stencil_reference_set[2] = {};
     uint32_t scissor_tl = 0, scissor_br = 0;
@@ -209,6 +212,7 @@ enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009,
        CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, CB_BLEND0_CONTROL = 0xa1e0, CB_BLEND7_CONTROL = 0xa1e7,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
+       CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
        VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9,
        PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32,
        PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_VPORT_SCISSOR_0_BR = 0xa095, PA_SC_VPORT_SCISSOR_LAST = 0xa0b3, PA_SC_MODE_CNTL_0 = 0xa292, PA_CL_CLIP_CNTL = 0xa204 };
@@ -241,9 +245,10 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
         const unsigned face = address - DB_STENCILREFMASK;
         state.stencil_reference[face] = value; state.stencil_reference_set[face] = true; return 0;
     }
-    /* These registers are inert in the admitted no-HTILE/no-clear profile. The active
-       metadata and clear controls are refused at the draw, never silently executed. */
-    case DB_HTILE_DATA_BASE: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: case DB_DEPTH_CLEAR: return 0;
+    case DB_HTILE_DATA_BASE: state.htile_base = value; state.htile_base_set = true; return 0;
+    case DB_HTILE_SURFACE: state.htile_surface = value; return 0;
+    case DB_DEPTH_CLEAR: state.depth_clear = value; state.depth_clear_set = true; return 0;
+    case DB_STENCIL_CLEAR: return 0; /* Stencil clears remain outside the draw profile. */
     case PA_CL_CLIP_CNTL: state.clip_control = value; return 0;
     case PA_SC_VPORT_SCISSOR_0_TL: state.viewport_scissor_tl = value; state.viewport_scissor_set = true; return 0;
     case PA_SC_VPORT_SCISSOR_0_BR: state.viewport_scissor_br = value; state.viewport_scissor_set = true; return 0;
@@ -256,6 +261,14 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
         if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
             const unsigned slot = address - CB_BLEND0_CONTROL;
             state.blend_control[slot] = value; state.blend_set |= 1u << slot; return 0;
+        }
+        /* GFX7 has two formatted clear words per target, fifteen registers apart.
+           Retain them independently; target_for still refuses active fast clears. */
+        if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + static_cast<unsigned>(RT_COLOR_TARGETS) * CB_COLOR_REGISTER_STRIDE &&
+            (address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE < 2) {
+            const unsigned relative = address - CB_COLOR0_CLEAR_WORD0;
+            state.clear_words[relative / CB_COLOR_REGISTER_STRIDE][relative % CB_COLOR_REGISTER_STRIDE] = value;
+            return 0;
         }
         /* the other viewports' scissors: a draw uses viewport 0 */
         if (address > PA_SC_VPORT_SCISSOR_0_BR && address <= PA_SC_VPORT_SCISSOR_LAST) return 0;
@@ -1079,6 +1092,9 @@ struct MetalDepthPlane {
 struct MetalDepthAttachments {
     MetalDepthPlane z, stencil;
     uint32_t width = 0, height = 0, reference[2] = {};
+    uint64_t htile_address = 0, htile_span = 0;
+    float clear_depth = 0;
+    bool clear = false;
     id<MTLDepthStencilState> state = nil;
 };
 enum { DEPTH_GEOMETRY, DEPTH_Z, DEPTH_STENCIL, DEPTH_Z_READ, DEPTH_STENCIL_READ,
@@ -1122,8 +1138,57 @@ static id<MTLTexture> depth_texture(rt_executor *x, MTLPixelFormat format, uint3
     descriptor.storageMode = MTLStorageModePrivate; descriptor.usage = MTLTextureUsageRenderTarget;
     return [x->device newTextureWithDescriptor:descriptor];
 }
-/* AMD GFX7 compare/stencil encodings. Active metadata-dependent aspects, clear,
-   copy and resummarize operations stop before attachment work. */
+enum { TILE_SURFACE_ENABLE = 1u << 29, ALLOW_EXPCLEAR = 1u << 27,
+    TILE_STENCIL_DISABLE = 1u << 29, HTILE_PRELOAD = 1u << 3, HTILE_ZMASK = 0xf };
+
+/* Metal never keeps compressed depth in guest memory. A uniform clear tag
+   supplies the entire plane; expanded tiles already have authoritative bytes. */
+static int depth_htile(rt_executor *x, const MetalState &s, MetalDepthAttachments &d, char *error, size_t size)
+{
+    if (d.z.layout.tiles.element_bytes != sizeof(float) || d.z.layout.tiles.kind != RT_TILING_2D || d.z.slice ||
+        (s.htile_surface & ~HTILE_PRELOAD) ||
+        ((s.depth_words[DEPTH_STENCIL] & 1u) && !(s.depth_words[DEPTH_STENCIL] & TILE_STENCIL_DISABLE)))
+        return failed(error,size,"HTILE requires tiled single-slice D32 without stencil metadata");
+    if (!s.htile_base_set) return failed(error,size,"HTILE requires an explicit base register");
+    d.htile_address = static_cast<uint64_t>(s.htile_base) << 8;
+    d.htile_span = rt_tiling_htile_size(d.width,d.height);
+    if (d.htile_address % 2048 || !pool_range(x,d.htile_address,d.htile_span))
+        return failed(error,size,"HTILE base is unaligned or outside the GPU-visible pool");
+    for (const auto *p : {&d.z,&d.stencil})
+        if (p->staging && overlap(d.htile_address,d.htile_span,p->address,rt_tiling_size(&p->layout.tiles,p->slice + 1)))
+            return failed(error,size,"HTILE overlaps a depth or stencil plane");
+    const auto *data = static_cast<const uint8_t *>(x->view) + d.htile_address - x->guest_base;
+    unsigned cleared = 0, expanded = 0;
+    for (uint32_t y = 0; y < d.height; y += 8) for (uint32_t col = 0; col < d.width; col += 8) {
+        uint32_t word;
+        std::memcpy(&word,data + rt_tiling_htile_offset(d.width,col,y),sizeof word);
+        switch (word & HTILE_ZMASK) {
+        case 0: ++cleared; break;
+        case HTILE_ZMASK: ++expanded; break;
+        default: return failed(error,size,"compressed HTILE depth tiles are not modeled");
+        }
+    }
+    if (!cleared) return 0;
+    if (expanded) return failed(error,size,"partly fast-cleared HTILE is not modeled");
+    if (!s.depth_clear_set) return failed(error,size,"HTILE depth clear requires DB_DEPTH_CLEAR");
+    std::memcpy(&d.clear_depth,&s.depth_clear,sizeof d.clear_depth);
+    if (!std::isfinite(d.clear_depth) || d.clear_depth < 0 || d.clear_depth > 1)
+        return failed(error,size,"HTILE depth clear value is outside the finite 0..1 range");
+    d.clear = true;
+    d.z.write = true; /* Publish the resolved plane even for draws with depth writes disabled. */
+    return 0;
+}
+
+static void expand_depth_htile(rt_executor *x, const MetalDepthAttachments &d)
+{
+    if (!d.clear) return;
+    auto *data = static_cast<uint8_t *>(x->view) + d.htile_address - x->guest_base;
+    for (uint32_t y = 0; y < d.height; y += 8) for (uint32_t col = 0; col < d.width; col += 8)
+        data[rt_tiling_htile_offset(d.width,col,y)] |= HTILE_ZMASK;
+}
+
+/* AMD GFX7 compare/stencil encodings. Clear, copy and resummarize commands
+   stop before attachment work; full HTILE clears use the metadata path. */
 static int depth_attachments(rt_executor *x, const MetalState &s, MetalDepthAttachments &d, char *error, size_t size)
 {
     const uint32_t control = s.depth_set ? s.depth : 0;
@@ -1147,11 +1212,12 @@ static int depth_attachments(rt_executor *x, const MetalState &s, MetalDepthAtta
     const uint32_t width = ((s.depth_words[DEPTH_SIZE] & 0x7ffu) + 1) * 8;
     const uint32_t height = ((s.depth_words[DEPTH_SIZE] >> 11 & 0x7ffu) + 1) * 8;
     if (width > MAX_DIMENSION || height > MAX_DIMENSION) return failed(error,size,"depth target dimensions exceed 4096");
-    const bool stencil_without_metadata = !z && stencil &&
-        (s.depth_words[DEPTH_STENCIL] & (1u << 29));
-    if ((s.depth_words[DEPTH_Z] & ((1u << 29) | (1u << 27))) && !stencil_without_metadata)
+    const uint32_t z_info = s.depth_words[DEPTH_Z], stencil_info = s.depth_words[DEPTH_STENCIL];
+    const bool stencil_without_metadata = !z && stencil && (stencil_info & TILE_STENCIL_DISABLE);
+    const bool htile = (z_info & TILE_SURFACE_ENABLE) != 0;
+    if (!stencil_without_metadata && ((z_info & ALLOW_EXPCLEAR) || (!z && htile)))
         return failed(error,size,"HTILE or expanded depth clears are not modeled");
-    if (stencil && (s.depth_words[DEPTH_STENCIL] & (1u << 27)))
+    if (stencil && (stencil_info & ALLOW_EXPCLEAR))
         return failed(error,size,"expanded stencil clears are not modeled");
     /* GFX7 RowSize encodings have a 1KiB minimum. Larger splits require an explicit
        GB_ADDR_CONFIG profile, which this executor does not model. Split7 stays undefined. */
@@ -1201,6 +1267,7 @@ static int depth_attachments(rt_executor *x, const MetalState &s, MetalDepthAtta
     if (z && depth_plane(x,s,false,z_write,d.z,error,size)) return -1;
     if (stencil && depth_plane(x,s,true,stencil_write,d.stencil,error,size)) return -1;
     d.width = width; d.height = height;
+    if (z && htile && depth_htile(x,s,d,error,size)) return -1;
     const bool combined = z && stencil && (s.depth_words[DEPTH_Z] & 3u) == 3;
     if (z && stencil && !combined && ![x->device supportsFamily:MTLGPUFamilyApple2])
         return failed(error,size,"separate D16/S8 attachments require Apple GPU family 2");
@@ -1216,11 +1283,18 @@ static int depth_attachments(rt_executor *x, const MetalState &s, MetalDepthAtta
         return failed(error,size,"overlapping depth and stencil planes are not modeled");
     return 0;
 }
-static void load_depth_plane(rt_executor *x, const MetalDepthPlane &p)
+static void load_depth_plane(rt_executor *x, const MetalDepthPlane &p, const float *clear = nullptr)
 {
     if (!p.texture) return;
+    auto *rows = static_cast<uint8_t *>(p.staging.contents);
+    if (clear) {
+        /* Initialize even the depth texels outside the smaller render area. */
+        for (uint32_t y = 0; y < p.layout.height; ++y)
+            std::fill_n(reinterpret_cast<float *>(rows + y * p.row),p.layout.width,*clear);
+        return;
+    }
     const auto *guest = static_cast<const uint8_t *>(x->view) + p.address - x->guest_base;
-    auto *rows = static_cast<uint8_t *>(p.staging.contents); const auto &t = p.layout.tiles;
+    const auto &t = p.layout.tiles;
     for (uint32_t y = 0; y < p.layout.height; ++y) for (uint32_t col = 0; col < p.layout.width; ++col)
         std::memcpy(rows + y * p.row + col * t.element_bytes,guest + rt_tiling_offset(&t,col,y,p.slice),t.element_bytes);
 }
@@ -1545,6 +1619,8 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     const uint32_t height = vertex_only ? 1 : target ? target->height : depth.height;
     if (has_depth && (depth.width < width || depth.height < height))
         return failed(error,size,"depth/stencil extent is smaller than the color target");
+    if (target && depth.htile_span && overlap(target->address,rt_tiling_size(&target->layout,1),
+        depth.htile_address,depth.htile_span)) return failed(error,size,"color target overlaps HTILE");
     if (target) for (const auto *p : {&depth.z,&depth.stencil})
         if (p->texture && overlap(target->address,rt_tiling_size(&target->layout,1),
             p->address,rt_tiling_size(&p->layout.tiles,p->slice + 1)))
@@ -1573,7 +1649,8 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     MetalRectangleDraw captured;
     if (raster_rectangle && capture_rectangle(x,state,count,indices,vertex,rectangle_shader.stride,captured,error,size)) return -1;
     if (target) load_target(x,*target);
-    load_depth_plane(x,depth.z); load_depth_plane(x,depth.stencil);
+    load_depth_plane(x,depth.z,depth.clear ? &depth.clear_depth : nullptr);
+    load_depth_plane(x,depth.stencil);
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.renderTargetWidth = width; pass.renderTargetHeight = height;
     if (vertex_only) pass.defaultRasterSampleCount = 1;
@@ -1651,6 +1728,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (fragment_quad_runtime_stop(x,error,size)) return -1;
     if (target) { if (write_color) store_target(x,*target); target->initialized = true; }
     store_depth_plane(x,depth.z); store_depth_plane(x,depth.stencil);
+    expand_depth_htile(x,depth);
     return shader_runtime_stop(x, error, size);
 }
 

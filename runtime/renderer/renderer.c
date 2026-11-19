@@ -69,6 +69,14 @@ static void resolve_guarded(uint64_t pool_offset, uint64_t length)
     unlock_renderer();
 }
 
+/* Whether the executor makes new pipelines on worker threads, leaving a draw out while its pipeline is
+   made (rt_executor_memory): on unless PB_ASYNC_PIPELINES=0 (one binary for an A/B run). */
+static int async_pipelines(void)
+{
+    const char *setting = getenv("PB_ASYNC_PIPELINES");
+    return !(setting && !strcmp(setting, "0"));
+}
+
 /* The executor, opened once the title has GPU-visible memory; NULL before that or when off. */
 static rt_executor *executor_for(const char *function)
 {
@@ -78,7 +86,7 @@ static rt_executor *executor_for(const char *function)
     rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = watched ? collect_cpu_writes : NULL,
                                  .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL,
                                  .gds = rt_gpu_memory_gds(), .gds_bytes = RT_GPU_GDS_BYTES,
-                                 .cpu_writes_due = watched ? cpu_writes_due : NULL};
+                                 .cpu_writes_due = watched ? cpu_writes_due : NULL, .async_pipelines = async_pipelines()};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
     if (watched) rt_write_watch_set_resolver(resolve_guarded);
     char error[RENDER_ERROR_BYTES];

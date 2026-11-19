@@ -187,8 +187,35 @@ static void refusal(uint32_t info,uint32_t z,uint32_t s,unsigned width,unsigned 
     rt_depth_layout out,before;memset(&out,0xa5,sizeof out);memcpy(&before,&out,sizeof out);
     CHECK(decode(info,z,s,width,height,pixels,aspect,&out)==-1);CHECK(memcmp(&out,&before,sizeof out)==0);
 }
+/* The AMD eight-pipe tiled layout interleaves 256-byte pipe segments.
+   Cover pipe selection, 4x4 blocks, cache-region boundaries and padding. */
+static void tiled_htile(void)
+{
+    enum { WIDTH = 640, HEIGHT = 576, BYTES = 4 * 16 * 1024 };
+    const struct { unsigned x,y,offset; } cases[] = {
+        {0,0,0}, {8,0,256}, {16,0,780}, {0,8,260}, {32,0,1024}, {64,0,16},
+        {0,32,1152}, {504,504,14840}, {512,0,16384}, {0,512,32768}, {512,512,49152},
+    };
+    CHECK(rt_tiling_htile_size(WIDTH,HEIGHT) == BYTES);
+    CHECK(rt_tiling_htile_size(512,512) == 16384);
+    for (unsigned i = 0; i < sizeof cases / sizeof *cases; ++i)
+        CHECK(rt_tiling_htile_offset(WIDTH,cases[i].x,cases[i].y) == cases[i].offset);
+    unsigned char seen[BYTES / sizeof(uint32_t)] = {0};
+    for (unsigned y = 0; y < HEIGHT; y += 8)
+        for (unsigned x = 0; x < WIDTH; x += 8) {
+            const uint64_t offset = rt_tiling_htile_offset(WIDTH,x,y);
+            CHECK(offset < BYTES && offset % sizeof(uint32_t) == 0);
+            if (offset >= BYTES || offset % sizeof(uint32_t)) continue;
+            CHECK(seen[offset / sizeof(uint32_t)] == 0);
+            seen[offset / sizeof(uint32_t)] = 1;
+        }
+    CHECK(seen[rt_tiling_htile_offset(WIDTH,WIDTH,0) / sizeof(uint32_t)] == 0);
+    CHECK(seen[rt_tiling_htile_offset(WIDTH,0,HEIGHT) / sizeof(uint32_t)] == 0);
+}
+
 int main(void)
 {
+    tiled_htile();
     canonical();direct_and_stride();geometry_boundaries();expanded_addr5_masks();
     for(unsigned samples=1;samples<4;++samples)refusal(0x001d0c40,1|samples<<2,1,256,8,32768,RT_DEPTH_ASPECT_Z);
     refusal(0x001d0c40,1|(1u<<2),1,256,8,32768,RT_DEPTH_ASPECT_STENCIL);

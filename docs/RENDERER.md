@@ -97,9 +97,13 @@ Instead:
        data format is its descriptor's). The executor owns 8,192 32-bit stop words; a translated
        shader's GPU address of one is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
-       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shaders
-       kept that write that word. Which word a shader writes follows from its kind and code address
-       (`stop_index`), never from the order the executor met it: numbered by order, the same shader
+       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the one
+       shader the word was given to. Each shader keeps its word for the executor's life, also after
+       its translation is freed, since its work may still be in flight (`stop_slot`): a word shared
+       by two shaders named every shader kept with it and none that was freed, so a stop could be
+       pinned on the wrong shader. Which word a shader writes follows from its kind and code address
+       (`stop_index`, its home word), not from the order the executor met it; only a shader whose
+       home word another shader took first gets the next free one. Numbered by order, the same shader
        translated to different SPIR-V from one run to the next, so the driver's pipeline cache, which
        knows a pipeline by its SPIR-V, missed, and every boot compiled its pipelines again (in
        Iosefka's Clinic, minutes of compiles on the renderer's thread in each boot, November 2026).
@@ -823,7 +827,11 @@ Instead:
           code's by construction. Each group of 64 takes one micro tile with its lanes in memory order,
           so neighbouring lanes touch neighbouring guest memory (taken in row order instead, the copies
           cost about twice the GPU time, as host memory is read and written across PCIe). Nothing waits for them: the batch notes the memory each write-back
-          stores to, and the CPU waits only before reading that memory itself. A target is loaded
+          stores to, and the CPU waits only before reading that memory itself. Each target and image
+          keeps its copy plan (the table and linear rows as large as the surface, one per mip level)
+          while it is kept; when the device's memory has no room for a new plan, the plans of images
+          no unfinished batch uses are freed and made again at their next load (`free_idle_image_plans`;
+          before, a long walk stopped with "no GPU memory for copying a 1920x1080 image"). A target is loaded
           again, and such an image too, whenever the memory may have changed (the memory epoch: a new
           buffer, a dispatch, a write-back over it), without comparing bytes: reading it on the GPU
           costs less than comparing it on the CPU. Images of 8- and 16-bit elements need the device's 8-
@@ -1270,6 +1278,18 @@ depth of field never reached the renderer (the scene behind the HUD stayed one f
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
 
+## Control flow in translated shaders
+
+GCN code branches by moving its program counter; SPIR-V needs structured control flow. With
+structured control on (the Vulkan executor sets it when it opens, `gcn_spirv_set_structured_control`),
+a program's blocks run in program order as a chain of selections, each entered when the program
+counter names it. A branch back makes a structured loop around the blocks from its target to the
+branch, merged with any loop they overlap, which goes round while the program counter names one of
+its blocks. Off, every program is one loop around a switch on the program counter: the Metal fragment
+path normalizes that shape (`metal_fragment_control.hpp`), so Metal keeps it. The driver's compiler
+sees ordinary forward code instead of a loop around every block, and folds more of it: over the
+clinic's shaders `spirv-opt -O` keeps 11.5% fewer instructions, weighted by calls.
+
 ## Pipeline compiles
 
 Every pipeline the executor makes goes through the driver's shader compiler, a few thousand by
@@ -1278,7 +1298,7 @@ things keep that to the first run:
 
 - **The same SPIR-V in every run.** Nothing in a translation depends on the order the executor
   meets shaders in: a shader's run-time stop word follows from its own code address
-  (`stop_index`). The driver knows a cached pipeline by its SPIR-V.
+  (`stop_index`), save for the rare shader whose home word another took first. The driver knows a cached pipeline by its SPIR-V.
 - **A pipeline cache file of the executor's own.** The driver keeps a cache on disk, but only up
   to its size limit (NVIDIA's is 1 GB by default, shared by every program; once it is full nothing
   new is kept). The executor fills its Vulkan pipeline cache from a file when it opens and writes
@@ -1287,6 +1307,18 @@ things keep that to the first run:
   `$XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin`, else `~/.cache/paleblood/vulkan-pipelines.bin`.
   A file written for another device or driver, or larger than 512 MB, is not used and is replaced.
   The unit tests set it empty unless a test asks for one.
+- **Pipelines made off the recording thread.** The file only helps from the second run on. On a
+  first launch, or after a translator change gives the shaders new SPIR-V, the compiles are still
+  there: in the clinic walk with no cache (frames 1350-2900) they took 5.2 s on the renderer's
+  thread, in single frames of up to 1.15 s. So a draw whose pipeline the cache does not hold
+  hands it to one of two worker threads and is left out until the pipeline is made, for a second
+  at most; then it waits for it. A pipeline the cache holds is made at once on the recording thread
+  (`VK_EXT_pipeline_creation_cache_control`: the driver says when a pipeline needs its compiler), so
+  a warm run leaves nothing out. Only a draw whose absence changes nothing but its own targets is
+  left out: it stores nothing, is not indirect, tessellated or a geometry-shader draw, and its depth
+  target has been drawn before (a later test reading depth no draw wrote would stop). Dispatches
+  and every other draw still wait for their pipelines. `PB_ASYNC_PIPELINES=0` turns this off (one
+  binary for an A/B run); the renderer's own test runs with it off, the executor's test checks it.
 
 ## Measuring frame rate
 
@@ -1313,3 +1345,18 @@ range that holds one, `--skip-frames FIRST-LAST` leaves the intervals ending on 
 the figures and reports them apart (count, time, longest); make it wide enough for where both
 builds stall.
 `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
+
+### Re-measured over frames 1250-3000 (November 2026)
+
+Two earlier speed changes were measured again with the frame range, because their first numbers
+came from the time window above.
+
+- **GPU fills (#1217).** The first claim, 1% low 3.01 to 6.09 fps, does not hold. Three rounds each
+  (the commit before #1217 against #1217, at most 3.9 CPUs of other work, one A run left out for more): average
+  10.90 to 10.82 fps (-0.08, noise floor 0.17: no change); 1% low 7.91 to 7.66 fps (-0.25, noise
+  floor 0.17: slightly worse, a difference of about one noise floor).
+- **GPU copies (#1232).** Not settled. Re-reading the first A/B's logs over the same frames gave an
+  average of 10.71 to 10.85 fps (+0.14, noise floor 0.14: on the floor) and the same 1% low (7.66).
+  A fresh three-round run (the commit before #1232 against main 0391d1fb) measured only one run of
+  #1232 (10.92 fps, 1% low 8.12): every other run was left out, for other work on the machine
+  (5.5-11.4 CPUs) or for ending before frame 3000. That is no result.

@@ -28,7 +28,9 @@ address,size,name,system,status,notes
 0x00b6a030,216,frame_timing_generator_refresh_00b6a030,frame_timing,edge-verified,"Generator: hands each binding group's short records to their targets' slot 7 and long records to slot 5, with the data after each index"
 0x00fb4ac0,89,render_yebis_context_instantiate,render,verified,YEBIS IPfxContext::Instantiate allocates a context; initializes its base; publishes its vtable then constructs the GNM shim; returns the allocation pointer
 0x00fb6c80,90,render_yebis_release_interface,render,verified,Decrements the DWORD reference count; asserts and rereads zero input; cleans up and frees on zero; returns the cached count
+0x00fb6ce0,54,render_yebis_cleanup_and_free_interface,render,edge-verified,Null-skips; invokes the interface cleanup slot; reloads the current allocator and frees storage without directly adjusting the object reference count
 0x00fb6d20,30,render_yebis_initialize_interface,render,verified,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
+0x00fb6f50,15,render_yebis_free_storage,render,edge-verified,Decrements the allocation DWORD before allocator slot 0x20; forwards the full allocator and storage pointers; the known consumers discard the method result
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,84,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
 0x01118300,149,audio_fmod_thread_entry,audio,edge-verified,FMOD Thread entry: sets running; signals startup; waits and dispatches the routine or virtual slot zero; re-reads fields after calls; applies callback delay; signals exit and returns null
@@ -36,6 +38,9 @@ address,size,name,system,status,notes
 0x01118420,377,audio_fmod_start_thread,audio,verified,FMOD Thread startup; initialize parameters and semaphores; create the native thread and wait; clean up saved semaphore handles on failure
 0x011185a0,269,audio_fmod_stop_thread,audio,edge-verified,FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status
 0x011186c0,24,audio_fmod_wake_thread,audio,edge-verified,Signal the optional FMOD Thread wakeup semaphore; absent handles return zero; otherwise preserve the helper DWORD status
+0x011186e0,88,audio_fmod_contribute_thread_handles,audio,edge-verified,Contribute the mutable count for each present FMOD Thread wakeup/startup handle through the original counter helper; re-read the second handle and count after the first update; return DWORD zero
+0x01118740,46,audio_fmod_initialize_timing_state,audio,edge-verified,Initialize FMOD timing clock/bookkeeping words and byte gates; preserve accumulated/output fields and all other bytes; no defined result
+0x01118770,27,audio_fmod_begin_timing_state,audio,edge-verified,Sample the microsecond clock into the start word; set the running byte even after clock failure; return DWORD zero
 0x0111a620,130,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
 0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads
@@ -46,6 +51,7 @@ address,size,name,system,status,notes
 0x0111a880,19,frame_timing_sleep_ms,frame_timing,verified,Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result
 0x0111a8a0,26,kernel_thread_self,kernel,verified,Copy the complete opaque current-thread handle to the output and return zero
 0x0111a8c0,290,audio_fmod_thread_affinity_lookup,audio,verified,FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched
+0x0111a9f0,424,audio_fmod_create_native_thread,audio,edge-verified,Configure and create the FMOD detached native thread; clamp stack size and map priorities; publish its handle only after final priority success; preserve early failure behavior
 0x0111abb0,208,kernel_mutex_create,kernel,verified,Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup
 0x0111ac80,78,kernel_mutex_destroy,kernel,verified,Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result
 0x0111acd0,30,kernel_mutex_lock,kernel,verified,Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21
