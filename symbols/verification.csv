@@ -187,10 +187,13 @@ character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_gaitem_free_item_01e86e60,recorded,,93,93,0,0,7fabf4dc282df527,2026-11-17
 character_gaitem_free_item_01e86e60,edge,,33,33,0,0,7fabf4dc282df527,2026-11-14
+character_gaitem_handle_assign_value_01e8c020,edge,,129,129,0,0,37d2b16de6b2abbc,2026-11-19
 character_gaitem_handle_copy_01e8bae0,recorded,,12,12,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_copy_01e8bae0,edge,,54,54,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_copy_01e8bb70,recorded,,128,128,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_copy_01e8bb70,edge,,54,54,0,0,7fabf4dc282df527,2026-11-14
+character_gaitem_handle_copy_assign_01e8bd80,edge,,131,131,0,0,37d2b16de6b2abbc,2026-11-19
+character_gaitem_handle_copy_assign_01e8bed0,edge,,131,131,0,0,37d2b16de6b2abbc,2026-11-19
 character_gaitem_handle_move_assign_01e8bcb0,recorded,,112,112,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_move_assign_01e8bcb0,edge,,58,58,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_release_01e8bc00,recorded,,130,130,0,0,7fabf4dc282df527,2026-11-14

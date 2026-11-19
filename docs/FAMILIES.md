@@ -144,6 +144,22 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `reads_byte_field` | `0f b6 47 {d8} c3` | getters of an 8-bit field, zero-extended (`mov al, [rdi+K]` is excluded) |
 | `reads_far_byte_field` | `0f b6 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `field_address` | `48 8d 47 {d8} c3` | the address of a member or base-class part, K bytes into the object |
+| `tail_calls_virtual_function` | `48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object's virtual table with the same arguments |
+| `tail_jumps_through_virtual_slot` | `48 8b 07 ff 60 {d8}` | tail-call slot K of the object's virtual table with the same arguments (`jmp [rax+K]`) |
+| `passes_flag_to_virtual_function` | `48 8b 07 48 8b 40 {d8} ba 01 00 00 00 ff e0` | tail-call slot K of the object's virtual table with the third argument 1 |
+| `passes_part_at_0xe8_to_virtual_0x68` | `48 8b 07 48 8b 40 68 48 81 c6 e8 00 00 00 ff e0` | tail-call slot 0x68 with the second argument plus 0xe8 |
+| `adjusts_base_and_passes_part_at_0xe8` | `48 8b 47 e0 48 83 c7 e0 48 8b 40 68 48 81 c6 e8 00 00 00 ff e0` | from a base 0x20 into the object: tail-call its slot 0x68 with the second argument plus 0xe8 |
+| `tail_calls_member_at_0x10` | `48 8b 7f 10 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +0x10 points at, with the same other arguments |
+| `passes_dword_argument_to_member_at_8` | `8b 36 48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +8 points at, with the dword the second argument points at |
+| `calls_member_at_8_with_constant` | `55 48 89 e5 48 8b 7f 08 48 8b 07 be {u32} ff 50 40 5d c3` | call slot 0x40 of the object the pointer at +8 points at with a constant, and return its result |
+| `exports_member_at_0x20_and_tail_calls_it` | `48 8b 47 20 48 89 06 48 8b 7f 20 48 8b 07 ff 60 08` | store the pointer at +0x20 through the second argument, then tail-call slot 8 of that object |
+| `tail_calls_virtual_unless_null` | `48 85 ff 74 09 48 8b 07 48 8b 40 {d8} ff e0 b8 25 00 00 00 c3` | tail-call slot K of the object's virtual table; a null object returns 0x25 |
+| `tail_jumps_through_member_at_8` | `48 8b 7f 08 48 8b 07 ff 60 {d8}` | tail-call slot K of the object the pointer at +8 points at (`jmp [rax+K]`) |
+| `tail_jumps_through_member_at_0x10` | `48 8b 7f 10 48 8b 07 ff 60 {d8}` | tail-call slot K of the object the pointer at +0x10 points at (`jmp [rax+K]`) |
+| `tail_calls_member_at_8` | `48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +8 points at, with the same other arguments |
+| `tail_calls_far_virtual_slot` | `48 8b 07 48 8b 80 {u32} ff e0` | tail-call slot K (32-bit offset) of the object's virtual table with the same arguments |
+| `tail_jumps_through_far_virtual_slot` | `48 8b 07 ff a0 {u32}` | tail-call slot K (32-bit offset) of the object's virtual table (`jmp [rax+K]`) |
+| `tail_jumps_through_table_with_second_argument` | `48 89 f8 48 89 f7 ff 60 {d8}` | tail-call entry K of the function table the first argument points at, with the second argument first |
 | `far_field_address` | `48 8d 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
@@ -170,6 +186,16 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
 | `writes_far_dword_field` | `89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_word_field` | `66 89 77 {d8} c3` | setters of a 16-bit field |
+| `calls_delegate_with_argument_field_0x10` | 50 exact bytes | when set: the delegate at +8 with the qword at +0x10 of the second argument and the dword at +0x28 |
+| `calls_delegate_with_argument_field_8` | 50 exact bytes | when set: the delegate at +8 with the qword at +8 of the second argument and the dword at +0x28 |
+| `calls_delegate_with_dword_at_0x20` | 46 exact bytes | when set: the delegate at +8 with the dword at +0x20 |
+| `calls_delegate_at_0x18_with_dword_at_0x40` | 39 exact bytes | when set: the delegate at +0x18 with the second argument and the dword at +0x40 |
+| `calls_flagged_delegate_with_dword_at_0x18` | 40 exact bytes | when the flag 0x40 at +0xb is set: the method at +0x20 on the object at +0x10 with the dword at +0x18 |
+| `calls_delegate_with_part_of_argument_target` | 57 exact bytes | when set: the delegate at +8 with the part 0x28 into what the second argument points at, and the dword at +0x20 |
+| `forwards_to_delegate_at_0x10` | 30 exact bytes | tail-call the delegate at +0x10 with the same other arguments |
+| `forwards_to_delegate_at_0x18` | 30 exact bytes | tail-call the delegate at +0x18 with the same other arguments |
+| `forwards_to_delegate_at_0x20` | 30 exact bytes | tail-call the delegate at +0x20 with the same other arguments |
+| `calls_delegate_at_0x50_when_argument_flagged` | 40 exact bytes | when the flag 0x10 at +0x3d of the second argument is set: the delegate at +0x50 with the dword at +0x68 |
 | `writes_far_word_field` | `66 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |
 | `writes_far_byte_field` | `40 88 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
