@@ -3412,7 +3412,8 @@ static void guarded_target_fill(int fd)
 /* The game's whole-target copy (a linear copy, runtime/linear_copy.h) from a guarded drawn target: into
    memory under no target (`into` 0), the copy takes the target's texels tiled as it lays them out without
    writing the target back (its own memory still zero until rt_executor_resolve); into a drawn target of
-   the same shape (`into` 1), that target's image takes them, its memory written only at its own resolve.
+   the same shape (`into` 1), that target's image takes them, its memory written only at its own resolve;
+   so too when that target's draws were already written back (`into` 2: the copy makes it drawn again).
    Either way both memories end up holding the same bytes as the draw put in the source. */
 static void target_copy_test(int fd, int into)
 {
@@ -3434,6 +3435,7 @@ static void target_copy_test(int fd, int into)
     memset(source_memory, 0, span), memset(copied, 0, span);
     if (into) /* the destination has draws of its own: black (ZERO + ZERO blending), so only the copy puts the triangle there */
         CHECK(record_tiled_draw_into(x, destination, 1u << 30, error, sizeof error) == 0);
+    if (into == 2) CHECK(rt_executor_resolve(x, destination, 4, error, sizeof error) == 0);
     CHECK(record_tiled_draw(x, error, sizeof error) == 0 && tiled_memory_zero());
     memcpy((void *)(uintptr_t)at(COPY_CODE), copy_program, sizeof copy_program);
     const uint64_t code = at(COPY_CODE);
@@ -3457,7 +3459,7 @@ static void target_copy_test(int fd, int into)
     CHECK(tiled_memory_zero()); /* the source was not written back */
     int destination_zero = 1;
     for (uint64_t i = 0; i < span; i++) destination_zero &= copied[i] == 0;
-    CHECK(destination_zero == into); /* into memory: there now; into a target: in its image */
+    CHECK(destination_zero == (into != 0)); /* into memory: there now; into a target: in its image */
     if (into) CHECK(rt_executor_resolve(x, destination, 4, error, sizeof error) == 0);
     CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0);
     CHECK(!tiled_memory_zero() && memcmp(source_memory, copied, span) == 0);
@@ -4685,6 +4687,7 @@ int main(void)
     guarded_target_fill(fd);
     target_copy_test(fd, 0);
     target_copy_test(fd, 1);
+    target_copy_test(fd, 2);
     float_targets(x);
     compressed_image(x);
     bc6h_image(x);
