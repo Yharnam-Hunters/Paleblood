@@ -1320,8 +1320,14 @@ things keep that to the first run:
   is made, with a checksum: a torn last record (a run killed while writing) is dropped when the file
   is read. The file is `BB_TRANSLATION_CACHE` (empty: none), else
   `$XDG_CACHE_HOME/paleblood/translations.bin`, else `~/.cache/paleblood/translations.bin`; one larger
-  than 256 MB is started again (`runtime/translation_cache.h`). The executor prints how many shaders
-  it found there and translated when it closes.
+  than 256 MB is started again, and appends stop at that size (`runtime/translation_cache.h`). The
+  executor prints how many shaders it found there and translated, and the time both took, every 20 s
+  while shaders are made and when it closes. Measured in the clinic walk (2026-11-18): a run with an
+  empty file translated 1298 shaders in 2.23 s and left a 123 MB file (the SPIR-V is most of it:
+  94 KB a shader on average, up to 1.16 MB); the next runs took 1189 to 1250 from the file and
+  translated 4 to 27, in 0.05 to 0.09 s. Frames 1350-2900 with warm caches (three rounds each) were
+  unchanged within the noise: average 15.52 to 15.58 fps, 1% low 10.36 to 10.59, worst frame 150 to
+  144 ms. The load to frame 1350 took 57.75 to 57.83 s with the file and 58.25 to 62.67 s without it.
 - **Pipelines made off the recording thread.** The file only helps from the second run on. On a
   first launch, or after a translator change gives the shaders new SPIR-V, the compiles are still
   there: in the clinic walk with no cache (frames 1350-2900) they took 5.2 s on the renderer's
