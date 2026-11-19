@@ -37,7 +37,7 @@ address,size,name,system,status,notes
 0x011185a0,269,audio_fmod_stop_thread,audio,edge-verified,FMOD Thread stop; signal and wait on semaphores then delete them; notify and release optional storage; return the semaphore helper DWORD status
 0x011186c0,24,audio_fmod_wake_thread,audio,edge-verified,Signal the optional FMOD Thread wakeup semaphore; absent handles return zero; otherwise preserve the helper DWORD status
 0x011186e0,88,audio_fmod_contribute_thread_handles,audio,edge-verified,Contribute the mutable count for each present FMOD Thread wakeup/startup handle through the original counter helper; re-read the second handle and count after the first update; return DWORD zero
-0x01118870,22,audio_fmod_read_timing_value,audio,replaced,Copy the scalar at +0x24 to optional output preserving payload bits and aliases; null output returns DWORD 0x25 and success returns zero
+0x01118870,22,audio_fmod_read_timing_value,audio,edge-verified,Copy the scalar at +0x24 to optional output preserving payload bits and aliases; null output returns DWORD 0x25 and success returns zero
 0x0111a620,130,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
 0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads
