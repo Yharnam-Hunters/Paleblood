@@ -2234,6 +2234,7 @@ render_wait_register,edge,,442,442,0,0,6573ac11f48a18ec,2026-11-14
 render_yebis_cleanup_and_free_interface,edge,,92,92,0,0,f1f8fe34e9f21902,2026-11-18
 render_yebis_context_instantiate,recorded,,4,4,0,0,9b7955beb7645a7f,2026-11-17
 render_yebis_context_instantiate,edge,,135,135,0,0,9b7955beb7645a7f,2026-11-15
+render_yebis_destruct_interface,edge,,109,109,0,0,dd98fd83756f9f13,2026-11-19
 render_yebis_free_storage,edge,,92,92,0,0,9e86f7009db47f8f,2026-11-18
 render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,30,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
