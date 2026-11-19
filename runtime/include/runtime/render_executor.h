@@ -168,6 +168,10 @@ int rt_executor_read_snapshot(rt_executor *executor, const rt_executor_snapshot 
                               char *error, size_t error_size);
 void rt_executor_release_snapshot(rt_executor *executor, const rt_executor_snapshot *snapshot);
 
+/* How many shaders the executor took from its translation cache (runtime/translation_cache.h) and how
+   many it translated, since it opened (Vulkan executor). */
+void rt_executor_translations(const rt_executor *executor, size_t *found, size_t *made);
+
 void rt_executor_close(rt_executor *executor);
 
 #ifdef __cplusplus

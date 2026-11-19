@@ -30,7 +30,7 @@ address,size,name,system,status,notes
 0x00fb6c80,90,render_yebis_release_interface,render,verified,Decrements the DWORD reference count; asserts and rereads zero input; cleans up and frees on zero; returns the cached count
 0x00fb6ce0,54,render_yebis_cleanup_and_free_interface,render,edge-verified,Null-skips; invokes the interface cleanup slot; reloads the current allocator and frees storage without directly adjusting the object reference count
 0x00fb6d20,30,render_yebis_initialize_interface,render,verified,Sets the IPfxInterface vtable; initializes the reference count to one; clears the instance pointer
-0x00fb6d40,88,render_yebis_delete_interface,render,replaced,Restores the interface vtable; checks the DWORD count then the QWORD instance after returning assertions; deletes the original object
+0x00fb6d40,88,render_yebis_delete_interface,render,edge-verified,Restores the interface vtable; checks the DWORD count then the QWORD instance after returning assertions; deletes the original object
 0x00fb6f50,15,render_yebis_free_storage,render,edge-verified,Decrements the allocation DWORD before allocator slot 0x20; forwards the full allocator and storage pointers; the known consumers discard the method result
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,84,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
