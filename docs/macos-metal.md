@@ -443,8 +443,10 @@ unestablished combinations fail by format name. Integer return bits stay integer
 reads use Metal's native conversion before filtering. Its precision is checked using the
 encoded-byte rule in the [Metal language specification, section 8.7.7](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf).
 
-Samplers support normalized wrap, mirror and clamp-to-edge addressing, with equal point or
-bilinear min/mag filters. Linear filtering requires a filterable sampled image; integer images
+Samplers support normalized wrap, mirror and clamp-to-edge addressing, with matching point,
+bilinear or anisotropic bilinear min/mag filters. The anisotropic ratio maps to Metal's
+maximum of 1, 2, 4, 8 or 16 samples. Anisotropy threshold and bias must be zero for
+anisotropic filtering. Linear filtering requires a filterable sampled image; integer images
 used only by texel loads do not impose that restriction. The common translator supplies coordinate
 gradients for `image_sample`; the native unmipmapped sampler selects the view's first level. Nondefault minimum LOD, bias or reserved
 mip controls with a multi-level sampled view fail explicitly until their semantics are modeled;
