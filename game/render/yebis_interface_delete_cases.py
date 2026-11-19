@@ -100,6 +100,12 @@ def cases():
     for field, data in [(0, marker), (8, struct.pack("<I", 0x56789abc)),
                         (0x10, struct.pack("<Q", 0x8000000012345678))]:
         result.append(case(f"delete-write-{field}", delete_writes=[(field, data)]))
+    # Observe the complete argument without dereferencing the callee's pointer.
+    row = case("delete-full-pointer-argument")
+    for entry in row["imports"]:
+        if entry["name"] == "_ZdlPv":
+            del entry["argmem"]
+    result.append(row)
     for value in ["0x0", "0x1", "0xff", "0x100000000", "0xffffffffffffffff"]:
         result.append(case("ignored-rsi-" + value[2:], incoming={"rsi": value}))
     for register in ["rax", "rdx", "rcx", "r8", "r9"]:
