@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 
 /* What the executor records, for orderings the pixels cannot show (this device may order the work
@@ -1690,11 +1691,16 @@ static int draw_with_vertex_code(rt_executor *x, uint64_t buffer, uint64_t code,
     return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset + 0x10), error, error_size);
 }
 
+/* The home stop word of a vertex shader (render_executor.c's stop_index, repeated here): 13 bits of a
+   Fibonacci hash of the shader's kind (0, a vertex shader) and code address. */
+static size_t vertex_stop_home(uint64_t code) { return (size_t)(code * 0x9e3779b97f4a7c15ull >> (64 - 13)); }
+
 /* More shaders than the 1024 kept (walking a scene brings more): the vertex shader copied to 1100
    places, each drawn once, all draw, the least recently used giving its entry. The first, freed by
    then, draws again (translated again). A shader that then stops at run time (it reads VCC as a lane
-   mask after writing its halves as scalars) is named by its own address: it took a freed entry, and
-   its stop word follows from its own address (stop_index). */
+   mask after writing its halves as scalars) is named by its own address, and by no other: it took a
+   freed entry, and it is placed where its home stop word is that of a shader still kept (stop_slot
+   gives it the next free word; sharing the word, the stop named both). */
 static void shaders_past_the_limit(rt_executor *x)
 {
     enum { MANY_SHADERS_BUFFER = 0xc0fd7000, SHADER_CODES = 0x3b00000, CODE_STRIDE = 0x100, SHADERS_DRAWN = 1100,
@@ -1714,7 +1720,17 @@ static void shaders_past_the_limit(rt_executor *x)
     memset((void *)(uintptr_t)at(SHADERS_TARGET), 0, SIZE * SIZE * 4);
     CHECK(draw_with_vertex_code(x, MANY_SHADERS_BUFFER, at(SHADER_CODES), at(SHADERS_TARGET), error, sizeof error) == 0);
     check_triangle(x, at(SHADERS_TARGET));
-    const uint64_t stopping = at(SHADER_CODES + (uint64_t)SHADERS_DRAWN * CODE_STRIDE);
+    enum { FIRST_KEPT = SHADERS_DRAWN - 900 }; /* well inside the 1024 most recently drawn */
+    uint64_t stopping = 0, sharing_home = 0;
+    for (uint64_t place = SHADERS_DRAWN; !stopping && at(SHADER_CODES + (place + 1) * CODE_STRIDE) <= at(SHADERS_TARGET); place++) {
+        const uint64_t candidate = at(SHADER_CODES + place * CODE_STRIDE);
+        for (unsigned k = FIRST_KEPT; k < SHADERS_DRAWN && !stopping; k++) {
+            const uint64_t kept = at(SHADER_CODES + (uint64_t)k * CODE_STRIDE);
+            if (vertex_stop_home(kept) == vertex_stop_home(candidate)) stopping = candidate, sharing_home = kept;
+        }
+    }
+    CHECK(stopping != 0);
+    if (!stopping) return;
     uint32_t *reads_vcc = (uint32_t *)(uintptr_t)stopping;
     reads_vcc[0] = 0xbeeb0380; /* s_mov_b32 vcc_hi, 0 */
     reads_vcc[1] = 0x00121280; /* v_cndmask_b32_e32 v9, 0, v9, vcc */
@@ -1724,6 +1740,9 @@ static void shaders_past_the_limit(rt_executor *x)
     snprintf(named, sizeof named, "the vertex shader at %#llx", (unsigned long long)stopping);
     if (!strstr(error, named)) fprintf(stderr, "shader past the limit stop: %s\n", error);
     CHECK(strstr(error, named) != NULL);
+    snprintf(named, sizeof named, "the vertex shader at %#llx", (unsigned long long)sharing_home);
+    if (strstr(error, named)) fprintf(stderr, "shader past the limit stop also names %#llx: %s\n", (unsigned long long)sharing_home, error);
+    CHECK(strstr(error, named) == NULL);
 }
 
 /* The pipelines kept after render targets are freed (many_targets leaves all 512 kept): each round draws
@@ -3035,7 +3054,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -3193,7 +3212,7 @@ static void guarded_targets(int fd, rt_executor *shared)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3284,7 +3303,7 @@ static void guarded_depth_read(int fd, unsigned bytes)
     enum { DEPTH_BUFFER = 0xc0f48000, GD_Z = 0x2700000, GD_HTILE = 0x2780000, GD_COLOUR = 0x2790000, GD_SAMPLED = 0x27a0000, GD_SIZE = 256,
            GD_WORDS = (GD_SIZE / 8) * (GD_SIZE / 8) };
     char error[256] = "";
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3358,7 +3377,7 @@ static void guarded_target_fill(int fd)
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     const uint64_t span = rt_tiling_size(&layout, 1);
     uint32_t *memory = (uint32_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3591,7 +3610,7 @@ static void collect_when_due(int fd)
 {
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "executor with a due check: %s\n", error);
@@ -3628,7 +3647,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -3684,7 +3703,7 @@ static void copied_image_after_write_back(int fd)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL};
+    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&watched_guarded, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3712,7 +3731,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3793,6 +3812,26 @@ static long read_file(const char *path, unsigned char *bytes, size_t size)
     return (long)got;
 }
 
+/* With the device's memory full, an image still loads: the copy plans of images no unfinished batch
+   uses give their memory back (free_idle_image_plans). BB_COPY_ROWS_LIMIT stands in for a full device:
+   linear rows for two 16x16 surfaces of 4-byte texels, the target's and one image's. many_images' 100
+   images, each drawn in its own run, then all draw; without the plans given back, the second image
+   found no memory for its copy. */
+static void images_past_full_memory(const rt_executor_memory *memory)
+{
+    enum { TWO_IMAGES_ROWS = 2 * SIZE * SIZE * 4 };
+    char error[256] = "", limit[16];
+    snprintf(limit, sizeof limit, "%d", TWO_IMAGES_ROWS);
+    setenv("BB_COPY_ROWS_LIMIT", limit, 1);
+    rt_executor *x = NULL;
+    const int opened = rt_executor_open(memory, &x, error, sizeof error);
+    unsetenv("BB_COPY_ROWS_LIMIT");
+    CHECK(opened == 0);
+    if (opened) return;
+    many_images(x, 100);
+    rt_executor_close(x);
+}
+
 /* A shader translates to the same SPIR-V whatever the order the executor meets it in: its run-time stop
    word follows from the shader itself, not from the entry it takes. Two vertex shaders (copies of one
    program at two addresses) are drawn in one order in one executor and in the other order in a second,
@@ -3869,9 +3908,47 @@ static void pipeline_cache_file(const rt_executor_memory *memory)
     rmdir(directory);
 }
 
+/* With async_pipelines, the first draw with a pipeline neither made nor cached is left out while a worker
+   thread makes the pipeline (the target keeps its zeroed memory), and a later run of the same buffer
+   draws it. */
+static void async_pipelines(int fd)
+{
+    enum { ASYNC_BUFFER = 0xc0e10000, ASYNC_TARGET = 0x3600000 };
+    const int attempts = 3000;
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1};
+    rt_executor *x = NULL;
+    char error[256] = "";
+    const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+    if (opened) fprintf(stderr, "async pipelines: %s\n", error);
+    CHECK(opened == 0);
+    if (!x) return;
+    rt_render_forget(), rt_executor_reset(x);
+    memset((void *)(uintptr_t)at(ASYNC_TARGET), 0, SIZE * SIZE * 4);
+    const uint32_t size = record_draw(ASYNC_BUFFER, at(ASYNC_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_executor_run(x, ASYNC_BUFFER, size, error, sizeof error) == 0);
+    uint32_t bgra[SIZE * SIZE];
+    int lit = 0; /* the target as loaded from its zeroed memory: the draw left out */
+    if (rt_executor_read_target(x, at(ASYNC_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0)
+        for (unsigned i = 0; i < SIZE * SIZE; i++) lit += bgra[i] != 0;
+    CHECK(lit == 0);
+    int drawn = 0;
+    for (int i = 0; i < attempts && !drawn; i++) { /* the pipeline is waited for a second after it was queued at the latest */
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(record_draw(ASYNC_BUFFER, at(ASYNC_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER) == size);
+        CHECK(rt_executor_run(x, ASYNC_BUFFER, size, error, sizeof error) == 0);
+        drawn = rt_executor_read_target(x, at(ASYNC_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0 && bgra[SIZE * SIZE / 2 + SIZE / 2];
+        if (!drawn) usleep(1000);
+    }
+    CHECK(drawn);
+    if (drawn) check_triangle_pixels(bgra);
+    rt_executor_close(x);
+}
+
 int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
+    /* nor the drivers' own shader caches on disk: async_pipelines needs a pipeline the compiler must make */
+    setenv("__GL_SHADER_DISK_CACHE", "0", 0), setenv("MESA_SHADER_CACHE_DISABLE", "true", 0);
     const int fd = map_guest_memory();
     if (fd < 0) {
         fprintf(stderr, "cannot map the guest memory at %#llx\n", GUEST_BASE);
@@ -3879,12 +3956,13 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
     }
     enum { BUFFER = 0xc0de0000, SECOND = 0xc0df0000, THIRD = 0xc0e00000 };
+    async_pipelines(fd); /* first: before any draw has made its pipeline */
 
     /* A triangle into an R8G8B8A8 target (SWAP_STD), through guest addresses and the pool's GPU buffer. */
     rt_render_forget(), rt_executor_reset(x);
@@ -4629,6 +4707,7 @@ int main(void)
     rt_executor_close(x);
     shader_sweep(&memory);
     same_spirv_in_any_order(&memory);
+    images_past_full_memory(&memory);
     pipeline_cache_file(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
