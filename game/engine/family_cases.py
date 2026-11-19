@@ -40,7 +40,45 @@ heap_buffer_owner_family_cases.py's, at each member's own address.
 destroys_with_0x010f6190_then_deletes and the seven other destroys_with_..._then_deletes families
 (destroy_then_delete_families.cpp): the copies of eight deleting destructors, one destructor each.
 Their cases are destroy_then_delete_family_cases.py's, at each member's own address.
-"""
+
+dispatches_on_slot_match_with_member_0x68/_0x70 and visits_base_pairs_and_entries_at_0x70/_0x78:
+four scaleform families, two pairs that differ only in one member offset; their cases are in
+game/engine/tests/scaleform_visit_dispatch_cases.py and their control mutants in
+game/engine/tests/scaleform_visit_dispatch_mutants.c.
+
+stores_vtable_0x0579c8a0_releases_members_then_destroys and
+stores_vtable_0x0579c8a0_releases_members_destroys_then_deletes: the copies of one class's
+destructor and its deleting twin (vtable_0x0579c8a0_destructor_family.cpp). The cases run no
+callable, one outside and one inside its slot's storage; the wide string inline and on the heap
+(capacities 8, 0x7f and all bits); the held blocks with bit 0x40 set or clear among other flags;
+and callables and member destructors that rewrite the string's capacity, a block's flags, its
+releaser and its value, which show each is read after the calls before it (with control mutants).
+
+sorts_16_byte_elements_with_comparator: the copies of 0x0292d520's quicksort
+(sort_16_byte_elements_family.cpp). The cases replay the sort in Python to script every
+comparator call: one to seven elements in order, reversed, mixed, with equal and negative keys,
+an inner range, first past last, negative indexes, and comparators that rewrite the middle element
+(the pivot is a copy) or an element before it is swapped.
+
+finds_id_pair_in_nested_hash_maps: the copies of 0x01274eb0's lookup of an id pair in a hash map
+of hash maps (nested_hash_lookup_family.cpp). The cases build real chained tables (runs in id
+order per bucket, a bucket count below the mask's so some indexes fold) and script the C
+library's ldiv with its quotient and remainder (rax and rdx): an empty bucket and an empty table,
+ids found at the start, inside and at the end of a run, in a folded bucket and with the top bit
+set; ids missing below, inside and above a run; ids 0, all bits and the seed; an empty inner
+table; equal outer ids (the first in order is taken).
+
+reallocates_array_of_8_byte_4_aligned_elements, reallocates_array_of_16_byte_elements,
+reallocates_array_of_24_byte_handle_records, erases_range_of_24_byte_handle_records and
+resizes_heap_array_of_8_byte_elements: the copies of an engine array's reallocation for three
+element types, of a range erase from an array of the third, and of a resize of an array whose buffer comes from the heap at 0x057e7320
+(array_resize_families.cpp). Their cases are array_resize_family_cases.py's, at each member's
+own address.
+
+The kind-sized storage families (game/engine/kind_sized_storage.cpp) run every kind and count rule
+(kinds 4 and 6 with and without the ignored low bit, other kinds, a second answer that differs from
+the first, empty, negative and wrapping counts), kind calls that change the count, the vtable or
+the allocator pointer (the order controls) and failing allocations."""
 from __future__ import annotations
 
 import copy
@@ -1680,3 +1718,657 @@ MUTANTS = {
 
 def cases(family: str, address: str, value: int | None) -> list[dict]:
     return CASES[family](address, value)
+
+
+# Families from #1168.
+def scaleform_cases(kind: str, offset: int):
+    """The cases of tests/scaleform_visit_dispatch_cases.py's KIND_cases for one member offset."""
+    def build(address: str, value: int | None) -> list[dict]:
+        return getattr(_load('tests/scaleform_visit_dispatch_cases'), f'{kind}_cases')(address, offset)
+    return build
+
+
+# Each scaleform control moves one read across the call or store that can change it
+# (game/engine/tests/scaleform_visit_dispatch_mutants.c).
+SLOT_FLAWS = ['first_slot_before_resolve', 'handle_not_reloaded', 'slots_after_resolve', 'slots_kept_for_second', 'kind_kept_for_second', 'second_slot_before_resolve']
+
+
+# count_every_entry is withdrawn: its kills came only from faulting cases
+VISIT_FLAWS = ['entries_before_calls', 'entries_read_once']
+
+
+CASES.update({
+    'dispatches_on_slot_match_with_member_0x68': scaleform_cases('dispatch', 0x68),
+    'dispatches_on_slot_match_with_member_0x70': scaleform_cases('dispatch', 0x70),
+    'visits_base_pairs_and_entries_at_0x70': scaleform_cases('visit', 0x70),
+    'visits_base_pairs_and_entries_at_0x78': scaleform_cases('visit', 0x78),
+})
+
+MUTANTS.update({
+    'dispatches_on_slot_match_with_member_0x68': ['bb_mutant_does_nothing'] + [f'bb_mutant_slot_dispatch_0x68_{flaw}' for flaw in SLOT_FLAWS],
+    'dispatches_on_slot_match_with_member_0x70': ['bb_mutant_does_nothing'] + [f'bb_mutant_slot_dispatch_0x70_{flaw}' for flaw in SLOT_FLAWS],
+    'visits_base_pairs_and_entries_at_0x70': ['bb_mutant_does_nothing'] + [f'bb_mutant_visit_0x70_{flaw}' for flaw in VISIT_FLAWS],
+    'visits_base_pairs_and_entries_at_0x78': ['bb_mutant_does_nothing'] + [f'bb_mutant_visit_0x78_{flaw}' for flaw in VISIT_FLAWS],
+})
+
+
+# Families from #1170.
+# stores_vtable_0x0579c8a0_releases_members_then_destroys and its deleting twin
+# (vtable_0x0579c8a0_destructor_family.cpp): an object (`object`, 0x2018 bytes of filler) whose
+# callable slot (+0x1ff0, pointer +0x2010), wide string (+0x1fb0) and held blocks (+0xd30,
+# +0x1f30) are set per case; the callable, the string's allocator and the releasers have fake
+# tables whose slots are scripted stubs comparing every argument; the member and base destructors
+# are stubs too. Some stubs write into the object to show which fields are read after them.
+# Generated fixtures, not game data.
+DESTROY_FIRST_MEMBER, DESTROY_BASE_MEMBER, DESTROY_BASE_pr1170 = '0x01f4cbb0', '0x01ed24f0', '0x01ed5390'
+
+
+FAKE_CALLABLE_DESTROY, FAKE_STRING_FREE, FAKE_RELEASE = '0x00500300', '0x00500320', '0x00500340'
+
+
+OBJECT_SIZE = 0x2018
+
+
+CALLABLE_STORAGE, CALLABLE_POINTER = 0x1ff0, 0x2010
+
+
+TEXT_HEAP, TEXT_SIZE, TEXT_CAPACITY, TEXT_ALLOCATOR = 0x1fb8, 0x1fc8, 0x1fd0, 0x1fd8
+
+
+SECOND_HELD, BASE_HELD = 0x1f30, 0xd30
+
+
+HELD_AREA, HELD_RELEASER, HELD_FLAGS, HELD_VALUE = 0x30, 0x40, 0x48, 0x50
+
+
+FIRST_MEMBER, BASE_MEMBER, SECOND_MEMBER = 0xd90, 0xa70, 0x1f20
+
+
+HELD_SET = 0x40
+
+
+ALL_BITS = 0xffffffffffffffff
+
+
+def _qword(value: int) -> str:
+    return struct.pack('<Q', value & ALL_BITS).hex()
+
+
+def _destructor_case(address: str, cid: str, deleting: bool, callable_at: str | None = None,
+                     capacity: int = 7, second_flags: int = 0, base_flags: int = 0,
+                     callable_writes: list | None = None, first_member_writes: list | None = None) -> dict:
+    """callable_at: None (no callable), 'outside' (its own buffer) or 'inside' (the slot's
+    storage). callable_writes / first_member_writes: what those stubs store (through their first
+    argument); a write's 'flags'/'capacity' key says which later decision it changes."""
+    buffers = {'object': {'size': OBJECT_SIZE, 'bytes': ''.join(f'{(i * 7 + 0x31) & 0xff:02x}' for i in range(OBJECT_SIZE))},
+               'callable': {'size': 0x20, 'bytes': '6b' * 0x20},
+               'callvt': {'size': 0x30, 'bytes': 'e1' * 0x30},
+               'text': {'size': 0x40, 'bytes': '47' * 0x40},
+               'heap': {'size': 0x10, 'bytes': '3c' * 0x10},
+               'heapvt': {'size': 0x80, 'bytes': 'e7' * 0x80},
+               'releaser': {'size': 0x10, 'bytes': '2d' * 0x10},
+               'other_releaser': {'size': 0x10, 'bytes': '2e' * 0x10},
+               'relvt': {'size': 0x20, 'bytes': 'e9' * 0x20}}
+    memory = [{'addr': 'buf:callable+0x0', 'pointer': 'callvt'},
+              {'addr': 'buf:callvt+0x20', 'guest': FAKE_CALLABLE_DESTROY},
+              {'addr': 'buf:heap+0x0', 'pointer': 'heapvt'},
+              {'addr': 'buf:heapvt+0x70', 'guest': FAKE_STRING_FREE},
+              {'addr': 'buf:releaser+0x0', 'pointer': 'relvt'},
+              {'addr': 'buf:other_releaser+0x0', 'pointer': 'relvt'},
+              {'addr': 'buf:relvt+0x18', 'guest': FAKE_RELEASE},
+              {'addr': f'buf:object+{TEXT_HEAP:#x}', 'pointer': 'text'},
+              {'addr': f'buf:object+{TEXT_SIZE:#x}', 'bytes': _qword(5)},
+              {'addr': f'buf:object+{TEXT_CAPACITY:#x}', 'bytes': _qword(capacity)},
+              {'addr': f'buf:object+{TEXT_ALLOCATOR:#x}', 'pointer': 'heap'}]
+    for held, flags in ((SECOND_HELD, second_flags), (BASE_HELD, base_flags)):
+        memory.append({'addr': f'buf:object+{held + HELD_RELEASER:#x}', 'pointer': 'releaser'})
+        memory.append({'addr': f'buf:object+{held + HELD_FLAGS:#x}', 'bytes': struct.pack('<I', flags).hex()})
+        memory.append({'addr': f'buf:object+{held + HELD_VALUE:#x}', 'bytes': _qword(0x5150000000000000 + held)})
+    if callable_at == 'outside':
+        memory.append({'addr': f'buf:object+{CALLABLE_POINTER:#x}', 'pointer': 'callable'})
+    elif callable_at == 'inside':
+        memory.append({'addr': f'buf:object+{CALLABLE_STORAGE:#x}', 'pointer': 'callvt'})
+        memory.append({'addr': f'buf:object+{CALLABLE_POINTER:#x}', 'pointer': f'object+{CALLABLE_STORAGE:#x}'})
+    else:
+        memory.append({'addr': f'buf:object+{CALLABLE_POINTER:#x}', 'bytes': _qword(0)})
+
+    stubs = []
+    if callable_at:
+        stub = {'address': FAKE_CALLABLE_DESTROY, 'argc': 2}
+        if callable_writes:
+            stub['writes'] = [{k: v for k, v in w.items() if k not in ('flags', 'capacity')} for w in callable_writes]
+            for w in callable_writes:
+                capacity = w.get('capacity', capacity)
+                second_flags = w.get('flags', second_flags)
+        stubs.append(stub)
+    if capacity >= 8:
+        stubs.append({'address': FAKE_STRING_FREE, 'argc': 2})
+    if second_flags & HELD_SET:
+        # The member's and the held block's tables are in place when the releaser runs.
+        stubs.append({'address': FAKE_RELEASE, 'argc': 3,
+                      'argmem': [{'arg': 1, 'offset': -(HELD_AREA + SECOND_HELD - SECOND_MEMBER), 'size': 0x18}]})
+    stub = {'address': DESTROY_FIRST_MEMBER, 'argc': 1,
+            # The object's own tables are in place while the member is destroyed.
+            'argmem': [{'arg': 0, 'offset': -FIRST_MEMBER, 'size': 0x50}]}
+    if first_member_writes:
+        stub['writes'] = [{k: v for k, v in w.items() if k not in ('flags', 'capacity')} for w in first_member_writes]
+        for w in first_member_writes:
+            base_flags = w.get('flags', base_flags)
+    stubs.append(stub)
+    if base_flags & HELD_SET:
+        # The base's tables and the held block's table are in place when the releaser runs.
+        stubs.append({'address': FAKE_RELEASE, 'argc': 3,
+                      'argmem': [{'arg': 1, 'offset': -(HELD_AREA + BASE_HELD), 'size': 0x50},
+                                 {'arg': 1, 'offset': -HELD_AREA, 'size': 0x8}]})
+    stubs.append({'address': DESTROY_BASE_MEMBER, 'argc': 1})
+    stubs.append({'address': DESTROY_BASE_pr1170, 'argc': 1, 'ret': '0x5a5a5a5a00000001'})
+    if deleting:
+        stubs.append({'address': OPERATOR_DELETE, 'argc': 1})
+    return {'schema': 1, 'address': address, 'id': cid, 'returns': 'void',
+            'args': {'rdi': 'buf:object'}, 'buffers': buffers, 'memory': memory, 'imports': [], 'stubs': stubs}
+
+
+def _destructor_cases(address: str, deleting: bool) -> list[dict]:
+    c = lambda cid, **kw: _destructor_case(address, cid, deleting, **kw)
+    # Writes through the callable (in the slot's storage, at +0x1ff0) or the member at +0xd90.
+    raise_capacity = {'arg': 0, 'offset': TEXT_CAPACITY - CALLABLE_STORAGE, 'bytes': _qword(0x20), 'capacity': 0x20}
+    set_second_flag = {'arg': 0, 'offset': SECOND_HELD + HELD_FLAGS - CALLABLE_STORAGE,
+                       'bytes': struct.pack('<I', HELD_SET).hex(), 'flags': HELD_SET}
+    clear_second_flag = {'arg': 0, 'offset': SECOND_HELD + HELD_FLAGS - CALLABLE_STORAGE,
+                         'bytes': struct.pack('<I', 0).hex(), 'flags': 0}
+    move_releaser = {'arg': 0, 'offset': SECOND_HELD + HELD_RELEASER - CALLABLE_STORAGE, 'pointer': 'other_releaser'}
+    set_base_flag = {'arg': 0, 'offset': BASE_HELD + HELD_FLAGS - FIRST_MEMBER,
+                     'bytes': struct.pack('<I', HELD_SET | 0x100).hex(), 'flags': HELD_SET | 0x100}
+    move_base_releaser = {'arg': 0, 'offset': BASE_HELD + HELD_RELEASER - FIRST_MEMBER, 'pointer': 'other_releaser'}
+    new_base_value = {'arg': 0, 'offset': BASE_HELD + HELD_VALUE - FIRST_MEMBER, 'bytes': _qword(0x0123456789abcdef)}
+    return [c('nothing_held'),
+            c('callable_outside_storage', callable_at='outside'),
+            c('callable_in_storage', callable_at='inside'),
+            c('string_on_heap', capacity=8),
+            c('string_capacity_large', capacity=0x7f),
+            c('string_capacity_all_bits', capacity=ALL_BITS),
+            c('member_block_held', second_flags=HELD_SET),
+            c('base_block_held', base_flags=HELD_SET),
+            c('both_blocks_held_all_flags', second_flags=0xffffffff, base_flags=0xffffffff),
+            c('flags_without_bit_0x40', second_flags=0xffffffbf, base_flags=0xbf),
+            c('bit_0x40_in_second_byte', second_flags=0x4000, base_flags=0x40000000),
+            c('everything', callable_at='outside', capacity=0x10, second_flags=0x41, base_flags=0xc0),
+            # the callable's destruction raises the string's capacity: it is read after the call
+            c('callable_raises_capacity', callable_at='inside', callable_writes=[raise_capacity]),
+            # it sets or clears the member block's flag and moves its releaser: read after it
+            c('callable_sets_held_flag', callable_at='inside', callable_writes=[set_second_flag, move_releaser]),
+            c('callable_clears_held_flag', callable_at='inside', second_flags=HELD_SET,
+              callable_writes=[clear_second_flag]),
+            # the member at +0xd90's destructor sets the base block's flag, its releaser and value
+            c('first_member_sets_base_flag', first_member_writes=[set_base_flag, move_base_releaser, new_base_value])]
+
+
+def destructor_cases_pr1170(address: str, value: int | None) -> list[dict]:
+    return _destructor_cases(address, False)
+
+
+def deleting_destructor_cases(address: str, value: int | None) -> list[dict]:
+    return _destructor_cases(address, True)
+
+
+# sorts_16_byte_elements_with_comparator (sort_16_byte_elements_family.cpp): an array of
+# 16-byte elements (a key qword the fake comparator orders by, and a distinct tag qword) sorted
+# over first..last. The comparator is a scripted stub at a fake address: the cases replay the
+# quicksort in Python to script every call in order, comparing the array element's address and
+# both elements' bytes (the pivot is a stack copy, so only its bytes). Some calls write into the
+# element they are given, to show the pivot is copied before and the swaps read after them.
+# Generated fixtures, not game data.
+FAKE_BEFORE = '0x00500360'
+
+
+ELEMENT = 0x10
+
+
+BEFORE_TRUE, BEFORE_FALSE = 0x5a5a5a5a5a5a0001, 0x5a5a5a5a5a5a0100
+
+
+MAX_STUBS = 64
+
+
+def _element(key: int, tag: int) -> bytes:
+    return struct.pack('<qQ', key, 0xa000000000000000 | tag)
+
+
+def _replay_sort(elements: list, origin: int, first: int, last: int, rewrites: dict) -> list[dict]:
+    """The quicksort over elements (index i at elements[origin + i]); rewrites: call number ->
+    the element bytes that call stores through the array element it is given."""
+    stubs = []
+
+    def before(index: int, pivot: bytes, array_first: bool) -> bool:
+        n = len(stubs)
+        element = elements[origin + index]
+        a, b = (element, pivot) if array_first else (pivot, element)
+        result = struct.unpack_from('<q', a)[0] < struct.unpack_from('<q', b)[0]
+        stub = {'address': FAKE_BEFORE, 'argc': 2, 'argi': [0 if array_first else 1],
+                'argmem': [{'arg': 0, 'size': ELEMENT}, {'arg': 1, 'size': ELEMENT}],
+                'ret': hex(BEFORE_TRUE if result else BEFORE_FALSE)}
+        if n in rewrites:
+            stub['writes'] = [{'arg': 0 if array_first else 1, 'offset': 0, 'bytes': rewrites[n].hex()}]
+            elements[origin + index] = rewrites[n]
+        stubs.append(stub)
+        return result
+
+    def sort(lo: int, hi: int) -> None:
+        while True:
+            middle = ((lo + hi) & 0xffffffff)
+            middle = (middle - (1 << 32) if middle >= 1 << 31 else middle) >> 1
+            pivot = elements[origin + middle]
+            i, j = lo, hi
+            while True:
+                while before(i, pivot, True):
+                    i += 1
+                while before(j, pivot, False):
+                    j -= 1
+                if i <= j:
+                    if i != j:
+                        elements[origin + i], elements[origin + j] = elements[origin + j], elements[origin + i]
+                    i += 1
+                    j -= 1
+                if i > j:
+                    break
+            if lo < j:
+                sort(lo, j)
+            if i >= hi:
+                return
+            lo = i
+
+    sort(first, last)
+    return stubs
+
+
+def _sort_case(address: str, cid: str, keys: list, first: int, last: int, origin: int = 0,
+               rewrites: dict | None = None) -> dict:
+    """keys: the array's element keys; origin: the index the elements pointer is at."""
+    elements = [_element(k, i) for i, k in enumerate(keys)]
+    data = b''.join(elements).hex()
+    stubs = _replay_sort(list(elements), origin, first, last, rewrites or {})
+    assert len(stubs) <= MAX_STUBS, (cid, len(stubs))
+    return {'schema': 1, 'address': address, 'id': cid, 'returns': 'void',
+            # the indexes are 32-bit: the upper halves of their registers are filler
+            'args': {'rdi': f'buf:elements+{origin * ELEMENT:#x}', 'rsi': hex(0xdead00000000 | (first & 0xffffffff)),
+                     'rdx': hex(0xbeef00000000 | (last & 0xffffffff)), 'rcx': f'guest:{FAKE_BEFORE}'},
+            'buffers': {'elements': {'size': len(keys) * ELEMENT, 'bytes': data}},
+            'memory': [], 'imports': [], 'stubs': stubs}
+
+
+def sort_cases(address: str, value: int | None) -> list[dict]:
+    c = lambda cid, keys, first=0, last=None, **kw: _sort_case(address, cid, keys, first,
+                                                                 len(keys) - 1 if last is None else last, **kw)
+    return [c('one', [5]),
+            c('two_in_order', [1, 2]),
+            c('two_reversed', [2, 1]),
+            c('two_equal', [3, 3]),
+            c('three_in_order', [1, 2, 3]),
+            c('three_reversed', [3, 2, 1]),
+            c('three_mixed', [3, 1, 2]),
+            c('five_mixed', [4, 1, 5, 2, 3]),
+            c('five_with_equal_keys', [2, 2, 1, 2, 1]),
+            c('five_equal', [7, 7, 7, 7, 7]),
+            c('six_reversed', [6, 5, 4, 3, 2, 1]),
+            c('seven_mixed', [3, 7, 1, 6, 2, 5, 4]),
+            c('negative_keys', [0, -3, 9, -8, 4]),
+            # only first..last move; the rest are not touched
+            c('inner_range', [9, 8, 7, 6, 5, 4, 3, 2], first=2, last=5),
+            # first past last: one pass of the partition still runs
+            c('first_past_last', [4, 1, 3, 2], first=2, last=1),
+            # negative indexes before the elements pointer (the middle rounds down)
+            c('negative_first', [5, 3, 8, 1, 6], first=-2, last=2, origin=2),
+            # a call rewrites the middle element: the pivot is the copy taken before
+            c('comparator_rewrites_middle', [4, 1, 5, 2, 3], rewrites={2: _element(9, 0x77)}),
+            # a call rewrites an element before it is swapped: the swap moves the new bytes
+            c('comparator_rewrites_swapped', [6, 5, 4, 3, 2, 1], rewrites={1: _element(-1, 0x78)})]
+
+
+# finds_id_pair_in_nested_hash_maps (nested_hash_lookup_family.cpp): real chained hash tables
+# built here: an outer one at +0x8 of `owner` whose values point at inner tables. Each table's
+# nodes (a list from its sentinel, the end) run bucket by bucket in id order; each bucket holds
+# its first and last node as iterators (filler before the node), or the end twice when empty. The
+# C library's ldiv is a scripted import (the quotient in rax, the remainder in rdx) comparing both
+# arguments. Generated fixtures, not game data.
+HASH_SEED, HASH_DIVISOR = 0xdeadbeef, 127773
+
+
+NODE, BUCKET, TABLE = 0x20, 0x30, 0x58
+
+
+TABLE_END, TABLE_BUCKETS, TABLE_MASK, TABLE_COUNT_pr1170 = 0x8, 0x28, 0x48, 0x50
+
+
+NODE_NEXT, NODE_PREVIOUS, NODE_ID, NODE_VALUE = 0x0, 0x8, 0x10, 0x18
+
+
+ITERATOR_NODE, BUCKET_LAST = 0x10, 0x18
+
+
+OWNER_TABLE = 0x8
+
+
+def _id_hash(key: int) -> tuple[int, int, int]:
+    """(hash, quotient, remainder) as the code computes them."""
+    quotient, remainder = divmod(key ^ HASH_SEED, HASH_DIVISOR)
+    value = (16807 * remainder - 2836 * quotient) & ALL_BITS
+    if value >= 1 << 63:
+        value = (value + (1 << 63) - 1) & ALL_BITS
+    return value, quotient, remainder
+
+
+def _bucket(key: int, mask: int, count: int) -> int:
+    index = _id_hash(key)[0] & mask
+    if count <= index:
+        index = (index - ((mask >> 1) + 1)) & ALL_BITS
+    return index
+
+
+def _hash_table(name: str, at: str, entries: list, mask: int, count: int, buffers: dict, memory: list) -> None:
+    """A table at `at` (buf:NAME+off) over entries [(id, value buffer name or None)]."""
+    runs = {}
+    for key, value in entries:
+        runs.setdefault(_bucket(key, mask, count), []).append((key, value))
+    order = [entry for b in sorted(runs) for entry in sorted(runs[b], key=lambda e: e[0])]
+    nodes, buckets = f'{name}_nodes', f'{name}_buckets'
+    buffers[nodes] = {'size': NODE * (len(order) + 1), 'bytes': '93' * (NODE * (len(order) + 1))}
+    buffers[buckets] = {'size': BUCKET * count, 'bytes': '71' * (BUCKET * count)}
+    slot = lambda i: f'{nodes}+{NODE * i:#x}'          # node 0 is the end
+    links = [0] + [i + 1 for i in range(len(order))] + [0]
+    for a, b in zip(links, links[1:]):
+        memory.append({'addr': f'buf:{nodes}+{NODE * a + NODE_NEXT:#x}', 'pointer': slot(b)})
+        memory.append({'addr': f'buf:{nodes}+{NODE * b + NODE_PREVIOUS:#x}', 'pointer': slot(a)})
+    for i, (key, value) in enumerate(order, 1):
+        base = NODE * i
+        memory.append({'addr': f'buf:{nodes}+{base + NODE_ID:#x}', 'bytes': struct.pack('<I', key).hex()})
+        if value:
+            memory.append({'addr': f'buf:{nodes}+{base + NODE_VALUE:#x}', 'pointer': value})
+    for b in range(count):
+        run = [i for i, entry in enumerate(order, 1) if _bucket(entry[0], mask, count) == b]
+        first, last = (run[0], run[-1]) if run else (0, 0)
+        memory.append({'addr': f'buf:{buckets}+{BUCKET * b + ITERATOR_NODE:#x}', 'pointer': slot(first)})
+        memory.append({'addr': f'buf:{buckets}+{BUCKET * b + BUCKET_LAST + ITERATOR_NODE:#x}', 'pointer': slot(last)})
+    buffer, off = at.split('+')
+    off = int(off, 16)
+    memory.append({'addr': f'buf:{buffer}+{off + TABLE_END:#x}', 'pointer': slot(0)})
+    memory.append({'addr': f'buf:{buffer}+{off + TABLE_BUCKETS:#x}', 'pointer': buckets})
+    memory.append({'addr': f'buf:{buffer}+{off + TABLE_MASK:#x}', 'bytes': _qword(mask)})
+    memory.append({'addr': f'buf:{buffer}+{off + TABLE_COUNT_pr1170:#x}', 'bytes': _qword(count)})
+
+
+def _lookup(entries: list, mask: int, count: int, key: int):
+    """What the code finds: the first entry of key in its bucket's run, or None."""
+    run = sorted((e for e in entries if _bucket(e[0], mask, count) == _bucket(key, mask, count)), key=lambda e: e[0])
+    for entry in run:
+        if entry[0] >= key:
+            return entry if entry[0] == key else None
+    return None
+
+
+OUTER_MASK, OUTER_COUNT = 7, 6
+
+
+INNER_MASK, INNER_COUNT = 3, 3
+
+
+def _hash_case(address: str, cid: str, outer: list, inner: dict, first: int, second: int) -> dict:
+    """outer: the outer ids, each with an inner table name in `inner` (name -> its ids) or None."""
+    buffers = {'owner': {'size': OWNER_TABLE + TABLE, 'bytes': 'c5' * (OWNER_TABLE + TABLE)},
+               'ids': {'size': 8, 'bytes': struct.pack('<II', first, second).hex()}}
+    memory = []
+    _hash_table('outer', f'owner+{OWNER_TABLE:#x}', [(k, v) for k, v in outer], OUTER_MASK, OUTER_COUNT, buffers, memory)
+    for name, ids in inner.items():
+        buffers[name] = {'size': TABLE, 'bytes': 'd6' * TABLE}
+        _hash_table(name, f'{name}+0x0', [(k, None) for k in ids], INNER_MASK, INNER_COUNT, buffers, memory)
+    imports = []
+
+    def divide(key):
+        _, quotient, remainder = _id_hash(key)
+        imports.append({'name': 'ldiv', 'argc': 2, 'ret': hex(quotient), 'rdx': hex(remainder)})
+
+    divide(first)
+    found = _lookup(outer, OUTER_MASK, OUTER_COUNT, first)
+    if found:
+        divide(second)
+    return {'schema': 1, 'address': address, 'id': cid, 'returns': 'i8',
+            'args': {'rdi': 'buf:owner', 'rsi': 'buf:ids'}, 'buffers': buffers, 'memory': memory,
+            'imports': imports, 'stubs': []}
+
+
+def _ids_in_bucket(bucket: int, mask: int, count: int, n: int, start: int = 1) -> list:
+    out, key = [], start
+    while len(out) < n:
+        if _bucket(key, mask, count) == bucket:
+            out.append(key)
+        key += 1
+    return out
+
+
+def _negative_hash(start: int) -> int:
+    """The first id from start whose hash before the wrap is negative."""
+    return next(k for k in range(start, start + 0x1000000) if 16807 * _id_hash(k)[2] < 2836 * _id_hash(k)[1])
+
+
+def hash_lookup_cases(address: str, value: int | None) -> list[dict]:
+    outer_bucket = lambda k: _bucket(k, OUTER_MASK, OUTER_COUNT)
+    inner_bucket = lambda k: _bucket(k, INNER_MASK, INNER_COUNT)
+    # Outer ids: three in one bucket (with ids in bucket 1 below, between and above them unused),
+    # two in another, one in a folded bucket, one with the top bit and one whose hash wraps.
+    one = _ids_in_bucket(1, OUTER_MASK, OUTER_COUNT, 6)
+    a, below, gap, above = [one[1], one[3], one[5]], one[0], one[2], one[5] + 1
+    while outer_bucket(above) != 1:
+        above += 1
+    b = _ids_in_bucket(4, OUTER_MASK, OUTER_COUNT, 2, 0x1000)
+    folded = next(k for k in range(0x2000, 0x10000) if _id_hash(k)[0] & OUTER_MASK >= OUTER_COUNT)
+    high = next(k for k in range(0x80000000, 0x80010000) if outer_bucket(k) == 3)
+    wraps = _negative_hash(0x10000)
+    used = {outer_bucket(k) for k in a + b + [folded, high, wraps]}
+    empty = next(k for k in range(1, 0x10000) if outer_bucket(k) not in used)
+    # Inner ids: three in bucket 0 (one missing between them and one above), two in bucket 2, and
+    # one whose hash wraps.
+    zero = _ids_in_bucket(0, INNER_MASK, INNER_COUNT, 5, 0x40)
+    x, inner_missing = [zero[0], zero[2], zero[3]], zero[1]
+    inner_above = zero[4]
+    y = _ids_in_bucket(2, INNER_MASK, INNER_COUNT, 2, 0x400)
+    inner_wraps = _negative_hash(0x20000)
+    inner = {'inner_a': x + y + [inner_wraps], 'inner_b': [y[0]], 'inner_c': []}
+    outer = [(a[0], 'inner_a'), (a[1], 'inner_b'), (a[2], 'inner_c'), (b[0], 'inner_a'), (b[1], 'inner_b'),
+             (folded, 'inner_a'), (high, 'inner_a'), (wraps, 'inner_a')]
+    c = lambda cid, first, second, entries=outer: _hash_case(address, cid, entries, inner, first, second)
+    return [c('outer_bucket_empty', empty, x[0]),
+            c('outer_table_empty', a[0], x[0], []),
+            c('found_first_of_run', a[0], x[0]),
+            c('found_last_of_inner_run', a[0], x[2]),
+            c('found_inner_other_bucket', a[0], y[1]),
+            c('found_inner_hash_wraps', a[0], inner_wraps),
+            c('inner_id_missing_inside_run', a[0], inner_missing),
+            c('inner_id_above_run', a[0], inner_above),
+            c('inner_one_entry', a[1], y[0]),
+            c('inner_one_entry_other_id', a[1], x[0]),
+            c('inner_table_empty', a[2], x[0]),
+            c('found_middle_of_run', a[1], y[0]),
+            c('found_last_of_run', a[2], y[0]),
+            c('found_second_bucket', b[1], y[0]),
+            c('found_folded_bucket', folded, x[1]),
+            c('found_top_bit_id', high, x[0]),
+            c('found_outer_hash_wraps', wraps, y[1]),
+            c('outer_id_below_run', below, x[0]),
+            c('outer_id_inside_run', gap, x[0]),
+            c('outer_id_above_run', above, x[0]),
+            c('outer_id_zero', 0, x[0]),
+            c('outer_id_all_bits', 0xffffffff, x[0]),
+            c('outer_id_seed', HASH_SEED, x[0]),
+            # equal ids: the first in id order (its inner table) is taken
+            c('equal_outer_ids', a[0], y[0], [(a[0], 'inner_c'), (a[0], 'inner_b')] + outer[1:])]
+
+
+CASES.update({
+    'stores_vtable_0x0579c8a0_releases_members_then_destroys': destructor_cases_pr1170,
+    'stores_vtable_0x0579c8a0_releases_members_destroys_then_deletes': deleting_destructor_cases,
+    'sorts_16_byte_elements_with_comparator': sort_cases,
+    'finds_id_pair_in_nested_hash_maps': hash_lookup_cases,
+})
+
+MUTANTS.update({
+    # Doing nothing makes none of the writes or calls; each other mutant says in
+    # tests/family_mutants.c how it differs from the family it is listed for.
+    'stores_vtable_0x0579c8a0_releases_members_then_destroys': ['bb_mutant_does_nothing', 'bb_mutant_vtable_0x0579c8a0_destroy_reads_first'],
+    'stores_vtable_0x0579c8a0_releases_members_destroys_then_deletes': ['bb_mutant_does_nothing', 'bb_mutant_vtable_0x0579c8a0_delete_reads_first', 'bb_mutant_vtable_0x0579c8a0_delete_without_delete'],
+    'sorts_16_byte_elements_with_comparator': ['bb_mutant_does_nothing', 'bb_mutant_sort_pivot_by_reference', 'bb_mutant_sort_pivot_at_first', 'bb_mutant_sort_recurses_right'],
+    'finds_id_pair_in_nested_hash_maps': ['bb_mutant_does_nothing', 'bb_mutant_hash_pair_signed_ids', 'bb_mutant_hash_pair_first_only'],
+})
+
+
+# Families from #1171.
+def _resize(name: str):
+    return getattr(_load('array_resize_family_cases'), name)
+
+
+CASES.update({
+    'reallocates_array_of_8_byte_4_aligned_elements': _resize('reallocation_cases')(8),
+    'reallocates_array_of_16_byte_elements': _resize('reallocation_cases')(16),
+    'reallocates_array_of_24_byte_handle_records': _resize('handle_record_cases'),
+    'erases_range_of_24_byte_handle_records': _resize('erase_cases'),
+    'resizes_heap_array_of_8_byte_elements': _resize('heap_resize_cases'),
+})
+
+MUTANTS.update({
+    # Doing nothing makes none of the writes or calls; each other mutant says in
+    # tests/family_mutants.c how it differs from the family it is listed for.
+    'reallocates_array_of_8_byte_4_aligned_elements': ['bb_mutant_does_nothing', 'bb_mutant_array64_reserve_8_aligned', 'bb_mutant_array64_4_aligned_reserve_keeps_old_buffer'],
+    'reallocates_array_of_16_byte_elements': ['bb_mutant_does_nothing', 'bb_mutant_array128_reserve_as_8_byte_elements', 'bb_mutant_array128_reserve_keeps_old_buffer'],
+    'reallocates_array_of_24_byte_handle_records': ['bb_mutant_does_nothing', 'bb_mutant_handle_records_snapshot_ends', 'bb_mutant_handle_records_reload_copy_end', 'bb_mutant_handle_records_free_early', 'bb_mutant_handle_records_without_destroy'],
+    'erases_range_of_24_byte_handle_records': ['bb_mutant_does_nothing', 'bb_mutant_erase_records_snapshot_end', 'bb_mutant_erase_records_whole_snapshot_begin', 'bb_mutant_erase_records_without_destroy'],
+    'resizes_heap_array_of_8_byte_elements': ['bb_mutant_does_nothing', 'bb_mutant_heap_array_grows_to_count', 'bb_mutant_heap_array_never_shrinks', 'bb_mutant_heap_array_rounds_to_8', 'bb_mutant_heap_array_allocates_for_array'],
+})
+
+
+# Families from #1172.
+# The kind-sized storage families (game/engine/kind_sized_storage.cpp). The object lives in
+# writable image memory just past the allocator pointer, so a kind call can change the count, the
+# vtable or the allocator pointer through its object argument (stub writes at fixed offsets).
+KIND_ALLOCATE = '0x02fa1b80'
+
+
+KIND_FREE = '0x02fa1c20'
+
+
+KIND_ALLOCATOR = 0x05ac8288
+
+
+KIND_OBJECT = 0x05ac82c0
+
+
+KIND_CALL = '0x00500100'        # what the kind slot (vtable +0x88) points at: a stub
+
+
+KIND_OTHER_CALL = '0x00500180'  # the slot of the vtable a kind call may install
+
+
+KIND_SLOT = 0x88
+
+
+KIND_COUNT = 0x18
+
+
+def kind_holder(seed: int, size: int) -> dict:
+    return {'size': size, 'bytes': bytes((seed * 19 + i) & 0xff for i in range(size)).hex()}
+
+
+def kind_word(value: int, size: int = 4) -> str:
+    return (value & ((1 << (8 * size)) - 1)).to_bytes(size, 'little').hex()
+
+
+def kind_case(address: str, case_id: str, returns: str, kinds: list[int], count: int,
+              changes: dict | None = None) -> dict:
+    """An object of COUNT entries whose kind calls answer KINDS in turn (the second only when the
+    first is not kind 4); CHANGES: what the first kind call writes ('count', 'vtable',
+    'allocator')."""
+    changes = changes or {}
+    case = {'schema': 1, 'address': address, 'id': case_id, 'returns': returns,
+            'buffers': {'vtable': kind_holder(7, KIND_SLOT + 8), 'other_vtable': kind_holder(9, KIND_SLOT + 8),
+                        'allocator': kind_holder(11, 0x20), 'other_allocator': kind_holder(13, 0x20)},
+            'memory': [{'addr': hex(KIND_OBJECT), 'bytes': kind_holder(17, 0x20)['bytes']},
+                       {'addr': hex(KIND_OBJECT), 'pointer': 'vtable'},
+                       {'addr': hex(KIND_OBJECT + KIND_COUNT), 'bytes': kind_word(count)},
+                       {'addr': f'buf:vtable+0x{KIND_SLOT:x}', 'guest': KIND_CALL},
+                       {'addr': f'buf:other_vtable+0x{KIND_SLOT:x}', 'guest': KIND_OTHER_CALL},
+                       {'addr': hex(KIND_ALLOCATOR), 'pointer': 'allocator'}],
+            'imports': [], 'stubs': [],
+            'args': {'rdi': f'guest:{KIND_OBJECT:#x}', 'rsi': '0x1111111111111111', 'rax': '0x5aa5c33c0ff0e11e'}}
+
+    writes = []
+    if 'count' in changes:
+        writes.append({'arg': 0, 'offset': KIND_COUNT, 'bytes': kind_word(changes['count'])})
+    if changes.get('vtable'):
+        writes.append({'arg': 0, 'offset': 0, 'pointer': 'other_vtable'})
+    if changes.get('allocator'):
+        writes.append({'arg': 0, 'offset': KIND_ALLOCATOR - KIND_OBJECT, 'pointer': 'other_allocator'})
+    asked = kinds[:1] if (kinds[0] & 0xfffffffe) == 4 or len(kinds) == 1 else kinds[:2]
+    for n, kind in enumerate(asked):
+        stub = {'address': KIND_OTHER_CALL if n and changes.get('vtable') else KIND_CALL, 'argc': 2,
+                'argmem': [{'arg': 0, 'offset': KIND_COUNT, 'size': 4}],
+                'ret': hex(0x1234567800000000 | (kind & 0xffffffff))}
+        if n == 0 and writes:
+            stub['writes'] = writes
+        case['stubs'].append(stub)
+    return case
+
+
+# (id, kinds, count, changes): every kind and count rule, and kind calls that change the count,
+# the vtable or the allocator pointer.
+KIND_SIZE_CASES = [
+    ('kind4', [4], 7, None), ('kind5', [5], 7, None), ('kind6', [6, 6], 7, None),
+    ('kind7', [7, 7], 7, None), ('kind0', [0, 0], 7, None), ('kind2', [2, 3], 7, None),
+    ('kind6_then_4', [6, 4], 7, None), ('kind0_then_6', [0, 6], 7, None),
+    ('kind1_then_7', [1, 7], 5, None), ('kind_high', [0xfffffffe, 0xfffffffe], 7, None),
+    ('kind4_empty', [4], 0, None), ('kind6_empty', [6, 6], 0, None), ('kind0_one', [0, 0], 1, None),
+    ('kind4_negative', [4], -1, None), ('kind6_negative', [6, 6], -3, None), ('kind0_negative', [0, 0], -2, None),
+    ('kind4_wraps', [4], 0x55555556, None), ('kind6_wraps', [6, 6], 0x55555556, None),
+    ('kind0_largest', [0, 0], 0x7fffffff, None),
+    ('kind4_count_changes', [4], 7, {'count': 11}), ('kind6_count_changes', [6, 6], 7, {'count': 11}),
+    ('kind0_count_changes', [0, 0], 9, {'count': 3}),
+    ('vtable_changes', [0, 6], 7, {'vtable': True}), ('vtable_changes_kind4', [6, 4], 7, {'vtable': True}),
+    ('allocator_changes', [4], 7, {'allocator': True}), ('allocator_changes_kind6', [0, 6], 7, {'allocator': True}),
+]
+
+
+def kind_free_cases(address: str, value: int | None) -> list[dict]:
+    """The sized free (a stub comparing the allocator, the buffer, the size and the alignment)."""
+    out = []
+    for case_id, kinds, count, changes in KIND_SIZE_CASES:
+        case = kind_case(address, case_id, 'void', kinds, count, changes)
+        case['stubs'].append({'address': KIND_FREE, 'argc': 4, 'ret': '0x0'})
+        out.append(case)
+    return out
+
+
+def kind_allocate_cases(set_count: bool):
+    """The allocation (a stub comparing the allocator, the size and the alignment) succeeding, or
+    failing (the object left alone, false). SET_COUNT: the count comes in rsi (high bits ignored)
+    and the object's count is something else."""
+    def cases(address: str, value: int | None) -> list[dict]:
+        out = []
+        for case_id, kinds, count, changes in KIND_SIZE_CASES + [('fails', [6, 6], 7, None), ('fails_kind4', [4], 5, None)]:
+            case = kind_case(address, case_id, 'i8', kinds, count + 0x101 if set_count else count, changes)
+            if set_count:
+                case['args']['rsi'] = hex(0xdeadbeef00000000 | (count & 0xffffffff))
+            case['buffers']['storage'] = kind_holder(19, 0x10)
+            ret = '0x0' if case_id.startswith('fails') else 'buf:storage'
+            case['stubs'].append({'address': KIND_ALLOCATE, 'argc': 3, 'ret': ret})
+            out.append(case)
+        return out
+    return cases
+
+
+CASES.update({
+    'frees_kind_sized_vec4_storage_through_0x05ac8288': kind_free_cases,
+    'allocates_kind_sized_dword_storage_through_0x05ac8288': kind_allocate_cases(False),
+    'sets_count_and_allocates_kind_sized_dword_storage_through_0x05ac8288': kind_allocate_cases(True),
+})
+
+MUTANTS.update({
+    'frees_kind_sized_vec4_storage_through_0x05ac8288': ['bb_mutant_does_nothing', 'bb_mutant_kind_storage_free_reads_allocator_late', 'bb_mutant_kind_storage_free_reads_count_early', 'bb_mutant_kind_storage_free_asks_once', 'bb_mutant_kind_storage_free_unrounded'],
+    'allocates_kind_sized_dword_storage_through_0x05ac8288': ['bb_mutant_does_nothing', 'bb_mutant_kind_storage_allocate_reads_allocator_late', 'bb_mutant_kind_storage_allocate_reads_count_early', 'bb_mutant_kind_storage_allocate_asks_once', 'bb_mutant_kind_storage_allocate_no_entry_offset', 'bb_mutant_kind_storage_allocate_true_on_failure'],
+    'sets_count_and_allocates_kind_sized_dword_storage_through_0x05ac8288': ['bb_mutant_does_nothing', 'bb_mutant_kind_storage_set_count_skipped', 'bb_mutant_kind_storage_set_count_after_kind', 'bb_mutant_kind_storage_allocate_true_on_failure'],
+})
