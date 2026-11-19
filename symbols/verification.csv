@@ -1657,7 +1657,10 @@ menu_heap_adapter_free_023411d0,recorded,,155,155,0,0,99d14ad81370e4cc,2026-11-1
 menu_heap_adapter_free_023411d0,edge,,6,6,0,0,99d14ad81370e4cc,2026-11-14
 menu_heap_adapter_reallocate_02341330,recorded,,105,105,0,0,99d14ad81370e4cc,2026-11-17
 menu_heap_adapter_reallocate_02341330,edge,,14,14,0,0,99d14ad81370e4cc,2026-11-14
-menu_localize_request_finish_01d53420,edge,,38,38,0,0,dc0cffa622548f6e,2026-11-19
+menu_localize_request_finish_01d53420,edge,,38,38,0,0,525e87d25699447c,2026-11-19
+menu_localize_step_release_final_loads_01d534b0,edge,,23,23,0,0,984e88c240cbc7de,2026-11-19
+menu_localize_step_release_load_01d53450,edge,,16,16,0,0,984e88c240cbc7de,2026-11-19
+menu_localize_step_release_loads_01d52e50,edge,,52,52,0,0,984e88c240cbc7de,2026-11-19
 menu_movie_screen_close_023548d0,recorded,,12,12,0,0,99d14ad81370e4cc,2026-11-17
 menu_movie_screen_close_023548d0,edge,,5,5,0,0,99d14ad81370e4cc,2026-11-14
 menu_movie_screen_step_02354d90,edge,,8,8,0,0,99d14ad81370e4cc,2026-11-14
