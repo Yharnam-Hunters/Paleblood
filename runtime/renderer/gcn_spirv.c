@@ -65,6 +65,7 @@ typedef struct {
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
     const uint32_t *input_controls;  /* a pixel shader's SPI_PS_INPUT_CNTL words, or NULL (runtime/gcn_spirv.h) */
+    unsigned *required_inputs;       /* logical pixel attribute usage, independent of vertex output location */
     uint32_t depth_export;           /* a pixel shader's GCN_DEPTH_EXPORT_* enables */
     unsigned first_binding;          /* the images' and samplers' bindings start here (runtime/gcn_spirv.h) */
     const uint32_t *callee;          /* a vertex shader's fetch shader, inlined at its call */
@@ -145,6 +146,7 @@ typedef struct {
     unsigned interface_count;
     /* v_interp_p1 results waiting for their p2: attribute * 4 + channel + 1 per VGPR, or 0 */
     uint32_t interpolation_pending[VGPR_COUNT];
+    unsigned required_inputs;
     /* SGPR spill slots (spill_lanes): the VGPRs v_writelane_b32 and v_readlane_b32 use, each a spill_index + 1
        (0: not one), the dwords of its first and last lane instruction (between them only those may use it),
        and its slots, a word and a lane bit for every lane (made on first use); the dword of the instruction
@@ -2602,6 +2604,7 @@ static void interpolation_instruction(translator *t, const uint32_t *w, const gc
         return;
     }
     t->interpolation_pending[vdst] = first ? key : 0;
+    if (t->required_inputs <= attribute) t->required_inputs = attribute + 1;
     const uint32_t control = t->layout->input_controls ? t->layout->input_controls[attribute] : attribute;
     if (control & GCN_PS_INPUT_USE_DEFAULT) {
         static const float defaults[4][4] = {{0, 0, 0, 0}, {0, 0, 0, 1}, {1, 1, 1, 0}, {1, 1, 1, 1}};
@@ -5247,6 +5250,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         *spirv = spirv_finish(m, spirv_word_count);
         if (*spirv) result = 0;
         if (layout->user_data_read) *layout->user_data_read = t->user_read;
+        if (layout->required_inputs) *layout->required_inputs = t->required_inputs;
         if (layout->sgprs_read) memcpy(layout->sgprs_read, t->read_sgprs, sizeof t->read_sgprs);
         else fail(t, "no memory");
     }
@@ -5526,6 +5530,7 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
                             .front_face = layout->front_face, .front_face_all_bits = layout->front_face_all_bits,
                             .front_face_vgpr = layout->front_face_vgpr, .images = layout->images, .image_count = layout->image_count,
                             .samplers = layout->samplers, .sampler_count = layout->sampler_count, .input_controls = layout->input_controls,
+                            .required_inputs = layout->required_inputs,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address, .guest = layout->guest,
                             .depth_export = layout->depth_export, .user_data_read = layout->user_data_read,
                             .sgprs_read = layout->sgprs_read, .table_snapshot = layout->table_snapshot,
