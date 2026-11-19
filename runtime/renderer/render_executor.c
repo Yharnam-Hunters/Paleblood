@@ -3040,6 +3040,46 @@ static int fill_guest_memory(rt_executor *x, uint64_t address, uint64_t bytes, u
     return 0;
 }
 
+/* Whether another render target with draws not yet in memory, or a depth target's unwritten depth,
+   overlaps a target's memory. */
+static int other_unwritten_over(const rt_executor *x, const target_entry *t)
+{
+    const uint64_t base = t->address, span = target_span(t);
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *o = &x->targets[i];
+        if (o != t && o->drawn && o->address < base + span && base < o->address + target_span(o)) return 1;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < base + span && base < x->depths[i].z_address + depth_span(&x->depths[i])) return 1;
+    return 0;
+}
+
+/* Fills a render target's linear rows with one repeated 32-bit word and copies them into its image, on
+   the GPU, with the batch: the target counts as drawn (its earlier draws replaced), its image current.
+   0, or -1 with the reason. */
+static int clear_target_rows(rt_executor *x, target_entry *t, uint32_t word, char *error, size_t error_size)
+{
+    rt_tiling layout;
+    uint64_t span;
+    if (target_memory(x, t, &layout, &span, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkDeviceSize rows = (VkDeviceSize)t->width * t->height * t->element_bytes;
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                                                                               VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before,
+                         0, NULL, 0, NULL);
+    vkCmdFillBuffer(commands, t->plan.linear.buffer, 0, rows, word);
+    const VkMemoryBarrier filled = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &filled, 0, NULL, 0, NULL);
+    if (record_target_copy(x, t, 0, error, error_size)) return -1;
+    target_drawn(x, t);
+    t->loaded_change = x->change_count;
+    return 0;
+}
+
 /* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
    8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
    0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
@@ -3081,7 +3121,8 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
                 return failed(error, error_size, "render target %#llx with a partly fast-cleared CMASK: not done yet", (unsigned long long)c->address);
         }
         uint32_t element_bytes;
-        if (target_format(c, &element_bytes, error, error_size) == VK_FORMAT_UNDEFINED) return -1;
+        const VkFormat format = target_format(c, &element_bytes, error, error_size);
+        if (format == VK_FORMAT_UNDEFINED) return -1;
         rt_tiling layout;
         char reason[160];
         if (rt_tiling_layout(c->tile_mode_index, element_bytes, c->pitch, c->height, &layout, reason, sizeof reason))
@@ -3091,7 +3132,13 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
             return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)c->address);
         const uint32_t words = element_bytes / 4;
         int settled = !stored; /* nothing in the batch still stores to the CMASK */
-        if (words == 1 || s->clear_words[slot][0] == s->clear_words[slot][1]) {
+        const int one_word = words == 1 || s->clear_words[slot][0] == s->clear_words[slot][1];
+        const int in_image = one_word && t && target_has_shape(t, c, format) && !other_unwritten_over(x, t);
+        if (in_image) {
+            /* the target's own image takes the clear, through its linear rows (a uniform texel lies the
+               same way tiled or not); its memory gets it when it is written back, as a draw's would */
+            if (clear_target_rows(x, t, s->clear_words[slot][0], error, error_size)) return -1;
+        } else if (one_word) {
             /* one repeated word: filled on the GPU with the batch, after what it already does to that memory */
             if (fill_guest_memory(x, c->address, span & ~(uint64_t)3, s->clear_words[slot][0], error, error_size)) return -1;
         } else {
@@ -3108,8 +3155,10 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
         } else if (fill_guest_memory(x, cmask, c->cmask_bytes, UINT32_MAX, error, error_size)) { /* after the dispatch that cleared it */
             return -1;
         }
-        if (t) t->drawn = 0, t->loaded_change = UINT64_MAX, t->staging_current = 0;
-        memory_changed(x, c->address, span); /* images over that memory load it again */
+        if (!in_image) { /* cleared in memory: the target and the images over it load it again */
+            if (t) t->drawn = 0, t->loaded_change = UINT64_MAX, t->staging_current = 0;
+            memory_changed(x, c->address, span);
+        }
         if (m) m->cleared = 0, m->resolved = x->change_count;
     }
     return 0;
