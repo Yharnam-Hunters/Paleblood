@@ -589,6 +589,9 @@ struct rt_executor {
     /* draws take table snapshots (DRAW_PUSH_BYTES): the push constants are then one range for every
        stage, which each push names (draw_push_stages); otherwise a range a stage */
     int draw_snapshots;
+    /* the copy plans' linear rows (tile_plan_make), in bytes, and a limit on them (BB_COPY_ROWS_LIMIT, for
+       tests: 0, none but the device's memory) */
+    VkDeviceSize copy_rows_bytes, copy_rows_limit;
     int snapshot_memory;             /* the blocks' memory (gpu_buffer_make): MAPPED_LOCAL, or MAPPED with PB_SNAPSHOT_LOCAL=0 */
     VkShaderStageFlags draw_push_stages;
     unsigned push_range_count;
@@ -1508,6 +1511,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     const char *draw_snapshots = getenv("PB_DRAW_SNAPSHOTS"), *snapshot_local = getenv("PB_SNAPSHOT_LOCAL");
     x->draw_snapshots = properties.limits.maxPushConstantsSize >= DRAW_PUSH_BYTES && !(draw_snapshots && !strcmp(draw_snapshots, "0"));
     x->snapshot_memory = snapshot_local && !strcmp(snapshot_local, "0") ? MAPPED : MAPPED_LOCAL;
+    const char *rows_limit = getenv("BB_COPY_ROWS_LIMIT");
+    x->copy_rows_limit = rows_limit ? strtoull(rows_limit, NULL, 0) : 0;
     x->draw_push_stages = x->vertex_stages | VK_SHADER_STAGE_FRAGMENT_BIT;
     x->push_range_count = x->draw_snapshots ? 1 : STAGES;
     const VkPushConstantRange ranges[STAGES] = {
@@ -2443,6 +2448,7 @@ static int gpu_buffer_make(rt_executor *x, gpu_buffer *b, VkDeviceSize bytes, in
 
 static void tile_plan_free(rt_executor *x, tile_plan *p)
 {
+    x->copy_rows_bytes -= p->linear.size;
     gpu_buffer_free(x, &p->table);
     gpu_buffer_free(x, &p->linear);
     *p = (tile_plan){0};
@@ -2470,6 +2476,35 @@ static unsigned tile_copy_pieces(const rt_tiling *layout)
     return micro_bytes <= PIPE_INTERLEAVE_BYTES && pieces && !(pieces & (pieces - 1)) ? pieces : 0;
 }
 
+/* Frees the copy plans of the images that no batch the GPU has not finished uses, nor the call being
+   recorded: each plan's linear rows are as large as its image, and every image keeps its plans while
+   it is kept, so a long walk fills the device's memory with them. A freed plan is made again when its
+   image next loads or is written back (the `!plan.table.buffer` tests). Returns how many images
+   gave theirs. */
+static size_t free_idle_image_plans(rt_executor *x)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return 0;
+    size_t freed = 0;
+    for (size_t i = 0; i < x->image_count; i++) {
+        image_entry *k = &x->images[i];
+        if (!k->image || k->used_ticket > done || k->used_call == x->call_serial || (!k->plan.table.buffer && !k->level_plans)) continue;
+        tile_plan_free(x, &k->plan);
+        level_plans_free(x, k);
+        freed++;
+    }
+    return freed;
+}
+
+/* Makes a plan's table (`table_bytes`, mapped) and linear rows (`rows_bytes`, device-local). 0, or -1. */
+static int tile_plan_buffers_make(rt_executor *x, tile_plan *p, VkDeviceSize table_bytes, VkDeviceSize rows_bytes)
+{
+    if (x->copy_rows_limit && x->copy_rows_bytes + rows_bytes > x->copy_rows_limit) return -1;
+    if (gpu_buffer_make(x, &p->table, table_bytes, 1) || gpu_buffer_make(x, &p->linear, rows_bytes, 0)) return -1;
+    x->copy_rows_bytes += rows_bytes;
+    return 0;
+}
+
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
    table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
    each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
@@ -2489,8 +2524,10 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
                      .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO, .pieces_log2 = pieces_log2};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
     const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices * pieces;
-    if (gpu_buffer_make(x, &p->table, entries * 4, 1) ||
-        gpu_buffer_make(x, &p->linear, (VkDeviceSize)width * height * slices * layout->element_bytes, 0)) {
+    const VkDeviceSize rows_bytes = (VkDeviceSize)width * height * slices * layout->element_bytes;
+    int made = tile_plan_buffers_make(x, p, entries * 4, rows_bytes);
+    if (made && free_idle_image_plans(x)) made = tile_plan_buffers_make(x, p, entries * 4, rows_bytes); /* the device's memory is full */
+    if (made) {
         tile_plan_free(x, p);
         return failed(error, error_size, "no GPU memory for copying a %ux%u image", width, height);
     }
@@ -3073,6 +3110,46 @@ static int fill_guest_memory(rt_executor *x, uint64_t address, uint64_t bytes, u
     return 0;
 }
 
+/* Whether another render target with draws not yet in memory, or a depth target's unwritten depth,
+   overlaps a target's memory. */
+static int other_unwritten_over(const rt_executor *x, const target_entry *t)
+{
+    const uint64_t base = t->address, span = target_span(t);
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *o = &x->targets[i];
+        if (o != t && o->drawn && o->address < base + span && base < o->address + target_span(o)) return 1;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < base + span && base < x->depths[i].z_address + depth_span(&x->depths[i])) return 1;
+    return 0;
+}
+
+/* Fills a render target's linear rows with one repeated 32-bit word and copies them into its image, on
+   the GPU, with the batch: the target counts as drawn (its earlier draws replaced), its image current.
+   0, or -1 with the reason. */
+static int clear_target_rows(rt_executor *x, target_entry *t, uint32_t word, char *error, size_t error_size)
+{
+    rt_tiling layout;
+    uint64_t span;
+    if (target_memory(x, t, &layout, &span, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkDeviceSize rows = (VkDeviceSize)t->width * t->height * t->element_bytes;
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                                                                               VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before,
+                         0, NULL, 0, NULL);
+    vkCmdFillBuffer(commands, t->plan.linear.buffer, 0, rows, word);
+    const VkMemoryBarrier filled = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &filled, 0, NULL, 0, NULL);
+    if (record_target_copy(x, t, 0, error, error_size)) return -1;
+    target_drawn(x, t);
+    t->loaded_change = x->change_count;
+    return 0;
+}
+
 /* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
    8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
    0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
@@ -3114,7 +3191,8 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
                 return failed(error, error_size, "render target %#llx with a partly fast-cleared CMASK: not done yet", (unsigned long long)c->address);
         }
         uint32_t element_bytes;
-        if (target_format(c, &element_bytes, error, error_size) == VK_FORMAT_UNDEFINED) return -1;
+        const VkFormat format = target_format(c, &element_bytes, error, error_size);
+        if (format == VK_FORMAT_UNDEFINED) return -1;
         rt_tiling layout;
         char reason[160];
         if (rt_tiling_layout(c->tile_mode_index, element_bytes, c->pitch, c->height, &layout, reason, sizeof reason))
@@ -3124,7 +3202,13 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
             return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)c->address);
         const uint32_t words = element_bytes / 4;
         int settled = !stored; /* nothing in the batch still stores to the CMASK */
-        if (words == 1 || s->clear_words[slot][0] == s->clear_words[slot][1]) {
+        const int one_word = words == 1 || s->clear_words[slot][0] == s->clear_words[slot][1];
+        const int in_image = one_word && t && target_has_shape(t, c, format) && !other_unwritten_over(x, t);
+        if (in_image) {
+            /* the target's own image takes the clear, through its linear rows (a uniform texel lies the
+               same way tiled or not); its memory gets it when it is written back, as a draw's would */
+            if (clear_target_rows(x, t, s->clear_words[slot][0], error, error_size)) return -1;
+        } else if (one_word) {
             /* one repeated word: filled on the GPU with the batch, after what it already does to that memory */
             if (fill_guest_memory(x, c->address, span & ~(uint64_t)3, s->clear_words[slot][0], error, error_size)) return -1;
         } else {
@@ -3141,8 +3225,10 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
         } else if (fill_guest_memory(x, cmask, c->cmask_bytes, UINT32_MAX, error, error_size)) { /* after the dispatch that cleared it */
             return -1;
         }
-        if (t) t->drawn = 0, t->loaded_change = UINT64_MAX, t->staging_current = 0;
-        memory_changed(x, c->address, span); /* images over that memory load it again */
+        if (!in_image) { /* cleared in memory: the target and the images over it load it again */
+            if (t) t->drawn = 0, t->loaded_change = UINT64_MAX, t->staging_current = 0;
+            memory_changed(x, c->address, span);
+        }
         if (m) m->cleared = 0, m->resolved = x->change_count;
     }
     return 0;

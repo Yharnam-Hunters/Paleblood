@@ -3812,6 +3812,26 @@ static long read_file(const char *path, unsigned char *bytes, size_t size)
     return (long)got;
 }
 
+/* With the device's memory full, an image still loads: the copy plans of images no unfinished batch
+   uses give their memory back (free_idle_image_plans). BB_COPY_ROWS_LIMIT stands in for a full device:
+   linear rows for two 16x16 surfaces of 4-byte texels, the target's and one image's. many_images' 100
+   images, each drawn in its own run, then all draw; without the plans given back, the second image
+   found no memory for its copy. */
+static void images_past_full_memory(const rt_executor_memory *memory)
+{
+    enum { TWO_IMAGES_ROWS = 2 * SIZE * SIZE * 4 };
+    char error[256] = "", limit[16];
+    snprintf(limit, sizeof limit, "%d", TWO_IMAGES_ROWS);
+    setenv("BB_COPY_ROWS_LIMIT", limit, 1);
+    rt_executor *x = NULL;
+    const int opened = rt_executor_open(memory, &x, error, sizeof error);
+    unsetenv("BB_COPY_ROWS_LIMIT");
+    CHECK(opened == 0);
+    if (opened) return;
+    many_images(x, 100);
+    rt_executor_close(x);
+}
+
 /* A shader translates to the same SPIR-V whatever the order the executor meets it in: its run-time stop
    word follows from the shader itself, not from the entry it takes. Two vertex shaders (copies of one
    program at two addresses) are drawn in one order in one executor and in the other order in a second,
@@ -4770,6 +4790,7 @@ int main(void)
     rt_executor_close(x);
     shader_sweep(&memory);
     same_spirv_in_any_order(&memory);
+    images_past_full_memory(&memory);
     pipeline_cache_file(&memory);
     launch_compiles(&memory);
     rt_render_forget();
