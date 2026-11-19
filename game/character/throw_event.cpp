@@ -83,19 +83,31 @@ RT_ORIGINAL(0x00d4a2c0, event_id_by_name, int32_t(EventNameTable *, const char *
 // Grows the ring's storage to hold at least that many events.
 RT_ORIGINAL(0x029bc380, event_ring_reserve, void(EventRing *, int32_t capacity));
 
+// The ring's 32-bit counts wrap as the original's arithmetic does (no signed overflow).
+int32_t wrapping_multiply(int32_t value, int32_t factor)
+{
+    return static_cast<int32_t>(static_cast<uint32_t>(value) * static_cast<uint32_t>(factor));
+}
+
+int32_t wrapping_increment(int32_t value)
+{
+    return static_cast<int32_t>(static_cast<uint32_t>(value) + 1);
+}
+
 void push_event(EventRing *ring, int32_t id, uint32_t stale_padding)
 {
     if (ring->count >= ring->capacity)
-        event_ring_reserve(ring, ring->capacity ? ring->capacity * ring_growth_factor : ring_first_capacity);
+        event_ring_reserve(ring, ring->capacity ? wrapping_multiply(ring->capacity, ring_growth_factor)
+                                                : ring_first_capacity);
     int32_t index = ring->write_index;
     if (index == ring->capacity) index = 0;
-    ring->write_index = index + 1;
+    ring->write_index = wrapping_increment(index);
     BehaviorEvent &event = ring->events[index];
     event.id = id;
     event.padding = stale_padding;
     event.payload = nullptr;
     event.sender = nullptr;
-    ring->count++;
+    ring->count = wrapping_increment(ring->count);
 }
 
 }  // namespace
@@ -123,7 +135,8 @@ character_throw_event_body(AnimEvents *events, const char *name, uint32_t stale_
 #else
 #define THROW_EVENT_BODY "character_throw_event_body"
 #endif
-extern "C" __attribute__((naked, visibility("default"))) void bb_character_throw_event_01e19e20(AnimEvents *, const char *)
+extern "C" __attribute__((naked, visibility("default"))) void
+bb_character_throw_event_01e19e20(AnimEvents *, const char *)
 {
     asm volatile("movl -0x44(%rsp), %edx\n\t"
                  "jmp " THROW_EVENT_BODY);
