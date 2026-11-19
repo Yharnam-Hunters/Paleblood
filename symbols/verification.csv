@@ -1892,7 +1892,7 @@ render_allocate_shader_upload,recorded,,239,239,0,0,48df8d1e68143c6f,2026-11-12
 render_allocate_shader_upload,edge,,40,40,0,0,48df8d1e68143c6f,2026-11-12
 render_allocate_shader_upload_range_02aa9db0,recorded,,719,719,0,0,dff531236f354620,2026-11-17
 render_allocate_shader_upload_range_02aa9db0,edge,,27,27,0,0,dff531236f354620,2026-11-13
-render_build_present_source_record,edge,,105,105,0,0,1c9e410dd4d00fed,2026-11-10
+render_build_present_source_record,edge,,105,105,0,0,368306e36f93940d,2026-11-19
 render_build_shader_link_words,recorded,,9,9,0,0,0179f06c079fc316,2026-11-12
 render_build_shader_link_words,edge,,30,30,0,0,0179f06c079fc316,2026-11-12
 render_calculate_record_descriptor_level_offset,edge,,30,30,0,0,a5d954dded06630e,2026-11-05
@@ -2011,7 +2011,7 @@ render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-12
 render_pop_present_buffer_pool,edge,,25,25,0,0,36601bdfbc50357a,2026-11-10
 render_prepare_present_context_scratch,recorded,,669,669,0,0,056fab43a42fc1e4,2026-11-17
 render_prepare_present_context_scratch,edge,,34,34,0,0,056fab43a42fc1e4,2026-11-05
-render_prepare_resource_descriptor,edge,,40,40,0,0,beb33acb10844a38,2026-11-10
+render_prepare_resource_descriptor,edge,,40,40,0,0,cb1e68cd389b1119,2026-11-19
 render_prepare_swap_chain_resource_info,edge,,54,54,0,0,328c0ffeac3089c8,2026-11-13
 render_present_encoding_units,recorded,,87,87,0,0,c3332eaa68fece3e,2026-11-17
 render_present_encoding_units,edge,,8,8,0,0,c3332eaa68fece3e,2026-11-10
@@ -2034,11 +2034,11 @@ render_read_record_mapping_word,recorded,,63,63,0,0,68ea5b3aae2f9be4,2026-11-12
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-12
 render_reclaim_shader_upload_blocks_02aaa860,recorded,,180,180,0,0,dff531236f354620,2026-11-17
 render_reclaim_shader_upload_blocks_02aaa860,edge,,22,22,0,0,dff531236f354620,2026-11-13
-render_record_apply_mapping,edge,,400,400,0,0,6de6826ea92e835a,2026-11-05
+render_record_apply_mapping,edge,,400,400,0,0,8836386d282fac95,2026-11-19
 render_record_apply_parameter_tuple,edge,,1050,1050,0,0,5cc7672932429aef,2026-11-04
 render_record_auxiliary_predicate,recorded,,137,137,0,0,ddfae0976d12bebd,2026-11-17
 render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
-render_record_constructor,edge,,64,64,0,0,396bf37de5ef4277,2026-11-10
+render_record_constructor,edge,,64,64,0,0,ef51a92055017d7d,2026-11-19
 render_record_constructor_optional_first,edge,,62,62,0,0,3b16979550283ed3,2026-11-10
 render_record_constructor_optional_second,edge,,79,79,0,0,0843eec05fb364bc,2026-11-10
 render_record_constructor_pack_pair,edge,,64,64,0,0,5e511c07c36ca7c5,2026-11-10
