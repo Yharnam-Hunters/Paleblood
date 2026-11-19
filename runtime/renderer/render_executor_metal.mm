@@ -110,9 +110,11 @@ struct MetalTarget {
 struct MetalBlend {
     bool enabled = false;
     MTLBlendFactor source = MTLBlendFactorOne, destination = MTLBlendFactorZero;
+    MTLBlendFactor alpha_source = MTLBlendFactorOne, alpha_destination = MTLBlendFactorZero;
     bool operator==(const MetalBlend &other) const
     {
-        return enabled == other.enabled && source == other.source && destination == other.destination;
+        return enabled == other.enabled && source == other.source && destination == other.destination &&
+            alpha_source == other.alpha_source && alpha_destination == other.alpha_destination;
     }
 };
 struct MetalPipeline {
@@ -285,7 +287,7 @@ static bool color_writes(const MetalState &state)
 }
 
 /* GFX7 CB_BLENDn_CONTROL factors are not Metal enum ordinals. This bounded
-   profile uses ADD and the colour factors for both RGB and alpha. */
+   profile uses ADD with shared or independent RGB and alpha factors. */
 static int blend_factor(unsigned factor, MTLBlendFactor &out, char *error, size_t size)
 {
     enum { BLEND_ZERO = 0, BLEND_ONE = 1, BLEND_SRC_ALPHA = 4, BLEND_ONE_MINUS_SRC_ALPHA = 5 };
@@ -303,17 +305,24 @@ static int blend_state(const MetalState &state, MetalBlend &out, char *error, si
     if (!color_writes(state) || !(state.blend_set & 1u) || !(state.blend_control[0] & BLEND_ENABLE)) return 0;
     enum { FACTOR_MASK = 0x1f, COLOR_COMB_SHIFT = 5, COLOR_DEST_SHIFT = 8,
            COMB_MASK = 7, COMB_DST_PLUS_SRC = 0, RESERVED_MASK = 7u << 13,
+           ALPHA_SOURCE_SHIFT = 16, ALPHA_COMB_SHIFT = 21, ALPHA_DEST_SHIFT = 24,
            SEPARATE_ALPHA_BLEND = 1u << 29, DISABLE_ROP3 = 1u << 31 };
     const uint32_t control = state.blend_control[0];
-    if (control & SEPARATE_ALPHA_BLEND) return failed(error,size,"separate alpha blending is outside the Metal ADD profile");
     if (control & DISABLE_ROP3) return failed(error,size,"blending DISABLE_ROP3 is outside the Metal ADD profile");
     if (control & RESERVED_MASK) return failed(error,size,"blending has unmodeled reserved CB_BLEND0_CONTROL bits");
     if ((control >> COLOR_COMB_SHIFT & COMB_MASK) != COMB_DST_PLUS_SRC)
         return failed(error,size,"blending operation is outside the Metal ADD profile");
     if (blend_factor(control & FACTOR_MASK,out.source,error,size) ||
         blend_factor(control >> COLOR_DEST_SHIFT & FACTOR_MASK,out.destination,error,size)) return -1;
-    /* SEPARATE_ALPHA_BLEND is clear: inactive alpha fields do not change the
-       shared factors, including their pipeline-cache identity. */
+    out.alpha_source = out.source;
+    out.alpha_destination = out.destination;
+    if (control & SEPARATE_ALPHA_BLEND) {
+        if ((control >> ALPHA_COMB_SHIFT & COMB_MASK) != COMB_DST_PLUS_SRC)
+            return failed(error,size,"separate alpha blending operation is outside the Metal ADD profile");
+        if (blend_factor(control >> ALPHA_SOURCE_SHIFT & FACTOR_MASK,out.alpha_source,error,size) ||
+            blend_factor(control >> ALPHA_DEST_SHIFT & FACTOR_MASK,out.alpha_destination,error,size)) return -1;
+    }
+    /* Inactive alpha fields retain the shared effective factors and cache identity. */
     out.enabled = true;
     return 0;
 }
@@ -1045,7 +1054,7 @@ static id<MTLRenderPipelineState> pipeline_for(rt_executor *x, id<MTLFunction> v
     if (blend.enabled) {
         attachment.rgbBlendOperation = MTLBlendOperationAdd; attachment.alphaBlendOperation = MTLBlendOperationAdd;
         attachment.sourceRGBBlendFactor = blend.source; attachment.destinationRGBBlendFactor = blend.destination;
-        attachment.sourceAlphaBlendFactor = blend.source; attachment.destinationAlphaBlendFactor = blend.destination;
+        attachment.sourceAlphaBlendFactor = blend.alpha_source; attachment.destinationAlphaBlendFactor = blend.alpha_destination;
     }
     id<MTLRenderPipelineState> pipeline = [x->device newRenderPipelineStateWithDescriptor:description error:&failure];
     if (!pipeline) return failed(error, size, "Metal draw pipeline: %s", failure.localizedDescription.UTF8String), nil;
