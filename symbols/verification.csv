@@ -152,6 +152,7 @@ audio_fmod_string_copy_counted,edge,,54,54,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_thread_affinity_lookup,recorded,,10,10,0,0,8abaccecd8e6ac90,2026-11-17
 audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-11-03
 audio_fmod_thread_entry,edge,,189,189,0,0,68c1bbca08873495,2026-11-17
+audio_fmod_update_timing_exclusion,edge,,156,156,0,0,ade789d511cebd87,2026-11-19
 audio_fmod_wake_thread,edge,,79,79,0,0,a915fff13aa4fb20,2026-11-18
 camera_axis_angle_quaternion_00848e80,recorded,,302,302,0,0,1bbcc2f491ba3af5,2026-11-17
 camera_axis_angle_quaternion_00848e80,edge,,866,866,0,0,1bbcc2f491ba3af5,2026-11-14
