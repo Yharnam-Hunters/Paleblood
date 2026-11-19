@@ -378,6 +378,33 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `destroys_with_0x0139bf90_then_deletes` | relative, 28 bytes (0x018293b0's), two `{rel:...}` | a deleting destructor: destroy through 0x0139bf90, then delete |
 | `clears_0x28_and_passes_0x18_to_0x027286b0` | relative, 23 bytes (0x0259c830's), one `{rel:...}` | clear +0x28 and pass the object at +0x18, when there is one, to 0x027286b0 |
 | `passes_float_to_0x01b5f7f0_when_0x010edc70_agrees` | relative, 49 bytes (0x01a00c50's), two `{rel:...}` | pass the object and a float to 0x01b5f7f0 when 0x010edc70 agrees |
+| `destroys_holder_of_shared_work` | relative, 128 bytes (0x01e64140's), 4 `{rel:...}` | in-place destructor of a holder of shared work (two more are in `menu/scaleform_glue.cpp`) |
+| `destroys_owner_of_wide_string_then_base_0x0139b630` | relative, 135 bytes (0x018d7d10's), 3 `{rel:...}` | destructor of an object owning a heap wide string (+0x30, flag +0x44), then the base destructor |
+| `deletes_owner_of_wide_string_after_base_0x0139b630` | relative, 143 bytes (0x018d7da0's), 4 `{rel:...}` | the deleting form of the same destructor |
+| `visits_children_of_list_at_0x40` | relative, 159 bytes (0x02e12d30's), 2 `{rel:...}` | walk the children of the list at +0x40 through 0x00b69e20 and the own slot 0x28 |
+| `secondary_base_visits_children_of_list_at_0x40` | relative, 159 bytes (0x02e13170's), 2 `{rel:...}` | the same walk entered through the secondary base at +0x48 |
+| `selects_index_of_changed_id_with_0x01348fe0` | relative, 103 bytes (0x0260f7f0's), one `{rel:...}` | when a followed id changes, pass its table index to 0x01348fe0 with the owner's target |
+| `initializes_owner_block_six_pointers_to_0x05ac5cac` | relative, 109 bytes (0x01663160's), one `{rel:...}` | fill an owner's block: one fixed address in its first six pointers, the rest cleared, the owner at +0x78 |
+| `initializes_owner_block_pointers_to_0x05acd45c_and_0x05acd1bc` | relative, 132 bytes (0x01667730's), two `{rel:...}` | fill an owner's block: two fixed addresses in its first two pointers, the rest cleared, the owner at +0x78 |
+| `initializes_owner_block_first_pointer_to_0x05ac74a3` | relative, 129 bytes (0x0166f510's), one `{rel:...}` | fill an owner's block: one fixed address in its first pointer, the rest cleared, the owner at +0x78 |
+| `destroys_pair_owner_with_vtable_0x0570fb90` | relative, 94 bytes (0x02eee0e0's), one `{rel:...}` | destructor of an owner of two objects (+0x8, +0x10) released through their slot 0x18 |
+| `destroys_entry_storage_with_vtable_0x057045e0` | relative, 79 bytes (0x02e074a0's), two `{rel:...}` | destructor that frees 16-byte entry storage through the global allocator object 0x058018b0 |
+| `releases_counted_object_at_0x10` | relative, 192 bytes (0x02d05810's), two `{rel:...}` | pass the counted object at +0x10 to 0x027286b0, then drop its strong and weak count, destroying or freeing it |
+| `frees_8_byte_block_through_0x05ac8288` | relative, 31 bytes (0x02eee000's), two `{rel:...}` | free an 8-byte block through the sized free of the allocator 0x05ac8288 points at |
+| `frees_sized_block_aligned_8_through_0x05ac8288` | relative, 32 bytes (0x02c85c20's), two `{rel:...}` | free a block of the size given through the sized free of the allocator 0x05ac8288 points at |
+| `allocates_aligned_8_through_0x05ac8288` | relative, 26 bytes (0x02c85bd0's), two `{rel:...}` | allocate the size given, alignment 8, from the allocator 0x05ac8288 points at |
+| `allocates_with_alignment_through_0x05ac8288` | relative, 27 bytes (0x02c85bf0's), two `{rel:...}` | allocate the size and alignment given from the allocator 0x05ac8288 points at |
+| `resets_with_0x02c375e0_and_returns_object` | relative, 24 bytes (0x02c3c990's), one `{rel:...}` | reset the object through 0x02c375e0 and return it |
+| `releases_value_at_0x8_with_0x005c14d0_then_clears_kind` | relative, 28 bytes (0x005a6820's), one `{rel:...}` | release the value at +0x8 through 0x005c14d0, then clear its kind byte |
+| `equals_by_kind_and_16_bytes_at_0x10` | relative, 75 bytes (0x02b05be0's), one `{rel:...}` | two objects are equal when their kinds (slot 0) and the 16 bytes at their +0x10 are |
+| `destroys_second_argument_then_frees_it_to_owning_heap` | 58 bytes, one `{rel:...}` | destroy the second argument, then free it through the heap that owns it |
+| `stores_vtable_0x05541c80_releases_members_0x10_and_0x8` | 80 bytes, two `{rel:...}` | destructor: release the derived and then the base counted member |
+| `stores_vtable_0x05541c80_releases_members_then_deletes` | 81 bytes, three `{rel:...}` | the deleting twin |
+| `stores_vtable_0x05541b90_releases_member_at_8_then_deletes` | 52 bytes, two `{rel:...}` | the base class's deleting destructor |
+| `frees_string_at_0x10_through_allocator_at_0x30_then_deletes` | 44 bytes, one `{rel:...}` | free a string's heap buffer through its allocator, then delete the object |
+| `stores_minus_2_at_0x10_through_setter_then_returns_zero` | 18 bytes, one `{rel:...}` | set the dword at +0x10 to -2 through a setter, return 0 |
+| `calls_0x022dc040_then_sets_byte_0x60` | 25 bytes, one `{rel:...}` | a call, then a flag |
+| `frees_0x10_bytes_through_0x05ac8288` | 31 bytes, two `{rel:...}` | free a 0x10-byte block through the allocator a global points at |
 
 A parameterized family's source is generated by `tools/family_emit.py FAMILY` from its member
 table and a template (one named constant and one replacement per value); the validator refuses a
