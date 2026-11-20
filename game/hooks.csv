@@ -396,6 +396,7 @@ address,replacement,system,returns
 0x01900d00,bb_engine_tree_free_subtree_01900d00,engine,void
 0x019048a0,bb_engine_array64_push_back_019048a0,engine,void
 0x01904bb0,bb_engine_array64_reserve_01904bb0,engine,void
+0x0190a5f0,bb_character_params_post_update,character,void
 0x01913c10,bb_character_data_update_01913c10,character,void
 0x01922130,bb_engine_array64_reserve_01922130,engine,void
 0x0193ec80,bb_engine_array64_push_back_0193ec80,engine,void
