@@ -4,36 +4,17 @@
 // Sys\Localize\CSLocalizeLang.cpp) clears it here once both of its loads reached the same state.
 // Two more users are kept original, too short to hook: 0x01d53530 raises the byte, 0x01d53540
 // answers whether no request is pending.
-#include <cstddef>
 #include <cstdint>
 
+#include "localize_language.h"
 #include "runtime/original.h"
+
+using menu::localize::LocalizeLanguage;
+using menu::localize::load_state_awaited;
 
 namespace {
 
-// A load the language object holds: only its state is read here.
-struct LocalizeLoad {
-    uint8_t unknown_0x00[0xc];
-    int32_t state;
-};
-static_assert(offsetof(LocalizeLoad, state) == 0xc);
-
-// The language object: 0x01d53140 and the function below are slots of its vtable.
-struct LocalizeLanguage {
-    const void *vtable;
-    uint8_t unknown_0x08[0x4];
-    int32_t state;
-    uint8_t unknown_0x10[0x20];
-    LocalizeLoad *first_load;
-    LocalizeLoad *second_load;
-};
-static_assert(offsetof(LocalizeLanguage, state) == 0xc);
-static_assert(offsetof(LocalizeLanguage, first_load) == 0x30);
-static_assert(offsetof(LocalizeLanguage, second_load) == 0x38);
-
-// The state both loads must be in before the request is cleared, and the state the language
-// object moves to then. What the two values stand for is not established.
-constexpr int32_t load_state_awaited = 3;
+// The state the language object moves to once both loads are awaited (meaning not established).
 constexpr int32_t language_state_after_request = 8;
 
 // Nonzero while a request is pending (a byte, not a bool).

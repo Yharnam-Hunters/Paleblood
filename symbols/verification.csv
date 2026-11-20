@@ -139,9 +139,10 @@ audio_fmod_create_native_thread,edge,,264,264,0,0,ba5ade3ce59c8354,2026-11-18
 audio_fmod_initialize_thread,recorded,,14,14,0,0,a40873c8233118df,2026-11-17
 audio_fmod_initialize_thread,edge,,84,84,0,0,a40873c8233118df,2026-11-16
 audio_fmod_initialize_timing_state,edge,,103,103,0,0,05e730c3a91adea3,2026-11-18
-audio_fmod_output_close,edge,,234,234,0,0,fbe1c1b6c8b2c968,2026-11-19
+audio_fmod_output_close,edge,,234,234,0,0,2be5b88f604095e3,2026-11-20
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
+audio_fmod_output_update_port_state,edge,,177,177,0,0,a8fc382cf6f41d62,2026-11-20
 audio_fmod_start_thread,recorded,,16,16,0,0,e778d7fce820c27f,2026-11-17
 audio_fmod_start_thread,edge,,237,237,0,0,e778d7fce820c27f,2026-11-17
 audio_fmod_stop_output_threads,edge,,181,181,0,0,7357e4defa4ca7a8,2026-11-15
@@ -1659,7 +1660,10 @@ menu_heap_adapter_free_023411d0,recorded,,155,155,0,0,99d14ad81370e4cc,2026-11-1
 menu_heap_adapter_free_023411d0,edge,,6,6,0,0,99d14ad81370e4cc,2026-11-14
 menu_heap_adapter_reallocate_02341330,recorded,,105,105,0,0,99d14ad81370e4cc,2026-11-17
 menu_heap_adapter_reallocate_02341330,edge,,14,14,0,0,99d14ad81370e4cc,2026-11-14
-menu_localize_request_finish_01d53420,edge,,38,38,0,0,dc0cffa622548f6e,2026-11-19
+menu_localize_request_finish_01d53420,edge,,38,38,0,0,525e87d25699447c,2026-11-19
+menu_localize_step_release_final_loads_01d534b0,edge,,23,23,0,0,984e88c240cbc7de,2026-11-19
+menu_localize_step_release_load_01d53450,edge,,16,16,0,0,984e88c240cbc7de,2026-11-19
+menu_localize_step_release_loads_01d52e50,edge,,52,52,0,0,984e88c240cbc7de,2026-11-19
 menu_movie_screen_close_023548d0,recorded,,12,12,0,0,99d14ad81370e4cc,2026-11-17
 menu_movie_screen_close_023548d0,edge,,5,5,0,0,99d14ad81370e4cc,2026-11-14
 menu_movie_screen_step_02354d90,edge,,8,8,0,0,99d14ad81370e4cc,2026-11-14
