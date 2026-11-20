@@ -2034,7 +2034,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x0277ac00,0x0277ac00,1,77,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/ExtendedHeader.cpp,direct,high
 0x0277ac50,0x0277aef0,13,651,engine,,range,low
 0x0277af40,0x0277af40,1,337,engine,Dantelion2/ClassLibrary/Extended/SerializeLight/Source/detail/LoaderTemporaryData.cpp,direct,high
-0x02785580,0x028bf790,8895,1214824,scaleform,,extent,medium
+0x02785580,0x028bf790,8895,1214811,scaleform,,extent,medium
 0x028f3f50,0x028f3f50,1,1102,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high
 0x028f43a0,0x028f75c0,166,11226,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,range,medium
 0x028f75d0,0x028f75d0,1,305,havok,Common/Serialize/Data/Dict/hkDataObjectDict.cpp,direct,high
@@ -2271,7 +2271,7 @@ address,last,functions,bytes,library,file,evidence,confidence
 0x02f8ffe0,0x02f8ffe0,1,161,engine,Dantelion2/ClassLibrary/Extended/Serialize/Source/detail/DLBinArchiveSaver.cpp,direct,high
 0x02f90090,0x02f901c0,2,305,engine,Dantelion2/ClassLibrary/Extended/Serialize/Source/detail/DLBinArchiveSaver.cpp,range,medium
 0x02f901d0,0x02f901d0,1,128,engine,Dantelion2/ClassLibrary/Extended/Serialize/Source/detail/DLBinArchiveSaver.cpp,direct,high
-0x02f90250,0x02fa10f0,353,67506,engine,,range,low
+0x02f90250,0x02fa10f0,353,67505,engine,,range,low
 0x02fa1640,0x02fa1640,1,517,engine,Dantelion2/ClassLibrary/Core/Kernel/Source/DLFastSmallObjectAllocator.cpp,direct,high
 0x02fa1850,0x02fa1850,1,78,engine,Dantelion2/ClassLibrary/Core/Kernel/Source/DLFastSmallObjectAllocator.cpp,range,medium
 0x02fa18a0,0x02fa1950,2,720,engine,Dantelion2/ClassLibrary/Core/Kernel/Source/DLFastSmallObjectAllocator.cpp,direct,high

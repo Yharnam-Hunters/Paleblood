@@ -1137,6 +1137,19 @@ class Harness(unittest.TestCase):
         self.assertEqual(result.get('errors', []), [])
         self.assertEqual(result['writes'], [])
 
+    def test_import_can_set_rdx(self):
+        # 0x00400c80 jumps to the import, so its rax and rdx are the function's.
+        case = {'schema': 1, 'address': '0x00400c80', 'id': 'import-rdx', 'returns': 'i128', 'args': {},
+                'buffers': {}, 'memory': [], 'stubs': [],
+                'imports': [{'name': 'testImport', 'argc': 0, 'ret': '0x5', 'rdx': '0x1234567890abcdef'}]}
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side_case(self.case, address=case['address'])
+        self.assertEqual(result['ret'], {'rax': '0x5', 'rdx': '0x1234567890abcdef'})
+        case['imports'][0].pop('rdx')
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side_case(self.case, address=case['address'])
+        self.assertEqual(result['ret'], {'rax': '0x5', 'rdx': '0x0'})
+
     def test_zero_shape_physics_fixture_references_only_declared_buffers(self):
         import runpy
         fixtures = runpy.run_path(os.path.join(ROOT, 'game', 'physics',

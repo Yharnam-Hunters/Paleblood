@@ -302,7 +302,8 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 # Deliberately wrong replacements for the function families' mutation tests (tools/verify.py
 # family); a test library, never loaded by the runtime. The generic mutants are in test/, the
 # game-specific ones beside their system (game/<system>/tests/).
-add_library(bbfamily_mutants SHARED test/family_mutants.c game/engine/tests/family_mutants.c)
+add_library(bbfamily_mutants SHARED test/family_mutants.c game/engine/tests/family_mutants.c
+            game/engine/tests/scaleform_visit_dispatch_mutants.c)
 target_include_directories(bbfamily_mutants PRIVATE runtime/include)
 target_compile_options(bbfamily_mutants PRIVATE -ffp-contract=off -fno-fast-math)
 
