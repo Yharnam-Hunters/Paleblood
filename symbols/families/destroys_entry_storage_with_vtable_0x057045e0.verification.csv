@@ -1,0 +1,8 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+engine_destroys_entry_storage_with_vtable_0x057045e0_02e074a0,edge,,10,10,0,0,4ef4efbcd158c981,2026-11-16
+engine_destroys_entry_storage_with_vtable_0x057045e0_02e07580,edge,,10,10,0,0,4ef4efbcd158c981,2026-11-16
+engine_destroys_entry_storage_with_vtable_0x057045e0_02e0bb40,edge,,10,10,0,0,4ef4efbcd158c981,2026-11-16
+engine_destroys_entry_storage_with_vtable_0x057045e0_02e0cfa0,edge,,10,10,0,0,4ef4efbcd158c981,2026-11-16
+engine_destroys_entry_storage_with_vtable_0x057045e0_02e0d080,edge,,10,10,0,0,4ef4efbcd158c981,2026-11-16
+engine_destroys_entry_storage_with_vtable_0x057045e0_02e0d690,edge,,10,10,0,0,4ef4efbcd158c981,2026-11-16
+engine_destroys_entry_storage_with_vtable_0x057045e0_02e0d770,edge,,10,10,0,0,4ef4efbcd158c981,2026-11-16
