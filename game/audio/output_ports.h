@@ -7,7 +7,8 @@
 
 namespace audio {
 
-// The context OutputThreadContext calls service_context; only one flag byte is read here.
+// The object that OutputThreadContext::service_context (output_threads.h) points to; its
+// type is unknown, and only the flag byte at +0x32 is read here.
 struct OutputServiceContext {
     std::byte unknown_0x0000[0x32];
     uint8_t flags_32;

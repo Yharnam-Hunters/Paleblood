@@ -31,7 +31,9 @@ extern "C" uint32_t bb_audio_fmod_output_update_port_state(audio::OutputPortCont
     if (owner->listener == nullptr || owner->second_audio_out_port == 0)
         return 0;
 
-    // The original ignores the call's result and reads the state either way.
+    // The original ignores the call's result and reads the state either way. It also leaves
+    // the buffer uninitialised; zero-filling it here means a failed call reads as
+    // disconnected rather than as leftover stack bytes.
     AudioOutPortState state{};
     sce_audio_out_get_port_state(owner->second_audio_out_port, &state);
     const bool disconnected = state.output == 0;
