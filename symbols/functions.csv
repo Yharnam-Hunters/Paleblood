@@ -67,7 +67,9 @@ address,size,name,system,status,notes
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b070,58,audio_fmod_copy_output_label,audio,edge-verified,Copy the fixed output label for a positive signed DWORD count; set the final NUL after the counted copy; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
+0x0111b120,22,audio_fmod_close_output_ports,audio,original,FMOD output callback installed by 0x0111aed0; null-preserving -0x38 adjust; tail to 0x0111b7c0: drain the first port and close both; free the mix buffer; returns 0 or 0x21
 0x0111b1f0,64,audio_fmod_stop_output_threads,audio,edge-verified,FMOD output descriptor callback; stop AudioOut first and mixer only after success; return the Thread helper DWORD status
+0x0111b230,30,audio_fmod_update_output_port_state,audio,original,FMOD output callback installed by 0x0111aed0; null-preserving -0x38 adjust; 0x0111bb10 polls the second port's state and notifies on a connection change; returns zero
 0x0111b320,128,audio_fmod_record_driver_count,audio,original,Record driver count when the output is still zero: add 3 per logged-in user from sceUserServiceGetLoginUserIdList; 0x3a for user-service error 0x80960002; 0x21 for other failures
 0x0111b3b0,24,audio_fmod_record_open,audio,original,FMOD record callback installed by 0x0111aed0; null-preserving -0x38 adjust; tail to 0x0111c050; the zero fourth argument is dead (0x0111c050 never reads it)
 0x0111b3d0,22,audio_fmod_record_close,audio,original,FMOD record callback installed by 0x0111aed0; null-preserving -0x38 adjust; tail to 0x0111c240
@@ -141,6 +143,7 @@ address,size,name,system,status,notes
 0x01448580,150,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c"
 0x01448620,169,frame_timing_stopwatch_stop,frame_timing,edge-verified,Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start
 0x014486d0,111,frame_timing_stopwatch_frame_end_014486d0,frame_timing,edge-verified,Every 30 frames turns the total seconds and start count into per-frame averages; every frame folds the frame starts and seconds into their peaks
+0x0144d860,50,frame_timing_item_group_apply_requests,frame_timing,edge-verified,Each item of the group takes its requested enabled byte (+0x69 to +0x68); vector ends read once; count is the signed low 32 bits of the length in pointers
 0x01456c80,54,frame_timing_item_list_update_01456c80,frame_timing,verified,Calls 0x013d4810 on each item pointer between +0x8 and +0x10 (the ends read once)
 0x01456eb0,28,frame_timing_profile_start_01456eb0,frame_timing,edge-verified,"If the profiling switch 0x058b8718 is set, starts stopwatch N of ten at 0x058b86c0 (tail call 0x01448580). Body unreachable in retail (switch 0): stays edge-verified"
 0x01456ed0,28,frame_timing_profile_stop_01456ed0,frame_timing,edge-verified,"If the profiling switch 0x058b8718 is set, stops stopwatch N of ten at 0x058b86c0 (tail call 0x01448620). Body unreachable in retail (switch 0): stays edge-verified"
