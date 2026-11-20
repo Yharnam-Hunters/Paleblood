@@ -134,6 +134,7 @@ address,size,name,system,status,notes
 0x01448580,150,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c"
 0x01448620,169,frame_timing_stopwatch_stop,frame_timing,edge-verified,Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start
 0x014486d0,111,frame_timing_stopwatch_frame_end_014486d0,frame_timing,edge-verified,Every 30 frames turns the total seconds and start count into per-frame averages; every frame folds the frame starts and seconds into their peaks
+0x0144d860,50,frame_timing_item_group_apply_requests,frame_timing,edge-verified,Each item of the group takes its requested enabled byte (+0x69 to +0x68); vector ends read once; count is the signed low 32 bits of the length in pointers
 0x01456c80,54,frame_timing_item_list_update_01456c80,frame_timing,verified,Calls 0x013d4810 on each item pointer between +0x8 and +0x10 (the ends read once)
 0x01456eb0,28,frame_timing_profile_start_01456eb0,frame_timing,edge-verified,"If the profiling switch 0x058b8718 is set, starts stopwatch N of ten at 0x058b86c0 (tail call 0x01448580). Body unreachable in retail (switch 0): stays edge-verified"
 0x01456ed0,28,frame_timing_profile_stop_01456ed0,frame_timing,edge-verified,"If the profiling switch 0x058b8718 is set, stops stopwatch N of ten at 0x058b86c0 (tail call 0x01448620). Body unreachable in retail (switch 0): stays edge-verified"
