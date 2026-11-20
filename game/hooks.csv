@@ -29,6 +29,8 @@ address,replacement,system,returns
 0x00fb6c80,bb_render_yebis_release_interface,render,i32
 0x00fb6ce0,bb_render_yebis_cleanup_and_free_interface,render,void
 0x00fb6d20,bb_render_yebis_initialize_interface,render,void
+0x00fb6d40,bb_render_yebis_delete_interface,render,void
+0x00fb6da0,bb_render_yebis_destruct_interface,render,void
 0x00fb6f50,bb_render_yebis_free_storage,render,void
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
@@ -40,6 +42,7 @@ address,replacement,system,returns
 0x011186e0,bb_audio_fmod_contribute_thread_handles,audio,i32
 0x01118740,bb_audio_fmod_initialize_timing_state,audio,void
 0x01118770,bb_audio_fmod_begin_timing_state,audio,i32
+0x01118890,bb_audio_fmod_update_timing_exclusion,audio,i32
 0x0111a620,bb_kernel_file_open,kernel,i32
 0x0111a6b0,bb_kernel_file_close,kernel,i32
 0x0111a6e0,bb_kernel_file_read_count,kernel,i32
@@ -392,6 +395,7 @@ address,replacement,system,returns
 0x01900d00,bb_engine_tree_free_subtree_01900d00,engine,void
 0x019048a0,bb_engine_array64_push_back_019048a0,engine,void
 0x01904bb0,bb_engine_array64_reserve_01904bb0,engine,void
+0x01913c10,bb_character_data_update_01913c10,character,void
 0x01922130,bb_engine_array64_reserve_01922130,engine,void
 0x0193ec80,bb_engine_array64_push_back_0193ec80,engine,void
 0x0193ed60,bb_engine_array64_reserve_0193ed60,engine,void
@@ -431,6 +435,7 @@ address,replacement,system,returns
 0x01cd92b0,bb_character_ai_display_update_01cd92b0,character,void
 0x01ceb3b0,bb_engine_array64_push_back_01ceb3b0,engine,void
 0x01ceb6a0,bb_engine_array64_reserve_01ceb6a0,engine,void
+0x01d53420,bb_menu_localize_request_finish_01d53420,menu,void
 0x01db3a20,bb_engine_tree_free_subtree_01db3a20,engine,void
 0x01db3de0,bb_engine_tree_free_subtree_01db3de0,engine,void
 0x01dcfbf0,bb_engine_tree_free_subtree_01dcfbf0,engine,void
@@ -452,6 +457,9 @@ address,replacement,system,returns
 0x01e8bb70,bb_character_gaitem_handle_copy_01e8bb70,character,void
 0x01e8bc00,bb_character_gaitem_handle_release_01e8bc00,character,void
 0x01e8bcb0,bb_character_gaitem_handle_move_assign_01e8bcb0,character,i64
+0x01e8bd80,bb_character_gaitem_handle_copy_assign_01e8bd80,character,i64
+0x01e8bed0,bb_character_gaitem_handle_copy_assign_01e8bed0,character,i64
+0x01e8c020,bb_character_gaitem_handle_assign_value_01e8c020,character,i64
 0x01e8d1a0,bb_engine_array64_push_back_01e8d1a0,engine,void
 0x01e9cb80,bb_frame_timing_pass_handle_on_01e9cb80,frame_timing,i8
 0x01e9cd20,bb_frame_timing_pass_handle_on_with_items_01e9cd20,frame_timing,i8

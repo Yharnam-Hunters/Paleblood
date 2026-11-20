@@ -11,6 +11,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/Metal.cmake'
       - 'cmake/MetalExecutor.cmake'
+      - 'cmake/ComputeThreadIdTests.cmake'
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
@@ -26,6 +27,7 @@ on:
       - 'test/test_metal_color_clear_words.c'
       - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
+      - 'test/test_compute_thread_ids.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
       - 'test/test_metal_quad_values.mm'
@@ -59,6 +61,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/Metal.cmake'
       - 'cmake/MetalExecutor.cmake'
+      - 'cmake/ComputeThreadIdTests.cmake'
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
@@ -74,6 +77,7 @@ on:
       - 'test/test_metal_color_clear_words.c'
       - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
+      - 'test/test_compute_thread_ids.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
       - 'test/test_metal_quad_values.mm'
@@ -132,7 +136,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and owned test executables
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_quad_values test_metal_blend_banks test_metal_alpha_blend test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth_bounds test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_vertex_only test_metal_storage test_metal_permutations test_metal_srgb_storage test_metal_index_windows test_metal_fragment_control test_metal_boolean_quads test_metal_fragment_runtime test_metal_color_clear_words --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_quad_values test_metal_blend_banks test_metal_alpha_blend test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth_bounds test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_vertex_only test_metal_storage test_metal_permutations test_metal_srgb_storage test_metal_index_windows test_metal_fragment_control test_metal_boolean_quads test_metal_fragment_runtime test_metal_color_clear_words test_compute_thread_ids --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:

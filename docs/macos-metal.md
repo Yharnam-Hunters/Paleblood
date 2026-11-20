@@ -437,6 +437,12 @@ unknown or absent components fail explicitly. Complete padded allocations must f
 Image dimensions are limited to 16384 and arrays to 2048 layers; actual native allocation and
 BC/32-bit filtering capabilities are also checked.
 
+Pixel shaders can sample or load a single square RGBA8 UNORM cube in thin 1D tiling (mode 13)
+at mip zero. The backend binds the six allocated faces through the common translator's 2D
+array representation. The descriptor must cover all six faces from zero. If it advertises
+additional faces, the view still ends at the sixth allocated face. Cube arrays and other
+cube layouts remain outside this profile.
+
 Formats follow the common renderer's established table: R8/RG8/RGBA8 UNORM, R32 FLOAT/UINT/SINT,
 RG32/RGBA32 FLOAT, RGBA8 UINT/sRGB, BC1/2/3/7 UNORM/sRGB, and BC4/5 UNORM/SNORM. BC6 and other
 unestablished combinations fail by format name. Integer return bits stay integer bits; sRGB
@@ -486,17 +492,28 @@ It uses the common GFX7 compute translator and the same SPIRV-Cross/MSL compiler
 shared memory pool and runtime-stop channel as draws. Compute user data and its
 written-slot mask are independent of vertex and pixel state. A reset forgets those
 values while retaining compiled pipelines. The cache includes the complete program
-bytes, local dimensions, user count and X workgroup-ID layout; changing code at an
-existing address does not reuse its previous pipeline.
+bytes, local dimensions, user count, thread-ID input profile and X workgroup-ID layout;
+changing code or the ID input allocation does not reuse the previous pipeline.
 
-This is a lane-local compute profile. All three thread-ID inputs must be explicitly
-enabled, and local XYZ dimensions must be positive, fit the device/pipeline limits
-and contain at most one logical 64-lane GCN wave. The profile does not assume that
+This is a lane-local buffer profile. GFX7 `TIDIG_COMP_CNT` encodings 0, 1 and 2
+initialize X in v0, XY in v0-v1, or XYZ in v0-v2. Encoding 3 and a declared VGPR
+allocation smaller than the enabled input count stop before GPU work. Disabled slots
+retain the translator's existing deterministic register default; hardware leaves their
+initial values unspecified. The compute layout's `thread_id_vgprs` takes counts 1..3,
+with 0 preserving the earlier XYZ default for existing callers. Local XYZ dimensions
+must be positive, fit the device/pipeline limits and contain at most one logical
+64-lane GCN wave. The profile does not assume that
 Metal has a native 64-lane SIMD group. Actual subgroup operations, including
 wave-wide votes and quad swaps, are rejected before MSL compilation. The common
 translator declares vote capabilities even for programs that never use them;
 capability declarations alone do not cause rejection. Lane-local VCC half writes
 retain the logical lane index from the common translator.
+
+The encodings follow the [AMD CIK register manual, COMPUTE_PGM_RSRC2, page 198](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
+and [LLVM's initial kernel execution state](https://releases.llvm.org/18.1.8/docs/AMDGPUUsage.html#initial-kernel-execution-state).
+Owned cache tests end the lower-profile dispatch before consuming disabled Y/Z inputs,
+then run the same program with the higher profile and written mode data. They avoid
+assuming a hardware value for a disabled register.
 
 The optional X workgroup-ID SGPR follows the declared user SGPRs. Y/Z ID SGPRs,
 packed workgroup-size input and compute samplers remain unsupported. Dispatches
@@ -569,8 +586,9 @@ image input. These device tests use synthetic data and do not establish original
 `test_metal_compute` runs owned buffer programs on the actual device. It checks
 partial and 64-invocation groups, multidimensional local IDs, X workgroups, VCC
 halves, stage isolation, partial user writes, cached resets, live code changes,
-metadata/admission guards, runtime-stop recovery, two ordered dispatches and a draw
-reading computed colors. It also dispatches after a completed draw and after reset. No original game shader or capture is used.
+metadata/admission guards, X/XY/XYZ input profiles, cache transitions with unchanged
+code/local sizes, null-buffer zero reads, runtime-stop recovery, two ordered dispatches
+and a draw reading computed colors. It also dispatches after a completed draw and after reset. No original game shader or capture is used.
 
 Descriptor-format accesses use the common translator's runtime stop channel: the executor owns
 a shared GPU-addressable stop word, declares its residency for both stages, and checks it after
