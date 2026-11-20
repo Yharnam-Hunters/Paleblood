@@ -1625,3 +1625,904 @@ uint8_t bb_mutant_kind_storage_set_count_after_kind(struct kind_storage *object,
     object->elements = storage + entries;
     return 1;
 }
+
+/* Mutants from #1175. */
+
+/* forwards_to_referenced_node_slot_0x28 (game/engine/virtual_method_families.cpp): a reference's
+   16-bit kind (+0x8) and signed index (+0xa) resolved by 0x02c4f560 into a node whose vtable slot
+   0x28 is called. */
+#define MUTANT_RESOLVE_NODE 0x02c4f560u
+struct mutant_node_reference {
+    uint8_t unknown_0x00[0x8];
+    uint16_t kind;
+    int16_t index;
+};
+struct mutant_node;
+typedef void *mutant_node_method_fn(struct mutant_node *node, void *context, void *argument, uint8_t flag);
+struct mutant_node_vtable {
+    void *unknown_slots[5];
+    mutant_node_method_fn *method_0x28;
+};
+struct mutant_node {
+    const struct mutant_node_vtable *vtable;
+};
+typedef struct mutant_node *mutant_resolve_node_fn(void *context, uint32_t kind, uint32_t index);
+
+static void *mutant_node_forward(const struct mutant_node_reference *reference, void *context, void *argument,
+                                 uint8_t flag, uint32_t index)
+{
+    mutant_resolve_node_fn *resolve = (mutant_resolve_node_fn *)rt_guest(MUTANT_RESOLVE_NODE);
+    struct mutant_node *node = resolve(context, reference->kind, index);
+    return node->vtable->method_0x28(node, context, argument, flag);
+}
+
+/* Widens the index without its sign: wrong for forwards_to_referenced_node_slot_0x28. */
+void *bb_mutant_node_forward_unsigned_index(const struct mutant_node_reference *reference, void *context,
+                                            void *argument, uint8_t flag)
+{
+    return mutant_node_forward(reference, context, argument, flag, (uint16_t)reference->index);
+}
+
+/* Passes no flag on: wrong for forwards_to_referenced_node_slot_0x28. */
+void *bb_mutant_node_forward_drops_flag(const struct mutant_node_reference *reference, void *context,
+                                        void *argument, uint8_t flag)
+{
+    (void)flag;
+    return mutant_node_forward(reference, context, argument, 0, (uint32_t)(int32_t)reference->index);
+}
+
+/* posts_event_9_when_accepted: the base handler 0x0139c240, the stop bits of the event's flag
+   byte +0x1b, the handler's slot 0x78, and the post 0x0139bc30. */
+#define MUTANT_HANDLE_EVENT_BASE 0x0139c240u
+#define MUTANT_POST_HANDLER_EVENT 0x0139bc30u
+#define MUTANT_EVENT_FLAGS_HIGH_BYTE 0x1b
+#define MUTANT_EVENT_STOP_BITS 0x90u
+#define MUTANT_ACCEPTED_EVENT_KIND 9
+#define MUTANT_ANSWER_BYTE 0xffu
+struct mutant_handler;
+typedef uint64_t mutant_accepts_fn(struct mutant_handler *handler, uint8_t *event);
+struct mutant_handler_vtable {
+    void *unknown_slots[15];
+    mutant_accepts_fn *accepts;
+};
+struct mutant_handler {
+    const struct mutant_handler_vtable *vtable;
+};
+typedef void mutant_handle_event_fn(struct mutant_handler *handler, void *source, uint8_t *event);
+typedef void mutant_post_event_fn(struct mutant_handler *handler, int32_t kind, void *source, uint64_t value,
+                                  uint8_t *event);
+
+static void mutant_post_event(struct mutant_handler *handler, void *source, uint8_t *event, uint64_t answer)
+{
+    if (answer == 0)
+        return;
+    ((mutant_post_event_fn *)rt_guest(MUTANT_POST_HANDLER_EVENT))(handler, MUTANT_ACCEPTED_EVENT_KIND, source, 0,
+                                                                  event);
+}
+
+/* Reads the flag byte before the base handler (a control for the order claim): wrong for
+   posts_event_9_when_accepted, which reads it after. */
+void bb_mutant_event_flags_read_before_base(struct mutant_handler *handler, void *source, uint8_t *event)
+{
+    const uint8_t flags = event[MUTANT_EVENT_FLAGS_HIGH_BYTE];
+    ((mutant_handle_event_fn *)rt_guest(MUTANT_HANDLE_EVENT_BASE))(handler, source, event);
+    if (flags & MUTANT_EVENT_STOP_BITS)
+        return;
+    mutant_post_event(handler, source, event, handler->vtable->accepts(handler, event) & MUTANT_ANSWER_BYTE);
+}
+
+/* Tests the whole answer register instead of its byte: wrong for posts_event_9_when_accepted. */
+void bb_mutant_event_accepts_whole_register(struct mutant_handler *handler, void *source, uint8_t *event)
+{
+    ((mutant_handle_event_fn *)rt_guest(MUTANT_HANDLE_EVENT_BASE))(handler, source, event);
+    if (event[MUTANT_EVENT_FLAGS_HIGH_BYTE] & MUTANT_EVENT_STOP_BITS)
+        return;
+    mutant_post_event(handler, source, event, handler->vtable->accepts(handler, event));
+}
+
+/* syncs_selected_id_and_index and selects_entry_id_by_index: a selector (flags +0xc, id +0x20,
+   id slot +0x28, list +0x30) over 24-byte entries with an id at +0x10. */
+#define MUTANT_APPLY_SELECTED_INDEX 0x02752100u
+#define MUTANT_APPLY_SELECTED_ID 0x02762360u
+struct mutant_id_entry {
+    uint8_t unknown_0x00[0x10];
+    uint32_t id;
+    uint8_t unknown_0x14[0x4];
+};
+struct mutant_id_list {
+    uint8_t unknown_0x00[0x18];
+    struct mutant_id_entry *begin;
+    struct mutant_id_entry *end;
+};
+struct mutant_id_selector {
+    uint8_t unknown_0x00[0xc];
+    uint8_t flags;
+    uint8_t unknown_0x0d[0x13];
+    uint32_t id;
+    uint32_t *id_slot;
+    struct mutant_id_list *list;
+};
+typedef void mutant_apply_index_fn(struct mutant_id_selector *selector, int32_t index);
+typedef void mutant_apply_id_fn(struct mutant_id_selector *selector);
+
+static void mutant_sync_selected(struct mutant_id_selector *selector, int last, int store)
+{
+    const uint32_t *slot = selector->id_slot;
+    if (!slot || *slot == selector->id)
+        return;
+    const uint32_t id = *slot;
+    if (store)
+        selector->id = id;
+    const uint32_t count = (uint32_t)(selector->list->end - selector->list->begin);
+    int32_t index = -1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (selector->list->begin[i].id == id) {
+            index = (int32_t)i;
+            if (!last)
+                break;
+        }
+    }
+    ((mutant_apply_index_fn *)rt_guest(MUTANT_APPLY_SELECTED_INDEX))(selector, index);
+}
+
+/* Passes the last entry with the id on: wrong for syncs_selected_id_and_index (the first). */
+void bb_mutant_selected_id_last_match(struct mutant_id_selector *selector)
+{
+    mutant_sync_selected(selector, 1, 1);
+}
+
+/* Does not keep the new id: wrong for syncs_selected_id_and_index. */
+void bb_mutant_selected_id_not_stored(struct mutant_id_selector *selector)
+{
+    mutant_sync_selected(selector, 0, 0);
+}
+
+static void mutant_select_entry(struct mutant_id_selector *selector, uint32_t index, int inclusive, int lock)
+{
+    if (lock && (selector->flags & 1u))
+        return;
+    const uint64_t count = (uint64_t)(selector->list->end - selector->list->begin);
+    if (inclusive ? (uint64_t)index > count : (uint64_t)index >= count)
+        return;
+    const uint32_t id = selector->list->begin[index].id;
+    selector->id = id;
+    *selector->id_slot = id;
+    ((mutant_apply_id_fn *)rt_guest(MUTANT_APPLY_SELECTED_ID))(selector);
+}
+
+/* Also selects the index equal to the count: wrong for selects_entry_id_by_index. */
+void bb_mutant_entry_index_inclusive(struct mutant_id_selector *selector, uint32_t index)
+{
+    mutant_select_entry(selector, index, 1, 1);
+}
+
+/* Selects while locked: wrong for selects_entry_id_by_index. */
+void bb_mutant_entry_index_ignores_lock(struct mutant_id_selector *selector, uint32_t index)
+{
+    mutant_select_entry(selector, index, 0, 0);
+}
+
+/* releases_counted_reference_at_0x20: the counted object at +0x20 (counts at +0x8: strong bits
+   0-14, weak bits 15-29, alive bit 30; destroy slot 0x18, free slot 0x20), then +0x28 cleared and
+   0x02759cc0. */
+#define MUTANT_RELEASE_BASE 0x02759cc0u
+#define MUTANT_COUNT_MASK 0x7fffu
+#define MUTANT_WEAK_SHIFT 15
+#define MUTANT_ALIVE 0x40000000u
+#define MUTANT_KEEP_WITH_WEAK 0xc0007fffu
+struct mutant_counted;
+typedef void mutant_counted_fn(struct mutant_counted *counted);
+struct mutant_counted_vtable {
+    void *unknown_slots[3];
+    mutant_counted_fn *destroy;
+    mutant_counted_fn *free;
+};
+struct mutant_counted {
+    const struct mutant_counted_vtable *vtable;
+    uint32_t counts;
+};
+struct mutant_counted_holder {
+    uint8_t unknown_0x00[0x20];
+    struct mutant_counted *counted;
+    uint64_t value_0x28;
+};
+typedef void mutant_release_base_fn(struct mutant_counted_holder *holder);
+
+static void mutant_release(struct mutant_counted_holder *holder, int reload, int weak_marked, int clear_pointer)
+{
+    struct mutant_counted *counted = holder->counted;
+    if (counted) {
+        const uint32_t old = counted->counts;
+        uint32_t counts = (old & ~MUTANT_COUNT_MASK) | ((old - 1) & MUTANT_COUNT_MASK);
+        counted->counts = counts;
+        if (!(counts & MUTANT_COUNT_MASK) && (old & MUTANT_ALIVE)) {
+            counted->vtable->destroy(counted);
+            counts = (reload ? counted->counts : counts) & ~MUTANT_ALIVE;
+            counted->counts = counts;
+        }
+        const uint32_t weak = ((counts >> MUTANT_WEAK_SHIFT) - 1) & MUTANT_COUNT_MASK;
+        counted->counts = (counts & MUTANT_KEEP_WITH_WEAK) | (weak << MUTANT_WEAK_SHIFT);
+        if (!weak) {
+            if (weak_marked)
+                counted->counts = counts | (MUTANT_COUNT_MASK << MUTANT_WEAK_SHIFT);
+            counted->vtable->free(counted);
+        }
+        if (clear_pointer)
+            holder->counted = 0;
+    }
+    holder->value_0x28 = 0;
+    ((mutant_release_base_fn *)rt_guest(MUTANT_RELEASE_BASE))(holder);
+}
+
+/* Keeps the counts from before the destroy (a control for the order claim): wrong for
+   releases_counted_reference_at_0x20, which reads them again. */
+void bb_mutant_counted_release_no_reload(struct mutant_counted_holder *holder)
+{
+    mutant_release(holder, 0, 1, 1);
+}
+
+/* Leaves the weak count at zero when freeing: wrong for releases_counted_reference_at_0x20,
+   which sets every weak bit. */
+void bb_mutant_counted_release_weak_zero(struct mutant_counted_holder *holder)
+{
+    mutant_release(holder, 1, 0, 1);
+}
+
+/* Keeps the pointer at +0x20: wrong for releases_counted_reference_at_0x20. */
+void bb_mutant_counted_release_keeps_pointer(struct mutant_counted_holder *holder)
+{
+    mutant_release(holder, 1, 1, 0);
+}
+
+/* registers_new_entry_at_0x30: an entry from the function the global 0x056c45c8 points at,
+   constructed (0x02aebf90), given the value (0x02aebf60) and registered (0x02aeb740). */
+#define MUTANT_ENTRY_ALLOCATOR 0x056c45c8u
+#define MUTANT_CONSTRUCT_ENTRY 0x02aebf90u
+#define MUTANT_SET_ENTRY_VALUE 0x02aebf60u
+#define MUTANT_REGISTER_ENTRY 0x02aeb740u
+#define MUTANT_ENTRY_SIZE 0x20u
+struct mutant_registrant {
+    uint8_t unknown_0x00[0x28];
+    void *registry;
+    void *entry;
+};
+typedef void *mutant_allocate_fn(uint64_t size);
+typedef void mutant_entry_fn(void *entry);
+typedef void mutant_set_value_fn(void *entry, void *value);
+typedef void mutant_register_fn(void *registry, struct mutant_registrant *self, void *entry);
+
+static void mutant_register(struct mutant_registrant *self, void *value, void *registry, int reload, int set_null)
+{
+    self->registry = registry;
+    void *entry = (*(mutant_allocate_fn **)rt_guest(MUTANT_ENTRY_ALLOCATOR))(MUTANT_ENTRY_SIZE);
+    if (entry)
+        ((mutant_entry_fn *)rt_guest(MUTANT_CONSTRUCT_ENTRY))(entry);
+    self->entry = entry;
+    if (entry || set_null)
+        ((mutant_set_value_fn *)rt_guest(MUTANT_SET_ENTRY_VALUE))(entry, value);
+    if (reload)
+        ((mutant_register_fn *)rt_guest(MUTANT_REGISTER_ENTRY))(self->registry, self, self->entry);
+    else
+        ((mutant_register_fn *)rt_guest(MUTANT_REGISTER_ENTRY))(registry, self, entry);
+}
+
+/* Registers the owner and entry from before the value is set (a control for the order claim):
+   wrong for registers_new_entry_at_0x30, which reads both again. */
+void bb_mutant_entry_registration_no_reload(struct mutant_registrant *self, void *value, void *registry)
+{
+    mutant_register(self, value, registry, 0, 1);
+}
+
+/* Does not set the value of a missing entry: wrong for registers_new_entry_at_0x30, which sets it
+   on null too. */
+void bb_mutant_entry_registration_skips_null_entry(struct mutant_registrant *self, void *value, void *registry)
+{
+    mutant_register(self, value, registry, 1, 0);
+}
+
+/* Mutants from #1176. */
+
+/* frees_kind_sized_dword_storage_through_0x05ac8288 (game/engine/kind_sized_dword_free_family.cpp):
+   an object with a vtable whose slot 0x88 reports the kind, a buffer at +0x8 and the count at
+   +0x18. Each mutant below gets one detail wrong; the controls move one read across the kind
+   calls. */
+#define DWORD_FREE_SIZED_FREE 0x02fa1c20u
+#define DWORD_FREE_ALLOCATOR 0x05ac8288u
+#define DWORD_FREE_KIND_SLOT 17
+#define DWORD_FREE_THREE_PER_ENTRY 4u
+#define DWORD_FREE_THREE_PER_ENTRY_AND_TWO 6u
+#define DWORD_FREE_PER_ENTRY 3u
+#define DWORD_FREE_EXTRA 2u
+#define DWORD_FREE_SIZE 4u
+
+struct dword_storage;
+typedef int32_t (*dword_storage_kind)(struct dword_storage *, int32_t);
+typedef void (*dword_storage_sized_free)(void *, void *, uint64_t, uint64_t);
+
+struct dword_storage {
+    void **vtable;
+    void *storage;
+    void *unknown_0x10;
+    int32_t count;
+};
+
+/* What the mutant gets wrong. */
+#define DWORD_FREE_ALLOCATOR_LATE 1  /* reads the allocator after the kind calls */
+#define DWORD_FREE_COUNT_EARLY 2  /* reads the count before the kind calls */
+#define DWORD_FREE_ASKS_ONCE 4  /* uses the first answer for the kind 6 test too */
+#define DWORD_FREE_CACHES_VTABLE 8  /* calls the second time through the first vtable */
+#define DWORD_FREE_NO_ENTRIES 16  /* leaves the entries out of the size */
+
+static void *dword_storage_allocator(void)
+{
+    return *(void *volatile *)rt_guest(DWORD_FREE_ALLOCATOR);
+}
+
+static uint32_t dword_storage_ask(struct dword_storage *object, void **vtable)
+{
+    return (uint32_t)((dword_storage_kind)vtable[DWORD_FREE_KIND_SLOT])(object, 0) & ~1u;
+}
+
+static void dword_storage_free_with(struct dword_storage *object, int wrong)
+{
+    volatile int32_t *field = &object->count;
+    void *allocator = dword_storage_allocator();
+    int32_t early = *field;
+    void **vtable = object->vtable;
+    int32_t count;
+    int32_t elements;
+    uint32_t first = dword_storage_ask(object, vtable);
+    if (first == DWORD_FREE_THREE_PER_ENTRY) {
+        count = (wrong & DWORD_FREE_COUNT_EARLY) ? early : *field;
+        elements = (int32_t)((uint32_t)count * DWORD_FREE_PER_ENTRY);
+    } else {
+        uint32_t second = dword_storage_ask(object, (wrong & DWORD_FREE_CACHES_VTABLE) ? vtable : object->vtable);
+        if (wrong & DWORD_FREE_ASKS_ONCE)
+            second = first;
+        count = (wrong & DWORD_FREE_COUNT_EARLY) ? early : *field;
+        elements = second == DWORD_FREE_THREE_PER_ENTRY_AND_TWO
+                       ? (int32_t)((uint32_t)count * DWORD_FREE_PER_ENTRY + DWORD_FREE_EXTRA) : count;
+    }
+    if (wrong & DWORD_FREE_ALLOCATOR_LATE)
+        allocator = dword_storage_allocator();
+    int64_t dwords = (int64_t)elements + ((wrong & DWORD_FREE_NO_ENTRIES) ? 0 : (int64_t)count);
+    ((dword_storage_sized_free)rt_guest(DWORD_FREE_SIZED_FREE))(allocator, object->storage,
+                                                               (uint64_t)dwords * DWORD_FREE_SIZE, DWORD_FREE_SIZE);
+}
+
+void bb_mutant_dword_storage_free_reads_allocator_late(struct dword_storage *object)
+{
+    dword_storage_free_with(object, DWORD_FREE_ALLOCATOR_LATE);
+}
+
+void bb_mutant_dword_storage_free_reads_count_early(struct dword_storage *object)
+{
+    dword_storage_free_with(object, DWORD_FREE_COUNT_EARLY);
+}
+
+void bb_mutant_dword_storage_free_asks_once(struct dword_storage *object)
+{
+    dword_storage_free_with(object, DWORD_FREE_ASKS_ONCE);
+}
+
+void bb_mutant_dword_storage_free_caches_vtable(struct dword_storage *object)
+{
+    dword_storage_free_with(object, DWORD_FREE_CACHES_VTABLE);
+}
+
+void bb_mutant_dword_storage_free_without_entries(struct dword_storage *object)
+{
+    dword_storage_free_with(object, DWORD_FREE_NO_ENTRIES);
+}
+
+/* deletes_work_holder (game/engine/work_holder_delete_family.cpp): a holder (vtable, work at +0x8)
+   of shared work (reference count +0x8, signal +0x10, users +0x30). */
+#define WORK_HOLDER_BASE_VTABLE 0x057b1a80u
+#define WORK_HOLDER_SIGNAL_SET 0x0247e780u
+#define WORK_HOLDER_FATAL_ERROR 0x024b55b0u
+#define WORK_HOLDER_DELETE 0x02fbe588u
+#define WORK_HOLDER_INVALID_UNREF 0x04d40331u
+#define WORK_HOLDER_UNREF_LINE 0x3e
+
+struct mutant_work {
+    void (**vtable)(struct mutant_work *);
+    int32_t references;
+    int32_t unknown_0x0c;
+    uint8_t unknown_0x10[0x20];  /* the signal */
+    int32_t users;
+};
+struct mutant_work_holder {
+    const void *vtable;
+    struct mutant_work *work;
+};
+typedef uint64_t (*work_holder_signal_set)(void *, uint8_t);
+typedef void (*work_holder_fatal_error)(const char *, int32_t, const char *, ...);
+typedef void (*work_holder_delete)(void *);
+
+#define WORK_HOLDER_RIGHT 0
+#define WORK_HOLDER_WORK_ONCE 1  /* does not read the work again after the signal */
+#define WORK_HOLDER_SIGNAL_ON_ONE 2  /* sets the signal only when the users were exactly 1 */
+#define WORK_HOLDER_KEPT 4  /* does not delete the holder */
+
+static void work_holder_delete_with(struct mutant_work_holder *holder, int wrong)
+{
+    holder->vtable = rt_guest(WORK_HOLDER_BASE_VTABLE);
+    struct mutant_work *work = holder->work;
+    if (work) {
+        int32_t users = __atomic_fetch_sub(&work->users, 1, __ATOMIC_SEQ_CST);
+        if ((wrong & WORK_HOLDER_SIGNAL_ON_ONE) ? users == 1 : users <= 1)
+            ((work_holder_signal_set)rt_guest(WORK_HOLDER_SIGNAL_SET))(work->unknown_0x10, 1);
+        if (!(wrong & WORK_HOLDER_WORK_ONCE))
+            work = *(struct mutant_work *volatile *)&holder->work;
+        if (work) {
+            int32_t references = __atomic_fetch_sub(&work->references, 1, __ATOMIC_SEQ_CST);
+            if (references == 1)
+                work->vtable[0](work);
+            else if (references <= 0)
+                ((work_holder_fatal_error)rt_guest(WORK_HOLDER_FATAL_ERROR))(
+                    0, WORK_HOLDER_UNREF_LINE, (const char *)rt_guest(WORK_HOLDER_INVALID_UNREF));
+        }
+    }
+    if (!(wrong & WORK_HOLDER_KEPT))
+        ((work_holder_delete)rt_guest(WORK_HOLDER_DELETE))(holder);
+}
+
+void bb_mutant_work_holder_delete_work_once(struct mutant_work_holder *holder)
+{
+    work_holder_delete_with(holder, WORK_HOLDER_WORK_ONCE);
+}
+
+void bb_mutant_work_holder_delete_signal_on_one(struct mutant_work_holder *holder)
+{
+    work_holder_delete_with(holder, WORK_HOLDER_SIGNAL_ON_ONE);
+}
+
+void bb_mutant_work_holder_delete_kept(struct mutant_work_holder *holder)
+{
+    work_holder_delete_with(holder, WORK_HOLDER_KEPT);
+}
+
+/* creates_0xe40_byte_object_with_0x020e9820 (game/engine/object_create_family.cpp): the owner's
+   first field is an allocator whose slot 0x58 allocates. */
+#define CREATE_OBJECT_SIZE 0xe40u
+#define CREATE_OBJECT_ALIGNMENT 0x10u
+#define CREATE_WRONG_ALIGNMENT 8u
+#define CREATE_ALLOCATE_SLOT 11
+#define CREATE_CONSTRUCT 0x020e9820u
+
+typedef void *(*create_allocate)(void *, uint64_t, uint64_t);
+typedef void (*create_construct)(void *, void *);
+
+static void *create_with(void ***owner, uint64_t alignment, int construct_always)
+{
+    void **allocator = *owner;
+    void *object = ((create_allocate)(*(void ***)allocator)[CREATE_ALLOCATE_SLOT])(allocator, CREATE_OBJECT_SIZE, alignment);
+    if (object || construct_always)
+        ((create_construct)rt_guest(CREATE_CONSTRUCT))(object, owner);
+    return object;
+}
+
+/* Allocates with alignment 8 instead of 16. */
+void *bb_mutant_create_object_aligned_8(void ***owner)
+{
+    return create_with(owner, CREATE_WRONG_ALIGNMENT, 0);
+}
+
+/* Constructs even when the allocation failed. */
+void *bb_mutant_create_object_constructs_on_failure(void ***owner)
+{
+    return create_with(owner, CREATE_OBJECT_ALIGNMENT, 1);
+}
+
+/* Returns what the constructor returns instead of the object. */
+void *bb_mutant_create_object_returns_constructor_result(void ***owner)
+{
+    void **allocator = *owner;
+    void *object = ((create_allocate)(*(void ***)allocator)[CREATE_ALLOCATE_SLOT])(allocator, CREATE_OBJECT_SIZE,
+                                                                                    CREATE_OBJECT_ALIGNMENT);
+    if (!object)
+        return 0;
+    return ((void *(*)(void *, void *))rt_guest(CREATE_CONSTRUCT))(object, owner);
+}
+
+/* frees_block_at_0xa0_then_destroys_base_0x00569a90 (game/engine/block_at_0xa0_family.cpp): the
+   block at +0xa0, its data, the free slot 0x68 of the allocator the global points at. */
+#define BLOCK_GLOBAL_ALLOCATOR 0x057e7320u
+#define BLOCK_FREE_SLOT 13
+#define BLOCK_BASE_DESTROY 0x00569a90u
+
+struct mutant_block_owner {
+    uint8_t unknown_0x00[0xa0];
+    void **block;
+};
+typedef void (*block_free)(void *, void *);
+
+#define BLOCK_RIGHT 0
+#define BLOCK_ONCE 1  /* frees the block read before the first free */
+#define BLOCK_ALLOCATOR_ONCE 2  /* frees both through the allocator read before the first free */
+#define BLOCK_SKIPS_DATA 4  /* frees only the block */
+
+static void block_free_through(void **allocator, void *data)
+{
+    ((block_free)(*(void ***)allocator)[BLOCK_FREE_SLOT])(allocator, data);
+}
+
+static void block_destroy_with(struct mutant_block_owner *owner, int wrong)
+{
+    void **block = owner->block;
+    if (block) {
+        void **allocator = *(void **volatile *)rt_guest(BLOCK_GLOBAL_ALLOCATOR);
+        if (!(wrong & BLOCK_SKIPS_DATA))
+            block_free_through(allocator, block[0]);
+        if (!(wrong & BLOCK_ALLOCATOR_ONCE))
+            allocator = *(void **volatile *)rt_guest(BLOCK_GLOBAL_ALLOCATOR);
+        block_free_through(allocator, (wrong & BLOCK_ONCE) ? block : *(void **volatile *)&owner->block);
+    }
+    ((void (*)(void *))rt_guest(BLOCK_BASE_DESTROY))(owner);
+}
+
+void bb_mutant_block_at_0xa0_once(struct mutant_block_owner *owner)
+{
+    block_destroy_with(owner, BLOCK_ONCE);
+}
+
+void bb_mutant_block_at_0xa0_allocator_once(struct mutant_block_owner *owner)
+{
+    block_destroy_with(owner, BLOCK_ALLOCATOR_ONCE);
+}
+
+void bb_mutant_block_at_0xa0_skips_data(struct mutant_block_owner *owner)
+{
+    block_destroy_with(owner, BLOCK_SKIPS_DATA);
+}
+
+/* destroys_owner_of_two_objects and deletes_owner_of_two_objects
+   (game/engine/owner_of_two_family.cpp): the owner (vtable, first +0x8, second +0x10) and its
+   objects, whose vtable slot 0x18 releases them. */
+#define OWNER_VTABLE 0x0570f800u
+#define OWNER_VTABLE_POINT 0x10u
+#define OWNER_RELEASE_SLOT 3
+#define OWNER_SIZED_FREE 0x02fa1c20u
+#define OWNER_ALLOCATOR 0x05ac8288u
+#define OWNER_SIZE 0x18u
+#define OWNER_ALIGNMENT 8u
+
+struct mutant_owned {
+    void (**vtable)(struct mutant_owned *);
+};
+struct mutant_owner_of_two {
+    const void *vtable;
+    struct mutant_owned *first;
+    struct mutant_owned *second;
+};
+typedef void (*owner_sized_free)(void *, void *, uint64_t, uint64_t);
+
+#define OWNER_RIGHT 0
+#define OWNER_SECOND_EARLY 1  /* reads the second object before the first release */
+#define OWNER_FIRST_CLEARED_LATE 2  /* clears the first field only after both releases */
+#define OWNER_NO_FINAL_CLEAR 4  /* does not clear the fields again at the end */
+#define OWNER_SECOND_ALONE 8  /* releases the second object without a first one */
+#define OWNER_ALLOCATOR_EARLY 16  /* reads the allocator before the releases */
+
+static void owner_release(struct mutant_owned *object)
+{
+    object->vtable[OWNER_RELEASE_SLOT](object);
+}
+
+static void owner_destroy_with(struct mutant_owner_of_two *owner, int wrong)
+{
+    owner->vtable = (const uint8_t *)rt_guest(OWNER_VTABLE) + OWNER_VTABLE_POINT;
+    struct mutant_owned *volatile *first = &owner->first;
+    struct mutant_owned *volatile *second = &owner->second;
+    if (!*first) {
+        if ((wrong & OWNER_SECOND_ALONE) && *second)
+            owner_release(*second);
+        return;
+    }
+    struct mutant_owned *early = *second;
+    owner_release(*first);
+    if (!(wrong & OWNER_FIRST_CLEARED_LATE))
+        *first = 0;
+    struct mutant_owned *object = (wrong & OWNER_SECOND_EARLY) ? early : *second;
+    if (object) {
+        owner_release(object);
+        *second = 0;
+    }
+    if (!(wrong & OWNER_NO_FINAL_CLEAR) || (wrong & OWNER_FIRST_CLEARED_LATE)) {
+        *second = 0;
+        *first = 0;
+    }
+}
+
+static void owner_delete_with(struct mutant_owner_of_two *owner, int wrong)
+{
+    void *allocator = *(void *volatile *)rt_guest(OWNER_ALLOCATOR);
+    owner_destroy_with(owner, wrong);
+    if (!(wrong & OWNER_ALLOCATOR_EARLY))
+        allocator = *(void *volatile *)rt_guest(OWNER_ALLOCATOR);
+    ((owner_sized_free)rt_guest(OWNER_SIZED_FREE))(allocator, owner, OWNER_SIZE, OWNER_ALIGNMENT);
+}
+
+void bb_mutant_owner_of_two_second_early(struct mutant_owner_of_two *owner)
+{
+    owner_destroy_with(owner, OWNER_SECOND_EARLY);
+}
+
+void bb_mutant_owner_of_two_first_cleared_late(struct mutant_owner_of_two *owner)
+{
+    owner_destroy_with(owner, OWNER_FIRST_CLEARED_LATE);
+}
+
+void bb_mutant_owner_of_two_no_final_clear(struct mutant_owner_of_two *owner)
+{
+    owner_destroy_with(owner, OWNER_NO_FINAL_CLEAR);
+}
+
+void bb_mutant_owner_of_two_second_alone(struct mutant_owner_of_two *owner)
+{
+    owner_destroy_with(owner, OWNER_SECOND_ALONE);
+}
+
+void bb_mutant_owner_of_two_delete_second_early(struct mutant_owner_of_two *owner)
+{
+    owner_delete_with(owner, OWNER_SECOND_EARLY);
+}
+
+void bb_mutant_owner_of_two_delete_first_cleared_late(struct mutant_owner_of_two *owner)
+{
+    owner_delete_with(owner, OWNER_FIRST_CLEARED_LATE);
+}
+
+void bb_mutant_owner_of_two_delete_allocator_early(struct mutant_owner_of_two *owner)
+{
+    owner_delete_with(owner, OWNER_ALLOCATOR_EARLY);
+}
+
+/* Mutants from #1177. */
+
+/* fills_owner_block_with_two_addresses and fills_owner_block_with_one_address
+   (game/engine/owner_block_families.cpp): the addresses 0x05acd45c and 0x05acd1bc in the block's
+   first three pointers, 12 qwords cleared from +0x18, the owner at +0x78, 0 returned. */
+#define MUTANT_BLOCK_ADDRESS_A 0x05acd45cu
+#define MUTANT_BLOCK_ADDRESS_B 0x05acd1bcu
+#define MUTANT_BLOCK_CLEARED 12
+struct mutant_owner_block {
+    const void *first;
+    const void *second;
+    const void *third;
+    uint64_t cleared[MUTANT_BLOCK_CLEARED];
+    void *owner;
+};
+
+static int32_t mutant_fill_block(void *owner, struct mutant_owner_block *block, uint32_t third, int keep_last)
+{
+    block->first = rt_guest(MUTANT_BLOCK_ADDRESS_A);
+    block->second = rt_guest(MUTANT_BLOCK_ADDRESS_A);
+    block->third = rt_guest(third);
+    for (int i = 0; i < MUTANT_BLOCK_CLEARED - keep_last; ++i)
+        block->cleared[i] = 0;
+    block->owner = owner;
+    return 0;
+}
+
+/* Stores 0x05acd45c in the third pointer too: wrong for fills_owner_block_with_two_addresses. */
+int32_t bb_mutant_owner_block_one_address(void *owner, struct mutant_owner_block *block)
+{
+    return mutant_fill_block(owner, block, MUTANT_BLOCK_ADDRESS_A, 0);
+}
+
+/* Stores 0x05acd1bc in the third pointer: wrong for fills_owner_block_with_one_address. */
+int32_t bb_mutant_owner_block_two_addresses(void *owner, struct mutant_owner_block *block)
+{
+    return mutant_fill_block(owner, block, MUTANT_BLOCK_ADDRESS_B, 0);
+}
+
+/* Leaves the last cleared qword (+0x70) alone: wrong for both block families. */
+int32_t bb_mutant_owner_block_keeps_0x70(void *owner, struct mutant_owner_block *block)
+{
+    return mutant_fill_block(owner, block, MUTANT_BLOCK_ADDRESS_A, 1);
+}
+
+/* Fills the block right and returns 1: wrong for both block families, which return 0. */
+int32_t bb_mutant_owner_block_returns_one(void *owner, struct mutant_owner_block *block)
+{
+    mutant_fill_block(owner, block, MUTANT_BLOCK_ADDRESS_A, 0);
+    return 1;
+}
+
+/* updates_and_calls_slot_0x38_unless_refused (game/engine/forwarding_method_families.cpp): the
+   source at +0xe0 (target +0x18, value +0x24) checked by 0x01c3f3b0, the update 0x020ce2f0, then
+   the object's slot 0x38. */
+#define MUTANT_CHECK_UPDATE_TARGET 0x01c3f3b0u
+#define MUTANT_UPDATE_OBJECT 0x020ce2f0u
+struct mutant_update_source {
+    uint8_t unknown_0x00[0x18];
+    void *target;
+    uint8_t unknown_0x20[0x4];
+    uint32_t value;
+};
+struct mutant_updated;
+struct mutant_updated_vtable {
+    void *unknown_slots[7];
+    void (*method_0x38)(struct mutant_updated *);
+};
+struct mutant_updated {
+    const struct mutant_updated_vtable *vtable;
+    uint8_t unknown_0x08[0xd8];
+    struct mutant_update_source *source;
+};
+typedef uint64_t mutant_check_target_fn(void *target, uint32_t value);
+typedef void mutant_update_fn(struct mutant_updated *object);
+
+static void mutant_update(struct mutant_updated *object, int whole_register, int table_first, int stop_without_target)
+{
+    struct mutant_update_source *source = object->source;
+    if (source->target == 0) {
+        if (stop_without_target)
+            return;
+    } else {
+        uint64_t answer = ((mutant_check_target_fn *)rt_guest(MUTANT_CHECK_UPDATE_TARGET))(source->target, source->value);
+        if ((whole_register ? answer : (uint32_t)answer) == 0)
+            return;
+    }
+    const struct mutant_updated_vtable *vtable = object->vtable;
+    ((mutant_update_fn *)rt_guest(MUTANT_UPDATE_OBJECT))(object);
+    (table_first ? vtable : object->vtable)->method_0x38(object);
+}
+
+/* Tests the check's whole register: wrong for updates_and_calls_slot_0x38_unless_refused, which
+   tests its low 32 bits. */
+void bb_mutant_update_check_whole_register(struct mutant_updated *object)
+{
+    mutant_update(object, 1, 0, 0);
+}
+
+/* Reads the table before the update (a control for the order claim): wrong for
+   updates_and_calls_slot_0x38_unless_refused, which reads it after. */
+void bb_mutant_update_table_read_first(struct mutant_updated *object)
+{
+    mutant_update(object, 0, 1, 0);
+}
+
+/* Stops when the source has no target: wrong for updates_and_calls_slot_0x38_unless_refused,
+   which then updates. */
+void bb_mutant_update_stops_without_target(struct mutant_updated *object)
+{
+    mutant_update(object, 0, 0, 1);
+}
+
+/* adopts_buffer_at_0x10_after_slot_0x78: slot 0x78 told 0, the count at +0x20, the old buffer at
+   +0x10 freed from 8 bytes before it by the function the global 0x056c45d0 points at, then the
+   new buffer and the count at +0x18 and +0x1c. */
+#define MUTANT_FREE_BLOCK_GLOBAL 0x056c45d0u
+#define MUTANT_LOADED_FREE_BLOCK 0x02b11cb0u
+#define MUTANT_BUFFER_HEADER 8
+struct mutant_buffer_holder;
+struct mutant_buffer_holder_vtable {
+    void *unknown_slots[15];
+    void (*method_0x78)(struct mutant_buffer_holder *, uint32_t);
+};
+struct mutant_buffer_holder {
+    const struct mutant_buffer_holder_vtable *vtable;
+    uint8_t unknown_0x08[0x8];
+    uint8_t *buffer;
+    uint32_t count_0x18;
+    uint32_t count_0x1c;
+    uint32_t count_0x20;
+};
+typedef void mutant_free_block_fn(void *block);
+
+static void mutant_adopt(struct mutant_buffer_holder *holder, uint8_t *buffer, uint32_t count, int early,
+                         int header, int fixed_free)
+{
+    uint8_t *old = holder->buffer;
+    if (early)
+        holder->count_0x20 = count;
+    holder->vtable->method_0x78(holder, 0);
+    if (!early) {
+        holder->count_0x20 = count;
+        old = holder->buffer;
+    }
+    if (old) {
+        mutant_free_block_fn *free_block = fixed_free ? (mutant_free_block_fn *)rt_guest(MUTANT_LOADED_FREE_BLOCK)
+                                                      : *(mutant_free_block_fn **)rt_guest(MUTANT_FREE_BLOCK_GLOBAL);
+        free_block(old - header);
+    }
+    holder->buffer = buffer;
+    holder->count_0x18 = count;
+    holder->count_0x1c = count;
+}
+
+/* Reads the old buffer and stores the count at +0x20 before slot 0x78 (a control for the order
+   claim): wrong for adopts_buffer_at_0x10_after_slot_0x78, which does both after it. */
+void bb_mutant_adopt_buffer_read_first(struct mutant_buffer_holder *holder, uint8_t *buffer, uint32_t count)
+{
+    mutant_adopt(holder, buffer, count, 1, MUTANT_BUFFER_HEADER, 0);
+}
+
+/* Frees the old buffer's own address: wrong for adopts_buffer_at_0x10_after_slot_0x78, which frees
+   from 8 bytes before it. */
+void bb_mutant_adopt_frees_buffer_itself(struct mutant_buffer_holder *holder, uint8_t *buffer, uint32_t count)
+{
+    mutant_adopt(holder, buffer, count, 0, 0, 0);
+}
+
+/* Calls the function the image loads into the global instead of reading the global: wrong for
+   adopts_buffer_at_0x10_after_slot_0x78. */
+void bb_mutant_adopt_fixed_free_function(struct mutant_buffer_holder *holder, uint8_t *buffer, uint32_t count)
+{
+    mutant_adopt(holder, buffer, count, 0, MUTANT_BUFFER_HEADER, 1);
+}
+
+/* destroys_with_0x0139bf90_then_deletes: 0x0139bf90, then operator delete (0x02fbe588). */
+#define MUTANT_DESTROY_OBJECT 0x0139bf90u
+#define MUTANT_OPERATOR_DELETE 0x02fbe588u
+typedef void mutant_object_fn(void *object);
+
+/* Destroys without deleting: wrong for destroys_with_0x0139bf90_then_deletes. */
+void bb_mutant_destroy_without_delete(void *object)
+{
+    ((mutant_object_fn *)rt_guest(MUTANT_DESTROY_OBJECT))(object);
+}
+
+/* Deletes without destroying: wrong for destroys_with_0x0139bf90_then_deletes. */
+void bb_mutant_delete_without_destroy(void *object)
+{
+    ((mutant_object_fn *)rt_guest(MUTANT_OPERATOR_DELETE))(object);
+}
+
+/* Deletes, then destroys: wrong for destroys_with_0x0139bf90_then_deletes. */
+void bb_mutant_delete_then_destroy(void *object)
+{
+    ((mutant_object_fn *)rt_guest(MUTANT_OPERATOR_DELETE))(object);
+    ((mutant_object_fn *)rt_guest(MUTANT_DESTROY_OBJECT))(object);
+}
+
+/* clears_0x28_and_passes_0x18_to_0x027286b0: +0x28 cleared, then the object at +0x18, when there
+   is one, passed to 0x027286b0. */
+#define MUTANT_PASS_TARGET 0x027286b0u
+struct mutant_cleared_holder {
+    uint8_t unknown_0x00[0x18];
+    void *target;
+    uint8_t unknown_0x20[0x8];
+    uint64_t cleared;
+};
+
+/* Clears +0x28 after passing the target on: wrong for clears_0x28_and_passes_0x18_to_0x027286b0,
+   whose callee sees it clear. */
+void bb_mutant_clear_after_passing(struct mutant_cleared_holder *holder)
+{
+    if (holder->target)
+        ((mutant_object_fn *)rt_guest(MUTANT_PASS_TARGET))(holder->target);
+    holder->cleared = 0;
+}
+
+/* Passes a null target on too: wrong for clears_0x28_and_passes_0x18_to_0x027286b0. */
+void bb_mutant_clear_passes_null_target(struct mutant_cleared_holder *holder)
+{
+    holder->cleared = 0;
+    ((mutant_object_fn *)rt_guest(MUTANT_PASS_TARGET))(holder->target);
+}
+
+/* passes_float_to_0x01b5f7f0_when_0x010edc70_agrees: the float passed on when 0x010edc70's byte
+   answer is not 0. */
+#define MUTANT_AGREES 0x010edc70u
+#define MUTANT_TAKE_FLOAT 0x01b5f7f0u
+typedef uint64_t mutant_agrees_fn(void *object);
+typedef void mutant_take_float_fn(void *object, float value);
+
+/* Tests the answer's whole register: wrong for passes_float_to_0x01b5f7f0_when_0x010edc70_agrees,
+   which tests its low byte. */
+void bb_mutant_float_check_whole_register(void *object, float value)
+{
+    if (((mutant_agrees_fn *)rt_guest(MUTANT_AGREES))(object))
+        ((mutant_take_float_fn *)rt_guest(MUTANT_TAKE_FLOAT))(object, value);
+}
+
+/* Passes the float on whatever the answer: wrong for
+   passes_float_to_0x01b5f7f0_when_0x010edc70_agrees. */
+void bb_mutant_float_passed_unconditionally(void *object, float value)
+{
+    ((mutant_agrees_fn *)rt_guest(MUTANT_AGREES))(object);
+    ((mutant_take_float_fn *)rt_guest(MUTANT_TAKE_FLOAT))(object, value);
+}

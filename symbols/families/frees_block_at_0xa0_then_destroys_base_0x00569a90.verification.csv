@@ -1,0 +1,14 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_02805bc0,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_02808060,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_028097d0,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_02809b00,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280a250,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280a960,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280ade0,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280b1a0,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280bff0,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280c320,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280c6e0,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_0280d0a0,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
+engine_frees_block_at_0xa0_then_destroys_base_0x00569a90_02827f10,edge,,6,6,0,0,e7d64e397780e176,2026-11-16
