@@ -15,7 +15,9 @@ scripted stub too.
   last two do not reach 0); each load in turn at states 0, 2, 4, 0x103, 0x80000003, -1 and INT_MAX
   while the others are awaited; the object's own state at 0, 4, -1 and INT_MAX (wraps); the first
   and last pointer naming the same load (counts 1 and 2); the first load being the object itself,
-  whose destroy changes the last pointer (the pointer is read again after a freeing release).
+  whose destroy changes the last pointer (the pointer is read again after a freeing release);
+  0x018e7870 storing into both pointers and the state (they are cleared before it, the state is
+  added to after it).
 - release_load (0x01d53450): the load at +0x58 awaited with counts 1, 2, 0 and 0x80000000, at the
   other states, the object's state at several values, and the load being the object itself.
 - release_final_loads (0x01d534b0): counts of the loads at +0x68 and +0x60 in every pair of 1, 2,
@@ -87,8 +89,11 @@ class Case:
         self.c['stubs'] += [{'address': ALLOCATOR_OF, 'argc': 1, 'argi': [0], 'ret': 'buf:heap'}, destroy,
                             {'address': HEAP_FREE, 'argc': 2, 'argi': [0, 1]}]
 
-    def after_first_loads(self):
-        self.c['stubs'].append({'address': AFTER_FIRST_LOADS, 'argc': 0})
+    def after_first_loads(self, writes=None):
+        stub = {'address': AFTER_FIRST_LOADS, 'argc': 0}
+        if writes:
+            stub['writes'] = writes
+        self.c['stubs'].append(stub)
 
 
 def release_loads_cases():
@@ -139,6 +144,16 @@ def release_loads_cases():
             c.frees()
         c.after_first_loads()
         out.append(c.c)
+    # 0x018e7870 itself stores into the object, so what is left shows the order around it: both
+    # pointers are cleared before the call (its stores survive) and the state is added to after
+    # it (its stored state comes out one higher).
+    c = Case('release_loads', 'after_first_loads_writes_object')
+    for s in ('l28', 'l30', 'l38', 'l40'):
+        c.load(s, references=2)
+    c.after_first_loads(writes=[{'addr': 'buf:language+0x28', 'bytes': '2112121212121212'},
+                                {'addr': 'buf:language+0x40', 'bytes': '4114141414141414'},
+                                {'addr': f'buf:language+{STATE:#x}', 'bytes': '41000000'}])
+    out.append(c.c)
     return out
 
 

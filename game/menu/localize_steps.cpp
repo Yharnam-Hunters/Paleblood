@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Menu: three steps of the language object (localize_language.h) that let go of the loads it
-// holds. Each is a slot of the object's step table, next to 0x01d53140 and 0x01d53420; none
+// holds. Each is an entry of the object's step table, next to 0x01d53140 and 0x01d53420; none
 // checks a load pointer for null, and neither does the code here.
 #include "localize_language.h"
 
