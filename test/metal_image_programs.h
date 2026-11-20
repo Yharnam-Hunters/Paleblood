@@ -93,6 +93,22 @@ static const uint32_t image_probe_sample_array[] = {
     0xbf810000, /* s_endpgm */
 };
 
+static const uint32_t image_probe_sample_cube[] = {
+    0xc0880d00, /* s_load_dwordx4 s[16:19], s[12:13], 0x0 */
+    0xc00a0d04, /* s_load_dword s20, s[12:13], 0x4 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x7e04020e, /* v_mov_b32_e32 v2, s14 */
+    0x7e06020f, /* v_mov_b32_e32 v3, s15 */
+    0x7e080214, /* v_mov_b32_e32 v4, s20 */
+    0xf0804f00, 0x00400802, /* image_sample v[8:11], v[2:4], s[0:7], s[8:11] dmask:0xf da */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e180280, /* v_mov_b32_e32 v12, 0 */
+    0xe0781000, 0x8004080c, /* buffer_store_dwordx4 v[8:11], v12, s[16:19], 0 offen */
+    0x7e000280, /* v_mov_b32_e32 v0, 0 */
+    0xf800180f, 0x00000000, /* exp mrt0, v0, v0, v0, v0 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 static const uint32_t image_probe_sample_memory[] = {
     0xc0880d00, /* s_load_dwordx4 s[16:19], s[12:13], 0x0 */
     0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
