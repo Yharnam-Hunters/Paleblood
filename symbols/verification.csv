@@ -202,6 +202,7 @@ character_gaitem_handle_release_01e8bc00,recorded,,130,130,0,0,7fabf4dc282df527,
 character_gaitem_handle_release_01e8bc00,edge,,54,54,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_resolve_handle_01e88da0,recorded,,24,24,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_resolve_handle_01e88da0,edge,,72,72,0,0,7fabf4dc282df527,2026-11-14
+character_params_post_update,edge,,65,65,0,0,eb2ce293ded226c1,2026-11-20
 character_state_flags_update_01e4a490,recorded,,57,57,0,0,84ffbaaca95d946f,2026-11-17
 character_state_flags_update_01e4a490,edge,,40,40,0,0,84ffbaaca95d946f,2026-11-13
 character_throw_event_01e19e20,edge,,25,25,0,0,49d040fba88dc6f2,2026-11-14
