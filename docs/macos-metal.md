@@ -437,6 +437,12 @@ unknown or absent components fail explicitly. Complete padded allocations must f
 Image dimensions are limited to 16384 and arrays to 2048 layers; actual native allocation and
 BC/32-bit filtering capabilities are also checked.
 
+Pixel shaders can sample or load a single square RGBA8 UNORM cube in thin 1D tiling (mode 13)
+at mip zero. The backend binds the six allocated faces through the common translator's 2D
+array representation. The descriptor must cover all six faces from zero. If it advertises
+additional faces, the view still ends at the sixth allocated face. Cube arrays and other
+cube layouts remain outside this profile.
+
 Formats follow the common renderer's established table: R8/RG8/RGBA8 UNORM, R32 FLOAT/UINT/SINT,
 RG32/RGBA32 FLOAT, RGBA8 UINT/sRGB, BC1/2/3/7 UNORM/sRGB, and BC4/5 UNORM/SNORM. BC6 and other
 unestablished combinations fail by format name. Integer return bits stay integer bits; sRGB
