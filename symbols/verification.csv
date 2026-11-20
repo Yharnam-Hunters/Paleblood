@@ -1243,6 +1243,7 @@ frame_timing_holygrail_wait_for_dungeon_mode,edge,60,59,59,0,0,e7fbc003fc64b0ed,
 frame_timing_holygrail_wait_for_ritual_mode,edge,,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_holygrail_wait_for_ritual_mode,edge,30,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_holygrail_wait_for_ritual_mode,edge,60,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
+frame_timing_item_group_apply_requests,edge,,56,56,0,0,a6da6ba7736a6c4d,2026-11-19
 frame_timing_item_list_update_01456c80,recorded,,381,381,0,0,ef8ef3f096df299e,2026-11-14
 frame_timing_item_list_update_01456c80,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_item_update_013d4810,recorded,,31,31,0,0,d704f414255172fc,2026-11-14
