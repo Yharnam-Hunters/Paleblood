@@ -139,8 +139,10 @@ audio_fmod_create_native_thread,edge,,264,264,0,0,ba5ade3ce59c8354,2026-11-18
 audio_fmod_initialize_thread,recorded,,14,14,0,0,a40873c8233118df,2026-11-17
 audio_fmod_initialize_thread,edge,,84,84,0,0,a40873c8233118df,2026-11-16
 audio_fmod_initialize_timing_state,edge,,103,103,0,0,05e730c3a91adea3,2026-11-18
+audio_fmod_output_close,edge,,234,234,0,0,2be5b88f604095e3,2026-11-20
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
+audio_fmod_output_update_port_state,edge,,177,177,0,0,a8fc382cf6f41d62,2026-11-20
 audio_fmod_start_thread,recorded,,16,16,0,0,e778d7fce820c27f,2026-11-17
 audio_fmod_start_thread,edge,,237,237,0,0,e778d7fce820c27f,2026-11-17
 audio_fmod_stop_output_threads,edge,,181,181,0,0,7357e4defa4ca7a8,2026-11-15
@@ -152,6 +154,7 @@ audio_fmod_string_copy_counted,edge,,54,54,0,0,950224f5b69d2ee0,2026-11-12
 audio_fmod_thread_affinity_lookup,recorded,,10,10,0,0,8abaccecd8e6ac90,2026-11-17
 audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-11-03
 audio_fmod_thread_entry,edge,,189,189,0,0,68c1bbca08873495,2026-11-17
+audio_fmod_update_timing_exclusion,edge,,156,156,0,0,ade789d511cebd87,2026-11-19
 audio_fmod_wake_thread,edge,,79,79,0,0,a915fff13aa4fb20,2026-11-18
 camera_axis_angle_quaternion_00848e80,recorded,,302,302,0,0,1bbcc2f491ba3af5,2026-11-17
 camera_axis_angle_quaternion_00848e80,edge,,866,866,0,0,1bbcc2f491ba3af5,2026-11-14
@@ -173,6 +176,7 @@ character_ai_display_update_01cd92b0,recorded,,48,48,0,0,84ffbaaca95d946f,2026-1
 character_ai_display_update_01cd92b0,edge,,8,8,0,0,84ffbaaca95d946f,2026-11-13
 character_counters_refill_01e5c440,recorded,,117,117,0,0,84ffbaaca95d946f,2026-11-17
 character_counters_refill_01e5c440,edge,,18,18,0,0,84ffbaaca95d946f,2026-11-13
+character_data_update_01913c10,edge,,77,77,0,0,34292f14d8b20d99,2026-11-19
 character_event_request_update_01e59250,recorded,,188,188,0,0,84ffbaaca95d946f,2026-11-17
 character_event_request_update_01e59250,edge,,27,27,0,0,84ffbaaca95d946f,2026-11-13
 character_frame_update_01cbdb20,recorded,,457,457,0,0,b243fddb1ca6589a,2026-10-07
@@ -185,16 +189,20 @@ character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_gaitem_free_item_01e86e60,recorded,,93,93,0,0,7fabf4dc282df527,2026-11-17
 character_gaitem_free_item_01e86e60,edge,,33,33,0,0,7fabf4dc282df527,2026-11-14
+character_gaitem_handle_assign_value_01e8c020,edge,,129,129,0,0,37d2b16de6b2abbc,2026-11-19
 character_gaitem_handle_copy_01e8bae0,recorded,,12,12,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_copy_01e8bae0,edge,,54,54,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_copy_01e8bb70,recorded,,128,128,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_copy_01e8bb70,edge,,54,54,0,0,7fabf4dc282df527,2026-11-14
+character_gaitem_handle_copy_assign_01e8bd80,edge,,131,131,0,0,37d2b16de6b2abbc,2026-11-19
+character_gaitem_handle_copy_assign_01e8bed0,edge,,131,131,0,0,37d2b16de6b2abbc,2026-11-19
 character_gaitem_handle_move_assign_01e8bcb0,recorded,,112,112,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_move_assign_01e8bcb0,edge,,58,58,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_release_01e8bc00,recorded,,130,130,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_handle_release_01e8bc00,edge,,54,54,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_resolve_handle_01e88da0,recorded,,24,24,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_resolve_handle_01e88da0,edge,,72,72,0,0,7fabf4dc282df527,2026-11-14
+character_params_post_update,edge,,65,65,0,0,eb2ce293ded226c1,2026-11-20
 character_state_flags_update_01e4a490,recorded,,57,57,0,0,84ffbaaca95d946f,2026-11-17
 character_state_flags_update_01e4a490,edge,,40,40,0,0,84ffbaaca95d946f,2026-11-13
 character_throw_event_01e19e20,edge,,25,25,0,0,49d040fba88dc6f2,2026-11-14
@@ -1236,6 +1244,7 @@ frame_timing_holygrail_wait_for_dungeon_mode,edge,60,59,59,0,0,e7fbc003fc64b0ed,
 frame_timing_holygrail_wait_for_ritual_mode,edge,,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_holygrail_wait_for_ritual_mode,edge,30,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_holygrail_wait_for_ritual_mode,edge,60,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
+frame_timing_item_group_apply_requests,edge,,56,56,0,0,a6da6ba7736a6c4d,2026-11-19
 frame_timing_item_list_update_01456c80,recorded,,381,381,0,0,ef8ef3f096df299e,2026-11-14
 frame_timing_item_list_update_01456c80,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_item_update_013d4810,recorded,,31,31,0,0,d704f414255172fc,2026-11-14
@@ -1652,6 +1661,10 @@ menu_heap_adapter_free_023411d0,recorded,,155,155,0,0,99d14ad81370e4cc,2026-11-1
 menu_heap_adapter_free_023411d0,edge,,6,6,0,0,99d14ad81370e4cc,2026-11-14
 menu_heap_adapter_reallocate_02341330,recorded,,105,105,0,0,99d14ad81370e4cc,2026-11-17
 menu_heap_adapter_reallocate_02341330,edge,,14,14,0,0,99d14ad81370e4cc,2026-11-14
+menu_localize_request_finish_01d53420,edge,,38,38,0,0,525e87d25699447c,2026-11-19
+menu_localize_step_release_final_loads_01d534b0,edge,,23,23,0,0,984e88c240cbc7de,2026-11-19
+menu_localize_step_release_load_01d53450,edge,,16,16,0,0,984e88c240cbc7de,2026-11-19
+menu_localize_step_release_loads_01d52e50,edge,,52,52,0,0,984e88c240cbc7de,2026-11-19
 menu_movie_screen_close_023548d0,recorded,,12,12,0,0,99d14ad81370e4cc,2026-11-17
 menu_movie_screen_close_023548d0,edge,,5,5,0,0,99d14ad81370e4cc,2026-11-14
 menu_movie_screen_step_02354d90,edge,,8,8,0,0,99d14ad81370e4cc,2026-11-14
@@ -2234,6 +2247,8 @@ render_wait_register,edge,,442,442,0,0,6573ac11f48a18ec,2026-11-14
 render_yebis_cleanup_and_free_interface,edge,,92,92,0,0,f1f8fe34e9f21902,2026-11-18
 render_yebis_context_instantiate,recorded,,4,4,0,0,9b7955beb7645a7f,2026-11-17
 render_yebis_context_instantiate,edge,,135,135,0,0,9b7955beb7645a7f,2026-11-15
+render_yebis_delete_interface,edge,,116,116,0,0,c646e6894249331b,2026-11-19
+render_yebis_destruct_interface,edge,,109,109,0,0,dd98fd83756f9f13,2026-11-19
 render_yebis_free_storage,edge,,92,92,0,0,9e86f7009db47f8f,2026-11-18
 render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,30,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
