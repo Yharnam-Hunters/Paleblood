@@ -437,6 +437,7 @@ address,replacement,system,returns
 0x01cd92b0,bb_character_ai_display_update_01cd92b0,character,void
 0x01ceb3b0,bb_engine_array64_push_back_01ceb3b0,engine,void
 0x01ceb6a0,bb_engine_array64_reserve_01ceb6a0,engine,void
+0x01cf7880,bb_character_state_data_sync,character,void
 0x01d52e50,bb_menu_localize_step_release_loads_01d52e50,menu,void
 0x01d53420,bb_menu_localize_request_finish_01d53420,menu,void
 0x01d53450,bb_menu_localize_step_release_load_01d53450,menu,void
