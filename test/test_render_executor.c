@@ -3950,6 +3950,9 @@ static void pipeline_cache_file(const rt_executor_memory *memory)
     CHECK(f != NULL);
     if (f) fputs("not a pipeline cache", f), fclose(f);
     setenv("BB_PIPELINE_CACHE", path, 1);
+    char translations[64];
+    snprintf(translations, sizeof translations, "%s/translations.bin", directory);
+    setenv("BB_TRANSLATION_CACHE", translations, 1);
     for (int run = 0; run < 2; run++) {
         rt_executor *x = NULL;
         const int opened = rt_executor_open(memory, &x, error, sizeof error);
@@ -3958,6 +3961,13 @@ static void pipeline_cache_file(const rt_executor_memory *memory)
         rt_render_forget(), rt_executor_reset(x);
         const uint32_t size = record_draw(CACHE_BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         CHECK(rt_executor_run(x, CACHE_BUFFER, size, error, sizeof error) == 0);
+        /* the first run translates the draw's shaders and keeps them; the second finds both */
+        size_t found = 0, made = 0;
+        rt_executor_translations(x, &found, &made);
+        CHECK(run ? found == 2 && made == 0 : found == 0 && made == 2);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        check_triangle_pixels(bgra);
         rt_executor_close(x);
         uint32_t header[4] = {0};
         f = fopen(path, "rb");
@@ -3967,7 +3977,9 @@ static void pipeline_cache_file(const rt_executor_memory *memory)
         CHECK(header[0] >= 16 + VK_UUID_SIZE && header[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && header[2] != 0);
     }
     setenv("BB_PIPELINE_CACHE", "", 1);
+    setenv("BB_TRANSLATION_CACHE", "", 1);
     unlink(path);
+    unlink(translations);
     rmdir(directory);
 }
 
@@ -4010,6 +4022,7 @@ static void async_pipelines(int fd)
 int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
+    setenv("BB_TRANSLATION_CACHE", "", 0); /* nor a translation cache file */
     /* nor the drivers' own shader caches on disk: async_pipelines needs a pipeline the compiler must make */
     setenv("__GL_SHADER_DISK_CACHE", "0", 0), setenv("MESA_SHADER_CACHE_DISABLE", "true", 0);
     const int fd = map_guest_memory();

@@ -216,6 +216,7 @@ static int stops(uint64_t buffer, uint32_t size)
 int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
+    setenv("BB_TRANSLATION_CACHE", "", 0); /* nor a translation cache file */
     setenv("PB_ASYNC_PIPELINES", "0", 0); /* each draw drawn when its buffer runs (the executor's test checks async pipelines) */
     guest_fd = map_guest_memory();
     if (guest_fd < 0) {

@@ -29,6 +29,7 @@
 #include "runtime/render_calls.h"
 #include "runtime/tile_copy.h"
 #include "runtime/tiling.h"
+#include "runtime/translation_cache.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -720,6 +721,11 @@ struct rt_executor {
     int saver_started, saver_stop;
     pthread_mutex_t saver_lock;
     pthread_cond_t saver_wake;
+    /* translations kept from earlier runs (open_translations; NULL: none), and how many shaders were
+       found there and translated, and the time both took on the recording thread */
+    translation_cache *translations;
+    size_t translations_found, translations_made;
+    uint64_t translation_ns, translations_reported; /* the total, and when it was last reported */
     /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
     int async_pipelines;
     int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
@@ -1325,6 +1331,40 @@ static void pipeline_cache_close(rt_executor *x)
     pthread_mutex_destroy(&x->saver_lock);
 }
 
+/* ---- the translation cache's file ----
+   The shaders' translations, kept from one run to the next (runtime/translation_cache.h). The file is
+   BB_TRANSLATION_CACHE (empty: none), else $XDG_CACHE_HOME/paleblood/translations.bin, else
+   ~/.cache/paleblood/translations.bin. Its version, PB_TRANSLATOR_VERSION, is a hash of the translator's
+   and this file's sources made by the build (CMakeLists.txt), so a change to either starts the file
+   again; a build without it keeps no translations. */
+static void open_translations(rt_executor *x)
+{
+#ifdef PB_TRANSLATOR_VERSION
+    const char *named = getenv("BB_TRANSLATION_CACHE"), *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    char path[sizeof x->pipeline_file] = "";
+    if (named) snprintf(path, sizeof path, "%s", named);
+    else if (cache && *cache) snprintf(path, sizeof path, "%s/paleblood/translations.bin", cache);
+    else if (home && *home) snprintf(path, sizeof path, "%s/.cache/paleblood/translations.bin", home);
+    x->translations = translation_cache_open(path, PB_TRANSLATOR_VERSION);
+#else
+    (void)x;
+#endif
+}
+
+void rt_executor_translations(const rt_executor *x, size_t *found, size_t *made)
+{
+    *found = x->translations_found, *made = x->translations_made;
+}
+
+static void close_translations(rt_executor *x)
+{
+    if (!x->translations) return;
+    fprintf(stderr, "executor: translations: %zu from the cache, %zu translated, %.2f s\n", x->translations_found, x->translations_made,
+            (double)x->translation_ns / 1e9);
+    translation_cache_close(x->translations);
+    x->translations = NULL;
+}
+
 static int open_device(rt_executor *x, char *error, size_t error_size)
 {
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_2};
@@ -1502,7 +1542,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
     const VkSemaphoreCreateInfo timeline = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline_type};
     if (vkCreateSemaphore(x->device, &timeline, NULL, &x->timeline) != VK_SUCCESS) return failed(error, error_size, "no timeline semaphore");
-    return pipeline_cache_open(x, error, error_size);
+    if (pipeline_cache_open(x, error, error_size)) return -1;
+    open_translations(x);
     return 0;
 }
 
@@ -3586,6 +3627,79 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
 
 /* ---- shaders and pipelines ---- */
 
+static uint64_t monotonic_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
+
+/* What a translation gives besides its SPIR-V, kept with it in the cache (the SPIR-V words follow). */
+typedef struct {
+    uint32_t user_read, sgprs_read[GCN_SGPR_READ_WORDS];
+    gcn_table_snapshot tables;
+} translation_outputs;
+
+/* Adds the program at code, through its end (gcn_program_dwords), to a translation's key, with its
+   address and length (the translator reads no further). 0, or -1 when the decoder finds no end: the
+   shader is then translated without the cache. */
+static int add_program(translation_key *key, const rt_executor *x, uint64_t code)
+{
+    const uint32_t *words = (const uint32_t *)(uintptr_t)code;
+    const long dwords = gcn_program_dwords(words, (size_t)((x->guest_base + x->size - code) / 4));
+    if (dwords <= 0) return -1;
+    const uint64_t where[2] = {code, (uint64_t)dwords};
+    translation_key_add(key, where, sizeof where);
+    translation_key_add(key, words, (size_t)dwords * 4);
+    return 0;
+}
+
+/* Adds the executor's values every layout takes (the guest memory's place on the GPU, table
+   snapshots on or off) and the shader's run-time stop word. */
+static void add_executor_values(translation_key *key, const rt_executor *x, uint64_t error_address)
+{
+    const gcn_guest_memory guest = guest_memory(x);
+    const uint64_t values[] = {x->address_offset, guest.base, guest.bytes, guest.sink, error_address, (uint64_t)x->draw_snapshots};
+    translation_key_add(key, values, sizeof values);
+}
+
+/* The translation kept under key: 1 with *outputs and *spirv (a copy the caller frees), else 0. */
+static int find_translation(rt_executor *x, const translation_key *key, translation_outputs *outputs, uint32_t **spirv, size_t *spirv_words)
+{
+    const void *value;
+    size_t size;
+    if (!translation_cache_find(x->translations, key, &value, &size) || size <= sizeof *outputs || (size - sizeof *outputs) % 4) return 0;
+    *spirv_words = (size - sizeof *outputs) / 4;
+    if (!(*spirv = malloc(*spirv_words * 4))) return 0; /* its own memory: the cache's bytes need not be aligned */
+    memcpy(outputs, value, sizeof *outputs);
+    memcpy(*spirv, (const unsigned char *)value + sizeof *outputs, *spirv_words * 4);
+    x->translations_found++;
+    return 1;
+}
+
+/* Adds a translation's time (since started) to the executor's total, and while shaders are made
+   reports the totals on stderr (at most every 20 s), so runs that never close the executor still show them. */
+static void count_translation_time(rt_executor *x, uint64_t started)
+{
+    const uint64_t now = monotonic_ns();
+    x->translation_ns += now - started;
+    if (now - x->translations_reported < 20000000000ull) return;
+    x->translations_reported = now;
+    fprintf(stderr, "executor: translations so far: %zu from the cache, %zu translated, %.2f s\n", x->translations_found,
+            x->translations_made, (double)x->translation_ns / 1e9);
+}
+
+static void keep_translation(rt_executor *x, const translation_key *key, const translation_outputs *outputs, const uint32_t *spirv, size_t spirv_words)
+{
+    unsigned char *value = malloc(sizeof *outputs + spirv_words * 4);
+    if (!value) return;
+    memcpy(value, outputs, sizeof *outputs);
+    memcpy(value + sizeof *outputs, spirv, spirv_words * 4);
+    translation_cache_add(x->translations, key, value, sizeof *outputs + spirv_words * 4);
+    free(value);
+}
+
+
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
 /* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's pixel_settings (part of the
    cache key, as are a pixel shader's input_controls: GCN_PIXEL_INPUTS words, or NULL). */
@@ -3709,51 +3823,83 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     uint32_t *spirv = NULL;
     size_t spirv_words = 0;
     char reason[TRANSLATION_REASON_BYTES];
-    int result;
-    /* a draw's vertex (with its fetch shader) or pixel shader takes table snapshots on a device with room
-       for their addresses; a plan that cannot be made leaves the shader without (its code then fails to
-       translate as well) */
-    const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
-    const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
-    gcn_table_snapshot planned = {0};
-    if (x->draw_snapshots && (stage == STAGE_VERTEX || stage == STAGE_PIXEL) &&
-        gcn_called_table_snapshot_plan(words, dwords, callee_words, callee_dwords, GCN_DRAW_SNAPSHOT_WORDS, &planned, reason, sizeof reason))
-        planned = (gcn_table_snapshot){0};
-    const gcn_table_snapshot *plan = planned.entry_count ? &planned : NULL;
-    if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
-        const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
-        const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
-                                          .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
-                                          .error_address = stop_slot(x, stage, code), .callee = callee_words, .callee_dwords = callee_dwords,
-                                          .code_address = code, .images = images, .image_count = image_count,
-                                          .first_binding = first_binding, .user_data_read = user_read, .sgprs_read = sgprs_read,
-                                          .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
-                                          .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
-                                          .step_rates_set = instancing.step_rates_set, .table_snapshot = plan,
-                                          .table_block_offset = VERTEX_TABLE_BLOCK};
-        result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
-    } else if (stage == STAGE_DOMAIN) {
-        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
-        layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
-        layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
-        memset(sgprs_read, 0xff, GCN_SGPR_READ_WORDS * sizeof *sgprs_read); /* not reported: taken as all read */
-        result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+    int result = 0;
+    const uint64_t started = monotonic_ns();
+    /* the translation's key: the programs, and every value the layouts below take that the shader's
+       entry does not already hold (the tessellation and geometry rings are made at their first draw) */
+    translation_key key = {0};
+    if (x->translations && add_program(&key, x, code) == 0 && (!callee || add_program(&key, x, callee) == 0)) {
+        const uint64_t values[] = {(uint64_t)stage, user_sgprs, settings, first_binding, tessellation, image_count, sampler_count,
+                                   input_controls != NULL, stage == STAGE_COPY ? x->gs_gsvs.address : 0,
+                                   stage == STAGE_DOMAIN ? x->tess_lds.address : 0, stage == STAGE_DOMAIN ? x->tess_factors.address : 0};
+        add_executor_values(&key, x, stop_slot(x, stage, code));
+        translation_key_add(&key, values, sizeof values);
+        translation_key_add(&key, &instancing, sizeof instancing);
+        translation_key_add(&key, images, image_count * sizeof *images);
+        translation_key_add(&key, samplers, sampler_count * sizeof *samplers);
+        if (input_controls) translation_key_add(&key, input_controls, control_bytes);
     } else {
-        const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
-        const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
-                                         .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
-                                                            (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
-                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
-                                         .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
-                                         .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, stage, code),
-                                         .images = images, .image_count = image_count, .samplers = samplers,
-                                         .sampler_count = sampler_count, .input_controls = input_controls,
-                                         .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
-                                         .user_data_read = user_read, .sgprs_read = sgprs_read, .table_snapshot = plan,
-                                         .table_block_offset = PIXEL_TABLE_BLOCK};
-        result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        key.failed = 1;
     }
+    translation_outputs kept;
+    gcn_table_snapshot planned = {0};
+    if (find_translation(x, &key, &kept, &spirv, &spirv_words)) {
+        *user_read = kept.user_read;
+        memcpy(sgprs_read, kept.sgprs_read, sizeof kept.sgprs_read);
+        planned = kept.tables;
+    } else {
+        /* a draw's vertex (with its fetch shader) or pixel shader takes table snapshots on a device with room
+           for their addresses; a plan that cannot be made leaves the shader without (its code then fails to
+           translate as well) */
+        const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+        const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+        if (x->draw_snapshots && (stage == STAGE_VERTEX || stage == STAGE_PIXEL) &&
+            gcn_called_table_snapshot_plan(words, dwords, callee_words, callee_dwords, GCN_DRAW_SNAPSHOT_WORDS, &planned, reason, sizeof reason))
+            planned = (gcn_table_snapshot){0};
+        const gcn_table_snapshot *plan = planned.entry_count ? &planned : NULL;
+        if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
+            const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
+            const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
+                                              .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
+                                              .error_address = stop_slot(x, stage, code), .callee = callee_words, .callee_dwords = callee_dwords,
+                                              .code_address = code, .images = images, .image_count = image_count,
+                                              .first_binding = first_binding, .user_data_read = user_read, .sgprs_read = sgprs_read,
+                                              .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
+                                              .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
+                                              .step_rates_set = instancing.step_rates_set, .table_snapshot = plan,
+                                              .table_block_offset = VERTEX_TABLE_BLOCK};
+            result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        } else if (stage == STAGE_DOMAIN) {
+            gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
+            layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
+            layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
+            memset(sgprs_read, 0xff, GCN_SGPR_READ_WORDS * sizeof *sgprs_read); /* not reported: taken as all read */
+            result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        } else {
+            const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
+            const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
+                                             .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+                                                                (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
+                                             .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
+                                             .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
+                                             .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
+                                             .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, stage, code),
+                                             .images = images, .image_count = image_count, .samplers = samplers,
+                                             .sampler_count = sampler_count, .input_controls = input_controls,
+                                             .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
+                                             .user_data_read = user_read, .sgprs_read = sgprs_read, .table_snapshot = plan,
+                                             .table_block_offset = PIXEL_TABLE_BLOCK};
+            result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        }
+        if (!result) {
+            translation_outputs outputs = {.user_read = *user_read, .tables = planned};
+            memcpy(outputs.sgprs_read, sgprs_read, sizeof outputs.sgprs_read);
+            keep_translation(x, &key, &outputs, spirv, spirv_words);
+            x->translations_made++;
+        }
+    }
+    translation_key_free(&key);
+    count_translation_time(x, started);
     sweep_shader(x, stage_name(stage), code, result ? reason : NULL, spirv, spirv_words);
     if (result) {
         failed(error, error_size, "%s shader at %#llx: %s", stage_name(stage),
@@ -3984,13 +4130,6 @@ static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait)
    a slow compile leaves a draw out for a second at most (LanternEngine's compile notes skip scene draws
    for up to a second the same way; facts only, engine/docs/pipeline_compiles.md). */
 #define ASYNC_SKIP_NS (UINT64_C(1000000000))
-
-static uint64_t monotonic_ns(void)
-{
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
-}
 
 /* The draw's pipeline (see describe_pipeline). With may_skip set and worker threads running, a pipeline
    not made yet goes to the workers and *pending is set, VK_NULL_HANDLE returned: the draw is left out
@@ -5101,20 +5240,42 @@ static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_comput
     const uint32_t *const code = (const uint32_t *)(uintptr_t)c->code;
     const size_t code_dwords = (size_t)((x->guest_base + x->size - c->code) / 4);
     char reason[TRANSLATION_REASON_BYTES];
-    gcn_table_snapshot tables;
-    if (gcn_table_snapshot_plan(code, code_dwords, &tables, reason, sizeof reason)) {
-        failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-        return NULL;
+    const uint64_t started = monotonic_ns();
+    translation_key key = {0};
+    if (x->translations && add_program(&key, x, c->code) == 0) {
+        const uint64_t values[] = {c->threads[0], c->threads[1], c->threads[2], c->user_sgprs, c->workgroup_id_enables, image_count, x->gds_address};
+        add_executor_values(&key, x, stop_slot(x, STOP_KIND_COMPUTE, c->code));
+        translation_key_add(&key, values, sizeof values);
+        translation_key_add(&key, images, image_count * sizeof *images);
+    } else {
+        key.failed = 1;
     }
-    uint32_t user_read = 0;
-    const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
-                                       .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code),
-                                       .images = images, .image_count = image_count, .user_data_read = &user_read,
-                                       .gds_address = x->gds_address, .table_snapshot = &tables};
+    translation_outputs kept;
     uint32_t *spirv = NULL;
     size_t words = 0;
-    const int translated = gcn_translate_compute(code, code_dwords, &layout, &spirv, &words, reason, sizeof reason);
+    int translated = 0;
+    if (!find_translation(x, &key, &kept, &spirv, &words)) {
+        kept = (translation_outputs){0};
+        if (gcn_table_snapshot_plan(code, code_dwords, &kept.tables, reason, sizeof reason)) {
+            translation_key_free(&key);
+            failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
+            return NULL;
+        }
+        const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+                                           .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
+                                           .address_offset = x->address_offset, .guest = guest_memory(x),
+                                           .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code), .images = images, .image_count = image_count,
+                                           .user_data_read = &kept.user_read, .gds_address = x->gds_address, .table_snapshot = &kept.tables};
+        translated = gcn_translate_compute(code, code_dwords, &layout, &spirv, &words, reason, sizeof reason);
+        if (!translated) {
+            keep_translation(x, &key, &kept, spirv, words);
+            x->translations_made++;
+        }
+    }
+    translation_key_free(&key);
+    count_translation_time(x, started);
+    const uint32_t user_read = kept.user_read;
+    const gcn_table_snapshot tables = kept.tables;
     sweep_shader(x, "compute", c->code, translated ? reason : NULL, spirv, words);
     if (translated) {
         failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
@@ -7305,6 +7466,7 @@ void rt_executor_close(rt_executor *x)
                 if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
         if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);
         pipeline_cache_close(x);
+        close_translations(x);
         if (x->pipeline_cache) vkDestroyPipelineCache(x->device, x->pipeline_cache, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);

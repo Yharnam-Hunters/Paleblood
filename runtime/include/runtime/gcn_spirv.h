@@ -333,6 +333,9 @@ typedef struct {
     const gcn_table_snapshot *table_snapshot; /* when not NULL, the program's plan (gcn_table_snapshot_plan):
                                                  its loads take the snapshot words after the user data, at
                                                  push-constant byte push_constant_offset + 4 * GCN_USER_SGPR_MAX */
+    unsigned thread_id_vgprs; /* 1=X, 2=XY, 3=XYZ; 0 preserves the existing XYZ default.
+                                 Other registers retain the translator's deterministic initial value,
+                                 not a hardware guarantee for disabled thread-ID inputs. */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program

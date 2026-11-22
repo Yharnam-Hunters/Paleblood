@@ -176,6 +176,13 @@ add_test(NAME gcn_spirv COMMAND test_gcn_spirv)
 add_executable(test_linear_copy test/test_linear_copy.c)
 target_link_libraries(test_linear_copy PRIVATE pbgcn_spirv)
 add_test(NAME linear_copy COMMAND test_linear_copy)
+# Translations kept on disk from one run to the next (runtime/translation_cache.h).
+add_library(pbtranslation_cache STATIC runtime/renderer/translation_cache.c)
+target_include_directories(pbtranslation_cache PUBLIC runtime/include)
+target_link_libraries(pbtranslation_cache PUBLIC pthread)
+add_executable(test_translation_cache test/test_translation_cache.c)
+target_link_libraries(test_translation_cache PRIVATE pbtranslation_cache)
+add_test(NAME translation_cache COMMAND test_translation_cache)
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
     pkg_check_modules(PB_TEST_VULKAN QUIET IMPORTED_TARGET vulkan)
@@ -190,7 +197,21 @@ if(PB_TEST_VULKAN_FOUND)
     # The draw executor (docs/RENDERER.md, phase 3) runs recorded calls on a Vulkan GPU.
     add_library(pbrender_executor STATIC runtime/renderer/render_executor.c)
     target_include_directories(pbrender_executor PUBLIC runtime/include)
-    target_link_libraries(pbrender_executor PUBLIC pbrender_calls pbgcn_spirv pbtiling PkgConfig::PB_TEST_VULKAN)
+    # The translation cache's version (runtime/translation_cache.h): a hash of every source a translation
+    # depends on, made again when one of them changes, so a changed translator never reads old translations.
+    set(PB_TRANSLATOR_SOURCES runtime/renderer/gcn_spirv.c runtime/renderer/spirv.c runtime/renderer/gcn_decode.c
+        runtime/renderer/gcn_opcodes.inc runtime/renderer/table_snapshot.c runtime/renderer/render_executor.c
+        runtime/include/runtime/gcn_spirv.h runtime/include/runtime/spirv.h runtime/include/runtime/gcn.h
+        runtime/include/runtime/table_snapshot.h runtime/include/runtime/render_executor.h)
+    set(PB_TRANSLATOR_HASHES "")
+    foreach(source IN LISTS PB_TRANSLATOR_SOURCES)
+        file(SHA256 ${PROJECT_SOURCE_DIR}/${source} source_hash)
+        string(APPEND PB_TRANSLATOR_HASHES ${source_hash})
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/${source})
+    endforeach()
+    string(SHA256 PB_TRANSLATOR_VERSION "${PB_TRANSLATOR_HASHES}")
+    set_source_files_properties(runtime/renderer/render_executor.c PROPERTIES COMPILE_DEFINITIONS PB_TRANSLATOR_VERSION="${PB_TRANSLATOR_VERSION}")
+    target_link_libraries(pbrender_executor PUBLIC pbrender_calls pbgcn_spirv pbtiling pbtranslation_cache PkgConfig::PB_TEST_VULKAN)
     add_executable(test_render_executor test/test_render_executor.c)
     target_link_libraries(test_render_executor PRIVATE pbrender_executor m)
     add_test(NAME render_executor COMMAND test_render_executor)
@@ -207,7 +228,7 @@ if(PB_TEST_VULKAN_FOUND)
 endif()
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
-set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_PIPELINE_CACHE=")
+set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_PIPELINE_CACHE=;BB_TRANSLATION_CACHE=")
 add_test(NAME verify_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/verify.py --self-test)
 add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
@@ -284,7 +305,9 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 # Deliberately wrong replacements for the function families' mutation tests (tools/verify.py
 # family); a test library, never loaded by the runtime. The generic mutants are in test/, the
 # game-specific ones beside their system (game/<system>/tests/).
-add_library(bbfamily_mutants SHARED test/family_mutants.c game/engine/tests/family_mutants.c)
+add_library(bbfamily_mutants SHARED test/family_mutants.c game/engine/tests/family_mutants.c
+            game/engine/tests/scaleform_visit_dispatch_mutants.c
+            game/engine/tests/debug_menu_release_mutants.c)
 target_include_directories(bbfamily_mutants PRIVATE runtime/include)
 target_compile_options(bbfamily_mutants PRIVATE -ffp-contract=off -fno-fast-math)
 
@@ -292,3 +315,4 @@ include(cmake/DarwinBootTests.cmake)
 include(cmake/BootArenaTests.cmake)
 
 include(cmake/GameBridgeTests.cmake)
+include(cmake/ComputeThreadIdTests.cmake)

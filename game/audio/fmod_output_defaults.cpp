@@ -6,28 +6,25 @@
 #include <cstring>
 
 namespace {
+
 constexpr uint32_t default_output_word = 0x84; // The meaning of this output is unknown.
 // Sample rate and speaker mode meanings are hypotheses from the FMOD descriptor.
 constexpr uint32_t sample_rate_hz = 48000;
 constexpr uint32_t speaker_mode_5_1 = 6;
+
+// Writes `value` through an optional output (nothing for null; no alignment is assumed).
+void store_word(void *output, uint32_t value)
+{
+    if (output != nullptr) std::memcpy(output, &value, sizeof(value));
 }
 
-extern "C" uint64_t bb_audio_fmod_output_defaults(uint64_t opaque0, uint64_t opaque1,
-                                            void *output0, void *output1, void *output2)
+}  // namespace
+
+extern "C" uint64_t bb_audio_fmod_output_defaults(uint64_t /*opaque0*/, uint64_t /*opaque1*/,
+                                                  void *output0, void *output1, void *output2)
 {
-    (void)opaque0;
-    (void)opaque1;
-    if (output0 != nullptr) {
-        const uint32_t word0 = default_output_word;
-        std::memcpy(output0, &word0, sizeof(word0));
-    }
-    if (output1 != nullptr) {
-        const uint32_t word1 = sample_rate_hz;
-        std::memcpy(output1, &word1, sizeof(word1));
-    }
-    if (output2 != nullptr) {
-        const uint32_t word2 = speaker_mode_5_1;
-        std::memcpy(output2, &word2, sizeof(word2));
-    }
+    store_word(output0, default_output_word);
+    store_word(output1, sample_rate_hz);
+    store_word(output2, speaker_mode_5_1);
     return 0;
 }
