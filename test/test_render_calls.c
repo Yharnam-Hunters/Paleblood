@@ -388,7 +388,7 @@ static void placed_ring(void)
 }
 
 /* With a reader, a buffer submitted again with no call recorded since is taken again only where its
-   memory still holds what it held at each call when first taken: the same commands submitted twice
+   memory still holds the packet it held at each call when first taken: the same commands submitted twice
    run twice, but the game also rewrites a buffer from DMA and memory-write packets alone, which
    record nothing, and the earlier use's user data and dispatch must not run with it. Without a reader
    a second submission takes the calls unchecked. */
@@ -421,6 +421,19 @@ static void resubmitted_calls(void)
     CHECK(count == 2);
     checked_memory[0x10 / 4] = 0xc0055000u, checked_memory[0x14 / 4] = 0xc4004000u;
     rt_render_submitted(CHECKED_BUFFER, 0x18, &count);
+    CHECK(count == 0);
+    /* a rewrite in the same layout: the same headers, another table address in the user data (the
+       clinic's compute buffers); the old address must not reach the dispatch */
+    checked_memory[0x10 / 4] = 0xc0027602u, checked_memory[0x14 / 4] = 0x242;
+    checked_memory[0x18 / 4] = user[0], checked_memory[0x1c / 4] = user[1];
+    CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 2, user, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 2);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count); /* unchanged: taken again */
+    CHECK(count == 2);
+    checked_memory[0x18 / 4] = 0x48a44770;
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
     CHECK(count == 0);
     /* without a reader nothing is checked */
     rt_render_check_placed_calls(NULL);
