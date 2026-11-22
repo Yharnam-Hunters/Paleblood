@@ -632,6 +632,56 @@ int main(int argc, char **argv)
             memcpy(bytes, saved_bytes, sizeof saved_bytes);
             memcpy(format_user, user, sizeof format_user);
         }
+        /* A structured program's buffer_load_format_xyzw loads the same words, and leaves the same stop
+           word, as the program translated without structured control, for whole 32-bit, 8_8_8_8,
+           16_16_16_16 and 8_8 formats in each number format, swizzles with 0, 1 and a reserved selector,
+           records at any byte alignment and lanes past NUM_RECORDS. */
+        {
+            uint8_t *const bytes = (uint8_t *)in_words;
+            uint8_t saved_bytes[1040];
+            memcpy(saved_bytes, bytes, sizeof saved_bytes);
+            for (int k = 0; k < (int)sizeof saved_bytes; k++) bytes[k] = (uint8_t)(k * 37 + 11);
+            static const uint32_t data_formats[] = {4, 11, 13, 14, 10, 12, 3};
+            static const uint32_t num_formats[] = {0, 4, 5, 7};
+            static const uint32_t strides[] = {4, 6, 10, 16};
+            static const uint32_t dst_sels[] = {4 | 5 << 3 | 6 << 6 | 7 << 9, 7 | 6 << 3 | 5 << 6 | 4 << 9, 4 | 0 << 3 | 0 << 6 | 1 << 9,
+                                                5 | 4 << 3 | 1 << 6 | 0 << 9, 6 | 2 << 3 | 4 << 6 | 4 << 9};
+            uint32_t general[LANES * 4], general_stop;
+            int same = 1, cases = 0;
+            for (size_t d = 0; d < sizeof data_formats / sizeof data_formats[0]; d++)
+                for (size_t n = 0; n < sizeof num_formats / sizeof num_formats[0]; n++)
+                    for (size_t s = 0; s < sizeof strides / sizeof strides[0]; s++)
+                        for (size_t w = 0; w < sizeof dst_sels / sizeof dst_sels[0]; w++)
+                            for (uint32_t misalign = 0; misalign < 4; misalign += 1 + (s & 1)) {
+                                memcpy(format_user, user, sizeof format_user);
+                                format_user[0] += misalign;
+                                format_user[1] |= strides[s] << 16;
+                                format_user[2] = w == 1 ? 50 : LANES; /* lanes 50 to 63 past NUM_RECORDS */
+                                format_user[3] = dst_sels[w] | num_formats[n] << 12 | data_formats[d] << 15;
+                                for (int structured_run = 0; structured_run < 2; structured_run++) {
+                                    gcn_spirv_set_structured_control(structured_run);
+                                    *stop = 0;
+                                    memset(out.mapped, 0xcc, BUFFER_BYTES);
+                                    CHECK(run(&g, load_format_indexed, sizeof load_format_indexed / sizeof load_format_indexed[0], format_user) == 0);
+                                    if (!structured_run) {
+                                        memcpy(general, out_words, sizeof general);
+                                        general_stop = *stop;
+                                        continue;
+                                    }
+                                    const int equal = memcmp(general, out_words, sizeof general) == 0 && general_stop == *stop;
+                                    if (!equal)
+                                        fprintf(stderr, "format load dfmt %u nfmt %u stride %u sel %#x misalign %u: structured differs\n",
+                                                data_formats[d], num_formats[n], strides[s], dst_sels[w], misalign);
+                                    same &= equal;
+                                }
+                                cases++;
+                            }
+            gcn_spirv_set_structured_control(structured);
+            CHECK(same && cases > 0);
+            *stop = 0;
+            memcpy(bytes, saved_bytes, sizeof saved_bytes);
+            memcpy(format_user, user, sizeof format_user);
+        }
         /* DATA_FORMAT 0 (an invalid, null buffer's): a load reads 0 in every component, a store writes nothing */
         {
             memset(out.mapped, 0xaa, BUFFER_BYTES);

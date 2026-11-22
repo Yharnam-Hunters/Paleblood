@@ -12,7 +12,7 @@
 enum { POOL_BYTES = 1 << 20, CODE = 0x1000, MASK_CODE = 0x2000, FORMAT_CODE = 0x3000,
        VERTEX_CODE = 0x5000, PIXEL_CODE = 0x6000, WAVE_CODE = 0x7000, IMAGE_CODE = 0x8000,
        INPUT = 0x20000, OUTPUT = 0x30000, SECOND = 0x31000, POSITIONS = 0x40000,
-       EMPTY_CODE = 0x9000, LAST_USER_CODE = 0xa000, TARGET = 0x80000, OUTPUT_WORDS = 512, SENTINEL = 0x5a5aa5a5 };
+       EMPTY_CODE = 0x9000, LAST_USER_CODE = 0xa000, THREAD_ID_CODE = 0xb000, TARGET = 0x80000, OUTPUT_WORDS = 512, SENTINEL = 0x5a5aa5a5 };
 static const uint64_t guest_base = UINT64_C(0x3000000000), buffer = UINT64_C(0xc0000000);
 static unsigned checks, scenarios, failures;
 #define CHECK(x) do { ++checks; if (!(x)) { ++failures; fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); } } while (0)
@@ -35,6 +35,13 @@ static const uint32_t inactive_vcc_branch[] = {
 };
 /* v_mov_b32 v2,s15; lane byte offset; raw store through s[4:7]. */
 static const uint32_t last_user[] = {0x7e04020f, 0x34020082, 0xe0701000, 0x80010201, 0xbf810000};
+/* Owned Bonaire program: s4=0 ends before any Y/Z input is consumed, s4=1 uses Y,
+   and s4=2 uses Y/Z. The same bytes prime caches with lower profiles without undefined reads.
+   s_cmp_eq; s_cbranch; y*2+x; optional z*4; byte offset; raw index store; endpgm. */
+static const uint32_t thread_id_indices[] = {
+    0xbf068004, 0xbf850009, 0x34060281, 0x4a060700, 0xbf068104, 0xbf850002,
+    0x34080482, 0x4a060704, 0x340a0682, 0xe0701000, 0x80000305, 0xbf810000
+};
 static uint64_t at(unsigned offset) { return guest_base + offset; }
 static uint32_t bits(float value) { uint32_t u; memcpy(&u, &value, sizeof u); return u; }
 static void descriptor(uint32_t out[4], unsigned offset, uint32_t bytes, uint32_t stride)
@@ -97,6 +104,7 @@ int main(void)
     const uint32_t empty = 0xbf810000;
     memcpy(pool + EMPTY_CODE, &empty, sizeof empty);
     memcpy(pool + LAST_USER_CODE, last_user, sizeof last_user);
+    memcpy(pool + THREAD_ID_CODE, thread_id_indices, sizeof thread_id_indices);
     memcpy(pool + FORMAT_CODE, load_format_xyzw, sizeof load_format_xyzw);
     memcpy(pool + WAVE_CODE, inactive_vcc_branch, sizeof inactive_vcc_branch);
     memcpy(pool + IMAGE_CODE, image_copy, sizeof image_copy);
@@ -178,9 +186,42 @@ int main(void)
     for (unsigned components = 0; components < 4; ++components) {
         clear_output(output); shader(CODE, 8, local, 0, components);
         user_data(RT_STAGE_COMPUTE, 0, data, 8);
-        execute(x, 1, components == 2 ? NULL : "enabled X, Y and Z");
-        if (components == 2) check_scale(output, 32, 2.5f, 1);
+        execute(x, 1, components < 3 ? NULL : "undefined compute thread-id encoding");
+        if (components < 3) check_scale(output, 32, 2.5f, 1);
     }
+    /* Metadata changes at identical code bytes and local sizes must not reuse a pipeline
+       compiled with fewer starting ID registers. Lower-profile priming does no buffer writes. */
+    const uint32_t id_shapes[2][3] = {{2,3,1},{2,2,2}};
+    uint32_t id_output[4]; descriptor(id_output, OUTPUT, OUTPUT_WORDS * 4, 0);
+    for (unsigned lower = 0; lower < 2; ++lower) {
+        const uint32_t disabled = 0, enabled = lower + 1;
+        rt_executor_reset(x); clear_output(output);
+        shader(THREAD_ID_CODE, 5, id_shapes[lower], 0, lower);
+        user_data(RT_STAGE_COMPUTE, 0, id_output, 4); user_data(RT_STAGE_COMPUTE, 4, &disabled, 1);
+        execute(x, 1, NULL);
+        for (unsigned i = 0; i < OUTPUT_WORDS; ++i) CHECK(output[i] == SENTINEL);
+        shader(THREAD_ID_CODE, 5, id_shapes[lower], 0, lower + 1);
+        user_data(RT_STAGE_COMPUTE, 4, &enabled, 1); execute(x, 1, NULL);
+        const unsigned count = id_shapes[lower][0] * id_shapes[lower][1] * id_shapes[lower][2];
+        for (unsigned i = 0; i < OUTPUT_WORDS; ++i) CHECK(output[i] == (i < count ? i : SENTINEL));
+        shader(THREAD_ID_CODE, 5, id_shapes[lower], 0, lower);
+        user_data(RT_STAGE_COMPUTE, 4, &disabled, 1); clear_output(output); execute(x, 1, NULL);
+        for (unsigned i = 0; i < OUTPUT_WORDS; ++i) CHECK(output[i] == SENTINEL);
+    }
+    /* Copied-call metadata can bypass the register decoder's allocation granularity. */
+    for (unsigned profile = 0; profile < 3; ++profile) {
+        rt_render_call call = {.kind = RT_CALL_COMPUTE_SHADER};
+        call.u.compute_shader = (rt_compute_shader){.code=at(CODE), .sgprs=16, .user_sgprs=8,
+            .vgprs=profile, .thread_id_components=profile, .threads={32,1,1}};
+        CHECK(rt_executor_run_calls(x, &call, 1, error, sizeof error) == 0);
+        execute(x, 1, "declared VGPR allocation");
+    }
+    rt_render_call undefined_profile = {.kind = RT_CALL_COMPUTE_SHADER};
+    undefined_profile.u.compute_shader = (rt_compute_shader){.code=at(CODE), .sgprs=16, .user_sgprs=8,
+        .vgprs=12, .thread_id_components=UINT32_MAX, .threads={32,1,1}};
+    CHECK(rt_executor_run_calls(x, &undefined_profile, 1, error, sizeof error) == 0);
+    execute(x, 1, "undefined compute thread-id encoding");
+    user_data(RT_STAGE_COMPUTE, 0, data, 8); /* Restore the existing arithmetic fixture descriptors. */
     shader(CODE, 17, local, 0, 2); execute(x, 1, "user SGPR count");
     shader(CODE, 8, local, 0, 2); execute(x, 65536, "X workgroups");
 
