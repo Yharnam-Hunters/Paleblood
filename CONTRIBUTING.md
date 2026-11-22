@@ -221,7 +221,8 @@ A function goes to `main` only when it is **verified and readable**:
 - **Readable** means it follows [STYLE.md](STYLE.md): named calls and globals instead of
   addresses, structs with named fields instead of offsets, named constants, vector code only in
   `game/engine/`, no recording code. `tools/check_readable.py` checks the mechanical part in the
-  pre-commit hook and in CI. A literal transcription of the disassembly is a fine way to start,
+  pre-commit hook and in CI, including byte-pointer arithmetic that hides an offset and a game
+  address declared by more than one `RT_GLOBAL` / `RT_ORIGINAL`. A literal transcription of the disassembly is a fine way to start,
   on your work branch; it never goes to `main`. Files written before this rule are listed in
   `tools/readable_allowlist.txt`; that list may only shrink, and CI fails if it grows.
 - **Reviewed:** before a function becomes `verified`, an independent reviewer (not the author:
