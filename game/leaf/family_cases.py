@@ -1052,3 +1052,384 @@ FAR_FIELD_FAMILIES = {
 for far, near in FAR_FIELD_FAMILIES.items():
     CASES[far] = CASES[near]
     MUTANTS[far] = MUTANTS[near]
+
+
+# Families from #1129.
+# Delegate calls (game/leaf/delegates.cpp): a record holds an object pointer and a pointer to
+# member function (Itanium C++ ABI: an address, or one plus a virtual slot's offset, then the
+# adjustment added to the object). Each family's layout: the record offsets it reads, its guard,
+# what it passes after the target, and which argument registers its call compares.
+DELEGATE_LAYOUTS = {
+    'calls_delegate_with_argument_field_0x10': {'object': 8, 'method': 16, 'value': 40, 'guard': 'method_object', 'argument': ('qword', 16), 'passes': ('argument', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_delegate_with_argument_field_8': {'object': 8, 'method': 16, 'value': 40, 'guard': 'method_object', 'argument': ('qword', 8), 'passes': ('argument', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_delegate_with_dword_at_0x20': {'object': 8, 'method': 16, 'value': 32, 'guard': 'method_object', 'passes': ('value', 'third'), 'compare': [0, 1, 4, 5]},
+    'calls_delegate_at_0x18_with_dword_at_0x40': {'object': 24, 'method': 32, 'value': 64, 'guard': 'method', 'passes': ('second', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_flagged_delegate_with_dword_at_0x18': {'object': 16, 'method': 32, 'value': 24, 'guard': ('record_flag', 11, 64), 'passes': ('value', 'third'), 'compare': [0, 1, 4, 5]},
+    'calls_delegate_with_part_of_argument_target': {'object': 8, 'method': 16, 'value': 32, 'guard': 'argument_target', 'argument': ('part', 8, 40), 'passes': ('argument', 'value'), 'compare': [0, 1, 2, 4, 5]},
+    'forwards_to_delegate_at_0x10': {'object': 16, 'method': 24, 'passes': ('second', 'third'), 'compare': [0, 1, 2, 4, 5]},
+    'forwards_to_delegate_at_0x18': {'object': 24, 'method': 32, 'passes': ('second', 'third'), 'compare': [0, 1, 2, 4, 5]},
+    'forwards_to_delegate_at_0x20': {'object': 32, 'method': 40, 'passes': ('second', 'third'), 'compare': [0, 1, 2, 4, 5]},
+    'calls_delegate_at_0x50_when_argument_flagged': {'object': 80, 'method': 88, 'value': 104, 'guard': ('argument_flag', 61, 16), 'passes': ('value', 'third'), 'compare': [0, 1, 4, 5]},
+}
+
+
+DELEGATE_RECORD_SIZE = 0x80
+
+
+DELEGATE_OBJECT_SIZE = 0x40
+
+
+DELEGATE_SLOTS = 8
+
+
+DELEGATE_SLOT = 5                # the virtual slot the virtual cases call
+
+
+DELEGATE_ADJUSTMENT = 0x10       # where the method's target lies in the object, virtual cases
+
+
+DIRECT_ADJUSTMENT = 8            # the same for a plain function
+
+
+DELEGATE_STUB_BASE = 0x00501000  # fake function addresses: virtual slot i at base + 0x10 * i
+
+
+DELEGATE_FUNCTION = 0x00501800   # the plain function the direct cases call
+
+
+DELEGATE_PART = 0x40             # the size of what a part argument points at
+
+
+def delegate_stub(slot: int) -> str:
+    return f'0x{DELEGATE_STUB_BASE + 0x10 * slot:08x}'
+
+
+def delegate_case(address: str, family: str, case_id: str, seed: int, path: str) -> dict:
+    """One call of a delegate family. PATH: 'virtual' (the method is slot DELEGATE_SLOT of the
+    target's virtual table, the target 0x10 into the object), 'direct' (a plain function, the
+    target 8 into the object), or a path the guard stops: 'no_method', 'no_object',
+    'flag_clear' (every other bit of the flag byte set), 'no_argument', 'no_argument_target'.
+    Every slot and the plain function are stubs returning their own values and comparing the
+    registers the family's call passes; xmm0 enters seeded and its float is compared. A family
+    with a guard returns nothing (on a guard exit the original leaves rax as it was, so the method
+    has no result): its calls are compared as void too. An unguarded forwarder passes the
+    stub's rax on (i64)."""
+    layout = DELEGATE_LAYOUTS[family]
+    calls = path in ('virtual', 'direct')
+    case = base_case(address, case_id, 'i64' if calls and 'guard' not in layout else 'void')
+    record = bytearray.fromhex(probe_bytes(seed, DELEGATE_RECORD_SIZE))
+    obj, method = layout['object'], layout['method']
+    record[obj:obj + 8] = bytes(8)
+    adjustment = DIRECT_ADJUSTMENT if path == 'direct' else DELEGATE_ADJUSTMENT
+    function = 0 if path in ('no_method', 'direct') else 8 * DELEGATE_SLOT + 1
+    record[method:method + 16] = function.to_bytes(8, 'little') + adjustment.to_bytes(8, 'little')
+    guard = layout.get('guard')
+    if isinstance(guard, tuple) and guard[0] == 'record_flag':
+        record[guard[1]] = 0xff & ~guard[2] if path == 'flag_clear' else 0xff
+    case['buffers'] = {'record': {'size': DELEGATE_RECORD_SIZE, 'bytes': record.hex()},
+                       'object': {'size': DELEGATE_OBJECT_SIZE, 'bytes': probe_bytes(seed + 2, DELEGATE_OBJECT_SIZE)},
+                       'table': {'size': 8 * DELEGATE_SLOTS}}
+    memory = case['memory']
+    if path != 'no_object':
+        memory.append({'addr': f'buf:record+0x{obj:x}', 'pointer': 'object'})
+    memory.append({'addr': f'buf:object+0x{DELEGATE_ADJUSTMENT:x}', 'pointer': 'table'})
+    if path == 'direct':
+        memory.append({'addr': f'buf:record+0x{method:x}', 'guest': f'0x{DELEGATE_FUNCTION:08x}'})
+    stub = {'argc': FORWARDED_DELEGATE_ARGUMENTS, 'argi': layout['compare'], 'argf32': [0]}
+    for slot in range(DELEGATE_SLOTS):
+        memory.append({'addr': f'buf:table+0x{8 * slot:x}', 'guest': delegate_stub(slot)})
+        case['stubs'].append(dict(stub, address=delegate_stub(slot), ret=seed << 32 | slot))
+    case['stubs'].append(dict(stub, address=f'0x{DELEGATE_FUNCTION:08x}', ret=seed << 32 | 0xff))
+    for i, reg in enumerate(ARGUMENT_REGISTERS[1:]):
+        case['args'][reg] = hex((seed * 0x9e3779b97f4a7c15 + 0x0123456789abcdef * (i + 1)) & (2**64 - 1))
+    argument = layout.get('argument')
+    if argument or (isinstance(guard, tuple) and guard[0] == 'argument_flag'):
+        pattern = bytearray.fromhex(probe_bytes(seed + 1))
+        if isinstance(guard, tuple) and guard[0] == 'argument_flag':
+            pattern[guard[1]] = 0xff & ~guard[2] if path == 'flag_clear' else 0xff
+        if argument and argument[0] == 'part':
+            pattern[argument[1]:argument[1] + 8] = bytes(8)
+            if path != 'no_argument_target':
+                case['buffers']['part'] = {'size': DELEGATE_PART, 'bytes': probe_bytes(seed + 3, DELEGATE_PART)}
+                memory.append({'addr': f'buf:argument+0x{argument[1]:x}', 'pointer': 'part'})
+        case['buffers']['argument'] = {'size': PROBE_SIZE, 'bytes': pattern.hex()}
+        case['args']['rsi'] = '0x0' if path == 'no_argument' else 'buf:argument'
+    case['args'].update({'rdi': 'buf:record', 'rax': hex(RAX_SEED), 'xmm0': XMM0_SEED})
+    return case
+
+
+FORWARDED_DELEGATE_ARGUMENTS = 6
+
+
+STOPPED_PATHS = {'method_object': ('no_method', 'no_object'), 'method': ('no_method',),
+                 'argument_target': ('no_argument', 'no_argument_target', 'no_object')}
+
+
+def delegate_cases(address: str, family: str) -> list[dict]:
+    """The method as a virtual function (two seeds) and as a plain function, and every way the
+    family's guard stops the call."""
+    guard = DELEGATE_LAYOUTS[family].get('guard')
+    stopped = ('flag_clear',) if isinstance(guard, tuple) else STOPPED_PATHS.get(guard, ())
+    cases = [delegate_case(address, family, 'virtual_a', 13, 'virtual'),
+             delegate_case(address, family, 'virtual_b', 89, 'virtual'),
+             delegate_case(address, family, 'direct', 47, 'direct')]
+    return cases + [delegate_case(address, family, path, 61, path) for path in stopped]
+
+
+CASES.update({
+    'calls_delegate_with_argument_field_0x10': lambda address, value: delegate_cases(address, 'calls_delegate_with_argument_field_0x10'),
+    'calls_delegate_with_argument_field_8': lambda address, value: delegate_cases(address, 'calls_delegate_with_argument_field_8'),
+    'calls_delegate_with_dword_at_0x20': lambda address, value: delegate_cases(address, 'calls_delegate_with_dword_at_0x20'),
+    'calls_delegate_at_0x18_with_dword_at_0x40': lambda address, value: delegate_cases(address, 'calls_delegate_at_0x18_with_dword_at_0x40'),
+    'calls_flagged_delegate_with_dword_at_0x18': lambda address, value: delegate_cases(address, 'calls_flagged_delegate_with_dword_at_0x18'),
+    'calls_delegate_with_part_of_argument_target': lambda address, value: delegate_cases(address, 'calls_delegate_with_part_of_argument_target'),
+    'forwards_to_delegate_at_0x10': lambda address, value: delegate_cases(address, 'forwards_to_delegate_at_0x10'),
+    'forwards_to_delegate_at_0x18': lambda address, value: delegate_cases(address, 'forwards_to_delegate_at_0x18'),
+    'forwards_to_delegate_at_0x20': lambda address, value: delegate_cases(address, 'forwards_to_delegate_at_0x20'),
+    'calls_delegate_at_0x50_when_argument_flagged': lambda address, value: delegate_cases(address, 'calls_delegate_at_0x50_when_argument_flagged'),
+})
+
+MUTANTS.update({
+    # Delegate calls: no call, and the method called as a plain function pointer whatever the
+    # guard, with the arguments as they came (a virtual method then jumps to an odd address).
+    'calls_delegate_with_argument_field_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'calls_delegate_with_argument_field_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'calls_delegate_with_dword_at_0x20': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'calls_delegate_at_0x18_with_dword_at_0x40': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x18_0x20_called_directly'],
+    'calls_flagged_delegate_with_dword_at_0x18': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x10_0x20_called_directly'],
+    'calls_delegate_with_part_of_argument_target': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x8_0x10_called_directly'],
+    'forwards_to_delegate_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'forwards_to_delegate_at_0x18': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'forwards_to_delegate_at_0x20': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'calls_delegate_at_0x50_when_argument_flagged': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_delegate_0x50_0x58_called_directly'],
+})
+
+
+# Families from #1128.
+# Forwarding thunks (game/leaf/virtual_call.h): slot i of fake table t is a stub at its own
+# address, so a call through the wrong slot or the wrong object's table is a different call.
+STUB_BASE = 0x00500400
+
+
+STUB_TABLE_STRIDE = 0x400
+
+
+STUB_SLOT_STRIDE = 0x10
+
+
+TABLE_SLOTS = 0x10       # room for every positive 8-bit slot offset
+
+
+FORWARDED_ARGUMENTS = 6
+
+
+CONSTANT_SLOT = 0x68     # the slot of the two offset-argument thunk families
+
+
+CONSTANT_CALL_SLOT = 0x40
+
+
+BASE_OFFSET = 0x20       # where the base thunks' base lies in the whole object
+
+
+WORD_MASK = 2**64 - 1
+
+
+def stub_address(table: int, slot: int) -> str:
+    return f'0x{STUB_BASE + STUB_TABLE_STRIDE * table + STUB_SLOT_STRIDE * slot:08x}'
+
+
+def forward_case(address: str, case_id: str, seed: int, slot: int, member: int | None = None,
+                 base_offset: int = 0, argc: int = FORWARDED_ARGUMENTS, second: str | None = None) -> dict:
+    """A thunk that calls slot SLOT of a virtual table: its own object's, or that of the object
+    the pointer MEMBER bytes into its object points at. rdi points BASE_OFFSET bytes into the
+    object (the base thunks). Every slot of every table is a stub returning its own value, so the
+    wrong slot or the wrong table is a different call; the stubs compare ARGC integer arguments
+    and the float in xmm0, which enters seeded. rsi..r9 hold distinct integers (SECOND, a buffer
+    address, replaces rsi)."""
+    case = base_case(address, case_id, 'i64')
+    case['buffers'] = {'object': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed)},
+                       'own_table': {'size': 8 * TABLE_SLOTS},
+                       'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
+    case['memory'] = [{'addr': 'buf:object+0x0', 'pointer': 'own_table'}]
+    tables = ['own_table']
+    if member is not None:
+        case['buffers'].update({'member': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 2)},
+                                'member_table': {'size': 8 * TABLE_SLOTS}})
+        case['memory'] += [{'addr': f'buf:object+0x{member:x}', 'pointer': 'member'},
+                           {'addr': 'buf:member+0x0', 'pointer': 'member_table'}]
+        tables.append('member_table')
+    for t, table in enumerate(tables):
+        for i in range(TABLE_SLOTS):
+            case['memory'].append({'addr': f'buf:{table}+0x{8 * i:x}', 'guest': stub_address(t, i)})
+            case['stubs'].append({'address': stub_address(t, i), 'argc': argc, 'argf32': [0],
+                                  'ret': (seed << 32 | t << 8 | i) & WORD_MASK})
+    for i, reg in enumerate(ARGUMENT_REGISTERS[1:]):
+        case['args'][reg] = hex((seed * 0x9e3779b97f4a7c15 + 0x0123456789abcdef * (i + 1)) & WORD_MASK)
+    if second is not None:
+        case['args']['rsi'] = second
+    case['args'].update({'rdi': f'buf:object+0x{base_offset:x}', 'rax': hex(RAX_SEED), 'xmm0': XMM0_SEED})
+    del slot  # the slot only names which stub the original calls; every slot is scripted
+    return case
+
+
+def forward_pair(address: str, slot: int, **layout) -> list[dict]:
+    return [forward_case(address, 'objects_a', 7, slot, **layout),
+            forward_case(address, 'objects_b', 151, slot, **layout)]
+
+
+def own_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object's own table, the other arguments as they came (the flag family's
+    third argument enters as an integer other than 1)."""
+    return forward_pair(address, value)
+
+
+def offset_argument_cases(address: str, value: int | None) -> list[dict]:
+    """Slot CONSTANT_SLOT of the object's own table with VALUE added to the second argument."""
+    return forward_pair(address, CONSTANT_SLOT)
+
+
+def base_offset_argument_cases(address: str, value: int | None) -> list[dict]:
+    """The same from a base BASE_OFFSET bytes into the object: the callee gets the whole object."""
+    return forward_pair(address, CONSTANT_SLOT, base_offset=BASE_OFFSET)
+
+
+def member_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object the pointer at +0x10 points at (its own table is another set of
+    stubs)."""
+    return forward_pair(address, value, member=0x10)
+
+
+def member_dword_argument_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object at +8, with the dword rsi points at (in a probe buffer) as the
+    second argument."""
+    return forward_pair(address, value, member=8, second='buf:probe+0x8')
+
+
+def member_constant_call_cases(address: str, value: int | None) -> list[dict]:
+    """A call (not a tail call) of slot CONSTANT_CALL_SLOT of the object at +8 with the constant;
+    the stubs compare the two arguments it passes."""
+    return forward_pair(address, CONSTANT_CALL_SLOT, member=8, argc=2)
+
+
+def exported_member_cases(address: str, value: int | None) -> list[dict]:
+    """The pointer at +0x20 stored through rsi (into a probe buffer, compared), then slot 8 of the
+    object it points at."""
+    return forward_pair(address, 8, member=0x20, second='buf:probe+0x10')
+
+
+NULL_OBJECT_RESULT = 0x25
+
+
+FAR_STUB_BASE = 0x00508000
+
+
+FAR_WINDOW = 4           # far slots scripted on each side of the one called
+
+
+def null_checked_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object's own table, and a null object (no call, 0x25 in rax)."""
+    null = base_case(address, 'null_object', 'i64')
+    null['args'] = {'rdi': '0x0', 'rsi': hex(RAX_SEED ^ 1), 'rax': hex(RAX_SEED)}
+    return forward_pair(address, value) + [null]
+
+
+def member_at_8_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object the pointer at +8 points at."""
+    return forward_pair(address, value, member=8)
+
+
+def member_at_0x10_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE of the object the pointer at +0x10 points at."""
+    return forward_pair(address, value, member=0x10)
+
+
+
+FAR_SLOT_FAMILIES = ('tail_calls_far_virtual_slot', 'tail_jumps_through_far_virtual_slot')
+
+
+def far_slot_values() -> set[int]:
+    """The slot offsets the far-slot families' members call (symbols/families/<family>.csv)."""
+    import csv
+    import os
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'symbols', 'families')
+    values = set()
+    for family in FAR_SLOT_FAMILIES:
+        with open(os.path.join(root, f'{family}.csv'), newline='') as f:
+            values |= {int(row['value'], 16) for row in csv.DictReader(f) if row['value']}
+    return values
+
+def far_slot_cases(address: str, value: int | None) -> list[dict]:
+    """Slot VALUE (an offset past the 8-bit ones) of the object's own table. The slots within
+    FAR_WINDOW of it, and every slot another member of the two far-slot families calls
+    (far_slot_values), are stubs too, each returning its own value: a neighbouring slot, and the
+    neighbouring value's replacement the mutation test runs, make a completed, observed different
+    call rather than a jump through an empty entry."""
+    cases = []
+    slots = sorted(set(range(max(TABLE_SLOTS, value // 8 - FAR_WINDOW), value // 8 + FAR_WINDOW + 1)) |
+                   {v // 8 for v in far_slot_values()})
+    last = slots[-1]
+    for case_id, seed in (('objects_a', 7), ('objects_b', 151)):
+        case = forward_case(address, case_id, seed, value)
+        cases.append(case)
+        case['buffers']['own_table']['size'] = 8 * (last + 1)
+        for i in slots:
+            stub = f'0x{FAR_STUB_BASE + STUB_SLOT_STRIDE * i:08x}'
+            case['memory'].append({'addr': f'buf:own_table+0x{8 * i:x}', 'guest': stub})
+            case['stubs'].append({'address': stub, 'argc': FORWARDED_ARGUMENTS, 'argf32': [0],
+                                  'ret': (seed << 40 | 1 << 24 | i) & WORD_MASK})
+    return cases
+
+
+def table_entry_cases(address: str, value: int | None) -> list[dict]:
+    """rdi points straight at a table of stubs (not at an object); entry VALUE gets the second
+    argument (a probe buffer address) as its first and second arguments."""
+    cases = forward_pair(address, value, second='buf:probe+0x0')
+    for case in cases:
+        case['args']['rdi'] = 'buf:own_table+0x0'
+    return cases
+
+
+CASES.update({
+    'tail_calls_virtual_function': own_slot_cases,
+    'tail_jumps_through_virtual_slot': own_slot_cases,
+    'passes_flag_to_virtual_function': own_slot_cases,
+    'passes_part_at_0xe8_to_virtual_0x68': offset_argument_cases,
+    'adjusts_base_and_passes_part_at_0xe8': base_offset_argument_cases,
+    'tail_calls_member_at_0x10': member_slot_cases,
+    'passes_dword_argument_to_member_at_8': member_dword_argument_cases,
+    'calls_member_at_8_with_constant': member_constant_call_cases,
+    'exports_member_at_0x20_and_tail_calls_it': exported_member_cases,
+    'tail_calls_virtual_unless_null': null_checked_slot_cases,
+    'tail_jumps_through_member_at_8': member_at_8_slot_cases,
+    'tail_jumps_through_member_at_0x10': member_at_0x10_slot_cases,
+    'tail_calls_member_at_8': member_at_8_slot_cases,
+    'tail_calls_far_virtual_slot': far_slot_cases,
+    'tail_jumps_through_far_virtual_slot': far_slot_cases,
+    'tail_jumps_through_table_with_second_argument': table_entry_cases,
+})
+
+MUTANTS.update({
+    # Forwarding thunks: the neighbouring slot's (or constant's) replacement calls another stub;
+    # a body that does not call returns the wrong value and records no call; the exact ones
+    # meet the same call without the part offset or without the store.
+    'tail_calls_virtual_function': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_virtual_slot': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'passes_flag_to_virtual_function': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'passes_part_at_0xe8_to_virtual_0x68': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                            'bb_mutant_virtual_0x68_without_part'],
+    'adjusts_base_and_passes_part_at_0xe8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                             'bb_mutant_base_virtual_0x68_without_part'],
+    'tail_calls_member_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'passes_dword_argument_to_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'calls_member_at_8_with_constant': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'exports_member_at_0x20_and_tail_calls_it': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero',
+                                                 'bb_mutant_tail_calls_member_at_0x20_without_export'],
+    'tail_calls_virtual_unless_null': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_member_at_0x10': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_calls_member_at_8': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_calls_far_virtual_slot': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_far_virtual_slot': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+    'tail_jumps_through_table_with_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
+})
