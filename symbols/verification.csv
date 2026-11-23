@@ -1147,10 +1147,10 @@ event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
 event_flag_write,recorded,,101,101,0,0,1a46ef419f934205,2026-11-12
 event_flag_write,edge,,15,15,0,0,1a46ef419f934205,2026-11-12
-frame_timing_append_slot_item_01e9d960,edge,,32,32,0,0,482ccf00e114b8fe,2026-11-19
+frame_timing_append_slot_item_01e9d960,edge,,32,32,0,0,482ccf00e114b8fe,2026-11-23
 frame_timing_config_get_int_024eba00,recorded,,350,350,0,0,ddcaf2bc1351e4b0,2026-11-14
 frame_timing_config_get_int_024eba00,edge,,21,21,0,0,ddcaf2bc1351e4b0,2026-11-13
-frame_timing_create_handle_from_levels_02265580,edge,,40,40,0,0,dbece23d7200743d,2026-11-19
+frame_timing_create_handle_from_levels_02265580,edge,,40,40,0,0,dbece23d7200743d,2026-11-23
 frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_dungeon_gate_on_event_0,edge,30,25,25,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,e7fbc003fc64b0ed,2026-11-17
@@ -1170,7 +1170,7 @@ frame_timing_dungeon_gate_step_mode_switch,recorded,,319,258,0,61,e7fbc003fc64b0
 frame_timing_dungeon_gate_step_mode_switch,edge,,15,15,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_dungeon_gate_step_mode_switch,edge,30,15,15,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_dungeon_gate_step_mode_switch,edge,60,15,15,0,0,e7fbc003fc64b0ed,2026-11-17
-frame_timing_fill_creation_part1_0231fbc0,edge,,223,223,0,0,dbece23d7200743d,2026-11-19
+frame_timing_fill_creation_part1_0231fbc0,edge,,223,223,0,0,dbece23d7200743d,2026-11-23
 frame_timing_flipper_init,recorded,,13,13,0,0,54004fb671301738,2026-11-17
 frame_timing_flipper_init,recorded,30,13,13,0,0,54004fb671301738,2026-11-17
 frame_timing_flipper_init,recorded,60,13,13,0,0,54004fb671301738,2026-11-17
@@ -1230,8 +1230,8 @@ frame_timing_get_monotonic_ms,option-recorded,wait-sleep,91,91,0,0,3a73b48ae6f6d
 frame_timing_get_monotonic_ms,option-recorded,wait-spin,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_us,recorded,,800,799,0,1,4e1059aed1298996,2026-11-14
 frame_timing_get_monotonic_us,edge,,20,20,0,0,4e1059aed1298996,2026-11-14
-frame_timing_give_handle_to_local_request_02269d40,edge,,22,22,0,0,d2308ca5131d815a,2026-11-19
-frame_timing_give_handle_to_server_request_02269e30,edge,,22,22,0,0,d2308ca5131d815a,2026-11-19
+frame_timing_give_handle_to_local_request_02269d40,edge,,22,22,0,0,d2308ca5131d815a,2026-11-23
+frame_timing_give_handle_to_server_request_02269e30,edge,,22,22,0,0,d2308ca5131d815a,2026-11-23
 frame_timing_holygrail_until_idle_0200f970,edge,,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_holygrail_until_idle_0200f970,edge,30,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
 frame_timing_holygrail_until_idle_0200f970,edge,60,59,59,0,0,e7fbc003fc64b0ed,2026-11-17
@@ -1277,8 +1277,8 @@ frame_timing_pace_frame,option-recorded,60,209,209,0,0,a5e49f2237ae7cce,2026-11-
 frame_timing_pace_frame,option-recorded,uncapped,51,51,0,0,a5e49f2237ae7cce,2026-11-17
 frame_timing_part_0x10_update_013d5440,recorded,,102,102,0,0,b2b1e1391c2bf853,2026-11-14
 frame_timing_part_0x10_update_013d5440,edge,,30,30,0,0,b2b1e1391c2bf853,2026-11-14
-frame_timing_pass_handle_on_01e9cb80,edge,,26,26,0,0,482ccf00e114b8fe,2026-11-19
-frame_timing_pass_handle_on_with_items_01e9cd20,edge,,26,26,0,0,482ccf00e114b8fe,2026-11-19
+frame_timing_pass_handle_on_01e9cb80,edge,,26,26,0,0,482ccf00e114b8fe,2026-11-23
+frame_timing_pass_handle_on_with_items_01e9cd20,edge,,26,26,0,0,482ccf00e114b8fe,2026-11-23
 frame_timing_pass_on_in_local_mode_02265170,edge,,36,36,0,0,0d1d573c71ee68d6,2026-11-17
 frame_timing_pass_on_in_server_mode_02265960,edge,,21,21,0,0,830b3c0637ebe9ac,2026-11-17
 frame_timing_posix_sleep_ms,edge,,11,11,0,0,316683d176b2d7b8,2026-11-10
