@@ -134,8 +134,7 @@ extern "C" engine::RefObject **bb_frame_timing_create_handle_from_levels_0226558
     start_request(request, &passed, levels);
     if (taken) engine::release(taken);
 
-    engine::RefObject *const result = handle ? &handle->base : nullptr;
-    *out = result;
-    if (result) engine::retain(result);
+    *out = taken;
+    if (taken) engine::retain(taken);
     return out;
 }
