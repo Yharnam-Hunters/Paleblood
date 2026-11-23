@@ -1,0 +1,208 @@
+# Game addresses that were declared by more than one RT_GLOBAL / RT_ORIGINAL when the check was added.
+# Cleanup: declare each once in a header next to its system and include it, then remove the line. This list may only
+# shrink. (the text after # is informational)
+0x005696e0  # game/engine/deleting_destructors.cpp:destructor_005696e0, game/engine/keyed_store_and_layout_block.cpp:destructor_005696e0, game/engine/member_destroying_destructors.cpp:destroy_base
+0x00819040  # game/ai/area_block_step.h:hk_array_reserve, game/physics/instance_construct_helpers.cpp:hk_array_reserve
+0x00819100  # game/engine/instance_update.cpp:grow_list, game/physics/controller_body_set.cpp:hk_array_reserve_more
+0x00829a90  # game/frame_timing/part_0x10_update.cpp:allocator_free_headed, game/loading/fios.h:allocator_free_headed
+0x011ab3a0  # game/audio/thread_services.h:release_thread_storage, game/kernel/kernel_context.h:memory_pool_free
+0x011c4840  # game/audio/copy_output_label.cpp:audio_fmod_string_copy_counted, game/audio/start_thread.cpp:copy_thread_name_counted
+0x011c4970  # game/audio/create_native_thread.cpp:compare_thread_names, game/audio/fmod_thread_lookup.cpp:compare_thread_names
+0x0139cd80  # game/ai/area_block_step.h:debug_menu_add, game/ai/debug_display.cpp:debug_menu_add
+0x013a2a00  # game/ai/debug_display.cpp:debug_menu_find, game/menu/scaleform_glue.h:registry_find
+0x013a33a0  # game/ai/area_block_step.h:debug_menu_remove, game/ai/debug_display.cpp:debug_menu_remove, game/engine/debug_menu_entry_family.cpp:debug_menu_remove
+0x013aeaf0  # game/ai/area_block_step.h:interned_name_construct, game/ai/debug_display.cpp:interned_name_construct, game/engine/debug_menu_entry_family.cpp:interned_name_construct
+0x013aebc0  # game/ai/area_block_step.h:interned_name_destroy, game/ai/debug_display.cpp:interned_name_destroy, game/engine/debug_menu_entry_family.cpp:interned_name_destroy
+0x01401720  # game/engine/member_release_destructors.cpp:release_member_through_0x01401720, game/menu/scaleform_glue.h:handle_release
+0x0143ec40  # game/frame_timing/task_manager.cpp:task_wake, game/frame_timing/task_refill_queue.cpp:task_clear_queue
+0x01485f90  # game/render/present_record_builder.h:record_constructor, game/render/resource_descriptor_builder.h:construct_record, game/render/swap_chain_setup.h:construct_record
+0x01486ca0  # game/render/swap_chain_setup.h:get_record_address, game/render/swap_chain_submit.cpp:present_buffer_value
+0x01489910  # game/render/record_descriptor_accessors.h:record_descriptor_level_count, game/render/swap_chain_resource_info.h:descriptor_levels
+0x0149cb30  # game/render/record_normalization.h:apply_record_mapping, game/render/swap_chain_setup.h:resolve_unit
+0x0149ea90  # game/render/record_geometry_category_call.h:get_record_geometry_category, game/render/record_geometry_classification_calls.h:get_record_geometry_category
+0x014a1e80  # game/render/record_descriptor_offsets.h:initialize_record_level_descriptor, game/render/swap_chain_resource_info.h:initialize_level_descriptor
+0x014a2c40  # game/render/record_builder_descriptor_calls.h:calculate_record_descriptor_level_offset, game/render/swap_chain_resource_info.h:calculate_level_offset
+0x016334b0  # game/ai/hk_ai.h:ai_debug_set_position, game/character/module_updates.cpp:ai_debug_set_position
+0x01e86e60  # game/character/gaitem_handle.cpp:free_item, game/character/gaitem_handle.h:gaitem_free_item
+0x0233ab20  # game/engine/scaleform_heap_free.cpp:bins_free, game/engine/scaleform_heap_reallocate_moving.cpp:bins_free
+0x0233be70  # game/engine/scaleform_heap_free.cpp:release_page, game/engine/scaleform_heap_reallocate_moving.cpp:release_page
+0x0233c660  # game/engine/scaleform_heap_allocate.cpp:allocate_large, game/engine/scaleform_heap_allocate_aligned.cpp:allocate_large
+0x0247b720  # game/character/gaitem_handle.cpp:heap_owning, game/engine/buffer_release.h:heap_owning, game/engine/release_and_free_thunks.cpp:heap_owning, game/frame_timing/task_manager.cpp:allocator_of, game/loading/result_helpers.cpp:allocator_of, game/loading/transfer_task.h:allocator_of, game/menu/localize_language.h:allocator_of, game/render/update_list_and_level_copy.cpp:heap_owning
+0x0247bbf0  # game/engine/allocator_of.cpp:heap_registry, game/loading/disk_file_device.h:path_copy_heap_owner, game/loading/resource_queue.h:request_heap_owner
+0x0247c4e0  # game/loading/file_load_queue.cpp:heap_allocate, game/render/swap_chain_setup.h:create_object
+0x0247d250  # game/character/frame_update.cpp:thread_heap_init, game/engine/temporary_heap.h:create_for_thread, game/loading/disk_file_device.h:thread_heap_init
+0x0247e780  # game/engine/shared_work_holder_family.cpp:condition_signal_set, game/engine/work_holder_delete_family.cpp:condition_signal_set, game/loading/resource_queue.h:condition_signal_set, game/menu/scaleform_glue.h:condition_signal_set
+0x0247ebd0  # game/render/resource_info_finish.cpp:atomic_fetch_increment, game/render/resource_info_queries.cpp:atomic_fetch_increment
+0x0247ee80  # game/engine/debug_print.cpp:light_mutex_is_created, game/engine/fast_small_object_allocator_construct.cpp:mutex_is_initialized, game/engine/small_object_allocator_construct.cpp:mutex_is_initialized, game/loading/transfer_task_callees.cpp:light_mutex_is_created
+0x0247f640  # game/engine/allocator_of.cpp:read_write_lock_read, game/loading/resource_queue.h:read_write_lock_read
+0x02483fe0  # game/engine/condition_signal.cpp:mutex_create, game/engine/debug_print.cpp:system_mutex_create, game/engine/fast_small_object_allocator_construct.cpp:mutex_create, game/engine/locked_regular_heap.cpp:pthread_mutex_initialize, game/engine/mutex.cpp:pthread_mutex_initialize, game/engine/small_object_allocator_construct.cpp:mutex_create, game/engine/thread_construct.cpp:mutex_create, game/kernel/light_mutex.cpp:pthread_mutex_initialize, game/loading/transfer_task_callees.cpp:system_mutex_create
+0x02484c70  # game/engine/segregated_bi_heap.h:pool_allocate, game/engine/segregated_regular_heap.h:descriptor_allocate
+0x02484de0  # game/engine/segregated_bi_heap.h:pool_free, game/engine/segregated_regular_heap.h:descriptor_free
+0x02485730  # game/engine/heap_manager_register_area.cpp:regular_heap_allocate, game/engine/regular_heap_allocate_aligned.cpp:allocate
+0x024bd4c0  # game/loading/file_copy_resource.cpp:file_handle_destroy, game/loading/resource_queue.h:resource_handle_destroy
+0x024bd930  # game/loading/resource_queue.h:resource_info_release, game/loading/result_helpers.cpp:resource_info_release
+0x024bdb80  # game/loading/file_copy_resource.h:loaded_file_unload, game/loading/resource_manager_release.cpp:resource_info_unload
+0x024e2550  # game/engine/temporary_heap.h:quit_query_create, game/frame_timing/frame_step.cpp:quit_query_create, game/loading/transfer_task_callees.cpp:quit_query_create
+0x024f8350  # game/engine/fixed_allocator.h:tree_insert_fixup, game/engine/robust_heap.h:tree_insert_fixup
+0x024f8460  # game/engine/fixed_allocator.h:tree_remove, game/engine/robust_heap.h:tree_remove
+0x025711d0  # game/render/present_record_builder.h:record_normalize_mode3, game/render/resource_descriptor_builder.h:normalize
+0x027286b0  # game/engine/block_init_and_owned_release_families.cpp:before_counted_release, game/engine/forwarding_method_families.cpp:pass_target
+0x027ee1e0  # game/engine/heap_buffer_owner_families.cpp:counted_object_released, game/engine/scaleform_member_release.cpp:release_counted
+0x02a1a1b0  # game/engine/variant_string_pool_families.cpp:engine_memcpy, game/loading/file_copy_resource.h:engine_memcpy, game/loading/memory_stream.h:engine_memcpy, game/menu/scaleform_glue.h:copy_memory, game/render/swap_chain_resource_info.h:copy_initial_span
+0x02a279a0  # game/engine/wide_string_assign.h:wide_string_assign_from, game/loading/disk_file_device.h:wide_string_assign_part
+0x02a27b60  # game/engine/wide_string_assign.cpp:throw_too_long, game/engine/wide_string_assign_repeated.cpp:throw_too_long
+0x02a27b70  # game/engine/wide_string_assign.cpp:wide_string_grow, game/engine/wide_string_assign_repeated.cpp:wide_string_grow
+0x02a2a720  # game/engine/wide_string_construct.cpp:wide_string_assign_counted, game/frame_timing/listener_take.cpp:wide_string_assign_counted, game/loading/resource_queue.h:wide_string_assign_counted, game/loading/transfer_task_callees.cpp:wide_string_assign_counted
+0x02a3a300  # game/loading/resource_queue.h:resource_info_add_reference, game/loading/result_helpers.cpp:resource_info_add_reference
+0x02a6f3d0  # game/engine/array64_push_back.cpp:reallocate_02a6f3d0, game/loading/list_push_find.cpp:request_pointer_array_reallocate
+0x02aaa860  # game/render/shader_upload.h:reclaim_shader_upload_blocks, game/render/swap_chain_submit.cpp:notify_present_queue
+0x02aaf700  # game/render/present_context_finish.h:finish_present_commands, game/render/swap_chain_submit.cpp:finish_present_commands
+0x02ab5a70  # game/render/present_context_scratch_prepare.h:present_record_consume, game/render/present_source.h:consume_present_source_record
+0x02ab7310  # game/render/record_normalization.h:translate_record_selector, game/render/swap_chain_setup.h:map_selector
+0x02ab7a20  # game/render/record_builder_selectors.h:choose_record_constructor_selector, game/render/resource_descriptor_builder.h:choose_constructor_parameter, game/render/swap_chain_setup.h:first_parameter
+0x02ab7ab0  # game/render/record_parameter_calls.h:combine_record_parameters, game/render/resource_descriptor_builder.h:combine_record_parameters, game/render/swap_chain_setup.h:second_parameter
+0x02ab9850  # game/render/present_context_finish.h:flush_shader_preparation, game/render/shader_secondary_calls.h:flush_shader_preparation
+0x02abadd0  # game/render/swap_chain_resource_info.h:storage_admitted, game/render/swap_chain_setup.h:storage_admitted
+0x02abaeb0  # game/render/present_record_calls.h:record_range_begin, game/render/swap_chain_setup.h:encode_address
+0x02abaef0  # game/render/swap_chain_resource_info.h:current_mode, game/render/swap_chain_setup.h:current_storage_mode
+0x02abb4a0  # game/render/record_normalization.h:report_record_normalization_error, game/render/resource_descriptor_builder.h:report_record_normalization_error, game/render/swap_chain_resource_info.h:note_offset_failure, game/render/swap_chain_setup.h:note_unit_failure
+0x02abb4f0  # game/render/record_normalization.h:record_auxiliary_predicate, game/render/resource_descriptor_builder.h:record_auxiliary_predicate
+0x02ad1f80  # game/render/present_context_scratch_prepare.h:refresh_state, game/render/present_source.h:render_present_source_flush_state
+0x02b62d00  # game/ai/area_block_step.h:wide_string_format, game/character/module_updates.cpp:wide_string_format, game/engine/text_for_slot_family.cpp:wide_string_format
+0x02bc1bb0  # game/param/map_lookups.cpp:entity_ids_push_back, game/param/row_iteration.cpp:id_array_push_back, game/physics/instance_construct.cpp:ids_push
+0x02bc1ca0  # game/param/id_array_push_back.cpp:id_array_reserve, game/physics/instance_construct.cpp:ids_reserve
+0x02c4f560  # game/engine/small_relative_families.cpp:resolve, game/engine/virtual_method_families.cpp:resolve_node_reference
+0x02fa1b80  # game/engine/allocator_forward_and_equality_families.cpp:allocate, game/engine/keyed_store_and_layout_block.cpp:allocate_aligned, game/engine/kind_sized_storage.cpp:allocate_from
+0x02fa1c20  # game/engine/allocator_forward_and_equality_families.cpp:sized_free, game/engine/keyed_store_and_layout_block.cpp:free_sized, game/engine/kind_sized_dword_free_family.cpp:sized_free, game/engine/kind_sized_storage.cpp:sized_free, game/engine/member_release_destructors.cpp:free_sized, game/engine/owner_of_two_family.cpp:sized_free, game/engine/release_and_free_thunks.cpp:free_sized
+0x02fa2b10  # game/ai/debug_display.cpp:default_allocator_create, game/engine/static_wide_string.h:acquire_default_allocator, game/engine/temporary_heap.h:default_allocator_create, game/engine/thread_construct.cpp:default_allocator_create, game/frame_timing/fixed_step_helpers.cpp:make_default_heap, game/frame_timing/fixed_step_states.cpp:make_container_heap
+0x02fa7940  # game/engine/array_resize_families.cpp:handle_destroy, game/engine/small_relative_families.cpp:release_element
+0x02fbe538  # game/engine/debug_print.cpp:static_guard_acquire, game/loading/transfer_task_callees.cpp:static_guard_acquire
+0x02fbe558  # game/engine/debug_print.cpp:static_guard_release, game/loading/transfer_task_callees.cpp:static_guard_release
+0x02fbe578  # game/engine/hk_array.cpp:copy_bytes, game/engine/keyed_store_and_layout_block.cpp:copy_bytes, game/engine/scaleform_heap_reallocate_moving.cpp:copy_bytes, game/engine/string_assign_text.cpp:c_memcpy, game/render/byte_copy_calls.h:copy_bytes
+0x02fbe588  # game/engine/condition_signal.cpp:operator_delete, game/engine/deleting_destructors.cpp:operator_delete, game/engine/destroy_then_delete_families.cpp:operator_delete, game/engine/fast_small_object_allocator.h:operator_delete, game/engine/forwarding_method_families.cpp:operator_delete, game/engine/member_release_destructors.cpp:operator_delete, game/engine/release_and_free_thunks.cpp:operator_delete, game/engine/small_object_allocator_destroy.cpp:operator_delete, game/engine/small_relative_families.cpp:operator_delete, game/engine/vtable_0x0579c8a0_destructor_family.cpp:operator_delete, game/engine/wide_string_owner_family.cpp:operator_delete, game/engine/work_holder_delete_family.cpp:operator_delete, game/kernel/light_mutex.cpp:operator_delete, game/kernel/read_write_lock.cpp:operator_delete, game/loading/file_copy_resource.h:operator_delete, game/render/yebis_interface_delete.cpp:operator_delete
+0x02fbe608  # game/engine/format_string.cpp:c_strlen, game/engine/text_encoding.h:c_strlen, game/engine/thread_construct.cpp:string_length
+0x02fbe638  # game/engine/allocator_forward_and_equality_families.cpp:c_memcmp, game/engine/keyed_store_and_layout_block.cpp:compare_bytes, game/engine/small_relative_families.cpp:compare_memory
+0x02fbe648  # game/ai/hearing.cpp:tangent, game/camera/update/target.h:tangent_float, game/camera/update/wing_escape.h:tangent_float
+0x02fbe658  # game/engine/byte_array_assign.cpp:c_memmove, game/engine/string_assign_text.cpp:c_memmove, game/loading/resource_queue.h:c_memmove
+0x02fbe688  # game/engine/locked_regular_heap.cpp:c_memset, game/engine/regular_heap_initialize.cpp:c_memset, game/loading/file_load_queue.cpp:c_memset, game/param/special_lookups.cpp:c_memset, game/physics/instance_construct.cpp:c_memset, game/render/present_context_shader_reset.h:c_memset, game/render/swap_chain_setup.h:fill_storage
+0x02fbe728  # game/frame_timing/time_of_day.h:c_gettimeofday, game/render/swap_chain_present.cpp:c_gettimeofday
+0x02fbec78  # game/engine/semaphore.cpp:sce_wait_sema, game/kernel/semaphore_wait.cpp:kernel_wait_semaphore
+0x02fbec88  # game/engine/semaphore.cpp:sce_signal_sema, game/kernel/semaphore_signal.cpp:kernel_signal_semaphore
+0x02fbf178  # game/render/yebis_interface_release.h:c_assert, game/render/yebis_sample_parameters.cpp:c_assert
+0x02fbf1b8  # game/engine/list_push_back.h:throw_length_error, game/render/update_list_and_level_copy.cpp:throw_length_error
+0x02fbf208  # game/engine/string_assign_text.cpp:c_wmemcpy, game/engine/wide_string_assign.cpp:c_wmemcpy
+0x02fbf218  # game/engine/string_assign_text.cpp:c_wmemmove, game/engine/wide_string_assign.cpp:c_wmemmove
+0x02fbf228  # game/character/frame_update.cpp:c_wcslen, game/engine/delegate_text_event.cpp:c_wcslen, game/engine/format_string.cpp:c_wcslen, game/engine/text_encoding.h:c_wcslen, game/engine/wide_string_construct.cpp:c_wcslen, game/frame_timing/config_get_int.cpp:c_wcslen, game/frame_timing/listener_take.cpp:c_wcslen, game/loading/disk_file_device.h:c_wcslen, game/loading/resource_queue.h:c_wcslen
+0x02fbf3f8  # game/kernel/files.h:open, game/loading/kernel_file.h:kernel_open
+0x02fbf408  # game/kernel/files.h:read, game/loading/kernel_file.h:kernel_read
+0x02fbf428  # game/kernel/files.h:seek, game/loading/kernel_file.h:kernel_seek
+0x02fbf438  # game/kernel/files.h:close, game/loading/kernel_file.h:kernel_close
+0x02fbfe58  # game/frame_timing/monotonic_clock.cpp:kernel_clock_gettime, game/frame_timing/monotonic_clock.h:kernel_clock_gettime
+0x02fbfe68  # game/frame_timing/sleep.cpp:kernel_usleep, game/frame_timing/time_of_day.h:kernel_usleep, game/render/swap_chain_present.cpp:kernel_usleep
+0x02fbfea8  # game/kernel/kernel_context.h:sce_mutexattr_init, game/kernel/pthread_mutex.cpp:sce_mutexattr_init
+0x02fbfeb8  # game/kernel/kernel_context.h:sce_mutexattr_settype, game/kernel/pthread_mutex.cpp:sce_mutexattr_settype
+0x02fbfec8  # game/kernel/kernel_context.h:sce_mutex_init, game/kernel/pthread_mutex.cpp:sce_mutex_init
+0x02fbfed8  # game/kernel/kernel_context.h:sce_mutexattr_destroy, game/kernel/pthread_mutex.cpp:sce_mutexattr_destroy
+0x02fbfee8  # game/engine/pthread_mutex.h:sce_mutex_destroy, game/kernel/kernel_context.h:sce_mutex_destroy, game/kernel/light_mutex.cpp:sce_mutex_destroy, game/kernel/pthread_mutex.cpp:sce_mutex_destroy
+0x02fbfef8  # game/engine/pthread_mutex.h:sce_mutex_lock, game/kernel/kernel_context.h:sce_mutex_lock, game/kernel/light_mutex.cpp:sce_mutex_lock, game/kernel/pthread_mutex.cpp:sce_mutex_lock
+0x02fbff08  # game/engine/pthread_mutex.h:sce_mutex_unlock, game/kernel/kernel_context.h:sce_mutex_unlock, game/kernel/light_mutex.cpp:sce_mutex_unlock, game/kernel/pthread_mutex.cpp:sce_mutex_unlock
+0x02fc0ca8  # game/engine/allocator_of.cpp:sce_rwlock_unlock, game/engine/heap_manager_register_area.cpp:sce_rwlock_unlock, game/kernel/read_write_lock.cpp:sce_rwlock_unlock
+0x02fc0cb8  # game/kernel/light_mutex.cpp:sce_mutex_trylock, game/kernel/pthread_mutex.cpp:sce_mutex_trylock
+0x02fd5280  # game/camera/update/subject_transform.h:transform_scale, game/physics/instance_construct_helpers.cpp:unit_scale
+0x04b37dc0  # game/ai/debug_display.cpp:incompatible_heap_message, game/character/frame_update.cpp:message_invalid_heap, game/engine/static_wide_string.h:invalid_heap_message, game/frame_timing/fixed_step_helpers.cpp:message_incompatible_heap, game/frame_timing/fixed_step_states.cpp:message_incompatible_heap, game/frame_timing/handle_pass_on.cpp:message_incompatible_heap, game/physics/instance_construct.cpp:message_invalid_heap
+0x04b388a8  # game/character/gaitem_handle.cpp:empty_message, game/engine/instance_update.cpp:empty_message
+0x04bfeb4b  # game/render/yebis_interface_delete.cpp:destroy_count_message, game/render/yebis_interface_destruct.cpp:destroy_count_message
+0x04bfebab  # game/render/yebis_interface_delete.cpp:destroy_function_name, game/render/yebis_interface_destruct.cpp:destroy_function_name
+0x04bfebba  # game/render/yebis_interface_delete.cpp:destroy_instance_message, game/render/yebis_interface_destruct.cpp:destroy_instance_message
+0x04c7d061  # game/audio/create_native_thread.cpp:mixer_name, game/audio/fmod_thread_lookup.cpp:mixer_name
+0x04cf24a0  # game/camera/update/angle_frame.h:unit_y, game/camera/update/chase.h:y_axis, game/camera/update/subject.h:unit_y, game/camera/update/wing_escape.h:unit_y
+0x04cf24b0  # game/camera/update/orientation.h:unit_z, game/camera/update/subject.h:unit_z
+0x04cf24c0  # game/camera/update/angle_frame.h:unit_w, game/camera/update/subject.h:unit_w, game/camera/update/subject_transform.h:position_unit_w, game/camera/update/wing_escape.h:unit_w
+0x04cf24d0  # game/camera/update/angle_frame.h:xyz_bits, game/camera/update/chase.h:xyz_bits, game/camera/update/final_collision.h:xyz_bits, game/camera/update/orientation.h:xyz_bits, game/camera/update/subject.h:xyz_bits, game/camera/update/subject_transform.h:position_xyz_bits, game/camera/update/territory.h:xyz_bits, game/camera/update/wing_escape.h:xyz_bits
+0x04cf24e0  # game/camera/update/angle_frame.h:negate_yaw_sine, game/camera/update/subject.h:negate_x_scale, game/camera/update/wing_escape.h:negate_yaw_sine
+0x04cf2520  # game/camera/update/angular_mode.h:pitch_sign_bits, game/camera/update/wing_escape.h:sign_mask
+0x04cf25c0  # game/camera/update/free_input.h:even_coefficients_0_to_6, game/camera/update/wing_escape.h:even_coefficients_0_to_6
+0x04cf25d0  # game/camera/update/free_input.h:even_coefficients_8_to_14, game/camera/update/wing_escape.h:even_coefficients_8_to_14
+0x04cf25e0  # game/camera/update/free_input.h:even_coefficients_16_to_22, game/camera/update/wing_escape.h:even_coefficients_16_to_22
+0x04cf2630  # game/camera/update/angle_frame.h:negate_pitch_sine, game/camera/update/wing_escape.h:negate_pitch_sine
+0x04cf2640  # game/camera/update/angle_frame.h:infinity_vector, game/camera/update/orientation.h:exponent_bits, game/camera/update/validation_margin.h:exponent_bits, game/camera/update/wing_escape.h:infinity_vector
+0x04cf2650  # game/camera/update/angle_frame.h:canonical_nan_vector, game/camera/update/wing_escape.h:canonical_nan_vector
+0x04cf2660  # game/camera/update/candidate_collision.h:unit_vector, game/camera/update/final_collision.h:unit_vector, game/camera/update/territory.h:unit_vector, game/camera/update/validation_margin.h:unit_vector
+0x04cf2680  # game/camera/update/final_collision.h:short_collision_displacement, game/camera/update/territory.h:short_collision_displacement
+0x04d25e58  # game/camera/update/front_chase.h:completion_tolerance, game/camera/update/parameter.h:degrees_to_radians, game/camera/update/wing_escape.h:minimum_escape_yaw
+0x04d25e6c  # game/camera/update/candidate_collision.h:scalar_one, game/camera/update/chase.h:one, game/camera/update/orientation.h:one, game/camera/update/subject.h:scalar_one, game/camera/update/target.h:scalar_one, game/camera/update/translation_compensation.h:scalar_one, game/camera/update/wing_escape.h:one
+0x04d25e70  # game/camera/update/control.h:minimum_fulcrum_distance, game/camera/update/target.h:half_fov, game/camera/update/translation_compensation.h:distance_floor
+0x04d25e74  # game/camera/update/locked_geometry.h:two_pi, game/camera/update/wing_escape.h:period
+0x04d25e88  # game/camera/update/angle_frame.h:short_distance_threshold, game/camera/update/candidate_collision.h:distance_division_threshold, game/camera/update/chase.h:distance_threshold, game/camera/update/final_collision.h:distance_threshold, game/camera/update/orientation.h:near_vertical_threshold, game/camera/update/territory.h:distance_threshold, game/camera/update/translation_compensation.h:distance_division_threshold, game/camera/update/validation_margin.h:distance_threshold, game/camera/update/wing_escape.h:short_distance_threshold, game/camera/update/wing_escape.h:distance_division_threshold
+0x04d25e8c  # game/camera/update/angle_frame.h:short_distance_replacement, game/camera/update/wing_escape.h:short_distance_replacement
+0x04d35616  # game/character/gaitem_handle.cpp:gaitem_manager_name, game/character/gaitem_handle.h:gaitem_manager_name
+0x04d35687  # game/ai/debug_display.cpp:world_ai_manager_name, game/ai/goals.h:world_ai_manager_name
+0x04d35bbd  # game/ai/area_block_step.h:world_nvm_manager_name, game/ai/debug_display.cpp:world_nvm_manager_name
+0x04d35c4a  # game/ai/hk_ai.h:world_chr_man_dbg_name, game/character/data_update.h:world_chr_man_dbg_name, game/character/frame_update.cpp:world_chr_man_dbg_name
+0x04d38ad0  # game/camera/update/parameter.h:repository_singleton_name, game/param/param_repository.h:solo_param_repository_name
+0x04d3ad5d  # game/ai/area_block_step.h:ai_manager_name, game/ai/hk_ai.h:ai_manager_name
+0x04d3b00c  # game/frame_timing/frame_limiter.cpp:window_name, game/frame_timing/frame_step.cpp:window_name
+0x04d3b1e1  # game/ai/hk_ai.h:rend_man_name, game/camera/update/territory.h:render_singleton_name, game/render/frame_update.cpp:rend_man_name, game/render/update_list_and_level_copy.cpp:rend_man_name
+0x04d3b26b  # game/ai/hearing.cpp:world_characters_name, game/ai/perception.cpp:world_character_manager_name
+0x04d3b41e  # game/ai/area_block_step.h:debug_menu_manager_name, game/ai/debug_display.cpp:debug_menu_manager_name
+0x04d3bd2b  # game/engine/allocator_of.cpp:lock_source_file, game/engine/heap_manager_register_area.cpp:lock_source_file, game/kernel/read_write_lock.cpp:source_file
+0x04d3be69  # game/engine/allocator_of.cpp:message_invalid_lock, game/engine/heap_manager_register_area.cpp:message_invalid_lock, game/kernel/read_write_lock.cpp:message_invalid_lock
+0x04d3be94  # game/engine/allocator_of.cpp:message_not_created, game/engine/heap_manager_register_area.cpp:message_not_created, game/kernel/read_write_lock.cpp:message_not_created
+0x04d3c0af  # game/engine/condition_signal.cpp:condition_source_file, game/kernel/condition_wait.cpp:source_file
+0x04d3c20e  # game/engine/pthread_mutex.h:source_file, game/kernel/light_mutex.cpp:mutex_source_file, game/kernel/pthread_mutex.cpp:source_file
+0x04d3c275  # game/engine/pthread_mutex.h:message_einval, game/kernel/light_mutex.cpp:message_invalid_attribute, game/kernel/pthread_mutex.cpp:message_invalid_attribute, game/kernel/read_write_lock.cpp:message_invalid_attribute
+0x04d3c2ae  # game/engine/pthread_mutex.h:message_unknown_error, game/kernel/condition_wait.cpp:message_unknown_error, game/kernel/light_mutex.cpp:message_unknown_error, game/kernel/pthread_mutex.cpp:message_unknown_error
+0x04d3c2bd  # game/engine/pthread_mutex.h:message_deadlock, game/kernel/light_mutex.cpp:message_deadlock, game/kernel/pthread_mutex.cpp:message_deadlock
+0x04d3c2f3  # game/engine/pthread_mutex.h:message_invalid_mutex, game/kernel/light_mutex.cpp:message_invalid_mutex, game/kernel/pthread_mutex.cpp:message_invalid_mutex
+0x04d3c319  # game/engine/pthread_mutex.h:message_too_many_locks, game/kernel/light_mutex.cpp:message_lock_limit, game/kernel/pthread_mutex.cpp:message_lock_limit
+0x04d3c34d  # game/engine/pthread_mutex.h:message_runtime_error, game/kernel/light_mutex.cpp:message_runtime_error, game/kernel/pthread_mutex.cpp:message_runtime_error
+0x04d3c555  # game/engine/fixed_allocator_free.cpp:source_file, game/engine/fixed_allocator_initialize.h:initialize_source_file
+0x04d3c6d4  # game/engine/regular_heap_check_block.cpp:source_file, game/engine/regular_heap_free.cpp:source_file
+0x04d3c78b  # game/engine/robust_heap_check_block.cpp:source_file, game/engine/robust_heap_free.cpp:source_file
+0x04d3c7ee  # game/engine/regular_heap_check_block.cpp:message_misaligned, game/engine/robust_heap_check_block.cpp:message_misaligned
+0x04d3c801  # game/engine/linear_heap.h:message_not_ours, game/engine/regular_heap_check_block.cpp:message_foreign, game/engine/robust_heap_check_block.cpp:message_foreign
+0x04d3cc44  # game/engine/regular_heap_free.cpp:message_not_in_use, game/engine/segregated_regular_heap_free.cpp:message_not_allocated
+0x04d40378  # game/engine/list_push_back.cpp:list_too_long_message, game/render/update_list_and_level_copy.cpp:message_list_too_long
+0x04da3552  # game/ai/area_block_step.h:area_menu_key_name, game/ai/debug_display.cpp:area_menu_key_name
+0x04dd85f0  # game/ai/area_block_step.h:empty_wide_text, game/engine/debug_menu_entry_family.cpp:entry_key_name, game/frame_timing/fixed_step_states.cpp:default_name, game/loading/resource_manager_release.cpp:empty_text
+0x056b35e0  # game/render/yebis_interface_delete.cpp:interface_vtable, game/render/yebis_interface_destruct.cpp:interface_vtable, game/render/yebis_interface_initialize.cpp:interface_vtable
+0x056b3618  # game/render/yebis_context_instantiate.cpp:current_allocator, game/render/yebis_interface_release.h:current_allocator
+0x056b5dc0  # game/engine/fast_small_object_allocator_construct.cpp:placeholder_lock_vtable, game/engine/small_object_allocator_construct.cpp:placeholder_lock_vtable
+0x056c45d0  # game/engine/forwarding_method_families.cpp:free_block, game/engine/slot_blocks_family.cpp:free_block
+0x056d6ae8  # game/audio/thread_services.h:thread_services, game/frame_timing/monotonic_clock.cpp:clock_state_instance, game/frame_timing/monotonic_clock.h:clock_state_instance, game/kernel/kernel_context.h:kernel_context_instance
+0x0575b670  # game/engine/small_object_allocator_construct.cpp:plain_vtable, game/engine/small_object_allocator_destroy.cpp:plain_vtable
+0x057b1a80  # game/engine/shared_work_holder_family.cpp:work_holder_base_vtable, game/engine/work_holder_delete_family.cpp:work_holder_base_vtable, game/menu/scaleform_glue.h:work_holder_base_vtable
+0x057b2f60  # game/engine/condition_signal.cpp:condition_signal_vtable, game/engine/thread_construct.cpp:condition_signal_vtable
+0x057b2fa0  # game/engine/locked_regular_heap.cpp:light_mutex_vtable, game/engine/pthread_mutex.h:mutex_vtable, game/kernel/light_mutex.cpp:light_mutex_vtable
+0x057b3240  # game/engine/small_object_allocator_construct.cpp:locked_vtable, game/engine/small_object_allocator_destroy.cpp:locked_vtable
+0x057e40f8  # game/engine/thread_allocator_free.h:thread_allocator_offset, game/frame_timing/part_0x10_update.cpp:thread_allocator_offset, game/loading/fios.h:thread_allocator_offset, game/physics/instance_construct.cpp:thread_allocator_offset
+0x057e4568  # game/character/frame_update.cpp:thread_heap_offset, game/engine/temporary_heap.h:thread_heap_offset, game/loading/disk_file_device.h:thread_heap_offset
+0x057e7320  # game/engine/array_resize_families.cpp:array_heap, game/engine/block_at_0xa0_family.cpp:global_allocator, game/engine/deleting_destructors.cpp:object_allocator, game/engine/heap_buffer_owner_families.cpp:global_heap, game/engine/keyed_store_and_layout_block.cpp:object_allocator, game/engine/member_destroying_destructors.cpp:object_allocator, game/engine/scaleform_member_release.cpp:object_allocator
+0x058018b0  # game/ai/area_block_step.h:shape_heap, game/engine/block_init_and_owned_release_families.cpp:storage_allocator, game/engine/instance_update.cpp:list_allocator, game/engine/small_relative_families.cpp:havok_heap, game/physics/controller_body_set.cpp:shape_heap, game/physics/instance_construct.cpp:shape_heap, game/physics/instance_construct_helpers.cpp:shape_heap
+0x058b3570  # game/ai/area_block_step.h:debug_menu_manager_instance, game/ai/debug_display.cpp:debug_menu_manager_instance, game/engine/debug_menu_entry_family.cpp:debug_menu_manager_instance, game/menu/scaleform_glue.h:named_resource_registry
+0x0593b0a0  # game/ai/debug_display.cpp:world_ai_manager_instance, game/ai/goals.h:world_ai_manager_instance
+0x0593d700  # game/ai/sight.cpp:physics_manager_instance, game/physics/instance_construct.cpp:physics_manager_instance
+0x0593e878  # game/ai/hearing.cpp:world_characters, game/ai/hk_ai.h:world_chr_man_instance, game/ai/perception.cpp:world_character_manager
+0x0593e880  # game/ai/hk_ai.h:world_chr_man_dbg_instance, game/character/data_update.h:world_chr_man_dbg_instance, game/character/frame_update.cpp:world_chr_man_dbg_instance
+0x0593e990  # game/character/gaitem_handle.cpp:gaitem_manager, game/character/gaitem_handle.h:gaitem_manager
+0x059401a0  # game/ai/area_block_step.h:ai_manager_instance, game/ai/hk_ai.h:ai_manager_instance
+0x05940208  # game/ai/area_block_step.h:world_nvm_manager_instance, game/ai/debug_display.cpp:world_nvm_manager_instance
+0x05940298  # game/ai/hk_ai.h:rend_man_instance, game/render/frame_update.cpp:rend_man_instance, game/render/update_list_and_level_copy.cpp:rend_man_instance
+0x05940340  # game/camera/follow_camera_state.h:solo_parameter_repository, game/param/param_repository.h:solo_param_repository
+0x05940408  # game/ai/area_block_step.h:block_allocator_instance, game/frame_timing/frame_step.cpp:flipper_allocator_instance, game/loading/file_copy_resource.h:resource_heap_instance, game/physics/instance_construct.cpp:flag_heap_instance
+0x05940420  # game/ai/sight.cpp:allocator_instance, game/event/emk_add.cpp:allocator_instance, game/render/update_list_and_level_copy.cpp:allocator_instance
+0x05940500  # game/frame_timing/frame_limiter.cpp:window_instance, game/frame_timing/frame_step.cpp:window_instance
+0x05940670  # game/ai/debug_display.cpp:default_allocator, game/engine/static_wide_string.h:default_allocator, game/engine/temporary_heap.h:default_allocator, game/engine/thread_construct.cpp:default_allocator, game/frame_timing/fixed_step_helpers.cpp:default_heap, game/frame_timing/fixed_step_states.cpp:container_heap
+0x059406c8  # game/render/model_wind.h:graphics_device_instance, game/render/swap_chain_present.cpp:gpu_holder_instance
+0x05940e00  # game/frame_timing/frame_limiter.cpp:notify_instance, game/render/model_wind.h:wind_system_instance
+0x05956678  # game/ai/ai_think.h:random_source_owner, game/camera/follow_camera_state.h:parameter_overrides
+0x05962878  # game/menu/scaleform_glue.h:menu_state_instance, game/menu/text_input_steps.cpp:menu_state_instance
+0x05973810  # game/menu/localize_request.cpp:localize_request_pending, game/menu/text_input_steps.cpp:localize_request_pending
+0x0597be80  # game/camera/follow_camera_state.h:subject_yaw_axis, game/camera/update/subject_transform.h:subject_yaw_axis
+0x05aa54f8  # game/engine/temporary_heap.h:quit_query_instance, game/frame_timing/frame_step.cpp:quit_query_instance, game/loading/transfer_task_callees.cpp:quit_query_instance
+0x05aa5720  # game/engine/debug_print.cpp:light_mutex_storage, game/loading/transfer_task_callees.cpp:light_mutex_storage
+0x05aa573f  # game/engine/debug_print.cpp:light_mutex_constructed, game/loading/transfer_task_callees.cpp:light_mutex_constructed
+0x05aa5740  # game/engine/debug_print.cpp:light_mutex_guard, game/loading/transfer_task_callees.cpp:light_mutex_guard
+0x05ac8288  # game/engine/allocator_forward_and_equality_families.cpp:engine_allocator, game/engine/keyed_store_and_layout_block.cpp:block_allocator, game/engine/kind_sized_dword_free_family.cpp:storage_allocator, game/engine/kind_sized_storage.cpp:storage_allocator, game/engine/member_release_destructors.cpp:object_allocator, game/engine/owner_of_two_family.cpp:owner_allocator, game/engine/release_and_free_thunks.cpp:block_allocator
+0x05acd1bc  # game/engine/block_init_and_owned_release_families.cpp:block_address_second, game/engine/owner_block_families.cpp:block_address_b
+0x05acd45c  # game/engine/block_init_and_owned_release_families.cpp:block_address_first, game/engine/owner_block_families.cpp:block_address_a
