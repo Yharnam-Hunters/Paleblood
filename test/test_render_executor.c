@@ -3947,22 +3947,25 @@ static int scale_add_dispatch(rt_executor *x, uint64_t buffer, uint64_t code, ui
 /* The shader catalog (BB_SHADER_CATALOG) and compiling at launch: a run's compute shader is kept in the
    catalog; the next executor, with an empty translation cache and pipeline cache (a new translator
    or driver), translates it and makes its pipeline as it opens, so its dispatch finds the translation
-   kept; one more executor finds the translation as it opens. BB_LAUNCH_COMPILE=0 makes none. */
+   kept; one more executor finds the translation as it opens. BB_LAUNCH_COMPILE=0 makes none. The
+   workers run while the game does: a dispatch that meets the shader first, with empty caches again,
+   makes it or waits for the worker making it, and the shader is translated once. */
 static void launch_compiles(const rt_executor_memory *memory)
 {
     enum { LAUNCH_BUFFER = 0xc0e50000, LAUNCH_CODE = 0x3100, INPUT = 0x23000, OUTPUT = 0x24000 };
-    char directory[] = "/tmp/pb-launch-XXXXXX", catalog[64], translations[2][64], pipelines[2][64], error[256] = "";
+    char directory[] = "/tmp/pb-launch-XXXXXX", catalog[64], translations[3][64], pipelines[3][64], error[256] = "";
     CHECK(mkdtemp(directory) != NULL);
     snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < 3; k++) {
         snprintf(translations[k], sizeof translations[k], "%s/translations%d.bin", directory, k);
         snprintf(pipelines[k], sizeof pipelines[k], "%s/pipelines%d.bin", directory, k);
     }
     setenv("BB_SHADER_CATALOG", catalog, 1);
     /* run 0 makes the shader; runs 1 and 2 use the second translation and pipeline caches; run 3 has
-       launch compiles turned off */
-    const int file_of_run[4] = {0, 1, 1, 1};
-    for (int run = 0; run < 4; run++) {
+       launch compiles turned off; run 4 dispatches before asking what the workers did, with the third
+       caches */
+    const int file_of_run[5] = {0, 1, 1, 1, 2};
+    for (int run = 0; run < 5; run++) {
         setenv("BB_TRANSLATION_CACHE", translations[file_of_run[run]], 1);
         setenv("BB_PIPELINE_CACHE", pipelines[file_of_run[run]], 1);
         if (run == 3) setenv("BB_LAUNCH_COMPILE", "0", 1);
@@ -3972,6 +3975,14 @@ static void launch_compiles(const rt_executor_memory *memory)
         CHECK(opened == 0);
         if (opened) break;
         size_t shaders = 9, translated = 9, compiled = 9, found = 9, made = 9;
+        if (run == 4) {
+            CHECK(scale_add_dispatch(x, LAUNCH_BUFFER, at(LAUNCH_CODE), at(INPUT), at(OUTPUT)));
+            rt_executor_translations(x, &found, &made);
+            rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
+            CHECK(shaders == 1 && found + made == 1 && translated + made == 1);
+            rt_executor_close(x);
+            continue;
+        }
         rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
         if (run == 0 || run == 3) CHECK(shaders == 0 && translated == 0 && compiled == 0);
         if (run == 1) CHECK(shaders == 1 && translated == 1 && compiled == 1);
@@ -3985,7 +3996,7 @@ static void launch_compiles(const rt_executor_memory *memory)
     setenv("BB_TRANSLATION_CACHE", "", 1);
     setenv("BB_PIPELINE_CACHE", "", 1);
     unlink(catalog);
-    for (int k = 0; k < 2; k++) unlink(translations[k]), unlink(pipelines[k]);
+    for (int k = 0; k < 3; k++) unlink(translations[k]), unlink(pipelines[k]);
     rmdir(directory);
 }
 

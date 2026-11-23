@@ -727,6 +727,7 @@ struct rt_executor {
        NULL: none), and what compile_catalog did with them when the executor opened */
     translation_cache *catalog;
     size_t launch_shaders, launch_translated, launch_compiled;
+    struct launch_work *launch; /* the shaders compile_catalog's workers are making (NULL: none, or finished) */
     /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
     int async_pipelines;
     int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
@@ -1369,8 +1370,11 @@ static void open_translations(rt_executor *x)
 #endif
 }
 
-void rt_executor_launch_compiles(const rt_executor *x, size_t *shaders, size_t *translated, size_t *compiled)
+static void finish_launch_work(rt_executor *x);
+
+void rt_executor_launch_compiles(rt_executor *x, size_t *shaders, size_t *translated, size_t *compiled)
 {
+    finish_launch_work(x);
     *shaders = x->launch_shaders, *translated = x->launch_translated, *compiled = x->launch_compiled;
 }
 
@@ -5359,6 +5363,8 @@ static VkResult make_compute_pipeline(rt_executor *x, VkShaderModule module, uns
     return made;
 }
 
+static void meet_launch_shader(rt_executor *x, const translation_key *key);
+
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
    register layout. VK_NULL_HANDLE after failing. */
 static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, const gcn_image_binding *images,
@@ -5390,6 +5396,7 @@ static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_comput
     translation_key key = {0};
     if (r.key_dwords) compute_key(&key, x, &r);
     else key.failed = 1;
+    meet_launch_shader(x, &key);
     translation_outputs kept;
     uint32_t *spirv = NULL;
     size_t words = 0;
@@ -5425,11 +5432,13 @@ static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_comput
 /* ---- compiling at launch ----
    When the executor opens, the shaders of the catalog (every compute shader any run made, by its key)
    are translated where the translation cache lacks them (a new translator) and their pipelines made
-   where the pipeline cache lacks them (a new translator or driver), on worker threads, before the game
-   draws a frame: the dispatches that meet them later find both caches ready. A dispatch cannot be left
-   out as a draw can (async_pipelines), so compute shaders made in-game held their frame for the whole
-   compile. BB_LAUNCH_COMPILE=0 turns it off. */
+   where the pipeline cache lacks them (a new translator or driver), on worker threads that run while
+   the game loads: the dispatches that meet them later find both caches ready. A dispatch cannot be
+   left out as a draw can (async_pipelines), so a compute shader made in-game holds its frame for the
+   whole compile; one a worker is making when its dispatch comes is waited for, not made twice.
+   BB_LAUNCH_COMPILE=0 turns it off. */
 enum { LAUNCH_WORKERS = 8 };
+typedef struct launch_work launch_work;
 
 typedef struct {
     unsigned char **keys;
@@ -5454,14 +5463,22 @@ static void take_catalog_key(void *context, const void *key, size_t size)
     all->keys[all->count] = copy, all->sizes[all->count++] = size;
 }
 
-/* The shaders the workers make, each with its key; the next one to take, and what was done. */
-typedef struct {
+/* A launch shader's state: waiting, being made by a worker, made, or taken by a dispatch that met it
+   before any worker did (the dispatch makes it then, the workers leave it). */
+enum { LAUNCH_WAITING, LAUNCH_MAKING, LAUNCH_MADE, LAUNCH_TAKEN };
+
+/* The shaders the workers make, each with its key and state; the next one to take, and what was done. */
+struct launch_work {
     rt_executor *x;
     compute_request *requests;
     translation_key *keys;
+    atomic_int *states;
     size_t count;
     atomic_size_t next, done, translated, compiled;
-} launch_work;
+    uint64_t began;
+    pthread_t workers[LAUNCH_WORKERS];
+    size_t started;
+};
 
 /* Makes one shader's translation and pipeline, where the caches lack them; the pipeline is let go
    (the pipeline cache keeps it for the dispatch that meets the shader). */
@@ -5481,78 +5498,100 @@ static void make_at_launch(launch_work *w, size_t i)
         if (module && x->cache_control) /* one the pipeline cache holds needs nothing more */
             made = make_compute_pipeline(x, module, w->requests[i].image_count, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT,
                                          &pipeline);
-        if (module && made == VK_PIPELINE_COMPILE_REQUIRED_EXT && make_compute_pipeline(x, module, w->requests[i].image_count, 0, &pipeline) == VK_SUCCESS)
+        if (module && made == VK_PIPELINE_COMPILE_REQUIRED_EXT && make_compute_pipeline(x, module, w->requests[i].image_count, 0, &pipeline) == VK_SUCCESS) {
             atomic_fetch_add(&w->compiled, 1);
+            atomic_fetch_add(&x->pipelines_made, 1); /* the saver writes the pipeline cache */
+        }
         if (pipeline) vkDestroyPipeline(x->device, pipeline, NULL);
         if (module) vkDestroyShaderModule(x->device, module, NULL);
     }
     free(spirv);
 }
 
+/* Takes the next waiting shaders until none is left; the last worker to finish reports on stderr. */
 static void *launch_worker(void *argument)
 {
     launch_work *w = argument;
     for (;;) {
         const size_t i = atomic_fetch_add(&w->next, 1);
         if (i >= w->count) return NULL;
-        make_at_launch(w, i);
-        atomic_fetch_add(&w->done, 1);
-    }
-}
-
-/* Runs the work on up to LAUNCH_WORKERS threads (one fewer than the processors), reporting progress on
-   stderr each second; on this thread when none can be started. */
-static void run_launch_work(launch_work *w)
-{
-    pthread_t workers[LAUNCH_WORKERS];
-    const long processors = sysconf(_SC_NPROCESSORS_ONLN);
-    size_t wanted = processors > 1 ? (size_t)processors - 1 : 1, started = 0;
-    if (wanted > LAUNCH_WORKERS) wanted = LAUNCH_WORKERS;
-    if (wanted > w->count) wanted = w->count;
-    while (started < wanted && pthread_create(&workers[started], NULL, launch_worker, w) == 0) started++;
-    if (!started) launch_worker(w);
-    uint64_t reported = monotonic_ns();
-    while (atomic_load(&w->done) < w->count) {
-        const struct timespec pause = {0, 50000000};
-        nanosleep(&pause, NULL);
-        const uint64_t now = monotonic_ns();
-        if (now - reported >= 1000000000u) {
-            fprintf(stderr, "executor: compiling shaders: %zu of %zu\n", (size_t)atomic_load(&w->done), w->count);
-            reported = now;
+        int waiting = LAUNCH_WAITING;
+        if (atomic_compare_exchange_strong(&w->states[i], &waiting, LAUNCH_MAKING)) {
+            make_at_launch(w, i);
+            atomic_store(&w->states[i], LAUNCH_MADE);
         }
+        if (atomic_fetch_add(&w->done, 1) + 1 == w->count)
+            fprintf(stderr, "executor: compiled at launch: %zu compute shaders (%zu translated, %zu pipelines compiled), %.2f s\n", w->count,
+                    (size_t)atomic_load(&w->translated), (size_t)atomic_load(&w->compiled), (double)(monotonic_ns() - w->began) / 1e9);
     }
-    for (size_t i = 0; i < started; i++) pthread_join(workers[i], NULL);
 }
 
+/* Before a dispatch makes the compute shader under key: a worker making it is waited for (its
+   translation and pipeline are then in the caches); one no worker has taken yet is left to the
+   dispatch. */
+static void meet_launch_shader(rt_executor *x, const translation_key *key)
+{
+    launch_work *w = x->launch;
+    if (!w || key->failed || atomic_load(&w->done) == w->count) return;
+    for (size_t i = 0; i < w->count; i++) {
+        if (w->keys[i].size != key->size || memcmp(w->keys[i].bytes, key->bytes, key->size)) continue;
+        int waiting = LAUNCH_WAITING;
+        if (atomic_compare_exchange_strong(&w->states[i], &waiting, LAUNCH_TAKEN)) return;
+        while (atomic_load(&w->states[i]) == LAUNCH_MAKING) {
+            const struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
+        return;
+    }
+}
+
+/* Waits for the launch workers and frees their work (rt_executor_launch_compiles, closing). */
+static void finish_launch_work(rt_executor *x)
+{
+    launch_work *w = x->launch;
+    if (!w) return;
+    for (size_t i = 0; i < w->started; i++) pthread_join(w->workers[i], NULL);
+    x->launch_shaders = w->count, x->launch_translated = atomic_load(&w->translated), x->launch_compiled = atomic_load(&w->compiled);
+    for (size_t i = 0; i < w->count; i++) free((void *)w->requests[i].words), translation_key_free(&w->keys[i]);
+    free(w->requests), free(w->keys), free(w->states), free(w);
+    x->launch = NULL;
+}
+
+/* Makes the catalog's shaders again with this executor's values and starts up to LAUNCH_WORKERS
+   threads (one fewer than the processors) making them while the game runs; on this thread when none
+   can be started. */
 static void compile_catalog(rt_executor *x)
 {
     const char *launch = getenv("BB_LAUNCH_COMPILE");
     if (!x->catalog || (launch && !strcmp(launch, "0"))) return;
-    const uint64_t began = monotonic_ns();
     catalog_keys all = {0};
     translation_cache_each(x->catalog, take_catalog_key, &all);
-    launch_work w = {.x = x, .requests = calloc(all.count ? all.count : 1, sizeof *w.requests),
-                     .keys = calloc(all.count ? all.count : 1, sizeof *w.keys)};
+    launch_work *w = calloc(1, sizeof *w);
+    const size_t room = all.count ? all.count : 1;
+    if (w) {
+        w->x = x, w->began = monotonic_ns();
+        w->requests = calloc(room, sizeof *w->requests), w->keys = calloc(room, sizeof *w->keys), w->states = calloc(room, sizeof *w->states);
+    }
     for (size_t i = 0; i < all.count; i++) {
         /* the key made again with this executor's values; the stop words given here, in the catalog's
            order, are those the dispatches find later */
-        compute_request *r = &w.requests[w.count];
-        if (w.requests && w.keys && parse_compute_key(all.keys[i], all.sizes[i], r) == 0) {
+        if (w && w->requests && w->keys && w->states && parse_compute_key(all.keys[i], all.sizes[i], &w->requests[w->count]) == 0) {
+            compute_request *r = &w->requests[w->count];
             r->error_address = stop_slot(x, STOP_KIND_COMPUTE, r->code);
-            compute_key(&w.keys[w.count++], x, r);
+            atomic_init(&w->states[w->count], LAUNCH_WAITING);
+            compute_key(&w->keys[w->count++], x, r);
         }
         free(all.keys[i]);
     }
     free(all.keys), free(all.sizes);
-    if (w.count) {
-        run_launch_work(&w);
-        atomic_fetch_add(&x->pipelines_made, (unsigned)atomic_load(&w.compiled)); /* the saver writes the pipeline cache */
-        fprintf(stderr, "executor: compiled at launch: %zu compute shaders (%zu translated, %zu pipelines compiled), %.2f s\n", w.count,
-                (size_t)atomic_load(&w.translated), (size_t)atomic_load(&w.compiled), (double)(monotonic_ns() - began) / 1e9);
-    }
-    x->launch_shaders = w.count, x->launch_translated = atomic_load(&w.translated), x->launch_compiled = atomic_load(&w.compiled);
-    for (size_t i = 0; i < w.count; i++) free((void *)w.requests[i].words), translation_key_free(&w.keys[i]);
-    free(w.requests), free(w.keys);
+    if (!w) return;
+    x->launch = w;
+    const long processors = sysconf(_SC_NPROCESSORS_ONLN);
+    size_t wanted = processors > 1 ? (size_t)processors - 1 : 1;
+    if (wanted > LAUNCH_WORKERS) wanted = LAUNCH_WORKERS;
+    if (wanted > w->count) wanted = w->count;
+    while (w->started < wanted && pthread_create(&w->workers[w->started], NULL, launch_worker, w) == 0) w->started++;
+    if (!w->started) launch_worker(w);
 }
 
 /* ---- images ---- */
@@ -7520,6 +7559,7 @@ void rt_executor_close(rt_executor *x)
 {
     if (!x) return;
     sweep_close(x);
+    finish_launch_work(x);
     pipeline_workers_stop(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);

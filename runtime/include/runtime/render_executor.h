@@ -171,10 +171,11 @@ void rt_executor_release_snapshot(rt_executor *executor, const rt_executor_snaps
 /* How many shaders the executor took from its translation cache (runtime/translation_cache.h) and how
    many it translated, since it opened (Vulkan executor). */
 void rt_executor_translations(const rt_executor *executor, size_t *found, size_t *made);
-/* What the executor did with the shader catalog when it opened (compile_catalog): the shaders made
-   again, those of them translated (the translation cache lacked them) and those whose pipelines the
-   driver compiled (the pipeline cache lacked them) (Vulkan executor). */
-void rt_executor_launch_compiles(const rt_executor *executor, size_t *shaders, size_t *translated, size_t *compiled);
+/* What the executor did with the shader catalog since it opened (compile_catalog), once its workers
+   are done (it waits for them): the shaders made again, those of them translated (the translation
+   cache lacked them) and those whose pipelines the driver compiled (the pipeline cache lacked them)
+   (Vulkan executor). */
+void rt_executor_launch_compiles(rt_executor *executor, size_t *shaders, size_t *translated, size_t *compiled);
 
 void rt_executor_close(rt_executor *executor);
 
