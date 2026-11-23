@@ -266,7 +266,9 @@ def destructor_cases(variant):
     for handle in (True, False):
         for job_references, job in ((2, True), (1, True), (0, True), (None, False)):
             name = f'job_count_{job_references}' if job else 'no_job'
-            case(f'{"handle" if handle else "no_handle"}_{name}', handle, job_references or 2, job)
+            # A None check, not `or`: a count of 0 must reach the job (it wraps, nothing is freed).
+            references = 2 if job_references is None else job_references
+            case(f'{"handle" if handle else "no_handle"}_{name}', handle, references, job)
     case('unregister_clears_handle', unregister_writes=[{'addr': f'buf:load+{HANDLE:#x}', 'bytes': '00' * 8}])
     case('unregister_clears_handle_job_count_1', job_references=1,
          unregister_writes=[{'addr': f'buf:load+{HANDLE:#x}', 'bytes': '00' * 8}])
