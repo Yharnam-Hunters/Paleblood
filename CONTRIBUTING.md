@@ -257,6 +257,43 @@ Investigation notes and logs go in the pull request, not in the repository. Game
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see
 Rules for what is allowed).
 
+## Speed and optimization work
+
+Paleblood now boots into the game and draws it, and the frame rate is the next thing to improve.
+Over Iosefka's Clinic route the merged work of the last weeks took the average from about 10.7 to
+about 15.5 fps, and the run is GPU-bound (about 60 ms of GPU time per frame), so there is room.
+Speed is more than the average: CPU work on the renderer thread (command recording, collecting the
+write-watch) sets the stutter, a boot uses about 7.5 of 8 GB of video memory and running out has
+stopped long sessions, and load and launch time (the translation cache, compiling shaders at
+launch) is the first thing a player waits for. A change that lowers the 1% low or the worst frame
+counts as much as one that raises the average.
+
+Optimization targets the runtime and the renderer, our own code. A decompiled game function must
+keep behaving exactly like the original ([docs/VERIFY.md](docs/VERIFY.md)); making one "faster"
+means a faster runtime around it, never changing what it does.
+
+**Measure honestly** ([docs/RENDERER.md](docs/RENDERER.md#measuring-frame-rate)):
+
+- Compare two builds with `tools/ab_bench.py run`, which measures both over the same frames of
+  the same save and input script. Keep the machine quiet; the tool leaves out runs that met other
+  work.
+- Run at least two rounds and report each build's noise floor; a difference counts only when it
+  is larger than both. Run three rounds before you claim a win.
+- Compare images with main: the same frames must look the same.
+- A change to memory use needs a 10-minute session, not a short run, because pressure builds
+  with the area and the time.
+
+**A speed PR contains** before and after average fps, 1% low, worst frame, the noise floor, the
+rounds and frame range, and your hardware (GPU, driver, CPU), plus the image comparison. For load
+or memory changes give the launch time or peak VRAM the same way. Say what you tried that did not
+help; a measured "no gain" is useful and goes in [docs/RENDERER.md](docs/RENDERER.md).
+
+**Game copy.** Boots and measurements need your own legally obtained copy of the game. Offline
+work does not: `tools/spirv_stats.py` ranks what the shader translator emits, and unit tests
+cover the executor and the caches.
+
+**Coordinate** in [issue #1332](https://github.com/Yharnam-Hunters/Paleblood/issues/1332): comment on the item you take so two people do not do the same one.
+
 ## Your own copy (decompilation work)
 
 Decompilation work starts from your own console and your own copy of the game: you dump
