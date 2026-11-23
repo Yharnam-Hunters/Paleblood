@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "callback_handle.h"
 #include "runtime/original.h"
 
 namespace engine {
@@ -99,7 +100,6 @@ RT_GLOBAL(0x057b1fb0, callback_base_vtable, const LoadCallbackVtable);
 
 RT_ORIGINAL(0x013e5c10, callback_base_construct, void(LoadCallback *));
 RT_ORIGINAL(0x02450490, callback_register, void *(LoadCallback *, uint32_t kind));
-RT_ORIGINAL(0x02450560, callback_release_handle, void(void *handle));
 // The frame function the constructor points the callback at (replaced in load.cpp).
 RT_ORIGINAL(0x01d55c40, load_frame, void(Load *, const LoadFrame *));
 
