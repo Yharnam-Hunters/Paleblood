@@ -16,7 +16,8 @@ struct FmodTimingStorage {
     uint32_t exclusion_end_tick;
     uint32_t previous_sample_tick;
     uint32_t sample_tick;
-    std::byte unknown_0x0018[0x10];
+    std::byte unknown_0x0018[0x0c];
+    uint32_t cached_value_bits;
     uint8_t excluding;
     std::byte unknown_0x0029[3];
     uint32_t excluded_ticks;
@@ -30,6 +31,7 @@ static_assert(offsetof(FmodTimingStorage, exclusion_start_tick) == 0x08);
 static_assert(offsetof(FmodTimingStorage, exclusion_end_tick) == 0x0c);
 static_assert(offsetof(FmodTimingStorage, previous_sample_tick) == 0x10);
 static_assert(offsetof(FmodTimingStorage, sample_tick) == 0x14);
+static_assert(offsetof(FmodTimingStorage, cached_value_bits) == 0x24);
 static_assert(offsetof(FmodTimingStorage, excluding) == 0x28);
 static_assert(offsetof(FmodTimingStorage, excluded_ticks) == 0x2c);
 static_assert(offsetof(FmodTimingStorage, exclusion_depth) == 0x30);

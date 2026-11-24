@@ -1436,3 +1436,4 @@ address,replacement,system,returns
 0x02fa1e20,bb_engine_small_object_allocator_construct_02fa1e20,engine,void
 0x02fa22a0,bb_engine_small_object_allocator_construct_locked_02fa22a0,engine,void
 0x02fa6af0,bb_render_prepare_resource_descriptor,render,i64
+0x01118870,bb_audio_fmod_read_timing_value,audio,i32

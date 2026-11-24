@@ -2268,3 +2268,4 @@ render_yebis_initialize_interface,recorded,,6,6,0,0,f50d8e7c8bbe9565,2026-11-17
 render_yebis_initialize_interface,edge,,41,41,0,0,f50d8e7c8bbe9565,2026-11-17
 render_yebis_release_interface,recorded,,4,4,0,0,9e83e346238d9b5e,2026-11-17
 render_yebis_release_interface,edge,,227,227,0,0,9e83e346238d9b5e,2026-11-17
+audio_fmod_read_timing_value,edge,,80,80,0,0,f447a112b2a032e1,2026-11-19

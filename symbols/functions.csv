@@ -1450,3 +1450,4 @@ address,size,name,system,status,notes
 0x02fa1e20,901,engine_small_object_allocator_construct_02fa1e20,engine,verified,"DLSmallObjectAllocator constructor: size classes from smallest to largest by the granularity, one checked DLFixedAllocator per class in an array from the backing allocator"
 0x02fa22a0,933,engine_small_object_allocator_construct_locked_02fa22a0,engine,verified,"DLSmallObjectAllocator constructor, locked variant: creates its recursive mutex, then the same size classes"
 0x02fa6af0,2221,render_prepare_resource_descriptor,render,edge-verified,Build the resource descriptor and requirements through ordered original helpers; preserve partial writes on errors and live parameter reads between calls.
+0x01118870,22,audio_fmod_read_timing_value,audio,edge-verified,Copy the scalar at +0x24 to optional output preserving payload bits and aliases; null output returns DWORD 0x25 and success returns zero
