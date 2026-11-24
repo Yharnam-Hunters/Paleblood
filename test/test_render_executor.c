@@ -4113,6 +4113,64 @@ static void launch_compiles(const rt_executor_memory *memory)
     rmdir(directory);
 }
 
+/* The pipeline catalog (BB_PIPELINE_CATALOG): a run's draw pipeline is kept by its recipe; the next
+   executor, with empty translation and pipeline caches, translates its shaders and makes the pipeline
+   for a canonical render pass as it opens, so that the same draw with async_pipelines finds it in the
+   pipeline cache and is drawn at once (not left out), its shaders' translations found in the cache.
+   BB_LAUNCH_COMPILE=0 makes none. */
+static void launch_makes_pipelines(int fd)
+{
+    enum { PIPELINE_BUFFER = 0xc0e60000, PIPELINE_TARGET = 0x3640000 };
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1};
+    char directory[] = "/tmp/pb-recipes-XXXXXX", catalog[64], recipes[64], translations[2][64], pipelines[2][64], error[256] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);
+    snprintf(recipes, sizeof recipes, "%s/recipes.bin", directory);
+    for (int k = 0; k < 2; k++) {
+        snprintf(translations[k], sizeof translations[k], "%s/translations%d.bin", directory, k);
+        snprintf(pipelines[k], sizeof pipelines[k], "%s/pipelines%d.bin", directory, k);
+    }
+    setenv("BB_SHADER_CATALOG", catalog, 1);
+    setenv("BB_PIPELINE_CATALOG", recipes, 1);
+    /* run 0 makes the pipeline at its draw; run 1 at launch, with the second caches; run 2 has launch
+       compiles turned off */
+    for (int run = 0; run < 3; run++) {
+        setenv("BB_TRANSLATION_CACHE", translations[run ? 1 : 0], 1);
+        setenv("BB_PIPELINE_CACHE", pipelines[run ? 1 : 0], 1);
+        if (run == 2) setenv("BB_LAUNCH_COMPILE", "0", 1);
+        rt_executor *x = NULL;
+        const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+        unsetenv("BB_LAUNCH_COMPILE");
+        CHECK(opened == 0);
+        if (opened) break;
+        size_t made_at_launch = 9, compiled = 9, found = 9, translated = 9;
+        rt_executor_launch_pipelines(x, &made_at_launch, &compiled);
+        CHECK(made_at_launch == (run == 1) && compiled == (run == 1));
+        uint32_t bgra[SIZE * SIZE];
+        int drawn = 0, tries = 0;
+        for (; tries < 3000 && !drawn; tries++) { /* run 0's first draw is left out while its pipeline is made */
+            rt_render_forget(), rt_executor_reset(x);
+            memset((void *)(uintptr_t)at(PIPELINE_TARGET), 0, SIZE * SIZE * 4);
+            const uint32_t size = record_draw(PIPELINE_BUFFER, at(PIPELINE_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+            CHECK(rt_executor_run(x, PIPELINE_BUFFER, size, error, sizeof error) == 0);
+            drawn = rt_executor_read_target(x, at(PIPELINE_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0 && bgra[SIZE * SIZE / 2 + SIZE / 2];
+            if (!drawn) usleep(1000);
+        }
+        CHECK(drawn);
+        if (run == 1) CHECK(tries == 1); /* drawn at once: its pipeline was in the cache */
+        rt_executor_translations(x, &found, &translated);
+        CHECK(run == 0 ? found == 0 && translated == 2 : found == 2 && translated == 0);
+        rt_executor_close(x);
+    }
+    setenv("BB_SHADER_CATALOG", "", 1);
+    setenv("BB_PIPELINE_CATALOG", "", 1);
+    setenv("BB_TRANSLATION_CACHE", "", 1);
+    setenv("BB_PIPELINE_CACHE", "", 1);
+    unlink(catalog), unlink(recipes);
+    for (int k = 0; k < 2; k++) unlink(translations[k]), unlink(pipelines[k]);
+    rmdir(directory);
+}
+
 /* With async_pipelines, the first draw with a pipeline neither made nor cached is left out while a worker
    thread makes the pipeline (the target keeps its zeroed memory), and a later run of the same buffer
    draws it. */
@@ -4154,6 +4212,7 @@ int main(void)
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
     setenv("BB_TRANSLATION_CACHE", "", 0); /* nor a translation cache file */
     setenv("BB_SHADER_CATALOG", "", 0); /* nor a shader catalog */
+    setenv("BB_PIPELINE_CATALOG", "", 0); /* nor a pipeline catalog */
     /* nor the drivers' own shader caches on disk: async_pipelines needs a pipeline the compiler must make */
     setenv("__GL_SHADER_DISK_CACHE", "0", 0), setenv("MESA_SHADER_CACHE_DISABLE", "true", 0);
     const int fd = map_guest_memory();
@@ -4920,6 +4979,7 @@ int main(void)
     image_allocation_pressure(&memory, VK_ERROR_OUT_OF_HOST_MEMORY, 1);
     pipeline_cache_file(&memory);
     launch_compiles(&memory);
+    launch_makes_pipelines(fd);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

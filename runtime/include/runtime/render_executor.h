@@ -176,6 +176,9 @@ void rt_executor_translations(const rt_executor *executor, size_t *found, size_t
    cache lacked them) and those whose pipelines the driver compiled (the pipeline cache lacked them)
    (Vulkan executor). */
 void rt_executor_launch_compiles(rt_executor *executor, size_t *shaders, size_t *translated, size_t *compiled);
+/* The same for the pipeline catalog's draw pipelines: those made again at launch and those of them the
+   driver compiled (Vulkan executor). */
+void rt_executor_launch_pipelines(rt_executor *executor, size_t *pipelines, size_t *compiled);
 
 void rt_executor_close(rt_executor *executor);
 
