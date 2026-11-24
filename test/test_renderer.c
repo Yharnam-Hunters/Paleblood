@@ -8,6 +8,7 @@
    fixture's (render_fixture.h), and rt_fatal ends the process with a code the test checks. Without a
    suitable Vulkan device the test reports itself skipped (exit 77). */
 #define _GNU_SOURCE /* memfd_create, MAP_FIXED_NOREPLACE (render_fixture.h) */
+#include "runtime/display.h"
 #include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
@@ -39,6 +40,9 @@ uint8_t *rt_gpu_memory_gds(void)
     static _Alignas(RT_GPU_GDS_BYTES) uint8_t gds[RT_GPU_GDS_BYTES];
     return gds;
 }
+
+/* the window's status (the renderer's launch_progress): no window here */
+void rt_display_set_status(const char *status) { (void)status; }
 
 _Noreturn void rt_fatal(const char *function, const char *message)
 {
@@ -226,7 +230,7 @@ int main(void)
     { /* skipped without a device that can run the executor */
         rt_executor *probe = NULL;
         char error[256];
-        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 0};
+        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL};
         if (rt_executor_open(&memory, &probe, error, sizeof error)) {
             fprintf(stderr, "skipped: %s\n", error);
             return 77;

@@ -28,6 +28,10 @@ static const char *capture_dir;
 static display_port ports[MAX_PORTS + 1]; /* video out's handles count from 1 */
 static int window_open;
 static FILE *frame_log; /* rt_display_log_frames: a line per presented frame (display_lock) */
+/* rt_display_set_status's words, under their own lock so that a caller never waits for a flip */
+static pthread_mutex_t status_lock = PTHREAD_MUTEX_INITIALIZER;
+static char status_text[96];
+static int status_changed;
 
 int rt_display_configure(rt_display_mode mode, const char *capture)
 {
@@ -201,7 +205,16 @@ void rt_display_present(int port, int buffer)
                 (unsigned long long)now.tv_sec * 1000000000ull + (unsigned long long)now.tv_nsec);
     }
     __atomic_store_n(&p->presented, p->presented + 1, __ATOMIC_RELEASE);
-    if (display_mode == RT_DISPLAY_WINDOW) rt_display_window_show(frame, p->width, p->height);
+    if (display_mode == RT_DISPLAY_WINDOW) {
+        char status[sizeof status_text];
+        pthread_mutex_lock(&status_lock);
+        const int changed = status_changed;
+        memcpy(status, status_text, sizeof status);
+        status_changed = 0;
+        pthread_mutex_unlock(&status_lock);
+        if (changed) rt_display_window_title(status);
+        rt_display_window_show(frame, p->width, p->height);
+    }
     pthread_mutex_unlock(&display_lock);
 }
 
@@ -210,4 +223,12 @@ void rt_display_present(int port, int buffer)
 uint64_t rt_display_presented(int port)
 {
     return port >= 1 && port <= MAX_PORTS ? __atomic_load_n(&ports[port].presented, __ATOMIC_ACQUIRE) : 0;
+}
+
+void rt_display_set_status(const char *status)
+{
+    pthread_mutex_lock(&status_lock);
+    snprintf(status_text, sizeof status_text, "%s", status ? status : "");
+    status_changed = 1;
+    pthread_mutex_unlock(&status_lock);
 }

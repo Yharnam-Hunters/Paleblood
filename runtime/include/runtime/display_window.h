@@ -12,5 +12,7 @@ int rt_display_window_available(void);
 int rt_display_window_open(uint32_t width, uint32_t height);
 /* Shows a frame (BGRA, width x height) in the window. */
 void rt_display_window_show(const uint32_t *pixels, uint32_t width, uint32_t height);
+/* Shows status after the name in the window's title; an empty status: the name alone. */
+void rt_display_window_title(const char *status);
 
 #endif

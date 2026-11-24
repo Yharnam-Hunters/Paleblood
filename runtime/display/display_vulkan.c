@@ -15,6 +15,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <vulkan/vulkan.h>
@@ -336,4 +337,11 @@ void rt_display_window_show(const uint32_t *pixels, uint32_t width, uint32_t hei
     const VkResult shown = vkQueuePresentKHR(vk.queue, &present);
     if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) rebuild_swapchain();
     else if (shown != VK_SUCCESS) rt_fatal("display window", "the window could not show the frame");
+}
+
+void rt_display_window_title(const char *status)
+{
+    char title[128];
+    snprintf(title, sizeof title, status[0] ? "Paleblood - %s" : "Paleblood", status);
+    SDL_SetWindowTitle(vk.window, title);
 }
