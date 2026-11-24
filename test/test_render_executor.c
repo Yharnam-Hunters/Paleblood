@@ -34,6 +34,43 @@ static struct {
     unsigned unordered_passes; /* render passes made with no dependency on earlier passes' attachment writes */
 } recorded;
 
+/* Armed only around one draw, after its target and pipeline already exist. The next plain
+   allocation backs its new texture. Keep refusing it until the executor frees memory (or on every
+   attempt when persistent is set). All successful allocations and frees go through the driver. */
+static _Thread_local struct {
+    VkResult error;
+    unsigned attempts, frees, destroyed_views;
+    int persistent;
+} pressure;
+
+VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo *info, const VkAllocationCallbacks *allocator,
+                                                VkDeviceMemory *memory)
+{
+    PFN_vkAllocateMemory next = (PFN_vkAllocateMemory)dlsym(RTLD_NEXT, "vkAllocateMemory");
+    if (pressure.error && !info->pNext) {
+        pressure.attempts++;
+        if (!pressure.frees || pressure.persistent) {
+            *memory = VK_NULL_HANDLE;
+            return pressure.error;
+        }
+    }
+    return next(device, info, allocator, memory);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkFreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks *allocator)
+{
+    PFN_vkFreeMemory next = (PFN_vkFreeMemory)dlsym(RTLD_NEXT, "vkFreeMemory");
+    next(device, memory, allocator);
+    if (pressure.error && memory) pressure.frees++;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice device, VkImageView view, const VkAllocationCallbacks *allocator)
+{
+    PFN_vkDestroyImageView next = (PFN_vkDestroyImageView)dlsym(RTLD_NEXT, "vkDestroyImageView");
+    next(device, view, allocator);
+    if (pressure.error && view) pressure.destroyed_views++;
+}
+
 VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(VkCommandBuffer commands, VkPipelineStageFlags source, VkPipelineStageFlags destination,
                                                 VkDependencyFlags flags, uint32_t memory_count, const VkMemoryBarrier *memory,
                                                 uint32_t buffer_count, const VkBufferMemoryBarrier *buffers, uint32_t image_count,
@@ -1885,6 +1922,11 @@ static void image_left_to_set_aside_target(rt_executor *x)
            HALF_ONE = 0x3c00 };
     char error[200] = "";
     const uint64_t target = at(LEFT_TARGET);
+    enum { FIRST_TEXTURE = 0x3f50000, SECOND_TEXTURE = 0x3f60000, SAMPLE_TARGET = 0x3f70000 };
+    uint32_t sampled[8];
+    image_descriptor(sampled, at(FIRST_TEXTURE), 10, 0, SIZE, SIZE);
+    sampled[3] |= LINEAR_ALIGNED << 20, sampled[4] = (64 - 1) << 13;
+    CHECK(draw_texels(x, at(SAMPLE_TARGET), sampled, error, sizeof error) == 0);
     memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 8);
     memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
     rt_render_forget(), rt_executor_reset(x);
@@ -1908,6 +1950,16 @@ static void image_left_to_set_aside_target(rt_executor *x)
     const int stored = rt_executor_run(x, CLEAR_BUFFER, 0x40, error, sizeof error);
     if (stored) fprintf(stderr, "halves stored over a halves target: %s\n", error);
     CHECK(stored == 0);
+
+    /* Only the storage image has the shader's result. Reclaim idle textures before switching
+       targets: the draw below must still recover that result from the retained image. */
+    image_descriptor(sampled, at(SECOND_TEXTURE), 10, 0, SIZE, SIZE);
+    sampled[3] |= LINEAR_ALIGNED << 20, sampled[4] = (64 - 1) << 13;
+    pressure.attempts = pressure.frees = pressure.destroyed_views = 0;
+    pressure.error = VK_ERROR_OUT_OF_DEVICE_MEMORY, pressure.persistent = 0;
+    const int recovered = draw_texels(x, at(SAMPLE_TARGET), sampled, error, sizeof error);
+    pressure.error = VK_SUCCESS;
+    CHECK(recovered == 0 && pressure.attempts >= 2 && pressure.destroyed_views > 0);
 
     rt_render_forget();
     const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -3813,7 +3865,7 @@ static long read_file(const char *path, unsigned char *bytes, size_t size)
 }
 
 /* With the device's memory full, an image still loads: the copy plans of images no unfinished batch
-   uses give their memory back (free_idle_image_plans). BB_COPY_ROWS_LIMIT stands in for a full device:
+   uses give their memory back. BB_COPY_ROWS_LIMIT stands in for a full device:
    linear rows for two 16x16 surfaces of 4-byte texels, the target's and one image's. many_images' 100
    images, each drawn in its own run, then all draw; without the plans given back, the second image
    found no memory for its copy. */
@@ -3829,6 +3881,67 @@ static void images_past_full_memory(const rt_executor_memory *memory)
     CHECK(opened == 0);
     if (opened) return;
     many_images(x, 100);
+    rt_executor_close(x);
+}
+
+/* The second allocation can succeed only after reclaiming the first texture. Its view must be
+   released and both textures must still sample correctly when the first is loaded again. */
+static void image_allocation_pressure(const rt_executor_memory *memory, VkResult fault, int persistent)
+{
+    enum { FIRST = 0x1c00000, SECOND = FIRST + 0x1000, IMAGE_TARGET = 0x1bc0000, PITCH = 64, LINEAR_ALIGNED = 8 };
+    rt_executor *x = NULL;
+    char error[256] = "";
+    CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+    if (!x) return;
+    uint32_t image[2][8];
+    for (unsigned i = 0; i < 2; i++) {
+        const uint64_t address = at(i ? SECOND : FIRST);
+        uint32_t *texels = (uint32_t *)(uintptr_t)address;
+        for (unsigned y = 0; y < SIZE; y++)
+            for (unsigned px = 0; px < SIZE; px++) texels[y * PITCH + px] = i ? UINT32_MAX : reference_texel(px, y);
+        image_descriptor(image[i], address, 10, 0, SIZE, SIZE);
+        image[i][3] |= LINEAR_ALIGNED << 20, image[i][4] = (PITCH - 1) << 13;
+    }
+    CHECK(draw_texels(x, at(IMAGE_TARGET), image[0], error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(IMAGE_TARGET)) == 0);
+    if (!persistent) {
+        /* Draw the first texture once more without submitting its batch. Its copy plan is the only
+           candidate. The failed allocation must leave it alone until the GPU has finished. */
+        enum { PENDING = 0xc0ff0000 };
+        rt_render_forget();
+        const uint32_t bytes = record_triangle_draw(PENDING, 0);
+        size_t count = 0;
+        const rt_render_call *calls = rt_render_submitted(PENDING, bytes, &count);
+        uint64_t ticket;
+        CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+        pressure.attempts = pressure.frees = pressure.destroyed_views = 0;
+        pressure.error = fault, pressure.persistent = 0;
+        const int pending = draw_texels(x, at(IMAGE_TARGET), image[1], error, sizeof error);
+        pressure.error = VK_SUCCESS;
+        CHECK(pending == -1 && pressure.attempts == 1 && pressure.frees == 0 && pressure.destroyed_views == 0);
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    }
+    error[0] = '\0';
+    pressure.attempts = pressure.frees = pressure.destroyed_views = 0;
+    pressure.error = fault, pressure.persistent = persistent;
+    const int drawn = draw_texels(x, at(IMAGE_TARGET), image[1], error, sizeof error);
+    pressure.error = VK_SUCCESS;
+    if (fault == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+        CHECK(pressure.attempts == 2 && pressure.frees > 0 && pressure.destroyed_views == 1);
+        if (!persistent) {
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(drawn == 0);
+            const int read = rt_executor_read_target(x, at(IMAGE_TARGET), bgra, SIZE, SIZE, error, sizeof error);
+            CHECK(read == 0);
+            if (!read)
+                for (unsigned px = 0; px < SIZE * SIZE; px++) CHECK(bgra[px] == UINT32_MAX);
+            CHECK(draw_texels(x, at(IMAGE_TARGET), image[0], error, sizeof error) == 0);
+            CHECK(differing_pixels(x, at(IMAGE_TARGET)) == 0);
+        }
+    } else {
+        CHECK(pressure.attempts == 1 && pressure.frees == 0 && pressure.destroyed_views == 0);
+    }
+    if (persistent) CHECK(drawn == -1 && strstr(error, "no memory for a 16x16 image"));
     rt_executor_close(x);
 }
 
@@ -4721,6 +4834,9 @@ int main(void)
     shader_sweep(&memory);
     same_spirv_in_any_order(&memory);
     images_past_full_memory(&memory);
+    image_allocation_pressure(&memory, VK_ERROR_OUT_OF_DEVICE_MEMORY, 0);
+    image_allocation_pressure(&memory, VK_ERROR_OUT_OF_DEVICE_MEMORY, 1);
+    image_allocation_pressure(&memory, VK_ERROR_OUT_OF_HOST_MEMORY, 1);
     pipeline_cache_file(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
