@@ -8,6 +8,12 @@ allocate is a stub comparing the arena and the size, and memcpy a stub comparing
 arguments: the cases are an index below the capacity (only the page is allocated), at it with
 pages (the table doubles and the counted pages are copied), past it, at it with a capacity of 1
 and no counted pages, with no pages yet (16 slots), and the 64-bit and unsigned extremes below.
+
+Every case scripts every path, not only the right one: three allocations (the right ones first,
+then a spare) and a memcpy, each returning a 32-slot buffer the case owns. A replacement that
+takes the wrong branch (grows when it should not, or the other way) then makes calls the
+original does not and stores into case buffers, a difference the comparison records, instead of
+stopping at an unscripted call.
 """
 from __future__ import annotations
 
@@ -20,34 +26,33 @@ def pattern(seed: int, size: int) -> str:
 
 
 ARENA = 0x7700_1234_5000           # the table's arena: only passed on, never read
+SLOT_BUFFER = 0x100                # 32 slots: room for every index below, on every path
 
 
 def page_table_case(address: str, case_id: str, count: int, capacity: int, index: int, pages: bool,
                     seed: int) -> dict:
     """The table (arena, count at +0x10, capacity at +0x18, pages at +0x20). The arena allocate
     is a stub comparing the arena and the size: the grown or first page array (when the index is
-    not below the capacity), then the page; memcpy copies the old pages when they grow."""
+    not below the capacity), then the page, then a spare for a wrong extra allocation; memcpy, a
+    stub that copies nothing, observes the copy of the old pages when they grow."""
     table = bytearray.fromhex(pattern(seed, 0x28))
     table[0:8] = ARENA.to_bytes(8, 'little')
     table[0x10:0x18] = count.to_bytes(8, 'little')
     table[0x18:0x20] = capacity.to_bytes(8, 'little')
     if not pages:
         table[0x20:0x28] = bytes(8)
-    case = {'schema': 1, 'address': address, 'id': case_id, 'returns': 'void',
+    allocations = ['grown', 'page', 'spare'] if capacity <= index else ['page', 'spare', 'spare']
+    return {'schema': 1, 'address': address, 'id': case_id, 'returns': 'void',
             'buffers': {'table': {'size': 0x28, 'bytes': table.hex()},
-                        'pages': {'size': 0x100, 'bytes': pattern(seed + 1, 0x100)},
-                        'grown': {'size': 0x100, 'bytes': pattern(seed + 2, 0x100)},
-                        'page': {'size': 0x10}},
+                        'pages': {'size': SLOT_BUFFER, 'bytes': pattern(seed + 1, SLOT_BUFFER)},
+                        'grown': {'size': SLOT_BUFFER, 'bytes': pattern(seed + 2, SLOT_BUFFER)},
+                        'page': {'size': SLOT_BUFFER, 'bytes': pattern(seed + 3, SLOT_BUFFER)},
+                        'spare': {'size': SLOT_BUFFER, 'bytes': pattern(seed + 4, SLOT_BUFFER)}},
             'memory': [{'addr': 'buf:table+0x20', 'pointer': 'pages'}] if pages else [],
-            'imports': [], 'stubs': [],
+            'imports': [{'name': 'memcpy', 'argc': 3, 'ret': 'buf:grown'}],
+            'stubs': [{'address': ARENA_ALLOCATE, 'argc': 2, 'ret': f'buf:{name}'} for name in allocations],
             'args': {'rdi': 'buf:table', 'rsi': hex(index), 'rdx': '0x2222222222222222',
                      'rax': RAX_SEED}}
-    if capacity <= index:
-        case['stubs'].append({'address': ARENA_ALLOCATE, 'argc': 2, 'ret': 'buf:grown'})
-        if pages:
-            case['imports'].append({'name': 'memcpy', 'argc': 3, 'ret': 'buf:grown'})
-    case['stubs'].append({'address': ARENA_ALLOCATE, 'argc': 2, 'ret': 'buf:page'})
-    return case
 
 
 def cases(address: str, value: int | None) -> list[dict]:
