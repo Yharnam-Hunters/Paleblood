@@ -11,9 +11,9 @@
 //   item inside the list is found again by its index after the list grows.
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 
 #include "../engine/allocator.h"
+#include "../engine/container.h"
 #include "../engine/engine.h"
 #include "../engine/ref_object.h"
 #include "dungeon_gate.h"
@@ -23,30 +23,20 @@ using namespace frame_timing::dungeon_gate;
 
 namespace {
 
-// The largest count of items the list's size arithmetic allows; a full list grows by a half.
-constexpr size_t max_slot_items = std::numeric_limits<size_t>::max() / sizeof(SlotItem);
-constexpr size_t growth_divisor = 2;
-
 // Moves the list to a block for `capacity` items from its heap (0x01e9da70, not replaced).
 RT_ORIGINAL(0x01e9da70, grow_slot_items, void(SlotItemList *list, size_t capacity));
 
 // The heap the list is built on.
 RT_GLOBAL(0x05940428, item_list_heap, engine::Allocator *);
-RT_GLOBAL(0x04b37dc0, message_incompatible_heap, const char);
-constexpr int32_t line_incompatible_heap = 0x3e;
 
 // Takes the handle's address and a list; it goes through FrpgNetMan (0x022658b0, not replaced;
 // its result is ignored).
 RT_ORIGINAL(0x022658b0, pass_items_on, void(engine::RefObject **handle, SlotItemList *list));
 
-// The capacity a full list grows to: half as much again, or one more when that is not possible.
+// The capacity a full list grows to (the engine's array growth rule).
 size_t grown_capacity(const SlotItemList *list)
 {
-    const size_t size = static_cast<size_t>(list->end - list->begin);
-    const size_t growth = size / growth_divisor;
-    size_t capacity = max_slot_items - growth < size ? 0 : size + growth;
-    if (capacity < size + 1) capacity = size + 1;
-    return capacity;
+    return engine::array_grown_capacity<SlotItem>(static_cast<uint64_t>(list->end - list->begin));
 }
 
 // Both pass-on functions: lists the handle object's items and hands the handle's address on with
@@ -62,10 +52,7 @@ bool pass_handle_on(engine::RefObject **handle, SlotItemList *items)
         if (!object) return false;
     }
     engine::Allocator *const heap = item_list_heap.get();
-    engine::AllocatorInfo info;
-    heap->vtable->info(&info, heap, 0);
-    if ((info.flags & engine::allocator_info_valid) == 0)
-        engine::fatal_error(nullptr, line_incompatible_heap, message_incompatible_heap.address());
+    engine::check_container_heap(heap);
 
     SlotItemList list{};
     list.heap = heap;
