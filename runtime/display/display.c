@@ -28,10 +28,11 @@ static const char *capture_dir;
 static display_port ports[MAX_PORTS + 1]; /* video out's handles count from 1 */
 static int window_open;
 static FILE *frame_log; /* rt_display_log_frames: a line per presented frame (display_lock) */
-/* rt_display_set_status's words, under their own lock so that a caller never waits for a flip */
+/* rt_display_set_status's words, under their own lock so that a caller never waits for a flip;
+   status_version counts the changes, status_shown (display_lock) the last one the title took. */
 static pthread_mutex_t status_lock = PTHREAD_MUTEX_INITIALIZER;
 static char status_text[96];
-static int status_changed;
+static unsigned status_version, status_shown;
 
 int rt_display_configure(rt_display_mode mode, const char *capture)
 {
@@ -60,10 +61,6 @@ void rt_display_attach(int port, uint32_t width, uint32_t height, int count)
         if (!p->frames[i]) rt_fatal(fn, "the host has no memory for a frame");
     }
     p->width = width, p->height = height, p->count = count;
-    if (display_mode == RT_DISPLAY_WINDOW && !window_open) {
-        if (rt_display_window_open(width, height)) rt_fatal(fn, "the host could not open the window");
-        window_open = 1;
-    }
     pthread_mutex_unlock(&display_lock);
 }
 
@@ -189,6 +186,18 @@ int rt_display_log_frames(const char *path)
     return 0;
 }
 
+/* With display_lock held: puts the latest rt_display_set_status words in the window's title, when
+   they changed since the title last took them and the back end can change it on this thread. */
+static void show_status(void)
+{
+    char status[sizeof status_text];
+    pthread_mutex_lock(&status_lock);
+    const unsigned version = status_version;
+    memcpy(status, status_text, sizeof status);
+    pthread_mutex_unlock(&status_lock);
+    if (version != status_shown && rt_display_window_title(status)) status_shown = version;
+}
+
 void rt_display_present(int port, int buffer)
 {
     static const char fn[] = "rt_display_present";
@@ -206,13 +215,14 @@ void rt_display_present(int port, int buffer)
     }
     __atomic_store_n(&p->presented, p->presented + 1, __ATOMIC_RELEASE);
     if (display_mode == RT_DISPLAY_WINDOW) {
-        char status[sizeof status_text];
-        pthread_mutex_lock(&status_lock);
-        const int changed = status_changed;
-        memcpy(status, status_text, sizeof status);
-        status_changed = 0;
-        pthread_mutex_unlock(&status_lock);
-        if (changed) rt_display_window_title(status);
+        /* The window opens on the thread that shows the first frame (video out's flip thread for
+           queued flips), so that its window system's thread is the one that shows frames, reads
+           its events and changes its title (runtime/display_window.h). */
+        if (!window_open) {
+            if (rt_display_window_open(p->width, p->height)) rt_fatal(fn, "the host could not open the window");
+            window_open = 1;
+        }
+        show_status();
         rt_display_window_show(frame, p->width, p->height);
     }
     pthread_mutex_unlock(&display_lock);
@@ -229,6 +239,6 @@ void rt_display_set_status(const char *status)
 {
     pthread_mutex_lock(&status_lock);
     snprintf(status_text, sizeof status_text, "%s", status ? status : "");
-    status_changed = 1;
+    status_version++;
     pthread_mutex_unlock(&status_lock);
 }

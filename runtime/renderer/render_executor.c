@@ -5675,6 +5675,7 @@ static void compile_catalog(rt_executor *x)
     catalog_keys all = {0};
     translation_cache_each(x->catalog, take_catalog_key, &all);
     launch_work *w = calloc(1, sizeof *w);
+    if (w && launch_progress_init(&w->progress)) free(w), w = NULL; /* no workers then: the dispatches make what they meet */
     const size_t room = all.count ? all.count : 1;
     if (w) {
         w->x = x, w->began = monotonic_ns();
@@ -5695,7 +5696,6 @@ static void compile_catalog(rt_executor *x)
     if (!w) return;
     x->launch = w;
     atomic_init(&w->reported, w->began);
-    launch_progress_init(&w->progress);
     if (w->count) report_launch_progress(w, 0);
     const long processors = sysconf(_SC_NPROCESSORS_ONLN);
     size_t wanted = processors > 1 ? (size_t)processors - 1 : 1;
