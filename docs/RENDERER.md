@@ -525,6 +525,16 @@ Instead:
        (`taken_count` in `render_calls.c`, with the reader of `runtime/render_placed.h`). A buffer
        built and never submitted is not checked this way: its calls stay until a new call starts
        it over.
+     - **The same layout with other values** (found in Iosefka's Clinic, 22 November 2026): two words
+       are only a packet's header and register, and the game rewrites some compute buffers in the
+       same layout, so every SET_SH_REG of a dispatch's table address matched while the address in
+       it had changed. The earlier use's address (one from frames before, its memory since holding
+       float data) reached the shader at 0x20d1b00800, whose first instructions read a
+       buffer descriptor from that table with scalar loads (`s_load_dwordx4`, then
+       `s_buffer_load_dword` through it). Scalar loads do not depend on EXEC, so the console would
+       read through that descriptor too: the fault was in the record, not in the shader's range
+       checks. The mark is now the whole packet (the header and the body it counts, up to 64 words,
+       folded into 64 bits), so a rewrite with other values forgets the earlier calls.
      - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
        command buffers from rings, so the record sees new buffer addresses all the time, and the
        runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
