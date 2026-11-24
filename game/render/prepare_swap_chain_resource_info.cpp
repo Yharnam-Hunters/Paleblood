@@ -22,12 +22,6 @@ uint16_t low_word(const render::Field<uint32_t> &field)
     std::memcpy(&value, field.bytes, sizeof(value));
     return value;
 }
-render::ResourceInfoInitialEntry *initial_entry(render::ResourceInfoInitialEntry *base,
-                                               uint32_t index)
-{
-    return reinterpret_cast<render::ResourceInfoInitialEntry *>(
-        reinterpret_cast<uintptr_t>(base) + uint64_t(index) * sizeof(*base));
-}
 void zero_qword(uintptr_t address)
 {
     const uint64_t zero = 0;
@@ -85,6 +79,8 @@ extern "C" uint32_t bb_render_prepare_swap_chain_resource_info(
     const uintptr_t allocation = allocate(allocator, uint64_t(allocation_bytes),
                                           uint64_t(allocation_alignment));
     if (allocation == 0) return allocation_failed_status;
+    // The level count wraps to zero for UINT32_MAX levels; the copy loops then
+    // never read entries_per_level.
     const uint32_t level_count = levels + 1;
     if (allocation_flag != 0) {
         zero_qword(allocation + uint64_t(allocation_bytes) - final_padding_qword);
@@ -128,24 +124,17 @@ extern "C" uint32_t bb_render_prepare_swap_chain_resource_info(
         operation(control, uint64_t(control_selector));
         ResourceInfoProcessor *processor = &services->processor;
         if (level_count != 0) {
+            // The entry count carries across levels; it is read again only after each entry.
             uint32_t current_count = parameters->entries_per_level.get();
-            const uint32_t step = levels + 1;
-            uint32_t outer = 0;
-            do {
-                uint32_t flattened = outer;
-                uint32_t inner = 0;
-                if (current_count != 0) {
-                    do {
-                        ResourceInfoInitialEntry *entry = initial_entry(initial, flattened);
-                        resource_info_calls::process_initial_entry(
-                            processor, output, entry, uint64_t(flattened), uint64_t(0));
-                        ++inner;
-                        current_count = parameters->entries_per_level.get();
-                        flattened += step;
-                    } while (inner < current_count);
+            for (uint32_t level = 0; level < level_count; ++level) {
+                uint32_t flattened = level;
+                for (uint32_t inner = 0; inner < current_count; ++inner) {
+                    resource_info_calls::process_initial_entry(
+                        processor, output, &initial[flattened], uint64_t(flattened), uint64_t(0));
+                    current_count = parameters->entries_per_level.get();
+                    flattened += level_count;
                 }
-                ++outer;
-            } while (outer < level_count);
+            }
         }
         resource_info_calls::finish_processing_first(processor);
         resource_info_calls::finish_processing_second(processor);
@@ -160,37 +149,30 @@ extern "C" uint32_t bb_render_prepare_swap_chain_resource_info(
     // This admission result is an exact-one token; other nonzero bytes decline.
     if (copy_admission != 1) return 0;
     uint32_t current_count = parameters->entries_per_level.get();
-    uint32_t level = 0;
-    do {
+    for (uint32_t level = 0; level < level_count; ++level) {
         uint32_t flattened = level;
-        uint32_t inner = 0;
-        if (current_count != 0) {
-            do {
-                offset.set(0);
-                const uint32_t offset_status = resource_info_calls::calculate_level_offset(
-                    &offset, size_slot, &descriptor, level, inner);
-                if (offset_status != 0) {
-                    resource_info_calls::note_offset_failure(offset_status);
-                    return unsupported_status;  // Offset failure keeps the allocated storage.
-                }
-                const uintptr_t destination = uintptr_t(offset.get()) + allocation;
-                resource_info_calls::initialize_level_descriptor(
-                    &temporary_descriptor, &descriptor, level, inner);
-                const uintptr_t source = initial_entry(initial, flattened)->data.get();
-                const uint32_t copy_status = resource_info_calls::copy_initial_level(
-                    destination, source,
-                    &temporary_descriptor);
-                if (copy_status != 0) {
-                    const ResourceInfoRelease release = allocator->vtable.get()->release.get();
-                    release(allocator, allocation);
-                    return unsupported_status;  // Published output is not cleared.
-                }
-                ++inner;
-                current_count = parameters->entries_per_level.get();
-                flattened += (levels + 1);
-            } while (inner < current_count);
+        for (uint32_t inner = 0; inner < current_count; ++inner) {
+            offset.set(0);
+            const uint32_t offset_status = resource_info_calls::calculate_level_offset(
+                &offset, size_slot, &descriptor, level, inner);
+            if (offset_status != 0) {
+                resource_info_calls::note_offset_failure(offset_status);
+                return unsupported_status;  // Offset failure keeps the allocated storage.
+            }
+            const uintptr_t destination = uintptr_t(offset.get()) + allocation;
+            resource_info_calls::initialize_level_descriptor(
+                &temporary_descriptor, &descriptor, level, inner);
+            const uintptr_t source = initial[flattened].data.get();
+            const uint32_t copy_status = resource_info_calls::copy_initial_level(
+                destination, source, &temporary_descriptor);
+            if (copy_status != 0) {
+                const ResourceInfoRelease release = allocator->vtable.get()->release.get();
+                release(allocator, allocation);
+                return unsupported_status;  // Published output is not cleared.
+            }
+            current_count = parameters->entries_per_level.get();
+            flattened += level_count;
         }
-        ++level;
-    } while (level < level_count);
+    }
     return 0;
 }

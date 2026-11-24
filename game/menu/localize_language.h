@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Menu: the language object and the loads it holds. The object is run by a table of step
-// functions (0x01d53140 and 0x01d53420 are two of them); each step reads the object's state and
-// the state of the loads it waits for. localize_steps.cpp replaces the steps that let go of loads.
+// Menu: the language object and the loads it holds. The object is run by its step table, whose
+// entries are step functions (0x01d53140 and 0x01d53420 are two of them); each step reads the
+// object's state and the state of the loads it waits for. localize_steps.cpp replaces the steps
+// that let go of loads.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
 #include "../engine/allocator.h"
+#include "../engine/buffer_release.h"
 #include "runtime/original.h"
 
 namespace menu::localize {
@@ -58,7 +60,6 @@ constexpr int32_t load_state_awaited = 3;
 // The state the last release step leaves the language object in.
 constexpr int32_t language_state_released = -1;
 
-RT_ORIGINAL(0x0247b720, allocator_of, engine::Allocator *(const void *));
 // Called once the first group of loads is let go; what it does is not established.
 RT_ORIGINAL(0x018e7870, after_first_loads_released, void());
 
@@ -68,7 +69,7 @@ inline void release(LocalizeLoad *load)
 {
     if (--load->references != 0)
         return;
-    engine::Allocator *allocator = allocator_of(load);
+    engine::Allocator *allocator = engine::heap_owning(load);
     load->vtable->destroy(load);
     allocator->free(load);
 }

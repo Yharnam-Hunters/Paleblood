@@ -52,6 +52,11 @@ void translation_cache_add(translation_cache *cache, const translation_key *key,
 /* How many records the cache holds, those read from its file and those added since. */
 size_t translation_cache_count(const translation_cache *cache);
 
+/* Calls each(context, key, size) for every key the cache holds, in the order they were kept (the file's
+   records, then those added since). each must not call the cache. */
+typedef void (*translation_cache_each_key)(void *context, const void *key, size_t size);
+void translation_cache_each(translation_cache *cache, translation_cache_each_key each, void *context);
+
 #ifdef __cplusplus
 }
 #endif
