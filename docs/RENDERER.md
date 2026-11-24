@@ -1365,7 +1365,10 @@ things keep that to the first run:
   While they work, a line on stderr tells how far they are ("compiling at launch: D of N compute
   shaders", at most every 2 s) and the window's title reads "Paleblood - compiling shaders D of N"
   (`rt_executor_memory.launch_progress`, `rt_display_set_status`; the title changes at the next
-  presented frame and goes back to the name once all are done). The last worker prints what it did
+  presented frame and goes back to the name once all are done). The workers count with an atomic
+  increment but tell the counts on their own threads, so each count goes through one lock and is
+  told only when it is past every count told before (`runtime/launch_progress.h`): a worker that
+  counted 1 of 2 and paused cannot put the title back after another told 2 of 2. The last worker prints what it did
   ("compiled at launch"). `BB_LAUNCH_COMPILE=0` turns it off.
   Measured in the clinic walk with a warm catalog of 30 compute shaders and empty translation and
   pipeline caches, the driver's disk cache off (a first run after an update; two rounds, the same

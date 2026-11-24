@@ -24,6 +24,7 @@
 
 #include "runtime/gcn.h"
 #include "runtime/gcn_spirv.h"
+#include "runtime/launch_progress.h"
 #include "runtime/rect_list.h"
 #include "runtime/render_calls.h"
 #include "runtime/tile_copy.h"
@@ -5554,6 +5555,7 @@ struct launch_work {
     atomic_size_t next, done, translated, compiled;
     uint64_t began;
     _Atomic uint64_t reported; /* when the last progress line went to stderr */
+    launch_progress progress;  /* the counts told, in order (launch_progress_publish) */
     pthread_t workers[LAUNCH_WORKERS];
     size_t started;
 };
@@ -5589,10 +5591,11 @@ static void make_at_launch(launch_work *w, size_t i)
 /* How often the workers write a progress line on stderr while they compile. */
 #define LAUNCH_REPORT_NS (UINT64_C(2000000000))
 
-/* Tells how far the workers are: launch_progress each time, and a line on stderr at most every
-   LAUNCH_REPORT_NS, the last one the summary. */
-static void report_launch_progress(launch_work *w, size_t done)
+/* Tells done of the shaders: launch_progress, and a line on stderr at most every LAUNCH_REPORT_NS, the
+   last one the summary (under launch_progress_publish's lock, so counts are told in order). */
+static void tell_launch_progress(void *context, size_t done)
 {
+    launch_work *w = context;
     rt_executor *x = w->x;
     if (x->launch_progress) x->launch_progress(done, w->count);
     const uint64_t now = monotonic_ns();
@@ -5601,9 +5604,17 @@ static void report_launch_progress(launch_work *w, size_t done)
                 (size_t)atomic_load(&w->translated), (size_t)atomic_load(&w->compiled), (double)(now - w->began) / 1e9);
         return;
     }
-    uint64_t last = atomic_load(&w->reported);
-    if (now - last >= LAUNCH_REPORT_NS && atomic_compare_exchange_strong(&w->reported, &last, now))
+    if (done && now - atomic_load(&w->reported) >= LAUNCH_REPORT_NS) {
+        atomic_store(&w->reported, now);
         fprintf(stderr, "executor: compiling at launch: %zu of %zu compute shaders, %.1f s\n", done, w->count, (double)(now - w->began) / 1e9);
+    }
+}
+
+/* Tells how far the workers are: a count already passed by one told from another worker is dropped,
+   so the last one told is always done == count (runtime/launch_progress.h). */
+static void report_launch_progress(launch_work *w, size_t done)
+{
+    launch_progress_publish(&w->progress, done, tell_launch_progress, w);
 }
 
 /* Takes the next waiting shaders until none is left, reporting progress after each. */
@@ -5649,6 +5660,7 @@ static void finish_launch_work(rt_executor *x)
     for (size_t i = 0; i < w->started; i++) pthread_join(w->workers[i], NULL);
     x->launch_shaders = w->count, x->launch_translated = atomic_load(&w->translated), x->launch_compiled = atomic_load(&w->compiled);
     for (size_t i = 0; i < w->count; i++) free((void *)w->requests[i].words), translation_key_free(&w->keys[i]);
+    launch_progress_destroy(&w->progress);
     free(w->requests), free(w->keys), free(w->states), free(w);
     x->launch = NULL;
 }
@@ -5683,7 +5695,8 @@ static void compile_catalog(rt_executor *x)
     if (!w) return;
     x->launch = w;
     atomic_init(&w->reported, w->began);
-    if (w->count && x->launch_progress) x->launch_progress(0, w->count);
+    launch_progress_init(&w->progress);
+    if (w->count) report_launch_progress(w, 0);
     const long processors = sysconf(_SC_NPROCESSORS_ONLN);
     size_t wanted = processors > 1 ? (size_t)processors - 1 : 1;
     if (wanted > LAUNCH_WORKERS) wanted = LAUNCH_WORKERS;
