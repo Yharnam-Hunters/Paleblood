@@ -2013,7 +2013,7 @@ render_initialize_pair_record_descriptor,edge,,33,33,0,0,63a1e970d620584f,2026-1
 render_initialize_record_geometry_flags,recorded,,19,19,0,0,0ef232dc6bf3c570,2026-11-17
 render_initialize_record_geometry_flags,edge,,70,70,0,0,0ef232dc6bf3c570,2026-11-10
 render_initialize_record_level_descriptor,edge,,51,51,0,0,a36426b67c294984,2026-11-05
-render_initialize_swap_chain_resource,edge,,52,52,0,0,7ca9b25d85adecaa,2026-11-19
+render_initialize_swap_chain_resource,edge,,52,52,0,0,7ca9b25d85adecaa,2026-11-24
 render_initialize_triple_record_descriptor,edge,,97,97,0,0,8993a89e4989c6b5,2026-11-10
 render_list_prepare_02379d60,recorded,,30,30,0,0,154139170a78885f,2026-11-17
 render_list_prepare_02379d60,edge,,23,23,0,0,154139170a78885f,2026-11-14
@@ -2025,7 +2025,7 @@ render_pop_present_buffer_pool,edge,,25,25,0,0,36601bdfbc50357a,2026-11-10
 render_prepare_present_context_scratch,recorded,,669,669,0,0,056fab43a42fc1e4,2026-11-17
 render_prepare_present_context_scratch,edge,,34,34,0,0,056fab43a42fc1e4,2026-11-05
 render_prepare_resource_descriptor,edge,,40,40,0,0,beb33acb10844a38,2026-11-10
-render_prepare_swap_chain_resource_info,edge,,54,54,0,0,5750addc3ae823c5,2026-11-19
+render_prepare_swap_chain_resource_info,edge,,54,54,0,0,5750addc3ae823c5,2026-11-24
 render_present_encoding_units,recorded,,87,87,0,0,c3332eaa68fece3e,2026-11-17
 render_present_encoding_units,edge,,8,8,0,0,c3332eaa68fece3e,2026-11-10
 render_present_last_record_consume,edge,,56,56,0,0,8feb3252c4706117,2026-11-10
@@ -2216,7 +2216,7 @@ render_set_vgt_primitive_type,recorded,,130,130,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_set_vgt_primitive_type,edge,,14,14,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_setup_create_object_0247c4e0,recorded,,661,661,0,0,95c882807baf8923,2026-11-17
 render_setup_create_object_0247c4e0,edge,,9,9,0,0,95c882807baf8923,2026-11-13
-render_setup_swap_chain,edge,,49,49,0,0,1937870745f1f8bf,2026-11-19
+render_setup_swap_chain,edge,,49,49,0,0,1937870745f1f8bf,2026-11-24
 render_submit_pending_commands_02aafa00,recorded,,587,587,0,0,e8a8d378ae1bef7e,2026-11-17
 render_submit_pending_commands_02aafa00,edge,,32,32,0,0,e8a8d378ae1bef7e,2026-11-13
 render_submit_present_finish_snapshot,recorded,,214,214,0,0,62314b61bf581dee,2026-11-12
