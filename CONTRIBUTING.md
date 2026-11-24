@@ -265,8 +265,8 @@ about 15.5 fps, and the run is GPU-bound (about 60 ms of GPU time per frame), so
 Speed is more than the average: CPU work on the renderer thread (command recording, collecting the
 write-watch) sets the stutter, a boot uses about 7.5 of 8 GB of video memory and running out has
 stopped long sessions, and load and launch time (the translation cache, compiling shaders at
-launch) is the first thing a player waits for. A change that lowers the 1% low or the worst frame
-counts as much as one that raises the average.
+launch) is the first thing a player waits for. A change that raises the 1% low or lowers the
+worst-frame time counts as much as one that raises the average.
 
 Optimization targets the runtime and the renderer, our own code. A decompiled game function must
 keep behaving exactly like the original ([docs/VERIFY.md](docs/VERIFY.md)); making one "faster"
