@@ -489,6 +489,7 @@ typedef struct {
     VkDescriptorPool descriptors;
     staging_buffer upload;           /* guest texels on their way into images */
     uint64_t ticket;                 /* the timeline value its submission signals once it has run */
+    uint64_t first_call;             /* a draw may start binding images before it opens this batch */
     int in_flight;                   /* submitted, not yet seen to have run */
     int memory_pending;              /* it holds a dispatch, which may store to any guest memory */
     int upload_pending;              /* it copies from its upload staging buffer */
@@ -2140,6 +2141,7 @@ static batch_slot *open_batch(rt_executor *x, char *error, size_t error_size)
         failed(error, error_size, "no command buffer");
         return NULL;
     }
+    b->first_call = x->call_serial;
     x->batch_open = 1, b->indirect_count = 0, b->work_count = b->work_kinds = 0, b->snapshot_used = SNAPSHOT_BLOCK_ALIGN;
     return b;
 }
@@ -2495,21 +2497,42 @@ static unsigned tile_copy_pieces(const rt_tiling *layout)
     return micro_bytes <= PIPE_INTERLEAVE_BYTES && pieces && !(pieces & (pieces - 1)) ? pieces : 0;
 }
 
-/* Frees the copy plans of the images that no batch the GPU has not finished uses, nor the call being
-   recorded: each plan's linear rows are as large as its image, and every image keeps its plans while
-   it is kept, so a long walk fills the device's memory with them. A freed plan is made again when its
-   image next loads or is written back (the `!plan.table.buffer` tests). Returns how many images
-   gave theirs. */
-static size_t free_idle_image_plans(rt_executor *x)
+static void image_release(rt_executor *x, image_entry *e);
+
+/* A draw may submit its staging upload and open a new batch while binding its next texture.
+   Images bound earlier in that draw still belong to the new batch. Keep every image touched
+   since the oldest unfinished batch began recording, including the current call. */
+static uint64_t first_unfinished_image_call(const rt_executor *x, uint64_t done)
+{
+    uint64_t first = x->call_serial;
+    for (unsigned i = 0; i < BATCH_SLOTS; i++) {
+        const batch_slot *b = &x->slots[i];
+        if (((i == x->current && x->batch_open) || (b->in_flight && b->ticket > done)) && b->first_call < first)
+            first = b->first_call;
+    }
+    return first;
+}
+
+/* A copy plan can be rebuilt the next time its image is used. When a texture itself runs out of
+   device memory, release idle guest-backed textures too: a level transition can exhaust memory
+   even after their plans have been freed. Keep the only copy of shader-written texels and keep
+   everything referenced by the current call or by a batch the GPU has not finished. */
+static size_t reclaim_image_memory(rt_executor *x, int release_textures)
 {
     uint64_t done = 0;
     if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return 0;
+    const uint64_t first = first_unfinished_image_call(x, done);
     size_t freed = 0;
     for (size_t i = 0; i < x->image_count; i++) {
         image_entry *k = &x->images[i];
-        if (!k->image || k->used_ticket > done || k->used_call == x->call_serial || (!k->plan.table.buffer && !k->level_plans)) continue;
-        tile_plan_free(x, &k->plan);
-        level_plans_free(x, k);
+        if (!k->image || k->used_ticket > done || k->used_call >= first) continue;
+        if (release_textures && !k->gpu_written) {
+            image_release(x, k);
+        } else {
+            if (!k->plan.table.buffer && !k->level_plans) continue;
+            tile_plan_free(x, &k->plan);
+            level_plans_free(x, k);
+        }
         freed++;
     }
     return freed;
@@ -2545,7 +2568,7 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices * pieces;
     const VkDeviceSize rows_bytes = (VkDeviceSize)width * height * slices * layout->element_bytes;
     int made = tile_plan_buffers_make(x, p, entries * 4, rows_bytes);
-    if (made && free_idle_image_plans(x)) made = tile_plan_buffers_make(x, p, entries * 4, rows_bytes); /* the device's memory is full */
+    if (made && reclaim_image_memory(x, 0)) made = tile_plan_buffers_make(x, p, entries * 4, rows_bytes); /* the device's memory is full */
     if (made) {
         tile_plan_free(x, p);
         return failed(error, error_size, "no GPU memory for copying a %ux%u image", width, height);
@@ -3040,6 +3063,9 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     for (uint32_t i = x->image_buckets[image_bucket(t->address)]; i; i = x->images[i - 1].bucket_next)
         if (x->images[i - 1].address == t->address && x->images[i - 1].gpu_written && (!e || &x->images[i - 1] < e)) e = &x->images[i - 1];
     if (!e) return 0;
+    /* Taking the shader's result can make the image eligible for eviction. The target's batch
+       still needs it until its copy (and any earlier copy to an alias) has finished. */
+    e->used_ticket = x->submitted + 1, e->used_call = x->call_serial;
     /* left in the image while a target of its texel size was at its address (write_back_image), and that
        target has since been set aside for this one: the memory gets the image's texels now */
     if (!target_takes_image(t->format, e->format, e->type) && !e->written_back && e->stored &&
@@ -5760,11 +5786,12 @@ static image_entry *image_to_evict(rt_executor *x)
 {
     uint64_t done = 0;
     if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return NULL;
+    const uint64_t first = first_unfinished_image_call(x, done);
     image_entry *oldest = NULL;
     for (size_t i = 0; i < x->image_count; i++) {
         image_entry *k = &x->images[i];
         if (!k->image) return k; /* released earlier */
-        if (k->gpu_written || k->used_ticket > done || k->used_call == x->call_serial) continue;
+        if (k->gpu_written || k->used_ticket > done || k->used_call >= first) continue;
         if (!oldest || k->used_ticket < oldest->used_ticket) oldest = k;
     }
     return oldest;
@@ -5821,24 +5848,34 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
                                                  VK_IMAGE_USAGE_SAMPLED_BIT |
                                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-        e = slot ? slot : &x->images[x->image_count];
-        *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
-                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = d->last_level + 1,
-                           .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_change = UINT64_MAX};
-        if (vkCreateImage(x->device, &info, NULL, &e->image) != VK_SUCCESS) {
+        VkImage image;
+        if (vkCreateImage(x->device, &info, NULL, &image) != VK_SUCCESS) {
             failed(error, error_size, "the device refused a %ux%u image", d->width, d->height);
             return NULL;
         }
         VkMemoryRequirements need;
-        vkGetImageMemoryRequirements(x->device, e->image, &need);
+        vkGetImageMemoryRequirements(x->device, image, &need);
         const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size,
                                                .memoryTypeIndex = memory_type(x, need.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+        if (allocate.memoryTypeIndex == UINT32_MAX) {
+            vkDestroyImage(x->device, image, NULL);
+            failed(error, error_size, "no device-local memory type for a %ux%u image", d->width, d->height);
+            return NULL;
+        }
+        VkDeviceMemory memory;
+        VkResult result = vkAllocateMemory(x->device, &allocate, NULL, &memory);
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && reclaim_image_memory(x, 1))
+            result = vkAllocateMemory(x->device, &allocate, NULL, &memory);
+        if (result != VK_SUCCESS) {
+            vkDestroyImage(x->device, image, NULL);
+            failed(error, error_size, "no memory for a %ux%u image (vkAllocateMemory: %d)", d->width, d->height, (int)result);
+            return NULL;
+        }
         VkCommandBuffer commands = VK_NULL_HANDLE;
-        if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &e->memory) != VK_SUCCESS ||
-            vkBindImageMemory(x->device, e->image, e->memory, 0) != VK_SUCCESS || !(commands = begin_commands(x))) {
-            if (e->memory) vkFreeMemory(x->device, e->memory, NULL);
-            vkDestroyImage(x->device, e->image, NULL);
-            failed(error, error_size, "no memory for a %ux%u image", d->width, d->height);
+        if (vkBindImageMemory(x->device, image, memory, 0) != VK_SUCCESS || !(commands = begin_commands(x))) {
+            vkDestroyImage(x->device, image, NULL);
+            vkFreeMemory(x->device, memory, NULL);
+            failed(error, error_size, "could not bind or initialize a %ux%u image", d->width, d->height);
             return NULL;
         }
         /* Compressed images are loaded from guest memory before sampling. Vulkan
@@ -5846,15 +5883,22 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         const VkImageMemoryBarrier general = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                               .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
                                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                              .image = e->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, e->levels, 0, d->layers}};
+                                              .image = image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, d->layers}};
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &general);
         const VkClearColorValue zero = {{0}};
-        const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, e->levels, 0, d->layers};
-        if (f->block == 1) vkCmdClearColorImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+        const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, d->layers};
+        if (f->block == 1) vkCmdClearColorImage(commands, image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
         if (finish_commands(x, commands)) {
+            vkDestroyImage(x->device, image, NULL);
+            vkFreeMemory(x->device, memory, NULL);
             failed(error, error_size, "the GPU did not clear a new image");
             return NULL;
         }
+        e = slot ? slot : &x->images[x->image_count];
+        *e = (image_entry){.image = image, .memory = memory, .address = d->address, .format = f->format,
+                           .width = d->width, .height = d->height, .layers = d->layers,
+                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = info.mipLevels,
+                           .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_change = UINT64_MAX};
         if (!slot) x->image_count++;
         image_index_add(x, e);
     }
@@ -5908,6 +5952,9 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
         return failed(error, error_size, "the storage image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
+    /* A later draw can request this write-back through take_written_image, long after the dispatch
+       that bound the image. Its copy plan belongs to the write-back's batch until that batch finishes. */
+    e->used_call = x->call_serial;
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) { /* the same memory laid out another way */
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
@@ -5919,6 +5966,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     if (target && write_back_targets_in(x, &memory, 1, error, error_size)) return -1; /* the older draws first */
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
+    e->used_ticket = x->submitted + 1;
     const VkMemoryBarrier stored = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &stored, 0, NULL, 0, NULL);
