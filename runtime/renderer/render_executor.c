@@ -733,6 +733,11 @@ struct rt_executor {
     translation_cache *translations;
     size_t translations_found, translations_made;
     uint64_t translation_ns, translations_reported; /* the total, and when it was last reported */
+    /* the keys of the shaders made in any run, whatever the translator's version (open_translations;
+       NULL: none), and what compile_catalog did with them when the executor opened */
+    translation_cache *catalog;
+    size_t launch_shaders, launch_translated, launch_compiled;
+    struct launch_work *launch; /* the shaders compile_catalog's workers are making (NULL: none, or finished) */
     /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
     int async_pipelines;
     int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
@@ -1344,18 +1349,43 @@ static void pipeline_cache_close(rt_executor *x)
    ~/.cache/paleblood/translations.bin. Its version, PB_TRANSLATOR_VERSION, is a hash of the translator's
    and this file's sources made by the build (CMakeLists.txt), so a change to either starts the file
    again; a build without it keeps no translations. */
+/* A cache file's path: the variable named's value when it is set (empty: none), else name in
+   $XDG_CACHE_HOME/paleblood, else in ~/.cache/paleblood. */
+static void cache_file_path(char *path, size_t size, const char *variable, const char *name)
+{
+    const char *named = getenv(variable), *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    *path = 0;
+    if (named) snprintf(path, size, "%s", named);
+    else if (cache && *cache) snprintf(path, size, "%s/paleblood/%s", cache, name);
+    else if (home && *home) snprintf(path, size, "%s/.cache/paleblood/%s", home, name);
+}
+
+/* The shader catalog's version: it changes only when the keys' layout does (compute_key), never with
+   the translator. */
+static const char CATALOG_VERSION[] = "shader catalog 1";
+
+/* Opens the translation cache, and the shader catalog (BB_SHADER_CATALOG, else catalog.bin beside
+   the translations): the keys of every shader made, kept across translator versions, from which
+   compile_catalog makes the shaders again when the executor opens. */
 static void open_translations(rt_executor *x)
 {
 #ifdef PB_TRANSLATOR_VERSION
-    const char *named = getenv("BB_TRANSLATION_CACHE"), *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
-    char path[sizeof x->pipeline_file] = "";
-    if (named) snprintf(path, sizeof path, "%s", named);
-    else if (cache && *cache) snprintf(path, sizeof path, "%s/paleblood/translations.bin", cache);
-    else if (home && *home) snprintf(path, sizeof path, "%s/.cache/paleblood/translations.bin", home);
+    char path[sizeof x->pipeline_file];
+    cache_file_path(path, sizeof path, "BB_TRANSLATION_CACHE", "translations.bin");
     x->translations = translation_cache_open(path, PB_TRANSLATOR_VERSION);
+    cache_file_path(path, sizeof path, "BB_SHADER_CATALOG", "catalog.bin");
+    if (x->translations) x->catalog = translation_cache_open(path, CATALOG_VERSION);
 #else
     (void)x;
 #endif
+}
+
+static void finish_launch_work(rt_executor *x);
+
+void rt_executor_launch_compiles(rt_executor *x, size_t *shaders, size_t *translated, size_t *compiled)
+{
+    finish_launch_work(x);
+    *shaders = x->launch_shaders, *translated = x->launch_translated, *compiled = x->launch_compiled;
 }
 
 void rt_executor_translations(const rt_executor *x, size_t *found, size_t *made)
@@ -1369,7 +1399,8 @@ static void close_translations(rt_executor *x)
     fprintf(stderr, "executor: translations: %zu from the cache, %zu translated, %.2f s\n", x->translations_found, x->translations_made,
             (double)x->translation_ns / 1e9);
     translation_cache_close(x->translations);
-    x->translations = NULL;
+    translation_cache_close(x->catalog);
+    x->translations = x->catalog = NULL;
 }
 
 static int open_device(rt_executor *x, char *error, size_t error_size)
@@ -1855,6 +1886,7 @@ static int sweep_skip(rt_executor *x, const char *what, char *error)
 }
 
 static void pipeline_workers_start(rt_executor *x);
+static void compile_catalog(rt_executor *x);
 
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
 {
@@ -1871,6 +1903,7 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
     pipeline_workers_start(x);
     gcn_spirv_set_span_checks(1); /* Vulkan takes whole-span guest checks (runtime/gcn_spirv.h) */
     gcn_spirv_set_structured_control(1); /* Vulkan takes structured programs (runtime/gcn_spirv.h) */
+    compile_catalog(x);
     *executor = x;
     return 0;
 }
@@ -3712,31 +3745,49 @@ typedef struct {
     gcn_table_snapshot tables;
 } translation_outputs;
 
-/* Adds the program at code, through its end (gcn_program_dwords), to a translation's key, with its
-   address and length (the translator reads no further). 0, or -1 when the decoder finds no end: the
-   shader is then translated without the cache. */
-static int add_program(translation_key *key, const rt_executor *x, uint64_t code)
+/* A translation key's first word: what it is the key of. A compute shader's key (compute_key) holds
+   all its translation takes, so that compile_catalog can translate it again from the key alone. */
+enum { KEY_COMPUTE = 1, KEY_GRAPHICS = 2 };
+
+/* Adds a program's address, its length in dwords and its words to a translation's key. */
+static void add_code(translation_key *key, uint64_t code, const uint32_t *words, size_t dwords)
 {
-    const uint32_t *words = (const uint32_t *)(uintptr_t)code;
-    const long dwords = gcn_program_dwords(words, (size_t)((x->guest_base + x->size - code) / 4));
-    if (dwords <= 0) return -1;
     const uint64_t where[2] = {code, (uint64_t)dwords};
     translation_key_add(key, where, sizeof where);
-    translation_key_add(key, words, (size_t)dwords * 4);
+    translation_key_add(key, words, dwords * 4);
+}
+
+/* The length of the program at code in the guest memory, through its end (gcn_program_dwords: the
+   translator reads no further); 0 when the decoder finds no end (the shader is then translated
+   without the cache). */
+static size_t program_dwords(const rt_executor *x, uint64_t code)
+{
+    const long dwords = gcn_program_dwords((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4));
+    return dwords > 0 ? (size_t)dwords : 0;
+}
+
+/* Adds the program at code, through its end, to a translation's key. 0, or -1 when it has no end. */
+static int add_program(translation_key *key, const rt_executor *x, uint64_t code)
+{
+    const size_t dwords = program_dwords(x, code);
+    if (!dwords) return -1;
+    add_code(key, code, (const uint32_t *)(uintptr_t)code, dwords);
     return 0;
 }
 
 /* Adds the executor's values every layout takes (the guest memory's place on the GPU, table
    snapshots on or off) and the shader's run-time stop word. */
+enum { EXECUTOR_VALUES = 6 };
 static void add_executor_values(translation_key *key, const rt_executor *x, uint64_t error_address)
 {
     const gcn_guest_memory guest = guest_memory(x);
-    const uint64_t values[] = {x->address_offset, guest.base, guest.bytes, guest.sink, error_address, (uint64_t)x->draw_snapshots};
+    const uint64_t values[EXECUTOR_VALUES] = {x->address_offset, guest.base, guest.bytes, guest.sink, error_address, (uint64_t)x->draw_snapshots};
     translation_key_add(key, values, sizeof values);
 }
 
-/* The translation kept under key: 1 with *outputs and *spirv (a copy the caller frees), else 0. */
-static int find_translation(rt_executor *x, const translation_key *key, translation_outputs *outputs, uint32_t **spirv, size_t *spirv_words)
+/* The translation kept under key: 1 with *outputs and *spirv (a copy the caller frees), else 0. Any
+   thread may call it. */
+static int find_translation(const rt_executor *x, const translation_key *key, translation_outputs *outputs, uint32_t **spirv, size_t *spirv_words)
 {
     const void *value;
     size_t size;
@@ -3745,7 +3796,6 @@ static int find_translation(rt_executor *x, const translation_key *key, translat
     if (!(*spirv = malloc(*spirv_words * 4))) return 0; /* its own memory: the cache's bytes need not be aligned */
     memcpy(outputs, value, sizeof *outputs);
     memcpy(*spirv, (const unsigned char *)value + sizeof *outputs, *spirv_words * 4);
-    x->translations_found++;
     return 1;
 }
 
@@ -3761,7 +3811,7 @@ static void count_translation_time(rt_executor *x, uint64_t started)
             x->translations_made, (double)x->translation_ns / 1e9);
 }
 
-static void keep_translation(rt_executor *x, const translation_key *key, const translation_outputs *outputs, const uint32_t *spirv, size_t spirv_words)
+static void keep_translation(const rt_executor *x, const translation_key *key, const translation_outputs *outputs, const uint32_t *spirv, size_t spirv_words)
 {
     unsigned char *value = malloc(sizeof *outputs + spirv_words * 4);
     if (!value) return;
@@ -3900,6 +3950,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     /* the translation's key: the programs, and every value the layouts below take that the shader's
        entry does not already hold (the tessellation and geometry rings are made at their first draw) */
     translation_key key = {0};
+    const uint64_t graphics = KEY_GRAPHICS;
+    translation_key_add(&key, &graphics, sizeof graphics);
     if (x->translations && add_program(&key, x, code) == 0 && (!callee || add_program(&key, x, callee) == 0)) {
         const uint64_t values[] = {(uint64_t)stage, user_sgprs, settings, first_binding, tessellation, image_count, sampler_count,
                                    input_controls != NULL, stage == STAGE_COPY ? x->gs_gsvs.address : 0,
@@ -3916,6 +3968,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     translation_outputs kept;
     gcn_table_snapshot planned = {0};
     if (find_translation(x, &key, &kept, &spirv, &spirv_words)) {
+        x->translations_found++;
         *user_read = kept.user_read;
         memcpy(sgprs_read, kept.sgprs_read, sizeof kept.sgprs_read);
         planned = kept.tables;
@@ -5289,6 +5342,104 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     return 0; /* the run-time stop words are checked once the batch has run */
 }
 
+/* What a compute shader's translation takes: its program (words, of which the translator may read
+   dwords; key_dwords through its end, 0 when that is not known: no key), the dispatch's values and
+   the shader's run-time stop word. */
+typedef struct {
+    uint64_t code;
+    const uint32_t *words;
+    size_t dwords, key_dwords;
+    uint32_t threads[3], user_sgprs, workgroup_id_enables;
+    unsigned image_count;
+    gcn_image_binding images[GCN_MAX_IMAGES];
+    uint64_t error_address;
+} compute_request;
+
+enum { COMPUTE_VALUES = 7 };
+
+/* The key of a compute shader's translation: KEY_COMPUTE, the program, the executor's values, the
+   dispatch's values and its images, in that order (parse_compute_key reads them back). */
+static void compute_key(translation_key *key, const rt_executor *x, const compute_request *r)
+{
+    const uint64_t kind = KEY_COMPUTE;
+    translation_key_add(key, &kind, sizeof kind);
+    add_code(key, r->code, r->words, r->key_dwords);
+    add_executor_values(key, x, r->error_address);
+    const uint64_t values[COMPUTE_VALUES] = {r->threads[0], r->threads[1], r->threads[2], r->user_sgprs, r->workgroup_id_enables,
+                                             r->image_count, x->gds_address};
+    translation_key_add(key, values, sizeof values);
+    translation_key_add(key, r->images, r->image_count * sizeof *r->images);
+}
+
+/* Reads a compute shader's key back into *r, its words a copy the caller frees (the executor's values
+   are left out: they are the running executor's when the key is made again). 0, or -1 for a key of
+   another kind or layout. */
+static int parse_compute_key(const unsigned char *key, size_t size, compute_request *r)
+{
+    uint64_t kind, where[2], values[COMPUTE_VALUES];
+    const size_t head = sizeof kind + sizeof where;
+    if (size < head) return -1;
+    memcpy(&kind, key, sizeof kind);
+    memcpy(where, key + sizeof kind, sizeof where);
+    if (kind != KEY_COMPUTE || !where[1] || where[1] > (size - head) / 4) return -1;
+    const size_t values_at = head + where[1] * 4 + EXECUTOR_VALUES * sizeof(uint64_t);
+    if (size < values_at + sizeof values) return -1;
+    memcpy(values, key + values_at, sizeof values);
+    if (values[5] > GCN_MAX_IMAGES || size != values_at + sizeof values + values[5] * sizeof *r->images) return -1;
+    uint32_t *words = malloc(where[1] * 4);
+    if (!words) return -1;
+    memcpy(words, key + head, where[1] * 4);
+    *r = (compute_request){.code = where[0], .words = words, .dwords = where[1], .key_dwords = where[1],
+                           .threads = {(uint32_t)values[0], (uint32_t)values[1], (uint32_t)values[2]}, .user_sgprs = (uint32_t)values[3],
+                           .workgroup_id_enables = (uint32_t)values[4], .image_count = (unsigned)values[5]};
+    memcpy(r->images, key + values_at + sizeof values, r->image_count * sizeof *r->images);
+    return 0;
+}
+
+/* A compute shader's translation, found under key or made (and kept there): 0 with *spirv (the
+   caller frees it) and *kept, *found telling which; -1 with the reason. Any thread may call it. */
+static int translate_compute(const rt_executor *x, const compute_request *r, const translation_key *key, translation_outputs *kept,
+                             uint32_t **spirv, size_t *words, int *found, char *reason, size_t reason_size)
+{
+    *found = find_translation(x, key, kept, spirv, words);
+    if (*found) return 0;
+    *kept = (translation_outputs){0};
+    if (gcn_table_snapshot_plan(r->words, r->dwords, &kept->tables, reason, reason_size)) return -1;
+    const gcn_compute_layout layout = {.local_size = {r->threads[0], r->threads[1], r->threads[2]}, .user_sgprs = r->user_sgprs,
+                                       .workgroup_id_enables = r->workgroup_id_enables, .push_constant_offset = 0,
+                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = r->error_address,
+                                       .images = r->images, .image_count = r->image_count, .user_data_read = &kept->user_read,
+                                       .gds_address = x->gds_address, .table_snapshot = &kept->tables};
+    if (gcn_translate_compute(r->words, r->dwords, &layout, spirv, words, reason, reason_size)) return -1;
+    keep_translation(x, key, kept, *spirv, *words);
+    return 0;
+}
+
+/* A shader module of SPIR-V, or VK_NULL_HANDLE when the device refuses it. */
+static VkShaderModule shader_module(const rt_executor *x, const uint32_t *spirv, size_t words)
+{
+    const VkShaderModuleCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    return vkCreateShaderModule(x->device, &info, NULL, &module) == VK_SUCCESS ? module : VK_NULL_HANDLE;
+}
+
+/* Makes a compute pipeline of module with image_count images, through the pipeline cache. */
+static VkResult make_compute_pipeline(rt_executor *x, VkShaderModule module, unsigned image_count, VkPipelineCreateFlags flags,
+                                      VkPipeline *pipeline)
+{
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .flags = flags,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
+                  .pName = "main"},
+        .layout = image_count ? x->image_layouts[image_count] : x->compute_layout};
+    *pipeline = VK_NULL_HANDLE;
+    const VkResult made = vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, pipeline);
+    if (made != VK_SUCCESS) *pipeline = VK_NULL_HANDLE;
+    return made;
+}
+
+static void meet_launch_shader(rt_executor *x, const translation_key *key);
+
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
    register layout. VK_NULL_HANDLE after failing. */
 static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, const gcn_image_binding *images,
@@ -5309,75 +5460,213 @@ static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_comput
         failed(error, error_size, "compute shader code at %#llx is outside the GPU-visible memory", (unsigned long long)c->code);
         return NULL;
     }
-    const uint32_t *const code = (const uint32_t *)(uintptr_t)c->code;
-    const size_t code_dwords = (size_t)((x->guest_base + x->size - c->code) / 4);
+    compute_request r = {.code = c->code, .words = (const uint32_t *)(uintptr_t)c->code,
+                         .dwords = (size_t)((x->guest_base + x->size - c->code) / 4), .key_dwords = x->translations ? program_dwords(x, c->code) : 0,
+                         .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+                         .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count,
+                         .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code)};
+    memcpy(r.images, images, image_count * sizeof *images);
     char reason[TRANSLATION_REASON_BYTES];
     const uint64_t started = monotonic_ns();
     translation_key key = {0};
-    if (x->translations && add_program(&key, x, c->code) == 0) {
-        const uint64_t values[] = {c->threads[0], c->threads[1], c->threads[2], c->user_sgprs, c->workgroup_id_enables, image_count, x->gds_address};
-        add_executor_values(&key, x, stop_slot(x, STOP_KIND_COMPUTE, c->code));
-        translation_key_add(&key, values, sizeof values);
-        translation_key_add(&key, images, image_count * sizeof *images);
-    } else {
-        key.failed = 1;
-    }
+    if (r.key_dwords) compute_key(&key, x, &r);
+    else key.failed = 1;
+    meet_launch_shader(x, &key);
     translation_outputs kept;
     uint32_t *spirv = NULL;
     size_t words = 0;
-    int translated = 0;
-    if (!find_translation(x, &key, &kept, &spirv, &words)) {
-        kept = (translation_outputs){0};
-        if (gcn_table_snapshot_plan(code, code_dwords, &kept.tables, reason, sizeof reason)) {
-            translation_key_free(&key);
-            failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-            return NULL;
-        }
-        const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
-                                           .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
-                                           .address_offset = x->address_offset, .guest = guest_memory(x),
-                                           .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code), .images = images, .image_count = image_count,
-                                           .user_data_read = &kept.user_read, .gds_address = x->gds_address, .table_snapshot = &kept.tables};
-        translated = gcn_translate_compute(code, code_dwords, &layout, &spirv, &words, reason, sizeof reason);
-        if (!translated) {
-            keep_translation(x, &key, &kept, spirv, words);
-            x->translations_made++;
-        }
-    }
-    translation_key_free(&key);
+    int found = 0;
+    const int translated = translate_compute(x, &r, &key, &kept, &spirv, &words, &found, reason, sizeof reason);
+    if (found) x->translations_found++;
+    else if (!translated) x->translations_made++;
     count_translation_time(x, started);
-    const uint32_t user_read = kept.user_read;
-    const gcn_table_snapshot tables = kept.tables;
     sweep_shader(x, "compute", c->code, translated ? reason : NULL, spirv, words);
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
     if (translated) {
         failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-        return NULL;
-    }
-    const VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
-    VkShaderModule module = VK_NULL_HANDLE;
-    const VkResult made = vkCreateShaderModule(x->device, &module_info, NULL, &module);
-    free(spirv);
-    if (made != VK_SUCCESS) {
+    } else if (!(module = shader_module(x, spirv, words))) {
         failed(error, error_size, "the device refused a translated compute shader");
-        return NULL;
-    }
-    const VkComputePipelineCreateInfo info = {
-        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
-                  .pName = "main"},
-        .layout = image_count ? x->image_layouts[image_count] : x->compute_layout};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
+    } else if (make_compute_pipeline(x, module, image_count, 0, &pipeline) != VK_SUCCESS) {
         vkDestroyShaderModule(x->device, module, NULL);
         failed(error, error_size, "the device refused a compute pipeline");
-        return NULL;
+    } else {
+        translation_cache_add(x->catalog, &key, "", 0);
     }
+    free(spirv);
+    translation_key_free(&key);
+    if (!pipeline) return NULL;
     atomic_fetch_add(&x->pipelines_made, 1);
     compute_entry *e = &x->computes[x->compute_count++];
-    *e = (compute_entry){.user_read = user_read, .tables = tables, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+    *e = (compute_entry){.user_read = kept.user_read, .tables = kept.tables, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                          .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count, .module = module, .pipeline = pipeline};
     memcpy(e->images, images, image_count * sizeof *images);
     return e;
+}
+
+/* ---- compiling at launch ----
+   When the executor opens, the shaders of the catalog (every compute shader any run made, by its key)
+   are translated where the translation cache lacks them (a new translator) and their pipelines made
+   where the pipeline cache lacks them (a new translator or driver), on worker threads that run while
+   the game loads: the dispatches that meet them later find both caches ready. A dispatch cannot be
+   left out as a draw can (async_pipelines), so a compute shader made in-game holds its frame for the
+   whole compile; one a worker is making when its dispatch comes is waited for, not made twice.
+   BB_LAUNCH_COMPILE=0 turns it off. */
+enum { LAUNCH_WORKERS = 8 };
+typedef struct launch_work launch_work;
+
+typedef struct {
+    unsigned char **keys;
+    size_t *sizes, count, capacity;
+} catalog_keys;
+
+static void take_catalog_key(void *context, const void *key, size_t size)
+{
+    catalog_keys *all = context;
+    if (all->count == all->capacity) {
+        const size_t capacity = all->capacity ? 2 * all->capacity : 256;
+        unsigned char **keys = realloc(all->keys, capacity * sizeof *keys);
+        if (keys) all->keys = keys;
+        size_t *sizes = realloc(all->sizes, capacity * sizeof *sizes);
+        if (sizes) all->sizes = sizes;
+        if (!keys || !sizes) return;
+        all->capacity = capacity;
+    }
+    unsigned char *copy = malloc(size);
+    if (!copy) return;
+    memcpy(copy, key, size);
+    all->keys[all->count] = copy, all->sizes[all->count++] = size;
+}
+
+/* A launch shader's state: waiting, being made by a worker, made, or taken by a dispatch that met it
+   before any worker did (the dispatch makes it then, the workers leave it). */
+enum { LAUNCH_WAITING, LAUNCH_MAKING, LAUNCH_MADE, LAUNCH_TAKEN };
+
+/* The shaders the workers make, each with its key and state; the next one to take, and what was done. */
+struct launch_work {
+    rt_executor *x;
+    compute_request *requests;
+    translation_key *keys;
+    atomic_int *states;
+    size_t count;
+    atomic_size_t next, done, translated, compiled;
+    uint64_t began;
+    pthread_t workers[LAUNCH_WORKERS];
+    size_t started;
+};
+
+/* Makes one shader's translation and pipeline, where the caches lack them; the pipeline is let go
+   (the pipeline cache keeps it for the dispatch that meets the shader). */
+static void make_at_launch(launch_work *w, size_t i)
+{
+    rt_executor *x = w->x;
+    translation_outputs kept;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    int found = 0;
+    char reason[TRANSLATION_REASON_BYTES];
+    if (translate_compute(x, &w->requests[i], &w->keys[i], &kept, &spirv, &words, &found, reason, sizeof reason) == 0) {
+        if (!found) atomic_fetch_add(&w->translated, 1);
+        const VkShaderModule module = shader_module(x, spirv, words);
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkResult made = VK_PIPELINE_COMPILE_REQUIRED_EXT;
+        if (module && x->cache_control) /* one the pipeline cache holds needs nothing more */
+            made = make_compute_pipeline(x, module, w->requests[i].image_count, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT,
+                                         &pipeline);
+        if (module && made == VK_PIPELINE_COMPILE_REQUIRED_EXT && make_compute_pipeline(x, module, w->requests[i].image_count, 0, &pipeline) == VK_SUCCESS) {
+            atomic_fetch_add(&w->compiled, 1);
+            atomic_fetch_add(&x->pipelines_made, 1); /* the saver writes the pipeline cache */
+        }
+        if (pipeline) vkDestroyPipeline(x->device, pipeline, NULL);
+        if (module) vkDestroyShaderModule(x->device, module, NULL);
+    }
+    free(spirv);
+}
+
+/* Takes the next waiting shaders until none is left; the last worker to finish reports on stderr. */
+static void *launch_worker(void *argument)
+{
+    launch_work *w = argument;
+    for (;;) {
+        const size_t i = atomic_fetch_add(&w->next, 1);
+        if (i >= w->count) return NULL;
+        int waiting = LAUNCH_WAITING;
+        if (atomic_compare_exchange_strong(&w->states[i], &waiting, LAUNCH_MAKING)) {
+            make_at_launch(w, i);
+            atomic_store(&w->states[i], LAUNCH_MADE);
+        }
+        if (atomic_fetch_add(&w->done, 1) + 1 == w->count)
+            fprintf(stderr, "executor: compiled at launch: %zu compute shaders (%zu translated, %zu pipelines compiled), %.2f s\n", w->count,
+                    (size_t)atomic_load(&w->translated), (size_t)atomic_load(&w->compiled), (double)(monotonic_ns() - w->began) / 1e9);
+    }
+}
+
+/* Before a dispatch makes the compute shader under key: a worker making it is waited for (its
+   translation and pipeline are then in the caches); one no worker has taken yet is left to the
+   dispatch. */
+static void meet_launch_shader(rt_executor *x, const translation_key *key)
+{
+    launch_work *w = x->launch;
+    if (!w || key->failed || atomic_load(&w->done) == w->count) return;
+    for (size_t i = 0; i < w->count; i++) {
+        if (w->keys[i].size != key->size || memcmp(w->keys[i].bytes, key->bytes, key->size)) continue;
+        int waiting = LAUNCH_WAITING;
+        if (atomic_compare_exchange_strong(&w->states[i], &waiting, LAUNCH_TAKEN)) return;
+        while (atomic_load(&w->states[i]) == LAUNCH_MAKING) {
+            const struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
+        return;
+    }
+}
+
+/* Waits for the launch workers and frees their work (rt_executor_launch_compiles, closing). */
+static void finish_launch_work(rt_executor *x)
+{
+    launch_work *w = x->launch;
+    if (!w) return;
+    for (size_t i = 0; i < w->started; i++) pthread_join(w->workers[i], NULL);
+    x->launch_shaders = w->count, x->launch_translated = atomic_load(&w->translated), x->launch_compiled = atomic_load(&w->compiled);
+    for (size_t i = 0; i < w->count; i++) free((void *)w->requests[i].words), translation_key_free(&w->keys[i]);
+    free(w->requests), free(w->keys), free(w->states), free(w);
+    x->launch = NULL;
+}
+
+/* Makes the catalog's shaders again with this executor's values and starts up to LAUNCH_WORKERS
+   threads (one fewer than the processors) making them while the game runs; on this thread when none
+   can be started. */
+static void compile_catalog(rt_executor *x)
+{
+    const char *launch = getenv("BB_LAUNCH_COMPILE");
+    if (!x->catalog || (launch && !strcmp(launch, "0"))) return;
+    catalog_keys all = {0};
+    translation_cache_each(x->catalog, take_catalog_key, &all);
+    launch_work *w = calloc(1, sizeof *w);
+    const size_t room = all.count ? all.count : 1;
+    if (w) {
+        w->x = x, w->began = monotonic_ns();
+        w->requests = calloc(room, sizeof *w->requests), w->keys = calloc(room, sizeof *w->keys), w->states = calloc(room, sizeof *w->states);
+    }
+    for (size_t i = 0; i < all.count; i++) {
+        /* the key made again with this executor's values; the stop words given here, in the catalog's
+           order, are those the dispatches find later */
+        if (w && w->requests && w->keys && w->states && parse_compute_key(all.keys[i], all.sizes[i], &w->requests[w->count]) == 0) {
+            compute_request *r = &w->requests[w->count];
+            r->error_address = stop_slot(x, STOP_KIND_COMPUTE, r->code);
+            atomic_init(&w->states[w->count], LAUNCH_WAITING);
+            compute_key(&w->keys[w->count++], x, r);
+        }
+        free(all.keys[i]);
+    }
+    free(all.keys), free(all.sizes);
+    if (!w) return;
+    x->launch = w;
+    const long processors = sysconf(_SC_NPROCESSORS_ONLN);
+    size_t wanted = processors > 1 ? (size_t)processors - 1 : 1;
+    if (wanted > LAUNCH_WORKERS) wanted = LAUNCH_WORKERS;
+    if (wanted > w->count) wanted = w->count;
+    while (w->started < wanted && pthread_create(&w->workers[w->started], NULL, launch_worker, w) == 0) w->started++;
+    if (!w->started) launch_worker(w);
 }
 
 /* ---- images ---- */
@@ -7367,6 +7656,7 @@ void rt_executor_close(rt_executor *x)
 {
     if (!x) return;
     sweep_close(x);
+    finish_launch_work(x);
     pipeline_workers_stop(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);

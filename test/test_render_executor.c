@@ -4033,6 +4033,86 @@ static void pipeline_cache_file(const rt_executor_memory *memory)
     rmdir(directory);
 }
 
+/* One dispatch of scale_add (out[i] = in[i] * 2.5 + 1, 64 lanes) at code; whether every lane stored. */
+static int scale_add_dispatch(rt_executor *x, uint64_t buffer, uint64_t code, uint64_t input_at, uint64_t output_at)
+{
+    enum { LANES = 64 };
+    char error[256] = "";
+    memcpy((void *)(uintptr_t)code, scale_add, sizeof scale_add);
+    float *input = (float *)(uintptr_t)input_at, *output = (float *)(uintptr_t)output_at;
+    for (unsigned i = 0; i < LANES; i++) input[i] = (float)i, output[i] = -1;
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+    uint32_t user[8];
+    descriptor(user, input_at, 4);
+    descriptor(user + 4, output_at, 4);
+    const uint32_t one[3] = {1, 1, 1};
+    rt_render_forget(), rt_executor_reset(x);
+    if (rt_render_record_compute_shader_at(buffer, shader) || rt_render_record_user_data(buffer, 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) ||
+        rt_render_record_dispatch(buffer, 0x20, one, error, sizeof error) || rt_executor_run(x, buffer, 0x30, error, sizeof error)) {
+        fprintf(stderr, "scale_add dispatch: %s\n", error);
+        return 0;
+    }
+    int right = 1;
+    for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
+    return right;
+}
+
+/* The shader catalog (BB_SHADER_CATALOG) and compiling at launch: a run's compute shader is kept in the
+   catalog; the next executor, with an empty translation cache and pipeline cache (a new translator
+   or driver), translates it and makes its pipeline as it opens, so its dispatch finds the translation
+   kept; one more executor finds the translation as it opens. BB_LAUNCH_COMPILE=0 makes none. The
+   workers run while the game does: a dispatch that meets the shader first, with empty caches again,
+   makes it or waits for the worker making it, and the shader is translated once. */
+static void launch_compiles(const rt_executor_memory *memory)
+{
+    enum { LAUNCH_BUFFER = 0xc0e50000, LAUNCH_CODE = 0x3100, INPUT = 0x23000, OUTPUT = 0x24000 };
+    char directory[] = "/tmp/pb-launch-XXXXXX", catalog[64], translations[3][64], pipelines[3][64], error[256] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);
+    for (int k = 0; k < 3; k++) {
+        snprintf(translations[k], sizeof translations[k], "%s/translations%d.bin", directory, k);
+        snprintf(pipelines[k], sizeof pipelines[k], "%s/pipelines%d.bin", directory, k);
+    }
+    setenv("BB_SHADER_CATALOG", catalog, 1);
+    /* run 0 makes the shader; runs 1 and 2 use the second translation and pipeline caches; run 3 has
+       launch compiles turned off; run 4 dispatches before asking what the workers did, with the third
+       caches */
+    const int file_of_run[5] = {0, 1, 1, 1, 2};
+    for (int run = 0; run < 5; run++) {
+        setenv("BB_TRANSLATION_CACHE", translations[file_of_run[run]], 1);
+        setenv("BB_PIPELINE_CACHE", pipelines[file_of_run[run]], 1);
+        if (run == 3) setenv("BB_LAUNCH_COMPILE", "0", 1);
+        rt_executor *x = NULL;
+        const int opened = rt_executor_open(memory, &x, error, sizeof error);
+        unsetenv("BB_LAUNCH_COMPILE");
+        CHECK(opened == 0);
+        if (opened) break;
+        size_t shaders = 9, translated = 9, compiled = 9, found = 9, made = 9;
+        if (run == 4) {
+            CHECK(scale_add_dispatch(x, LAUNCH_BUFFER, at(LAUNCH_CODE), at(INPUT), at(OUTPUT)));
+            rt_executor_translations(x, &found, &made);
+            rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
+            CHECK(shaders == 1 && found + made == 1 && translated + made == 1);
+            rt_executor_close(x);
+            continue;
+        }
+        rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
+        if (run == 0 || run == 3) CHECK(shaders == 0 && translated == 0 && compiled == 0);
+        if (run == 1) CHECK(shaders == 1 && translated == 1 && compiled == 1);
+        if (run == 2) CHECK(shaders == 1 && translated == 0 && compiled <= 1); /* compiled again without cache control */
+        CHECK(scale_add_dispatch(x, LAUNCH_BUFFER, at(LAUNCH_CODE), at(INPUT), at(OUTPUT)));
+        rt_executor_translations(x, &found, &made);
+        CHECK(run == 0 ? found == 0 && made == 1 : found == 1 && made == 0);
+        rt_executor_close(x);
+    }
+    setenv("BB_SHADER_CATALOG", "", 1);
+    setenv("BB_TRANSLATION_CACHE", "", 1);
+    setenv("BB_PIPELINE_CACHE", "", 1);
+    unlink(catalog);
+    for (int k = 0; k < 3; k++) unlink(translations[k]), unlink(pipelines[k]);
+    rmdir(directory);
+}
+
 /* With async_pipelines, the first draw with a pipeline neither made nor cached is left out while a worker
    thread makes the pipeline (the target keeps its zeroed memory), and a later run of the same buffer
    draws it. */
@@ -4073,6 +4153,7 @@ int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
     setenv("BB_TRANSLATION_CACHE", "", 0); /* nor a translation cache file */
+    setenv("BB_SHADER_CATALOG", "", 0); /* nor a shader catalog */
     /* nor the drivers' own shader caches on disk: async_pipelines needs a pipeline the compiler must make */
     setenv("__GL_SHADER_DISK_CACHE", "0", 0), setenv("MESA_SHADER_CACHE_DISABLE", "true", 0);
     const int fd = map_guest_memory();
@@ -4838,6 +4919,7 @@ int main(void)
     image_allocation_pressure(&memory, VK_ERROR_OUT_OF_DEVICE_MEMORY, 1);
     image_allocation_pressure(&memory, VK_ERROR_OUT_OF_HOST_MEMORY, 1);
     pipeline_cache_file(&memory);
+    launch_compiles(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);
