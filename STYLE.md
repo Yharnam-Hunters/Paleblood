@@ -7,7 +7,9 @@ transcription of the disassembly can live on a work branch while you work, never
 
 `tools/check_readable.py` checks the mechanical rules below (pre-commit and CI); the independent
 review checks the rest. Files written before this rule are listed in
-`tools/readable_allowlist.txt`, which may only shrink.
+`tools/readable_allowlist.txt`, which may only shrink; the offset-arithmetic and
+duplicate-declaration checks have their own shrink-only lists beside it
+(`tools/offset_arithmetic_allowlist.txt`, `game/duplicate_declarations_allowlist.txt`).
 
 ## What readable means
 
@@ -28,7 +30,11 @@ an expression.
 **Structs, not offsets.** Describe the objects a function touches as structs with named fields;
 pin each known offset with `static_assert(offsetof(...))`, and fill unknown space with padding
 named for its offset (`uint8_t unknown_0x0010[0x2bb8];`; `void *unknown_slots[N];` for vtable
-slots). Never `get<T>(p, 0x..)`, `put<T>`, `ptr_at(p, 0x..)` or `p[0x..]`. A field whose meaning is unknown gets a name that says what is
+slots). Never `get<T>(p, 0x..)`, `put<T>`, `ptr_at(p, 0x..)` or `p[0x..]`, and never the same thing as byte-pointer
+math: `reinterpret_cast<const std::byte *>(p) + field_offset` (or a `uint8_t *` / `char *` variable holding such a
+cast, plus a literal or a named constant) then read, memmoved or cast back to a typed pointer is an offset in
+disguise. `tools/check_readable.py` flags it; whole-object memcpy, real byte arrays and `+ sizeof(...)` /
+`+ offsetof(...)` / `*_size` header lengths are fine. A field whose meaning is unknown gets a name that says what is
 known (`flags_2c91`, `debug_mode`) and a comment; rename it when someone finds out.
 
 **Named constants.** A number that means something gets a `constexpr` name (or an enum): flag
@@ -66,5 +72,8 @@ each line or repeat offsets the struct already names.
 - One system per directory, `game/<system>/`; shared engine types and the vector helpers in
   `game/engine/`.
 - A system's structs and its `RT_ORIGINAL` / `RT_GLOBAL` declarations go in a header next to the
-  code (`game/ai/hk_ai.h`), so the next function in that system reuses them.
+  code (`game/ai/hk_ai.h`), so the next function in that system reuses them. Search for the address
+  before declaring it: one declaration per game address across `game/`
+  (`tools/check_readable.py` fails on a second one; addresses declared twice before the check are in
+  `game/duplicate_declarations_allowlist.txt`, which may only shrink).
 - The exported replacement keeps its registry name (`bb_<name>` in `game/hooks.csv`).

@@ -249,7 +249,8 @@ extern "C" void bb_param_face_gen_set_part_color(int32_t id, uint32_t part, uint
 {
     if (id < 0 || channel >= color_channel_count) return;
     if (FaceGenRow *row = editable_row_for_index<FaceGenRow>(ParamType::face_gen, id, part, face_part_count - 1,
-                                                             "param_face_gen_set_part_color", MissingRow::writes_null_row))
+                                                             "param_face_gen_set_part_color",
+                                                             MissingRow::writes_null_row))
         row->parts[part].color[channel] = value;
 }
 
@@ -284,17 +285,20 @@ extern "C" void bb_param_face_gen_set_hair_blue(int32_t id, uint8_t value)
 
 extern "C" void bb_param_face_gen_set_left_eye_red(int32_t id, uint8_t value)
 {
-    if (FaceGenRow *row = face_gen_row(id, "param_face_gen_set_left_eye_red")) row->parts[left_eye_part].color[red] = value;
+    if (FaceGenRow *row = face_gen_row(id, "param_face_gen_set_left_eye_red"))
+        row->parts[left_eye_part].color[red] = value;
 }
 
 extern "C" void bb_param_face_gen_set_left_eye_green(int32_t id, uint8_t value)
 {
-    if (FaceGenRow *row = face_gen_row(id, "param_face_gen_set_left_eye_green")) row->parts[left_eye_part].color[green] = value;
+    if (FaceGenRow *row = face_gen_row(id, "param_face_gen_set_left_eye_green"))
+        row->parts[left_eye_part].color[green] = value;
 }
 
 extern "C" void bb_param_face_gen_set_left_eye_blue(int32_t id, uint8_t value)
 {
-    if (FaceGenRow *row = face_gen_row(id, "param_face_gen_set_left_eye_blue")) row->parts[left_eye_part].color[blue] = value;
+    if (FaceGenRow *row = face_gen_row(id, "param_face_gen_set_left_eye_blue"))
+        row->parts[left_eye_part].color[blue] = value;
 }
 
 // Writes the face being built on the character creation screen into FaceGenParam row `id`:
@@ -304,8 +308,6 @@ extern "C" void bb_param_apply_char_make_face(const CharMakeFace *face, int32_t 
 {
     if (face->state != face_being_edited) return;
     FaceGenRowCopy current;
-    current.id = -1;
-    current.row = nullptr;
     bb_param_find_row_face_gen(&current, id);
     if (current.row == nullptr) return;
     // The state is read again for every value: a write to the row may change the face (the
@@ -386,5 +388,6 @@ extern "C" void bb_param_face_set_asymmetry(int32_t id, uint32_t index, uint8_t 
     const TableHeader *table = loaded_table(ParamType::face);
     if (table == nullptr || index >= preset_asymmetry_count) return;
     if (table->data_version != face_tables_current_version) return;
-    existing_row<FaceRow>(table, id, "param_face_set_asymmetry", MissingRow::searches_forever)->asymmetry[index] = value;
+    FaceRow *row = existing_row<FaceRow>(table, id, "param_face_set_asymmetry", MissingRow::searches_forever);
+    row->asymmetry[index] = value;
 }

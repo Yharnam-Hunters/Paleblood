@@ -1391,3 +1391,23 @@ came from the time window above.
   A fresh three-round run (the commit before #1232 against main 0391d1fb) measured only one run of
   #1232 (10.92 fps, 1% low 8.12): every other run was left out, for other work on the machine
   (5.5-11.4 CPUs) or for ending before frame 3000. That is no result.
+
+### New targets cleared without a wait (November 2026)
+
+A render target or depth image is cleared to zero when the executor makes it. That clear was
+submitted and then waited for (`vkQueueWaitIdle`), about 2.25 s of the renderer's thread per clinic
+boot in single waits. It now goes to the queue with a fence and no wait (`queue_commands`): every
+batch that uses the target is submitted after it on the same queue, so the clear's last barrier
+orders it before them (the Vulkan specification's submission order). Its command buffer is freed
+once its fence has signalled; a target evicted before any batch used it waits for the queued clears
+first, and so does closing. Three rounds over frames 1350-2900 against main 1234ccc7: average 15.49
+to 15.64 fps (+0.16, noise floor 0.21), 1% low 10.05 to 10.40 (+0.35, noise floor 0.93), worst
+frame 183.3 to 144.5 ms (noise floor 100): better in each figure, all within the noise.
+
+Comparing frames by number between two runs needs runs that walked the same route. The route
+script's player sometimes gets stuck at walk 50 and sidesteps for longer (43 against 18 "stuck"
+lines), on either build, which moves the rest of the walk by about 300 frames. Four route-aligned
+captures (main 89ee1d80 twice, this change twice, the same caches) put three runs on the same frames
+(walks 51 to 54 at frames 2762, 2864, 2912 and 2996); between them the mean pixel difference at
+those frames was 0.19 to 1.59 of 255, main against main 0.22 to 1.38. The fourth run took the
+detour and differed from both builds by 4.7 to 12.6: the same corridor seen from another spot.

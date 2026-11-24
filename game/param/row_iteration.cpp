@@ -115,7 +115,6 @@ uint64_t list_all_row_ids(engine::Array<int32_t> *ids, ParamType type, const Pus
     return list_row_ids(ids, type, [](const uint8_t *) { return true; }, push_back);
 }
 
-
 // Reads a field of a row (tables give no alignment guarantee).
 template <typename Field> Field row_field(const uint8_t *data, size_t offset)
 {
@@ -161,6 +160,14 @@ template <typename Accept> int32_t previous_accepted_row_id(ParamType type, int3
 // and the reinforcement entries the variant list reads.
 constexpr size_t protector_step_byte = 0xd2;
 constexpr size_t protector_origins = 0x40;
+
+// Accepts an EquipParamProtector row whose step byte equals `value` (a value outside 0-255 never
+// matches).
+auto protector_step_equals(int32_t value)
+{
+    return [value](const uint8_t *data) { return static_cast<int32_t>(data[protector_step_byte]) == value; };
+}
+
 // An EquipParamWeapon row: the byte its variant list filters on, its reinforcement entries, and
 // the word the id list can filter on (meanings not known beyond what these lists do with them).
 constexpr size_t weapon_list_byte = 0xe2;
@@ -192,6 +199,15 @@ void push_versions(engine::Array<int32_t> *ids, int32_t first, int32_t versions,
 
 RT_ORIGINAL(0x019f8d70, protector_id_array_push_back, void(engine::Array<int32_t> *, const int32_t *id));
 RT_ORIGINAL(0x01b0d5f0, weapon_id_array_push_back, void(engine::Array<int32_t> *, const int32_t *id));
+
+// Two id lists whose walk the compiler removed: each empties the array, requires the repository
+// and returns the array's count.
+uint64_t clear_id_list(engine::Array<int32_t> *ids)
+{
+    ids->end = ids->begin;
+    engine::require(param::solo_param_repository, param::solo_param_repository_name.address());
+    return id_count(ids);
+}
 
 }  // namespace
 
@@ -274,9 +290,7 @@ extern "C" uint64_t bb_param_list_row_ids_equip_param_protector(engine::Array<in
 extern "C" uint64_t bb_param_list_listed_ids_equip_param_accessory(engine::Array<int32_t> *ids)
 {
     const auto listed = [](const uint8_t *data) {
-        int16_t order;
-        std::memcpy(&order, data + offsetof(AccessoryRow, list_order), sizeof(order));
-        return order >= 0;
+        return row_field<int16_t>(data, offsetof(AccessoryRow, list_order)) >= 0;
     };
     return list_row_ids(ids, ParamType::equip_param_accessory, listed, id_array_push_back_copy);
 }
@@ -285,16 +299,12 @@ extern "C" uint64_t bb_param_list_listed_ids_equip_param_accessory(engine::Array
 // `value` (a value outside 0-255 never matches).
 extern "C" int32_t bb_param_next_matching_id_equip_param_protector(int32_t id, int32_t value)
 {
-    return next_accepted_row_id(ParamType::equip_param_protector, id, [value](const uint8_t *data) {
-        return static_cast<int32_t>(data[protector_step_byte]) == value;
-    });
+    return next_accepted_row_id(ParamType::equip_param_protector, id, protector_step_equals(value));
 }
 
 extern "C" int32_t bb_param_previous_matching_id_equip_param_protector(int32_t id, int32_t value)
 {
-    return previous_accepted_row_id(ParamType::equip_param_protector, id, [value](const uint8_t *data) {
-        return static_cast<int32_t>(data[protector_step_byte]) == value;
-    });
+    return previous_accepted_row_id(ParamType::equip_param_protector, id, protector_step_equals(value));
 }
 
 // Empties `ids` and appends, for every EquipParamProtector row in file order, its id and the ids
@@ -345,15 +355,6 @@ extern "C" uint64_t bb_param_list_row_ids_equip_param_weapon(engine::Array<int32
         return !filter || row_field<int32_t>(data, weapon_list_word) != weapon_unlisted_word;
     };
     return list_row_ids(ids, ParamType::equip_param_weapon, listed, id_array_push_back_copy);
-}
-
-// Two id lists whose walk the compiler removed: each empties the array, requires the repository
-// and returns the array's count.
-static uint64_t clear_id_list(engine::Array<int32_t> *ids)
-{
-    ids->end = ids->begin;
-    engine::require(param::solo_param_repository, param::solo_param_repository_name.address());
-    return id_count(ids);
 }
 
 extern "C" uint64_t bb_param_clear_id_list_equip_param_protector(engine::Array<int32_t> *ids)

@@ -518,6 +518,8 @@ typedef struct {
     } listed[WORK_LISTED];           /* each draw and dispatch in order (the first WORK_LISTED), for the checkpoints */
 } batch_slot;
 
+enum { QUEUED_COMMANDS = 64 };
+
 struct rt_executor {
     VkInstance instance;
     VkPhysicalDevice physical;
@@ -525,6 +527,13 @@ struct rt_executor {
     VkQueue queue;
     uint32_t family;
     VkCommandPool pool;
+    /* one-time commands submitted without a wait (queue_commands), each with the fence that says when
+       its command buffer may be freed */
+    struct {
+        VkCommandBuffer commands;
+        VkFence fence;
+    } queued[QUEUED_COMMANDS];
+    size_t queued_count;
     VkPipelineLayout layout, compute_layout;
     /* compute shaders with n storage images: their descriptor set layout and pipeline layout (n >= 1) */
     VkDescriptorSetLayout image_set_layouts[GCN_MAX_IMAGES + 1];
@@ -1888,6 +1897,45 @@ static int finish_commands(rt_executor *x, VkCommandBuffer commands)
     return ok ? 0 : -1;
 }
 
+/* Frees the queued one-time commands the GPU has run (all of them with wait set, after waiting). */
+static void free_queued_commands(rt_executor *x, int wait)
+{
+    size_t kept = 0;
+    for (size_t i = 0; i < x->queued_count; i++) {
+        if (wait) vkWaitForFences(x->device, 1, &x->queued[i].fence, VK_TRUE, UINT64_MAX);
+        if (!wait && vkGetFenceStatus(x->device, x->queued[i].fence) != VK_SUCCESS) {
+            x->queued[kept++] = x->queued[i];
+            continue;
+        }
+        vkFreeCommandBuffers(x->device, x->pool, 1, &x->queued[i].commands);
+        vkDestroyFence(x->device, x->queued[i].fence, NULL);
+    }
+    x->queued_count = kept;
+}
+
+/* Submits one-time commands without waiting for them, for work that only the GPU's later work reads
+   (a new target's clear): commands later in submission order on the queue come after it (its last
+   barrier orders them, the Vulkan specification's "submission order"), and the batch that first uses
+   the target signals its ticket only once the clear has run too. Waits as finish_commands does when
+   QUEUED_COMMANDS are all still running. 0, or -1. */
+static int queue_commands(rt_executor *x, VkCommandBuffer commands)
+{
+    free_queued_commands(x, 0);
+    if (x->queued_count == QUEUED_COMMANDS) return finish_commands(x, commands);
+    const VkFenceCreateInfo fence_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence = VK_NULL_HANDLE;
+    vkEndCommandBuffer(commands);
+    const VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &commands};
+    if (vkCreateFence(x->device, &fence_info, NULL, &fence) != VK_SUCCESS || vkQueueSubmit(x->queue, 1, &submit, fence) != VK_SUCCESS) {
+        if (fence) vkDestroyFence(x->device, fence, NULL);
+        vkFreeCommandBuffers(x->device, x->pool, 1, &commands);
+        return -1;
+    }
+    x->queued[x->queued_count].commands = commands, x->queued[x->queued_count].fence = fence;
+    x->queued_count++;
+    return 0;
+}
+
 static void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout from, VkImageLayout to, VkAccessFlags src_access,
                           VkAccessFlags dst_access, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage)
 {
@@ -2781,6 +2829,7 @@ static target_entry *target_slot_to_free(rt_executor *x)
     for (size_t i = 0; i < x->image_count; i++)
         if (x->images[i].copied_from == pick) x->images[i].copied_from = NULL;
     if (pick->guarded && x->unguard) x->unguard(pick->address, target_span(pick));
+    free_queued_commands(x, 1); /* a target no batch has used yet may still have its clear queued */
     vkDestroyImageView(x->device, pick->view, NULL);
     vkDestroyImage(x->device, pick->image, NULL);
     vkFreeMemory(x->device, pick->memory, NULL);
@@ -2860,7 +2909,7 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-    if (finish_commands(x, commands)) goto fail;
+    if (queue_commands(x, commands)) goto fail;
     if (appended) x->target_count++;
     return t;
 fail:
@@ -3387,7 +3436,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     to_attachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 1,
                          &to_attachment);
-    if (finish_commands(x, commands)) goto fail;
+    if (queue_commands(x, commands)) goto fail;
     x->depth_count++;
     return d;
 fail:
@@ -7273,6 +7322,7 @@ void rt_executor_close(rt_executor *x)
     pipeline_workers_stop(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);
+        free_queued_commands(x, 1);
         for (size_t i = 0; i < x->pipeline_count; i++) {
             pipeline_settle(x, &x->pipelines[i], 1);
             vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
