@@ -739,6 +739,7 @@ struct rt_executor {
     struct launch_work *launch; /* the shaders compile_catalog's workers are making (NULL: none, or finished) */
     /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
     int async_pipelines;
+    void (*launch_progress)(size_t done, size_t count); /* rt_executor_memory's */
     int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
     pthread_t pipeline_workers[PIPELINE_WORKERS];
     unsigned pipeline_worker_count;
@@ -1899,6 +1900,7 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
         return -1;
     }
     x->async_pipelines = memory->async_pipelines;
+    x->launch_progress = memory->launch_progress;
     pipeline_workers_start(x);
     gcn_spirv_set_span_checks(1); /* Vulkan takes whole-span guest checks (runtime/gcn_spirv.h) */
     gcn_spirv_set_structured_control(1); /* Vulkan takes structured programs (runtime/gcn_spirv.h) */
@@ -5525,6 +5527,7 @@ struct launch_work {
     size_t count;
     atomic_size_t next, done, translated, compiled;
     uint64_t began;
+    _Atomic uint64_t reported; /* when the last progress line went to stderr */
     pthread_t workers[LAUNCH_WORKERS];
     size_t started;
 };
@@ -5557,7 +5560,27 @@ static void make_at_launch(launch_work *w, size_t i)
     free(spirv);
 }
 
-/* Takes the next waiting shaders until none is left; the last worker to finish reports on stderr. */
+/* How often the workers write a progress line on stderr while they compile. */
+#define LAUNCH_REPORT_NS (UINT64_C(2000000000))
+
+/* Tells how far the workers are: launch_progress each time, and a line on stderr at most every
+   LAUNCH_REPORT_NS, the last one the summary. */
+static void report_launch_progress(launch_work *w, size_t done)
+{
+    rt_executor *x = w->x;
+    if (x->launch_progress) x->launch_progress(done, w->count);
+    const uint64_t now = monotonic_ns();
+    if (done == w->count) {
+        fprintf(stderr, "executor: compiled at launch: %zu compute shaders (%zu translated, %zu pipelines compiled), %.2f s\n", w->count,
+                (size_t)atomic_load(&w->translated), (size_t)atomic_load(&w->compiled), (double)(now - w->began) / 1e9);
+        return;
+    }
+    uint64_t last = atomic_load(&w->reported);
+    if (now - last >= LAUNCH_REPORT_NS && atomic_compare_exchange_strong(&w->reported, &last, now))
+        fprintf(stderr, "executor: compiling at launch: %zu of %zu compute shaders, %.1f s\n", done, w->count, (double)(now - w->began) / 1e9);
+}
+
+/* Takes the next waiting shaders until none is left, reporting progress after each. */
 static void *launch_worker(void *argument)
 {
     launch_work *w = argument;
@@ -5569,9 +5592,7 @@ static void *launch_worker(void *argument)
             make_at_launch(w, i);
             atomic_store(&w->states[i], LAUNCH_MADE);
         }
-        if (atomic_fetch_add(&w->done, 1) + 1 == w->count)
-            fprintf(stderr, "executor: compiled at launch: %zu compute shaders (%zu translated, %zu pipelines compiled), %.2f s\n", w->count,
-                    (size_t)atomic_load(&w->translated), (size_t)atomic_load(&w->compiled), (double)(monotonic_ns() - w->began) / 1e9);
+        report_launch_progress(w, atomic_fetch_add(&w->done, 1) + 1);
     }
 }
 
@@ -5635,6 +5656,8 @@ static void compile_catalog(rt_executor *x)
     free(all.keys), free(all.sizes);
     if (!w) return;
     x->launch = w;
+    atomic_init(&w->reported, w->began);
+    if (w->count && x->launch_progress) x->launch_progress(0, w->count);
     const long processors = sysconf(_SC_NPROCESSORS_ONLN);
     size_t wanted = processors > 1 ? (size_t)processors - 1 : 1;
     if (wanted > LAUNCH_WORKERS) wanted = LAUNCH_WORKERS;

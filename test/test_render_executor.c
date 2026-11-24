@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -3054,7 +3055,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -3212,7 +3213,7 @@ static void guarded_targets(int fd, rt_executor *shared)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3303,7 +3304,7 @@ static void guarded_depth_read(int fd, unsigned bytes)
     enum { DEPTH_BUFFER = 0xc0f48000, GD_Z = 0x2700000, GD_HTILE = 0x2780000, GD_COLOUR = 0x2790000, GD_SAMPLED = 0x27a0000, GD_SIZE = 256,
            GD_WORDS = (GD_SIZE / 8) * (GD_SIZE / 8) };
     char error[256] = "";
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3377,7 +3378,7 @@ static void guarded_target_fill(int fd)
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     const uint64_t span = rt_tiling_size(&layout, 1);
     uint32_t *memory = (uint32_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3610,7 +3611,7 @@ static void collect_when_due(int fd)
 {
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0, NULL};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "executor with a due check: %s\n", error);
@@ -3647,7 +3648,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -3703,7 +3704,7 @@ static void copied_image_after_write_back(int fd)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&watched_guarded, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3731,7 +3732,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3949,9 +3950,20 @@ static int scale_add_dispatch(rt_executor *x, uint64_t buffer, uint64_t code, ui
    or driver), translates it and makes its pipeline as it opens, so its dispatch finds the translation
    kept; one more executor finds the translation as it opens. BB_LAUNCH_COMPILE=0 makes none. The
    workers run while the game does: a dispatch that meets the shader first, with empty caches again,
-   makes it or waits for the worker making it, and the shader is translated once. */
-static void launch_compiles(const rt_executor_memory *memory)
+   makes it or waits for the worker making it, and the shader is translated once. launch_progress
+   hears 0 of 1 as the workers start and 1 of 1 when they are done. */
+static atomic_size_t progress_calls, progress_done, progress_count;
+static void count_launch_progress(size_t done, size_t count)
 {
+    atomic_fetch_add(&progress_calls, 1);
+    atomic_store(&progress_done, done), atomic_store(&progress_count, count);
+}
+
+static void launch_compiles(const rt_executor_memory *shared)
+{
+    rt_executor_memory told = *shared;
+    told.launch_progress = count_launch_progress;
+    const rt_executor_memory *memory = &told;
     enum { LAUNCH_BUFFER = 0xc0e50000, LAUNCH_CODE = 0x3100, INPUT = 0x23000, OUTPUT = 0x24000 };
     char directory[] = "/tmp/pb-launch-XXXXXX", catalog[64], translations[3][64], pipelines[3][64], error[256] = "";
     CHECK(mkdtemp(directory) != NULL);
@@ -3970,6 +3982,7 @@ static void launch_compiles(const rt_executor_memory *memory)
         setenv("BB_PIPELINE_CACHE", pipelines[file_of_run[run]], 1);
         if (run == 3) setenv("BB_LAUNCH_COMPILE", "0", 1);
         rt_executor *x = NULL;
+        atomic_store(&progress_calls, 0);
         const int opened = rt_executor_open(memory, &x, error, sizeof error);
         unsetenv("BB_LAUNCH_COMPILE");
         CHECK(opened == 0);
@@ -3985,6 +3998,9 @@ static void launch_compiles(const rt_executor_memory *memory)
         }
         rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
         if (run == 0 || run == 3) CHECK(shaders == 0 && translated == 0 && compiled == 0);
+        if (run == 0 || run == 3) CHECK(atomic_load(&progress_calls) == 0);
+        if (run == 1 || run == 2)
+            CHECK(atomic_load(&progress_calls) == 2 && atomic_load(&progress_done) == 1 && atomic_load(&progress_count) == 1);
         if (run == 1) CHECK(shaders == 1 && translated == 1 && compiled == 1);
         if (run == 2) CHECK(shaders == 1 && translated == 0 && compiled <= 1); /* compiled again without cache control */
         CHECK(scale_add_dispatch(x, LAUNCH_BUFFER, at(LAUNCH_CODE), at(INPUT), at(OUTPUT)));
@@ -4007,7 +4023,7 @@ static void async_pipelines(int fd)
 {
     enum { ASYNC_BUFFER = 0xc0e10000, ASYNC_TARGET = 0x3600000 };
     const int attempts = 3000;
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, NULL};
     rt_executor *x = NULL;
     char error[256] = "";
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
@@ -4050,7 +4066,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0, NULL};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
