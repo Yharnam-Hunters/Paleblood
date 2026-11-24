@@ -59,6 +59,21 @@ static void add(translation_cache *cache, unsigned n)
     translation_key_free(&key);
 }
 
+/* translation_cache_each's visits: whether each key came as key_of(next) in turn. */
+typedef struct {
+    unsigned next;
+    int in_order;
+} visits;
+
+static void visit(void *context, const void *key, size_t size)
+{
+    visits *v = context;
+    translation_key expected = key_of(v->next, 40 + v->next % 50);
+    v->in_order &= size == expected.size && !memcmp(key, expected.bytes, size);
+    translation_key_free(&expected);
+    v->next++;
+}
+
 static long file_size(const char *path)
 {
     struct stat st;
@@ -95,6 +110,10 @@ int main(void)
     /* the next run reads the file */
     cache = translation_cache_open(path, "v1");
     CHECK(translation_cache_count(cache) == KEYS);
+    /* its keys in the order kept */
+    visits seen = {0, 1};
+    translation_cache_each(cache, visit, &seen);
+    CHECK(seen.in_order && seen.next == KEYS);
     all = 1;
     for (unsigned n = 0; n < KEYS; n++) all &= holds(cache, n);
     CHECK(all);
@@ -107,6 +126,10 @@ int main(void)
     CHECK(translation_cache_count(cache) == KEYS - 1);
     CHECK(holds(cache, KEYS - 2) && !holds(cache, KEYS - 1));
     add(cache, KEYS - 1); /* appended after the cut */
+    add(cache, 9); /* kept already: not visited again */
+    seen = (visits){0, 1}; /* those read from the file, then the one added since */
+    translation_cache_each(cache, visit, &seen);
+    CHECK(seen.in_order && seen.next == KEYS);
     translation_cache_close(cache);
     cache = translation_cache_open(path, "v1");
     CHECK(translation_cache_count(cache) == KEYS && holds(cache, KEYS - 1));
