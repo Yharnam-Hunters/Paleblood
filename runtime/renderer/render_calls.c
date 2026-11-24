@@ -221,9 +221,9 @@ typedef struct {
     rt_render_call *calls;
     size_t count, capacity;
     int submitted;                   /* submitted since its last call: the next call starts it over */
-    /* With a reader (runtime/render_placed.h): the first two words of memory at each call's offset when
-       a submission first took it (calls[0..marked)), for a submission of the buffer again with no new
-       calls (taken_count) */
+    /* With a reader (runtime/render_placed.h): the packet in memory at each call's offset when a
+       submission first took it (calls[0..marked), mark_at), for a submission of the buffer again with
+       no new calls (taken_count) */
     uint64_t *marks;
     size_t marked, marks_capacity;
     uint64_t used;                   /* the submission clock when it was last recorded into or taken */
@@ -788,18 +788,34 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
     return record(buffer, &call, error, error_size);
 }
 
-/* The two words at a call's offset in its buffer (the second only inside the size). Called with lists_lock held. */
+/* A call's mark: the packet at its offset as the memory holds it, folded into 64 bits (FNV-1a). For a
+   PM4 type-3 header that is the header and the body it counts, up to MARK_BODY_MAX words; otherwise
+   the first two words. Only words inside the size are read, the first always. The header and the
+   register alone are not enough: a new use of the buffer in the same layout writes the same headers
+   with other values, and the clinic's compute buffers do (each dispatch's table address is user data
+   behind the same SET_SH_REG header), so an old call would run with an address from an earlier frame
+   whose memory now holds other data. Called with lists_lock held. */
+enum { MARK_BODY_MAX = 64 };
 static uint64_t mark_at(uint64_t buffer, uint32_t offset, uint32_t size)
 {
-    const uint64_t second = offset + 8ull <= size ? read_word(buffer + offset + 4) : 0;
-    return read_word(buffer + offset) | second << 32;
+    enum { PM4_TYPE3 = 3, PM4_TYPE_SHIFT = 30 };
+    const uint64_t fnv_offset = 0xcbf29ce484222325ull, fnv_prime = 0x100000001b3ull;
+    const uint32_t header = read_word(buffer + offset);
+    uint32_t words = 2;
+    if (header >> PM4_TYPE_SHIFT == PM4_TYPE3) {
+        const uint32_t body = PM4_COUNT(header) + 1;
+        words = 1 + (body < MARK_BODY_MAX ? body : MARK_BODY_MAX);
+    }
+    uint64_t mark = (fnv_offset ^ header) * fnv_prime;
+    for (uint32_t i = 1; i < words && offset + 4ull * (i + 1) <= size; i++) mark = (mark ^ read_word(buffer + offset + 4ull * i)) * fnv_prime;
+    return mark;
 }
 
 /* How many of a list's calls a submission of `size` bytes takes: those before the size. A list taken
    before and given no call since is either the same commands submitted again, or a new use of the
    memory in a layout nothing recorded (the game writes some buffers from packets alone, DMA and
-   memory writes): with a reader, it is taken again only where the memory still holds what it held at
-   each call's offset when first taken, and otherwise its calls belong to the earlier use and are
+   memory writes): with a reader, it is taken again only where the memory still holds the packet it
+   held at each call's offset when first taken, and otherwise its calls belong to the earlier use and are
    forgotten (their user data would land on a later dispatch). Called with lists_lock held. */
 static size_t taken_count(call_list *list, uint32_t size)
 {
