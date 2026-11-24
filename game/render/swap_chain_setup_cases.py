@@ -277,7 +277,36 @@ def additional_cases():
         yield c
 
 
+    # The information block can overlap record storage. Each loop must observe
+    # both a growing and an emptied count after its own copy or callback.
+    for stage in ("record_copy", "set_record_address", "get_record_address"):
+        for before, after in ((2, 0), (1, 2)):
+            c = setup_route("success", 2, 8)
+            c["id"] = f"{stage}_changes_overlapping_count_{before}_to_{after}"
+            c["args"]["r8"] = "buf:self"
+            c["buffers"].pop("info")
+            for preset in c["memory"]:
+                if preset["addr"].startswith("buf:info"):
+                    preset["addr"] = preset["addr"].replace("buf:info", "buf:self", 1)
+            next(preset for preset in c["memory"] if preset["addr"] == "buf:self+40")["bytes"] = word(before)
+            descriptor = next(stub for stub in c["stubs"] if stub["address"] == "0x01485f90")
+            payload = bytearray.fromhex(descriptor["writes"][0]["bytes"])
+            payload[40:44] = bytes.fromhex(word(after if stage == "record_copy" else before))
+            descriptor["writes"][0]["bytes"] = payload.hex()
+            if stage != "record_copy":
+                callback = "0x01486c50" if stage == "set_record_address" else "0x01486ca0"
+                first = next(stub for stub in c["stubs"] if stub["address"] == callback)
+                first.setdefault("writes", []).append({"arg": 0, "offset": 40, "bytes": word(after), "size": 4})
+            register = next(stub for stub in c["stubs"] if stub["address"] == "0x02fbf5d8")
+            # Observe only initialized address entries. Spare callback stubs
+            # remain present so an erroneous extra call is traced.
+            initialized = 1 if stage == "get_record_address" else (2 if after == 2 else 0)
+            next(view for view in register["argmem"] if view["arg"] == 2)["size"] = initialized * 8
+            yield c
+
+
 def main():
+    """Write the synthetic setup cases to the requested directory."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2

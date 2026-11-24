@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Menu: the localize request byte (0x05973810). The text input steps raise it and wait for it
-// (text_input_steps.cpp); the language object run by 0x01d53140 (kept original, whose text names
-// Sys\Localize\CSLocalizeLang.cpp) clears it here once both of its loads reached the same state.
+// (text_input_steps.cpp); a step of the language object (localize_language.h), from the same step
+// table as 0x01d53140 (kept original, whose text names Sys\Localize\CSLocalizeLang.cpp), clears it
+// here once both of its loads reached the same state.
 // Two more users are kept original, too short to hook: 0x01d53530 raises the byte, 0x01d53540
 // answers whether no request is pending.
 #include <cstdint>
