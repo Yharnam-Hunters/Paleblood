@@ -525,6 +525,16 @@ Instead:
        (`taken_count` in `render_calls.c`, with the reader of `runtime/render_placed.h`). A buffer
        built and never submitted is not checked this way: its calls stay until a new call starts
        it over.
+     - **The same layout with other values** (found in Iosefka's Clinic, 22 November 2026): two words
+       are only a packet's header and register, and the game rewrites some compute buffers in the
+       same layout, so every SET_SH_REG of a dispatch's table address matched while the address in
+       it had changed. The earlier use's address (one from frames before, its memory since holding
+       float data) reached the shader at 0x20d1b00800, whose first instructions read a
+       buffer descriptor from that table with scalar loads (`s_load_dwordx4`, then
+       `s_buffer_load_dword` through it). Scalar loads do not depend on EXEC, so the console would
+       read through that descriptor too: the fault was in the record, not in the shader's range
+       checks. The mark is now the whole packet (the header and the body it counts, up to 64 words,
+       folded into 64 bits), so a rewrite with other values forgets the earlier calls.
      - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
        command buffers from rings, so the record sees new buffer addresses all the time, and the
        runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
@@ -830,8 +840,10 @@ Instead:
           stores to, and the CPU waits only before reading that memory itself. Each target and image
           keeps its copy plan (the table and linear rows as large as the surface, one per mip level)
           while it is kept; when the device's memory has no room for a new plan, the plans of images
-          no unfinished batch uses are freed and made again at their next load (`free_idle_image_plans`;
-          before, a long walk stopped with "no GPU memory for copying a 1920x1080 image"). A target is loaded
+          no unfinished batch uses are freed and made again at their next load (`reclaim_image_memory`;
+          before, a long walk stopped with "no GPU memory for copying a 1920x1080 image"). If allocating a descriptor
+          image runs out of device memory, idle textures that can be reloaded are also released and the allocation
+          is retried once. Shader-written texels stay in their image. A target is loaded
           again, and such an image too, whenever the memory may have changed (the memory epoch: a new
           buffer, a dispatch, a write-back over it), without comparing bytes: reading it on the GPU
           costs less than comparing it on the CPU. Images of 8- and 16-bit elements need the device's 8-
@@ -1340,6 +1352,25 @@ things keep that to the first run:
   target has been drawn before (a later test reading depth no draw wrote would stop). Dispatches
   and every other draw still wait for their pipelines. `PB_ASYNC_PIPELINES=0` turns this off (one
   binary for an A/B run); the renderer's own test runs with it off, the executor's test checks it.
+- **Compute shaders compiled while the game loads.** A dispatch cannot be left out, so a compute
+  shader neither cache holds is translated and compiled on the renderer's thread when its dispatch
+  comes. Every compute shader made is also kept, by its translation key, in a shader catalog that
+  outlives translator versions (`BB_SHADER_CATALOG` (empty: none), else `catalog.bin` beside the
+  translations; its version changes only with the key's layout). When the executor opens it makes
+  each catalog key again with its own values (the guest memory's place, the stop words, given in the
+  catalog's order) and starts up to eight worker threads (one fewer than the processors) that
+  translate the shaders the translation cache lacks and make the pipelines the pipeline cache lacks,
+  while the game loads. A dispatch that meets a shader a worker is making waits for it; one no
+  worker has taken yet is made by the dispatch and left by the workers, so nothing is made twice.
+  The last worker prints what it did ("compiled at launch"). `BB_LAUNCH_COMPILE=0` turns it off.
+  Measured in the clinic walk with a warm catalog of 30 compute shaders and empty translation and
+  pipeline caches, the driver's disk cache off (a first run after an update; two rounds, the same
+  binary with it off and on, 2026-11-22): the workers took 7.65 to 7.73 s; the time from start to
+  frame 1350 went from 79.28 and 81.29 s to 70.85 and 71.78 s; frames 1350-2900 were unchanged within
+  the noise (average 16.27 and 16.21 fps, 1% low 9.90 and 9.72, worst frame 233 and 225 ms). A
+  first version that waited for the workers before the first frame delayed it by 7.0 s and saved
+  only 2.0 s later, so the workers now run beside the game. With a warm pipeline cache (the 30
+  translations made again) the workers took 0.10 s.
 
 ## Measuring frame rate
 

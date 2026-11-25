@@ -34,6 +34,43 @@ static struct {
     unsigned unordered_passes; /* render passes made with no dependency on earlier passes' attachment writes */
 } recorded;
 
+/* Armed only around one draw, after its target and pipeline already exist. The next plain
+   allocation backs its new texture. Keep refusing it until the executor frees memory (or on every
+   attempt when persistent is set). All successful allocations and frees go through the driver. */
+static _Thread_local struct {
+    VkResult error;
+    unsigned attempts, frees, destroyed_views;
+    int persistent;
+} pressure;
+
+VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo *info, const VkAllocationCallbacks *allocator,
+                                                VkDeviceMemory *memory)
+{
+    PFN_vkAllocateMemory next = (PFN_vkAllocateMemory)dlsym(RTLD_NEXT, "vkAllocateMemory");
+    if (pressure.error && !info->pNext) {
+        pressure.attempts++;
+        if (!pressure.frees || pressure.persistent) {
+            *memory = VK_NULL_HANDLE;
+            return pressure.error;
+        }
+    }
+    return next(device, info, allocator, memory);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkFreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks *allocator)
+{
+    PFN_vkFreeMemory next = (PFN_vkFreeMemory)dlsym(RTLD_NEXT, "vkFreeMemory");
+    next(device, memory, allocator);
+    if (pressure.error && memory) pressure.frees++;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice device, VkImageView view, const VkAllocationCallbacks *allocator)
+{
+    PFN_vkDestroyImageView next = (PFN_vkDestroyImageView)dlsym(RTLD_NEXT, "vkDestroyImageView");
+    next(device, view, allocator);
+    if (pressure.error && view) pressure.destroyed_views++;
+}
+
 VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(VkCommandBuffer commands, VkPipelineStageFlags source, VkPipelineStageFlags destination,
                                                 VkDependencyFlags flags, uint32_t memory_count, const VkMemoryBarrier *memory,
                                                 uint32_t buffer_count, const VkBufferMemoryBarrier *buffers, uint32_t image_count,
@@ -1885,6 +1922,11 @@ static void image_left_to_set_aside_target(rt_executor *x)
            HALF_ONE = 0x3c00 };
     char error[200] = "";
     const uint64_t target = at(LEFT_TARGET);
+    enum { FIRST_TEXTURE = 0x3f50000, SECOND_TEXTURE = 0x3f60000, SAMPLE_TARGET = 0x3f70000 };
+    uint32_t sampled[8];
+    image_descriptor(sampled, at(FIRST_TEXTURE), 10, 0, SIZE, SIZE);
+    sampled[3] |= LINEAR_ALIGNED << 20, sampled[4] = (64 - 1) << 13;
+    CHECK(draw_texels(x, at(SAMPLE_TARGET), sampled, error, sizeof error) == 0);
     memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 8);
     memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
     rt_render_forget(), rt_executor_reset(x);
@@ -1908,6 +1950,16 @@ static void image_left_to_set_aside_target(rt_executor *x)
     const int stored = rt_executor_run(x, CLEAR_BUFFER, 0x40, error, sizeof error);
     if (stored) fprintf(stderr, "halves stored over a halves target: %s\n", error);
     CHECK(stored == 0);
+
+    /* Only the storage image has the shader's result. Reclaim idle textures before switching
+       targets: the draw below must still recover that result from the retained image. */
+    image_descriptor(sampled, at(SECOND_TEXTURE), 10, 0, SIZE, SIZE);
+    sampled[3] |= LINEAR_ALIGNED << 20, sampled[4] = (64 - 1) << 13;
+    pressure.attempts = pressure.frees = pressure.destroyed_views = 0;
+    pressure.error = VK_ERROR_OUT_OF_DEVICE_MEMORY, pressure.persistent = 0;
+    const int recovered = draw_texels(x, at(SAMPLE_TARGET), sampled, error, sizeof error);
+    pressure.error = VK_SUCCESS;
+    CHECK(recovered == 0 && pressure.attempts >= 2 && pressure.destroyed_views > 0);
 
     rt_render_forget();
     const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -3876,7 +3928,7 @@ static long read_file(const char *path, unsigned char *bytes, size_t size)
 }
 
 /* With the device's memory full, an image still loads: the copy plans of images no unfinished batch
-   uses give their memory back (free_idle_image_plans). BB_COPY_ROWS_LIMIT stands in for a full device:
+   uses give their memory back. BB_COPY_ROWS_LIMIT stands in for a full device:
    linear rows for two 16x16 surfaces of 4-byte texels, the target's and one image's. many_images' 100
    images, each drawn in its own run, then all draw; without the plans given back, the second image
    found no memory for its copy. */
@@ -3892,6 +3944,67 @@ static void images_past_full_memory(const rt_executor_memory *memory)
     CHECK(opened == 0);
     if (opened) return;
     many_images(x, 100);
+    rt_executor_close(x);
+}
+
+/* The second allocation can succeed only after reclaiming the first texture. Its view must be
+   released and both textures must still sample correctly when the first is loaded again. */
+static void image_allocation_pressure(const rt_executor_memory *memory, VkResult fault, int persistent)
+{
+    enum { FIRST = 0x1c00000, SECOND = FIRST + 0x1000, IMAGE_TARGET = 0x1bc0000, PITCH = 64, LINEAR_ALIGNED = 8 };
+    rt_executor *x = NULL;
+    char error[256] = "";
+    CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+    if (!x) return;
+    uint32_t image[2][8];
+    for (unsigned i = 0; i < 2; i++) {
+        const uint64_t address = at(i ? SECOND : FIRST);
+        uint32_t *texels = (uint32_t *)(uintptr_t)address;
+        for (unsigned y = 0; y < SIZE; y++)
+            for (unsigned px = 0; px < SIZE; px++) texels[y * PITCH + px] = i ? UINT32_MAX : reference_texel(px, y);
+        image_descriptor(image[i], address, 10, 0, SIZE, SIZE);
+        image[i][3] |= LINEAR_ALIGNED << 20, image[i][4] = (PITCH - 1) << 13;
+    }
+    CHECK(draw_texels(x, at(IMAGE_TARGET), image[0], error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(IMAGE_TARGET)) == 0);
+    if (!persistent) {
+        /* Draw the first texture once more without submitting its batch. Its copy plan is the only
+           candidate. The failed allocation must leave it alone until the GPU has finished. */
+        enum { PENDING = 0xc0ff0000 };
+        rt_render_forget();
+        const uint32_t bytes = record_triangle_draw(PENDING, 0);
+        size_t count = 0;
+        const rt_render_call *calls = rt_render_submitted(PENDING, bytes, &count);
+        uint64_t ticket;
+        CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+        pressure.attempts = pressure.frees = pressure.destroyed_views = 0;
+        pressure.error = fault, pressure.persistent = 0;
+        const int pending = draw_texels(x, at(IMAGE_TARGET), image[1], error, sizeof error);
+        pressure.error = VK_SUCCESS;
+        CHECK(pending == -1 && pressure.attempts == 1 && pressure.frees == 0 && pressure.destroyed_views == 0);
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    }
+    error[0] = '\0';
+    pressure.attempts = pressure.frees = pressure.destroyed_views = 0;
+    pressure.error = fault, pressure.persistent = persistent;
+    const int drawn = draw_texels(x, at(IMAGE_TARGET), image[1], error, sizeof error);
+    pressure.error = VK_SUCCESS;
+    if (fault == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+        CHECK(pressure.attempts == 2 && pressure.frees > 0 && pressure.destroyed_views == 1);
+        if (!persistent) {
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(drawn == 0);
+            const int read = rt_executor_read_target(x, at(IMAGE_TARGET), bgra, SIZE, SIZE, error, sizeof error);
+            CHECK(read == 0);
+            if (!read)
+                for (unsigned px = 0; px < SIZE * SIZE; px++) CHECK(bgra[px] == UINT32_MAX);
+            CHECK(draw_texels(x, at(IMAGE_TARGET), image[0], error, sizeof error) == 0);
+            CHECK(differing_pixels(x, at(IMAGE_TARGET)) == 0);
+        }
+    } else {
+        CHECK(pressure.attempts == 1 && pressure.frees == 0 && pressure.destroyed_views == 0);
+    }
+    if (persistent) CHECK(drawn == -1 && strstr(error, "no memory for a 16x16 image"));
     rt_executor_close(x);
 }
 
@@ -3983,6 +4096,86 @@ static void pipeline_cache_file(const rt_executor_memory *memory)
     rmdir(directory);
 }
 
+/* One dispatch of scale_add (out[i] = in[i] * 2.5 + 1, 64 lanes) at code; whether every lane stored. */
+static int scale_add_dispatch(rt_executor *x, uint64_t buffer, uint64_t code, uint64_t input_at, uint64_t output_at)
+{
+    enum { LANES = 64 };
+    char error[256] = "";
+    memcpy((void *)(uintptr_t)code, scale_add, sizeof scale_add);
+    float *input = (float *)(uintptr_t)input_at, *output = (float *)(uintptr_t)output_at;
+    for (unsigned i = 0; i < LANES; i++) input[i] = (float)i, output[i] = -1;
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+    uint32_t user[8];
+    descriptor(user, input_at, 4);
+    descriptor(user + 4, output_at, 4);
+    const uint32_t one[3] = {1, 1, 1};
+    rt_render_forget(), rt_executor_reset(x);
+    if (rt_render_record_compute_shader_at(buffer, shader) || rt_render_record_user_data(buffer, 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) ||
+        rt_render_record_dispatch(buffer, 0x20, one, error, sizeof error) || rt_executor_run(x, buffer, 0x30, error, sizeof error)) {
+        fprintf(stderr, "scale_add dispatch: %s\n", error);
+        return 0;
+    }
+    int right = 1;
+    for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
+    return right;
+}
+
+/* The shader catalog (BB_SHADER_CATALOG) and compiling at launch: a run's compute shader is kept in the
+   catalog; the next executor, with an empty translation cache and pipeline cache (a new translator
+   or driver), translates it and makes its pipeline as it opens, so its dispatch finds the translation
+   kept; one more executor finds the translation as it opens. BB_LAUNCH_COMPILE=0 makes none. The
+   workers run while the game does: a dispatch that meets the shader first, with empty caches again,
+   makes it or waits for the worker making it, and the shader is translated once. */
+static void launch_compiles(const rt_executor_memory *memory)
+{
+    enum { LAUNCH_BUFFER = 0xc0e50000, LAUNCH_CODE = 0x3100, INPUT = 0x23000, OUTPUT = 0x24000 };
+    char directory[] = "/tmp/pb-launch-XXXXXX", catalog[64], translations[3][64], pipelines[3][64], error[256] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);
+    for (int k = 0; k < 3; k++) {
+        snprintf(translations[k], sizeof translations[k], "%s/translations%d.bin", directory, k);
+        snprintf(pipelines[k], sizeof pipelines[k], "%s/pipelines%d.bin", directory, k);
+    }
+    setenv("BB_SHADER_CATALOG", catalog, 1);
+    /* run 0 makes the shader; runs 1 and 2 use the second translation and pipeline caches; run 3 has
+       launch compiles turned off; run 4 dispatches before asking what the workers did, with the third
+       caches */
+    const int file_of_run[5] = {0, 1, 1, 1, 2};
+    for (int run = 0; run < 5; run++) {
+        setenv("BB_TRANSLATION_CACHE", translations[file_of_run[run]], 1);
+        setenv("BB_PIPELINE_CACHE", pipelines[file_of_run[run]], 1);
+        if (run == 3) setenv("BB_LAUNCH_COMPILE", "0", 1);
+        rt_executor *x = NULL;
+        const int opened = rt_executor_open(memory, &x, error, sizeof error);
+        unsetenv("BB_LAUNCH_COMPILE");
+        CHECK(opened == 0);
+        if (opened) break;
+        size_t shaders = 9, translated = 9, compiled = 9, found = 9, made = 9;
+        if (run == 4) {
+            CHECK(scale_add_dispatch(x, LAUNCH_BUFFER, at(LAUNCH_CODE), at(INPUT), at(OUTPUT)));
+            rt_executor_translations(x, &found, &made);
+            rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
+            CHECK(shaders == 1 && found + made == 1 && translated + made == 1);
+            rt_executor_close(x);
+            continue;
+        }
+        rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
+        if (run == 0 || run == 3) CHECK(shaders == 0 && translated == 0 && compiled == 0);
+        if (run == 1) CHECK(shaders == 1 && translated == 1 && compiled == 1);
+        if (run == 2) CHECK(shaders == 1 && translated == 0 && compiled <= 1); /* compiled again without cache control */
+        CHECK(scale_add_dispatch(x, LAUNCH_BUFFER, at(LAUNCH_CODE), at(INPUT), at(OUTPUT)));
+        rt_executor_translations(x, &found, &made);
+        CHECK(run == 0 ? found == 0 && made == 1 : found == 1 && made == 0);
+        rt_executor_close(x);
+    }
+    setenv("BB_SHADER_CATALOG", "", 1);
+    setenv("BB_TRANSLATION_CACHE", "", 1);
+    setenv("BB_PIPELINE_CACHE", "", 1);
+    unlink(catalog);
+    for (int k = 0; k < 3; k++) unlink(translations[k]), unlink(pipelines[k]);
+    rmdir(directory);
+}
+
 /* With async_pipelines, the first draw with a pipeline neither made nor cached is left out while a worker
    thread makes the pipeline (the target keeps its zeroed memory), and a later run of the same buffer
    draws it. */
@@ -4023,6 +4216,7 @@ int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
     setenv("BB_TRANSLATION_CACHE", "", 0); /* nor a translation cache file */
+    setenv("BB_SHADER_CATALOG", "", 0); /* nor a shader catalog */
     /* nor the drivers' own shader caches on disk: async_pipelines needs a pipeline the compiler must make */
     setenv("__GL_SHADER_DISK_CACHE", "0", 0), setenv("MESA_SHADER_CACHE_DISABLE", "true", 0);
     const int fd = map_guest_memory();
@@ -4787,7 +4981,11 @@ int main(void)
     shader_sweep(&memory);
     same_spirv_in_any_order(&memory);
     images_past_full_memory(&memory);
+    image_allocation_pressure(&memory, VK_ERROR_OUT_OF_DEVICE_MEMORY, 0);
+    image_allocation_pressure(&memory, VK_ERROR_OUT_OF_DEVICE_MEMORY, 1);
+    image_allocation_pressure(&memory, VK_ERROR_OUT_OF_HOST_MEMORY, 1);
     pipeline_cache_file(&memory);
+    launch_compiles(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

@@ -203,6 +203,7 @@ character_gaitem_handle_release_01e8bc00,edge,,54,54,0,0,7fabf4dc282df527,2026-1
 character_gaitem_resolve_handle_01e88da0,recorded,,24,24,0,0,7fabf4dc282df527,2026-11-14
 character_gaitem_resolve_handle_01e88da0,edge,,72,72,0,0,7fabf4dc282df527,2026-11-14
 character_params_post_update,edge,,65,65,0,0,eb2ce293ded226c1,2026-11-20
+character_state_data_sync,edge,,84,84,0,0,0f52e98975a5395b,2026-11-22
 character_state_flags_update_01e4a490,recorded,,57,57,0,0,84ffbaaca95d946f,2026-11-17
 character_state_flags_update_01e4a490,edge,,40,40,0,0,84ffbaaca95d946f,2026-11-13
 character_throw_event_01e19e20,edge,,27,27,0,0,b366a522fe9632ff,2026-11-22
@@ -847,6 +848,11 @@ engine_list_push_back_constructed_02b2dae0,edge,,13,13,0,0,842a523ad9f6e039,2026
 engine_list_push_back_constructed_02b2f840,edge,,13,13,0,0,842a523ad9f6e039,2026-11-14
 engine_list_push_back_constructed_02b306f0,edge,,13,13,0,0,842a523ad9f6e039,2026-11-14
 engine_list_push_back_constructed_02da1630,edge,,13,13,0,0,842a523ad9f6e039,2026-11-14
+engine_load_construct_01d55cb0,edge,,16,16,0,0,d610b927c6f263ff,2026-11-23
+engine_load_delete_01d55d40,edge,,14,14,0,0,d610b927c6f263ff,2026-11-23
+engine_load_destroy_01d55de0,edge,,14,14,0,0,d610b927c6f263ff,2026-11-23
+engine_load_frame_01d55c40,edge,,37,37,0,0,d610b927c6f263ff,2026-11-23
+engine_load_run_job_01d55380,edge,,31,31,0,0,d610b927c6f263ff,2026-11-23
 engine_locked_regular_heap_construct_0247c590,edge,,3,3,0,0,d86ef37204a20cc9,2026-11-13
 engine_locked_regular_heap_initialize_0247c5e0,recorded,,7,7,0,0,d86ef37204a20cc9,2026-11-17
 engine_locked_regular_heap_initialize_0247c5e0,edge,,24,24,0,0,d86ef37204a20cc9,2026-11-13
@@ -1661,10 +1667,10 @@ menu_heap_adapter_free_023411d0,recorded,,155,155,0,0,99d14ad81370e4cc,2026-11-1
 menu_heap_adapter_free_023411d0,edge,,6,6,0,0,99d14ad81370e4cc,2026-11-14
 menu_heap_adapter_reallocate_02341330,recorded,,105,105,0,0,99d14ad81370e4cc,2026-11-17
 menu_heap_adapter_reallocate_02341330,edge,,14,14,0,0,99d14ad81370e4cc,2026-11-14
-menu_localize_request_finish_01d53420,edge,,38,38,0,0,525e87d25699447c,2026-11-19
-menu_localize_step_release_final_loads_01d534b0,edge,,23,23,0,0,984e88c240cbc7de,2026-11-19
-menu_localize_step_release_load_01d53450,edge,,16,16,0,0,984e88c240cbc7de,2026-11-19
-menu_localize_step_release_loads_01d52e50,edge,,52,52,0,0,984e88c240cbc7de,2026-11-19
+menu_localize_request_finish_01d53420,edge,,38,38,0,0,751469116ed7bd70,2026-11-20
+menu_localize_step_release_final_loads_01d534b0,edge,,23,23,0,0,0aceec3e49424fcc,2026-11-21
+menu_localize_step_release_load_01d53450,edge,,16,16,0,0,0aceec3e49424fcc,2026-11-21
+menu_localize_step_release_loads_01d52e50,edge,,53,53,0,0,0aceec3e49424fcc,2026-11-21
 menu_movie_screen_close_023548d0,recorded,,12,12,0,0,99d14ad81370e4cc,2026-11-17
 menu_movie_screen_close_023548d0,edge,,5,5,0,0,99d14ad81370e4cc,2026-11-14
 menu_movie_screen_step_02354d90,edge,,8,8,0,0,99d14ad81370e4cc,2026-11-14
@@ -1905,7 +1911,7 @@ render_allocate_shader_upload,recorded,,239,239,0,0,48df8d1e68143c6f,2026-11-12
 render_allocate_shader_upload,edge,,40,40,0,0,48df8d1e68143c6f,2026-11-12
 render_allocate_shader_upload_range_02aa9db0,recorded,,719,719,0,0,dff531236f354620,2026-11-17
 render_allocate_shader_upload_range_02aa9db0,edge,,27,27,0,0,dff531236f354620,2026-11-13
-render_build_present_source_record,edge,,105,105,0,0,1c9e410dd4d00fed,2026-11-10
+render_build_present_source_record,edge,,105,105,0,0,368306e36f93940d,2026-11-24
 render_build_shader_link_words,recorded,,9,9,0,0,0179f06c079fc316,2026-11-12
 render_build_shader_link_words,edge,,30,30,0,0,0179f06c079fc316,2026-11-12
 render_calculate_record_descriptor_level_offset,edge,,30,30,0,0,a5d954dded06630e,2026-11-05
@@ -2013,7 +2019,7 @@ render_initialize_pair_record_descriptor,edge,,33,33,0,0,63a1e970d620584f,2026-1
 render_initialize_record_geometry_flags,recorded,,19,19,0,0,0ef232dc6bf3c570,2026-11-17
 render_initialize_record_geometry_flags,edge,,70,70,0,0,0ef232dc6bf3c570,2026-11-10
 render_initialize_record_level_descriptor,edge,,51,51,0,0,a36426b67c294984,2026-11-05
-render_initialize_swap_chain_resource,edge,,52,52,0,0,e636609d2c7f7211,2026-11-10
+render_initialize_swap_chain_resource,edge,,52,52,0,0,7ca9b25d85adecaa,2026-11-24
 render_initialize_triple_record_descriptor,edge,,97,97,0,0,8993a89e4989c6b5,2026-11-10
 render_list_prepare_02379d60,recorded,,30,30,0,0,154139170a78885f,2026-11-17
 render_list_prepare_02379d60,edge,,23,23,0,0,154139170a78885f,2026-11-14
@@ -2024,8 +2030,8 @@ render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-12
 render_pop_present_buffer_pool,edge,,25,25,0,0,36601bdfbc50357a,2026-11-10
 render_prepare_present_context_scratch,recorded,,669,669,0,0,056fab43a42fc1e4,2026-11-17
 render_prepare_present_context_scratch,edge,,34,34,0,0,056fab43a42fc1e4,2026-11-05
-render_prepare_resource_descriptor,edge,,40,40,0,0,beb33acb10844a38,2026-11-10
-render_prepare_swap_chain_resource_info,edge,,54,54,0,0,328c0ffeac3089c8,2026-11-13
+render_prepare_resource_descriptor,edge,,40,40,0,0,cb1e68cd389b1119,2026-11-24
+render_prepare_swap_chain_resource_info,edge,,54,54,0,0,5750addc3ae823c5,2026-11-24
 render_present_encoding_units,recorded,,87,87,0,0,c3332eaa68fece3e,2026-11-17
 render_present_encoding_units,edge,,8,8,0,0,c3332eaa68fece3e,2026-11-10
 render_present_last_record_consume,edge,,56,56,0,0,8feb3252c4706117,2026-11-10
@@ -2047,11 +2053,11 @@ render_read_record_mapping_word,recorded,,63,63,0,0,68ea5b3aae2f9be4,2026-11-12
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-12
 render_reclaim_shader_upload_blocks_02aaa860,recorded,,180,180,0,0,dff531236f354620,2026-11-17
 render_reclaim_shader_upload_blocks_02aaa860,edge,,22,22,0,0,dff531236f354620,2026-11-13
-render_record_apply_mapping,edge,,400,400,0,0,6de6826ea92e835a,2026-11-05
+render_record_apply_mapping,edge,,400,400,0,0,8836386d282fac95,2026-11-24
 render_record_apply_parameter_tuple,edge,,1050,1050,0,0,5cc7672932429aef,2026-11-04
 render_record_auxiliary_predicate,recorded,,137,137,0,0,ddfae0976d12bebd,2026-11-17
 render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
-render_record_constructor,edge,,64,64,0,0,396bf37de5ef4277,2026-11-10
+render_record_constructor,edge,,64,64,0,0,ef51a92055017d7d,2026-11-24
 render_record_constructor_optional_first,edge,,62,62,0,0,3b16979550283ed3,2026-11-10
 render_record_constructor_optional_second,edge,,79,79,0,0,0843eec05fb364bc,2026-11-10
 render_record_constructor_pack_pair,edge,,64,64,0,0,5e511c07c36ca7c5,2026-11-10
@@ -2216,7 +2222,7 @@ render_set_vgt_primitive_type,recorded,,130,130,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_set_vgt_primitive_type,edge,,14,14,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_setup_create_object_0247c4e0,recorded,,661,661,0,0,95c882807baf8923,2026-11-17
 render_setup_create_object_0247c4e0,edge,,9,9,0,0,95c882807baf8923,2026-11-13
-render_setup_swap_chain,edge,,43,43,0,0,5f2a48128c627ac6,2026-11-05
+render_setup_swap_chain,edge,,49,49,0,0,1937870745f1f8bf,2026-11-24
 render_submit_pending_commands_02aafa00,recorded,,587,587,0,0,e8a8d378ae1bef7e,2026-11-17
 render_submit_pending_commands_02aafa00,edge,,32,32,0,0,e8a8d378ae1bef7e,2026-11-13
 render_submit_present_finish_snapshot,recorded,,214,214,0,0,62314b61bf581dee,2026-11-12
