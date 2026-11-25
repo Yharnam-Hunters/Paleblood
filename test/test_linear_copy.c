@@ -25,6 +25,19 @@ static int shape_of(const uint32_t *code, size_t dwords, gcn_linear_copy *shape)
     return gcn_linear_copy_shape(code, dwords, shape);
 }
 
+/* Insert s_mov_b32 sdst, 0 before one word of the guarded copy. */
+static void check_scalar_move(unsigned sdst, unsigned before, int expected)
+{
+    uint32_t code[WORDS + 1];
+    memcpy(code, copy_dwords, before * sizeof *code);
+    code[before] = 0xbe800380u | sdst << 16;
+    memcpy(code + before + 1, copy_dwords + before, (WORDS - before) * sizeof *code);
+    gcn_linear_copy shape;
+    const int matched = shape_of(code, WORDS + 1, &shape);
+    if (matched != expected) fprintf(stderr, "scalar move to %u before word %u: matched %d, expected %d\n", sdst, before, matched, expected);
+    CHECK(matched == expected);
+}
+
 int main(void)
 {
     gcn_linear_copy shape;
@@ -72,6 +85,26 @@ int main(void)
     const uint32_t harmless[] = {0xbeeb03ff, 7, copy_dwords[LSHL], copy_dwords[ADD], copy_dwords[LOAD], copy_dwords[LOAD_1], copy_dwords[WAIT],
                                  copy_dwords[STORE], copy_dwords[STORE_1], copy_dwords[END]};
     CHECK(shape_of(harmless, sizeof harmless / 4, &shape) == 1);
+    /* EXEC's low and high halves independently select which lanes load and store. */
+    enum { VCC_LO = 106, VCC_HI = 107, EXEC_LO = 126, EXEC_HI = 127 };
+    check_scalar_move(EXEC_LO, LOAD, 0);
+    check_scalar_move(EXEC_HI, LOAD, 0);
+    const uint32_t exec_cleared[] = {copy_dwords[LSHL], copy_dwords[ADD], 0xbefe0380, 0xbeff0380, copy_dwords[LOAD], copy_dwords[LOAD_1],
+                                     copy_dwords[COMPARE], copy_dwords[SAVEEXEC], copy_dwords[WAIT], copy_dwords[STORE], copy_dwords[STORE_1],
+                                     copy_dwords[END]};
+    CHECK(shape_of(exec_cleared, sizeof exec_cleared / sizeof *exec_cleared, &shape) == 0);
+    /* Either VCC half written after the compare changes the mask consumed by saveexec. */
+    check_scalar_move(VCC_LO, SAVEEXEC, 0);
+    check_scalar_move(VCC_HI, SAVEEXEC, 0);
+    /* Earlier VCC writes are overwritten by the compare; unused ordinary SGPR writes stay valid. */
+    check_scalar_move(VCC_LO, LSHL, 1);
+    check_scalar_move(VCC_HI, COMPARE, 1);
+    check_scalar_move(8, COMPARE, 1);
+    /* Flat scratch, trap registers, M0 and reserved destinations have no proven harmless role. */
+    check_scalar_move(104, LOAD, 0);
+    check_scalar_move(108, LOAD, 0);
+    check_scalar_move(124, LOAD, 0);
+    check_scalar_move(125, LOAD, 0);
     /* the scaled index's SGPR (s2) written after the add reads it (the exec save), and before it */
     memcpy(code, copy_dwords, sizeof copy_dwords);
     code[SAVEEXEC] = 0xbe82246a;
