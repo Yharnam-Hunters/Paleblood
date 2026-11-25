@@ -1996,7 +1996,7 @@ render_emit_shader_sampler16_014762f0,recorded,,50,50,0,0,4dee6fa4a094cca6,2026-
 render_emit_shader_sampler16_014762f0,edge,,27,27,0,0,4dee6fa4a094cca6,2026-11-13
 render_emit_shader_word_01476420,edge,,25,25,0,0,4dee6fa4a094cca6,2026-11-13
 render_emit_update_ps_shader_01475420,edge,,9,9,0,0,38220377991f253f,2026-11-13
-render_finish_present_commands,edge,,12,12,0,0,8903f4ade7e86684,2026-11-19
+render_finish_present_commands,edge,,12,12,0,0,8903f4ade7e86684,2026-11-25
 render_finish_present_context,recorded,,105,105,0,0,fd9fe3b2f4ad1c02,2026-11-12
 render_finish_present_context,edge,,2,2,0,0,fd9fe3b2f4ad1c02,2026-11-12
 render_finish_record_shader,recorded,,57,57,0,0,073880f2c3fe7a48,2026-11-12
@@ -2022,7 +2022,7 @@ render_initialize_swap_chain_resource,edge,,52,52,0,0,7ca9b25d85adecaa,2026-11-2
 render_initialize_triple_record_descriptor,edge,,97,97,0,0,8993a89e4989c6b5,2026-11-10
 render_list_prepare_02379d60,recorded,,30,30,0,0,154139170a78885f,2026-11-17
 render_list_prepare_02379d60,edge,,23,23,0,0,154139170a78885f,2026-11-14
-render_managed_present_capacity,edge,,13,13,0,0,bf18f4e18d35dab3,2026-11-19
+render_managed_present_capacity,edge,,13,13,0,0,bf18f4e18d35dab3,2026-11-25
 render_object_update_02373850,edge,,96,96,0,0,154139170a78885f,2026-11-14
 render_pack_record_mapping_word,recorded,,13,13,0,0,9bf1f50e8f52effa,2026-11-12
 render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-12
