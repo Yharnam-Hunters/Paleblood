@@ -435,6 +435,23 @@ static void resubmitted_calls(void)
     checked_memory[0x18 / 4] = 0x48a44770;
     rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
     CHECK(count == 0);
+    /* a descriptor behind the game's one-word NOP: the call stands at the NOP, and another descriptor
+       in the same layout must forget the old one too */
+    memset(checked_memory, 0, sizeof checked_memory);
+    const uint32_t descriptor[4] = {0x43450000, 0x80000020, 0x100, 0x24fac};
+    checked_memory[0x10 / 4] = 0xc0001000u, checked_memory[0x14 / 4] = 0x68750005; /* NOP, its control word */
+    checked_memory[0x18 / 4] = 0xc0047602u, checked_memory[0x1c / 4] = 0x244;      /* SET_SH_REG: user data 4-7 */
+    memcpy(&checked_memory[0x20 / 4], descriptor, sizeof descriptor);
+    checked_memory[0x30 / 4] = 0xc0031502u, checked_memory[0x34 / 4] = 1;          /* DISPATCH_DIRECT */
+    CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 4, descriptor, 4, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x30, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 2);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count); /* unchanged: taken again */
+    CHECK(count == 2);
+    checked_memory[0x20 / 4] = 0x48a40000; /* the descriptor's base address changed */
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 0);
     /* without a reader nothing is checked */
     rt_render_check_placed_calls(NULL);
     CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
