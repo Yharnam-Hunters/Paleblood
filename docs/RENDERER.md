@@ -1261,7 +1261,15 @@ element a thread (`0x20d1b00000`, about seven a frame in Iosefka's Clinic, 2 to 
 each copy wrote the target back into host memory, the shader read it there and stored it into host
 memory again, and the copy's destination loaded it back over PCIe.
 
-`gcn_linear_copy_shape` (`runtime/linear_copy.h`) recognises such a program strictly. When the
+`gcn_linear_copy_shape` (`runtime/linear_copy.h`) recognises such a program strictly: only the
+known shape, straight-line with no branches, and with the store after an `s_waitcnt` with vmcnt 0
+that follows the load. Apart from the shape's own writes (VCC by the index add's carry and the
+guard's compare, EXEC by the guard's `s_and_saveexec_b64` into an even pair of ordinary SGPRs),
+an `s_mov_b32` may write only an ordinary SGPR (s0 to s103) or, before the guard's compare, either
+half of VCC; any other write to VCC, EXEC, M0, the trap or the flat scratch registers rejects the
+program. The game's program sets VCC's high half before the add, which the guard's compare
+rewrites before the exec save reads it. Both descriptors must lie in ordinary SGPRs, and the
+MUBUF bits Sea Islands leaves reserved must be clear. When the
 source is a render target drawn into since its write-back, from its first byte through at least its
 memory, `target_copy` copies on the GPU instead:
 
@@ -1269,7 +1277,9 @@ memory, `target_copy` copies on the GPU instead:
 - into any other memory, by tiling the source's linear rows straight there (the source is not
   written back).
 
-Bytes past the source target's memory are copied in guest memory.
+Bytes past the source target's memory are copied in guest memory. A dword copy (`buffer_load_dword`
+and `buffer_store_dword`) whose source or destination descriptor has the invalid data format 0 is
+not taken over: it runs as usual rather than rely on how untyped accesses treat that format.
 
 Measured with `tools/ab_bench.py` on the clinic walk (warm caches, quiet machine, runs alternated A
 B A B), in two A/Bs on different main revisions. Average fps / 1% low / worst frame, mean of two
