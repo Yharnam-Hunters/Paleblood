@@ -2,6 +2,7 @@
 /* The renderer behind the runtime's GPU calls (runtime/renderer.h), using the selected executor. */
 #include "runtime/renderer.h"
 
+#include "runtime/display.h"
 #include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
@@ -77,6 +78,14 @@ static int async_pipelines(void)
     return !(setting && !strcmp(setting, "0"));
 }
 
+/* The shaders compiling at launch, in the window's title and gone once all are done. */
+static void launch_progress(size_t done, size_t count)
+{
+    char status[64];
+    snprintf(status, sizeof status, "compiling shaders %zu of %zu", done, count);
+    rt_display_set_status(done < count ? status : NULL);
+}
+
 /* The executor, opened once the title has GPU-visible memory; NULL before that or when off. */
 static rt_executor *executor_for(const char *function)
 {
@@ -86,7 +95,8 @@ static rt_executor *executor_for(const char *function)
     rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = watched ? collect_cpu_writes : NULL,
                                  .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL,
                                  .gds = rt_gpu_memory_gds(), .gds_bytes = RT_GPU_GDS_BYTES,
-                                 .cpu_writes_due = watched ? cpu_writes_due : NULL, .async_pipelines = async_pipelines()};
+                                 .cpu_writes_due = watched ? cpu_writes_due : NULL, .async_pipelines = async_pipelines(),
+                                 .launch_progress = launch_progress};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
     if (watched) rt_write_watch_set_resolver(resolve_guarded);
     char error[RENDER_ERROR_BYTES];

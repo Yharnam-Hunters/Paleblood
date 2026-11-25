@@ -58,6 +58,9 @@ typedef struct {
        pipeline is being made (for at most a second), instead of the recording thread waiting for the
        driver's compiler. Off: every pipeline is made at its first draw. */
     int async_pipelines;
+    /* Called as the shaders compiled at launch get done (rt_executor_launch_compiles): done of count,
+       first with none done, last with done == count. It runs on the compiling threads. NULL: not told. */
+    void (*launch_progress)(size_t done, size_t count);
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no
