@@ -45,6 +45,10 @@ int gcn_linear_copy_shape(const uint32_t *code, size_t dwords, gcn_linear_copy *
         } else if (ins.encoding == GCN_SOP1) {
             const unsigned sdst = (w[0] >> 16) & 0x7f, ssrc0 = w[0] & 0xff;
             if (!strcmp(name, "s_mov_b32")) {
+                /* Only ordinary SGPR writes and VCC writes before any guard compare are harmless.
+                   EXEC controls which lanes load and store; the compare's VCC must reach its guard. */
+                const int vcc = sdst == VCC_LOW || sdst == VCC_LOW + 1;
+                if (sdst >= SGPRS && (!vcc || compared)) return 0;
                 if (written_count == 8) return 0;
                 written[written_count].sgpr = sdst, written[written_count++].stage = (scaled != NONE) + (index != NONE);
             } else if (!strcmp(name, "s_and_saveexec_b64") && ssrc0 == VCC_LOW && compared && !guarded && sdst + 1 < SGPRS) {
