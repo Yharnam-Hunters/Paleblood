@@ -1431,10 +1431,14 @@ things keep that to the first run:
   alone (`make_render_pass`), so a pipeline made at launch for that canonical pass serves the
   draw's own pass. After the compute shaders the same workers translate each recipe's shaders and
   make its pipeline into the pipeline cache. A draw that meets a recipe a worker is making is left
-  out while it may be (the rules above), else waits; the second counts from the first draw that met
-  that recipe being made, so a launch compile longer than a second leaves its draws out for a
-  second at most, after which they wait for the worker (and make the pipeline themselves if the
-  pipeline cache still lacks it). One no worker has taken yet is made by the draw. Tessellated
+  out while it may be (the rules above), else waits. A launch recipe's draws are left out for a
+  second in all, counted from the first one left out, whatever kept them out: the worker making
+  it, or, once it is done, the pipeline cache lacking it and the draw pipeline workers making it
+  again. Past that second a draw waits for the launch worker and makes the pipeline itself if the
+  pipeline cache still lacks it. The second is the recipe's for as long as the executor is open
+  (its time is kept after the launch work is freed too): a later draw with it in a new render pass
+  is not left out again but makes its pipeline at once, in practice found in the pipeline cache.
+  One no worker has taken yet is made by the draw. Tessellated
   and geometry-shader draws stay with the draw (their rings are made at the first one). The progress line and the title count compute shaders and draw pipelines together,
   and stderr tells "draw pipelines: H from the pipeline cache, C compiled; L draws left out while
   theirs were made" (at most every 10 s, and at close).

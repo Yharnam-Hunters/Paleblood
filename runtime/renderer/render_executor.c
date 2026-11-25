@@ -748,10 +748,16 @@ struct rt_executor {
     size_t pipelines_cached, pipelines_compiled, draws_left_out; /* report_draw_pipelines */
     uint64_t pipelines_reported;
     struct launch_work *launch; /* the shaders compile_catalog's workers are making (NULL: none, or finished) */
+    /* the launch recipes whose draws were left out, kept when the launch work is freed, and when the
+       first such draw of each was left out (launch_left_out_since) */
+    translation_key *left_out_recipes;
+    uint64_t *left_out_since;
+    size_t left_out_count;
     /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
     int async_pipelines;
     void (*launch_progress)(size_t done, size_t count); /* rt_executor_memory's */
     int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
+    int probe_misses;                /* rt_executor_set_pipeline_probe: RT_PIPELINE_PROBE_MISS */
     pthread_t pipeline_workers[PIPELINE_WORKERS];
     unsigned pipeline_worker_count;
     pthread_mutex_t job_lock;
@@ -1428,6 +1434,11 @@ static void close_translations(rt_executor *x)
     x->translations = x->catalog = x->pipeline_catalog = NULL;
 }
 
+/* How the executors opened next look for a draw's pipeline in the pipeline cache (rt_executor_set_pipeline_probe). */
+static int pipeline_probe = RT_PIPELINE_PROBE_DEVICE;
+
+void rt_executor_set_pipeline_probe(int probe) { pipeline_probe = probe; }
+
 static int open_device(rt_executor *x, char *error, size_t error_size)
 {
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_2};
@@ -1526,11 +1537,13 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT enable_cached = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT, .pipelineCreationCacheControl = VK_TRUE};
     x->cache_control = cache_control && cached.pipelineCreationCacheControl;
+    x->probe_misses = pipeline_probe == RT_PIPELINE_PROBE_MISS;
     if (x->cache_control) {
         extensions[extension_count++] = VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME;
         enable_cached.pNext = enable12.pNext;
         enable12.pNext = &enable_cached;
     }
+    if (pipeline_probe == RT_PIPELINE_PROBE_NONE) x->cache_control = 0;
     const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable, .queueCreateInfoCount = 1,
                                        .pQueueCreateInfos = &queue, .enabledExtensionCount = extension_count, .ppEnabledExtensionNames = extensions};
     if (vkCreateDevice(x->physical, &device, NULL, &x->device) != VK_SUCCESS)
@@ -2873,6 +2886,8 @@ static uint64_t target_span(const target_entry *t)
    that draw into it with the pipelines made for them. NULL when no target can go: the one set aside
    longest first (a game moving its targets through memory leaves them behind), then the least recently
    used. */
+static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait);
+
 static target_entry *target_slot_to_free(rt_executor *x)
 {
     uint64_t done = 0;
@@ -2899,6 +2914,7 @@ static target_entry *target_slot_to_free(rt_executor *x)
                 k++;
                 continue;
             }
+            pipeline_settle(x, &x->pipelines[k], 1); /* a worker making it reads the render pass */
             vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
             x->pipelines[k] = x->pipelines[--x->pipeline_count];
             removed_pipelines = 1;
@@ -3905,8 +3921,6 @@ static long shader_to_free(rt_executor *x)
     return pick;
 }
 
-static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait);
-
 /* The entry a new shader takes: the next unused one, a slot freed before, or, with all MAX_SHADERS kept
    (walking a scene brings more shaders than that), the least recently used shader's once no unfinished
    batch draws with it, waiting for the GPU's work when every one is in use. That shader's module goes
@@ -4220,7 +4234,7 @@ typedef struct pipeline_job {
     VkPipelineDepthStencilStateCreateInfo depth_stencil;
     VkPipelineColorBlendStateCreateInfo blend;
     VkPipelineDynamicStateCreateInfo dynamic;
-    uint64_t queued_ns;              /* when it went to the workers (ASYNC_SKIP_NS) */
+    uint64_t queued_ns;              /* when it went to the workers, or a launch recipe's first draw was left out (ASYNC_SKIP_NS) */
     VkPipeline pipeline;             /* job_lock: set with done */
     VkResult result;
     int done;
@@ -4305,6 +4319,11 @@ static int describe_pipeline(pipeline_job *j, VkShaderModule tess_vertex, VkShad
     return 0;
 }
 
+/* Called by a draw pipeline worker as it takes a job, before making its pipeline (NULL: nothing); for tests. */
+static void (*pipeline_job_hook)(void);
+
+void rt_executor_set_pipeline_job_hook(void (*hook)(void)) { pipeline_job_hook = hook; }
+
 /* The workers: each takes the oldest queued job, has the driver make its pipeline, and marks it done. They
    end once stopped with the queue empty. */
 static void *pipeline_worker(void *argument)
@@ -4318,6 +4337,7 @@ static void *pipeline_worker(void *argument)
         x->job_head = j->next;
         if (!x->job_head) x->job_tail = NULL;
         pthread_mutex_unlock(&x->job_lock);
+        if (pipeline_job_hook) pipeline_job_hook();
         VkPipeline made = VK_NULL_HANDLE;
         const VkResult result = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &made);
         pthread_mutex_lock(&x->job_lock);
@@ -4432,7 +4452,7 @@ static void report_draw_pipelines(rt_executor *x, int now)
             x->pipelines_cached, x->pipelines_compiled, x->draws_left_out);
 }
 
-static int meet_launch_pipeline(rt_executor *x, const translation_key *key, int *may_skip);
+static int meet_launch_pipeline(rt_executor *x, const translation_key *key, int *may_skip, uint64_t **left_out_since);
 
 /* The draw's pipeline (see describe_pipeline). With may_skip set and worker threads running, a pipeline
    not made yet goes to the workers and *pending is set, VK_NULL_HANDLE returned: the draw is left out
@@ -4462,7 +4482,8 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     /* the draw's recipe: kept in the pipeline catalog once made; one a launch worker is making is not made twice */
     translation_key recipe_key = {0};
     if (!recipe || pipeline_recipe_key(x, &recipe_key, recipe, vertex, pixel)) recipe_key.failed = 1;
-    if (meet_launch_pipeline(x, &recipe_key, &may_skip)) {
+    uint64_t *left_out_since = NULL; /* a launch recipe's: when its first draw was left out (0: none yet) */
+    if (meet_launch_pipeline(x, &recipe_key, &may_skip, &left_out_since)) {
         translation_key_free(&recipe_key);
         *pending = 1;
         return VK_NULL_HANDLE;
@@ -4477,7 +4498,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     }
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkResult made = VK_PIPELINE_COMPILE_REQUIRED_EXT;
-    if (x->cache_control) { /* one the pipeline cache holds is made here, at once, and drawn now */
+    if (x->cache_control && !x->probe_misses) { /* one the pipeline cache holds is made here, at once, and drawn now */
         j->info.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
         made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
         j->info.flags &= ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
@@ -4489,7 +4510,10 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     if (made == VK_PIPELINE_COMPILE_REQUIRED_EXT && !may_skip)
         made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
     if (may_skip) {
+        /* a launch recipe's draws are left out for a second in all, from the first one left out */
         j->queued_ns = monotonic_ns();
+        if (left_out_since && !*left_out_since) *left_out_since = j->queued_ns;
+        if (left_out_since) j->queued_ns = *left_out_since;
         pthread_mutex_lock(&x->job_lock);
         if (x->job_tail) x->job_tail->next = j;
         else x->job_head = j;
@@ -5779,7 +5803,7 @@ struct launch_work {
     launch_pipeline *pipelines;
     translation_key *recipes;        /* each pipeline's recipe made again with this executor's values */
     atomic_int *pipeline_states;
-    uint64_t *pipeline_met;          /* when a draw first met each one being made (0: none has); ASYNC_SKIP_NS */
+    uint64_t *left_out_since;        /* when the first draw with each one was left out (0: none has); ASYNC_SKIP_NS */
     size_t pipeline_count;
     launch_pass passes[LAUNCH_PASSES];
     size_t pass_count;
@@ -5898,10 +5922,11 @@ static void report_launch_progress(launch_work *w, size_t done)
     launch_progress_publish(&w->progress, done, tell_launch_progress, w);
 }
 
-/* Called by a launch worker as it starts making a draw pipeline, before it is made (NULL: nothing); for tests. */
-static void (*launch_pipeline_hook)(void);
+/* Called by a launch worker as it starts making a draw pipeline (its place among the launch pipelines), before it is
+   made (NULL: nothing); for tests. */
+static void (*launch_pipeline_hook)(size_t pipeline);
 
-void rt_executor_set_launch_pipeline_hook(void (*hook)(void)) { launch_pipeline_hook = hook; }
+void rt_executor_set_launch_pipeline_hook(void (*hook)(size_t pipeline)) { launch_pipeline_hook = hook; }
 
 /* Takes the next waiting shaders, then pipelines, until none is left, reporting progress after each. */
 static void *launch_worker(void *argument)
@@ -5915,7 +5940,7 @@ static void *launch_worker(void *argument)
         atomic_int *state = pipeline ? &w->pipeline_states[i - w->count] : &w->states[i];
         int waiting = LAUNCH_WAITING;
         if (atomic_compare_exchange_strong(state, &waiting, LAUNCH_MAKING)) {
-            if (pipeline && launch_pipeline_hook) launch_pipeline_hook();
+            if (pipeline && launch_pipeline_hook) launch_pipeline_hook(i - w->count);
             if (pipeline) make_pipeline_at_launch(w, i - w->count);
             else make_at_launch(w, i);
             atomic_store(state, LAUNCH_MADE);
@@ -5943,31 +5968,56 @@ static void meet_launch_shader(rt_executor *x, const translation_key *key)
     }
 }
 
-/* Before a draw makes the pipeline of recipe key: one no worker has taken yet is left to the draw; one a
-   worker is making is waited for (it is then in the pipeline cache), unless the draw may be left out
-   (*may_skip) and the first draw that met it being made did so less than ASYNC_SKIP_NS ago: then 1, the
-   draw is left out. Otherwise 0; past that second *may_skip is cleared, so that a pipeline the cache
-   still lacks is made for the draw at once rather than leaving it out another second. Draws come from
-   the recording thread only, so pipeline_met is its own. */
-static int meet_launch_pipeline(rt_executor *x, const translation_key *key, int *may_skip)
+/* Where the time of the first left-out draw with the launch recipe key is kept (0 there: none yet), or
+   NULL when key is no launch recipe; *index is its place in the launch work, or SIZE_MAX once that is
+   freed (finish_launch_work keeps the times of the recipes whose draws were left out). Draws come from
+   the recording thread only, and the launch work is freed on it too, so these times are its own. */
+static uint64_t *launch_left_out_since(rt_executor *x, const translation_key *key, size_t *index)
 {
     launch_work *w = x->launch;
-    if (!w || key->failed || atomic_load(&w->done) == w->count + w->pipeline_count) return 0;
-    for (size_t i = 0; i < w->pipeline_count; i++) {
-        if (w->recipes[i].size != key->size || memcmp(w->recipes[i].bytes, key->bytes, key->size)) continue;
-        int waiting = LAUNCH_WAITING;
-        if (atomic_compare_exchange_strong(&w->pipeline_states[i], &waiting, LAUNCH_TAKEN)) return 0;
-        while (atomic_load(&w->pipeline_states[i]) == LAUNCH_MAKING) {
-            if (*may_skip) {
-                const uint64_t now = monotonic_ns();
-                if (!w->pipeline_met[i]) w->pipeline_met[i] = now;
-                if (now - w->pipeline_met[i] < ASYNC_SKIP_NS) return 1;
-                *may_skip = 0; /* left out long enough: waited for from here */
-            }
-            const struct timespec pause = {0, 1000000};
-            nanosleep(&pause, NULL);
+    *index = SIZE_MAX;
+    if (key->failed) return NULL;
+    if (w) {
+        for (size_t i = 0; i < w->pipeline_count; i++)
+            if (w->recipes[i].size == key->size && !memcmp(w->recipes[i].bytes, key->bytes, key->size)) return *index = i, &w->left_out_since[i];
+        return NULL;
+    }
+    for (size_t i = 0; i < x->left_out_count; i++)
+        if (x->left_out_recipes[i].size == key->size && !memcmp(x->left_out_recipes[i].bytes, key->bytes, key->size)) return &x->left_out_since[i];
+    return NULL;
+}
+
+/* Whether a draw may still be left out (*may_skip, cleared here) when the first draw with its recipe was
+   left out at since (0: none yet): for ASYNC_SKIP_NS from then, in all, whatever made it wait since. */
+static int may_still_skip(uint64_t since, int *may_skip)
+{
+    if (*may_skip && since && monotonic_ns() - since >= ASYNC_SKIP_NS) *may_skip = 0;
+    return *may_skip;
+}
+
+/* Before a draw makes the pipeline of recipe key. For a launch recipe *left_out_since is where the time of
+   its first left-out draw is kept (else NULL), and *may_skip is cleared once its draws have been left out
+   for ASYNC_SKIP_NS, so that the draw is drawn now: its pipeline made at once if the pipeline cache lacks
+   it, never left to the workers again. One no worker has taken yet is left to the draw; one a worker is
+   making is waited for (it is then in the pipeline cache) unless the draw may still be left out: then 1,
+   the draw is left out, and its time kept if it is the first. Otherwise 0. */
+static int meet_launch_pipeline(rt_executor *x, const translation_key *key, int *may_skip, uint64_t **left_out_since)
+{
+    size_t i;
+    uint64_t *since = *left_out_since = launch_left_out_since(x, key, &i);
+    if (!since) return 0;
+    may_still_skip(*since, may_skip); /* only to clear *may_skip once the second is over */
+    if (i == SIZE_MAX) return 0;
+    launch_work *w = x->launch;
+    int waiting = LAUNCH_WAITING;
+    if (atomic_compare_exchange_strong(&w->pipeline_states[i], &waiting, LAUNCH_TAKEN)) return 0;
+    while (atomic_load(&w->pipeline_states[i]) == LAUNCH_MAKING) {
+        if (may_still_skip(*since, may_skip)) {
+            if (!*since) *since = monotonic_ns();
+            return 1;
         }
-        return 0;
+        const struct timespec pause = {0, 1000000};
+        nanosleep(&pause, NULL);
     }
     return 0;
 }
@@ -5989,10 +6039,20 @@ static void finish_launch_work(rt_executor *x)
     x->launch_shaders = w->count, x->launch_translated = atomic_load(&w->translated), x->launch_compiled = atomic_load(&w->compiled);
     x->launch_pipelines = w->pipeline_count, x->launch_pipelines_compiled = atomic_load(&w->pipelines_compiled);
     for (size_t i = 0; i < w->count; i++) free((void *)w->requests[i].words), translation_key_free(&w->keys[i]);
-    for (size_t i = 0; i < w->pipeline_count; i++) free_launch_pipeline(&w->pipelines[i]), translation_key_free(&w->recipes[i]);
+    /* the recipes whose draws were left out keep their times (launch_left_out_since), in the arrays they had */
+    size_t kept = 0;
+    for (size_t i = 0; i < w->pipeline_count; i++) {
+        free_launch_pipeline(&w->pipelines[i]);
+        if (!w->left_out_since[i]) {
+            translation_key_free(&w->recipes[i]);
+            continue;
+        }
+        w->recipes[kept] = w->recipes[i], w->left_out_since[kept++] = w->left_out_since[i];
+    }
+    x->left_out_recipes = w->recipes, x->left_out_since = w->left_out_since, x->left_out_count = kept;
     for (size_t i = 0; i < w->pass_count; i++) vkDestroyRenderPass(x->device, w->passes[i].pass, NULL);
     launch_progress_destroy(&w->progress);
-    free(w->requests), free(w->keys), free(w->states), free(w->pipelines), free(w->recipes), free(w->pipeline_states), free(w->pipeline_met), free(w);
+    free(w->requests), free(w->keys), free(w->states), free(w->pipelines), free(w->pipeline_states), free(w);
     x->launch = NULL;
 }
 
@@ -6077,9 +6137,9 @@ static void compile_catalog(rt_executor *x)
         w->requests = calloc(room, sizeof *w->requests), w->keys = calloc(room, sizeof *w->keys), w->states = calloc(room, sizeof *w->states);
         w->pipelines = calloc(pipeline_room, sizeof *w->pipelines), w->recipes = calloc(pipeline_room, sizeof *w->recipes);
         w->pipeline_states = calloc(pipeline_room, sizeof *w->pipeline_states);
-        w->pipeline_met = calloc(pipeline_room, sizeof *w->pipeline_met);
+        w->left_out_since = calloc(pipeline_room, sizeof *w->left_out_since);
     }
-    const int ready = w && w->requests && w->keys && w->states && w->pipelines && w->recipes && w->pipeline_states && w->pipeline_met;
+    const int ready = w && w->requests && w->keys && w->states && w->pipelines && w->recipes && w->pipeline_states && w->left_out_since;
     for (size_t i = 0; i < all.count; i++) {
         /* the key made again with this executor's values; the stop words given here, in the catalog's
            order, are those the dispatches find later */
@@ -8211,6 +8271,8 @@ void rt_executor_close(rt_executor *x)
     if (!x) return;
     sweep_close(x);
     finish_launch_work(x);
+    for (size_t i = 0; i < x->left_out_count; i++) translation_key_free(&x->left_out_recipes[i]);
+    free(x->left_out_recipes), free(x->left_out_since);
     pipeline_workers_stop(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);
