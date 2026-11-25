@@ -1692,6 +1692,36 @@ static void many_targets(rt_executor *x)
     check_triangle(x, at(MANY_FIRST));
 }
 
+/* Filling the target cache must retain the source of a snapshot recorded since its last draw.
+   The next draw needs another slot while that copy is still in an unsubmitted command buffer. */
+static void snapshot_before_target_eviction(const rt_executor_memory *memory)
+{
+    enum { BUFFER = 0xc1500000, FIRST = 0x3000000, TARGETS = 512, BYTES = SIZE * SIZE * 4 };
+    rt_executor *x = NULL;
+    char error[256] = "";
+    CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+    if (!x) return;
+    for (unsigned i = 0; i < TARGETS; i++) {
+        rt_render_forget(), rt_executor_reset(x);
+        const uint32_t bytes = record_draw(BUFFER, at(FIRST + i * BYTES), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_executor_run(x, BUFFER, bytes, error, sizeof error) == 0);
+    }
+    rt_executor_snapshot snapshot;
+    CHECK(rt_executor_snapshot_target(x, at(FIRST), &snapshot, error, sizeof error) == 0);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint64_t next = at(FIRST + TARGETS * BYTES);
+    const uint32_t bytes = record_draw(BUFFER, next, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const int ran = rt_executor_run(x, BUFFER, bytes, error, sizeof error);
+    if (ran) fprintf(stderr, "snapshot before eviction: %s\n", error);
+    CHECK(ran == 0);
+    uint32_t pixels[SIZE * SIZE];
+    CHECK(rt_executor_read_snapshot(x, &snapshot, pixels, SIZE, SIZE, error, sizeof error) == 0);
+    check_triangle_pixels(pixels);
+    check_triangle(x, next);
+    rt_executor_release_snapshot(x, &snapshot);
+    rt_executor_close(x);
+}
+
 /* More pipelines than the executor keeps (MAX_PIPELINES, 1024): 1,210 draws into one target, each with
    another blend state (11 source x 11 destination factors x 5 functions, under two target masks), each
    buffer run to the end. Every draw is made: the least recently used pipeline whose batch has run gives
@@ -4228,6 +4258,7 @@ int main(void)
     null_image_descriptor(x);
     reshaped_target(x);
     many_targets(x);
+    snapshot_before_target_eviction(&memory);
     pipelines_after_freed_targets(x);
     pipelines_past_the_limit(x);
     shaders_past_the_limit(x);
