@@ -207,6 +207,8 @@ def cases():
                 "ret": 0,
                 "writes": [{"arg": 0, "offset": 0xB3D0, "pointer": "second_owner", "size": 8}],
             },
+            # Observe an incorrect second call through the first owner's vtable too.
+            {"address": "0x01471280", "argc": 2, "ret": 0},
             {"address": "0x01471290", "argc": 2, "ret": 0},
         ]
         + c["stubs"][2:]
@@ -233,6 +235,7 @@ def cases():
 
 
 def main():
+    """Write the synthetic finish-command cases to the requested directory."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2

@@ -16,7 +16,6 @@ FinishBlockSlot *managed_capacity_block_slot(uintptr_t block, uint32_t index)
     const uintptr_t address = block + static_cast<uintptr_t>(index) * block_slot_bytes;
     return reinterpret_cast<FinishBlockSlot *>(address);
 }
-
 }  // namespace
 
 extern "C" uint8_t bb_render_managed_present_capacity(render::CommandFinishStateView *buffer,
@@ -30,13 +29,8 @@ extern "C" uint8_t bb_render_managed_present_capacity(render::CommandFinishState
     const uintptr_t begin = packet_begin(&buffer->buffer.commands);
     const uint64_t saved_record = capture_present_buffer_pool_record(processor, begin);
     const uint64_t slots = processor->slots.get();
-    uint32_t pop_result = pop_present_buffer_pool(
-        processor, &acquired_buffer);
-    while (pop_result != 0) {
+    while (pop_present_buffer_pool(processor, &acquired_buffer) != 0)
         managed_capacity_calls::managed_capacity_retry_step();
-        pop_result = pop_present_buffer_pool(
-            processor, &acquired_buffer);
-    }
 
     const uint64_t capacity_words = (slots * block_slot_bytes - block_slot_bytes) /
                                     capacity_word_bytes;
@@ -88,8 +82,7 @@ extern "C" uint8_t bb_render_managed_present_capacity(render::CommandFinishState
     set_packet_cursor(&buffer->buffer.commands, acquired);
     set_packet_limit(&buffer->buffer.commands, acquired + capacity_words * capacity_word_bytes);
     const uint32_t flags = state->submission_flags;
-    submit_present_finish_snapshot(state, buffer,
-                                   &snapshot, flags);
+    submit_present_finish_snapshot(state, buffer, &snapshot, flags);
     const uintptr_t fresh_cursor = packet_cursor(&buffer->buffer.commands);
     set_packet_begin(&buffer->buffer.commands, fresh_cursor);
     state->last_reset_cursor = fresh_cursor;
