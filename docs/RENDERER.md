@@ -1254,6 +1254,40 @@ renderer-performed steps. Second, the collect must cost a small fraction of a fr
 limited to the pages the GPU can read, or the watch's dirty bits read without scanning the whole
 span.
 
+### Target copies on the GPU (November 2026)
+
+The game copies a whole render target's memory with a compute shader that moves one 32-bit
+element a thread (`0x20d1b00000`, about seven a frame in Iosefka's Clinic, 2 to 17 MB each). Before,
+each copy wrote the target back into host memory, the shader read it there and stored it into host
+memory again, and the copy's destination loaded it back over PCIe.
+
+`gcn_linear_copy_shape` (`runtime/linear_copy.h`) recognises such a program strictly. When the
+source is a render target drawn into since its write-back, from its first byte through at least its
+memory, `target_copy` copies on the GPU instead:
+
+- into a render target of the same shape, by an image copy (the destination counts as drawn);
+- into any other memory, by tiling the source's linear rows straight there (the source is not
+  written back).
+
+Bytes past the source target's memory are copied in guest memory.
+
+Measured with `tools/ab_bench.py` on the clinic walk (warm caches, quiet machine, runs alternated A
+B A B), in two A/Bs on different main revisions. Average fps / 1% low / worst frame, mean of two
+runs per side:
+
+| A/B | window | main | branch |
+|---|---|---|---|
+| 1 (main 128fa433) | frames 1350-2900 | 15.96 / 6.60 / 358 ms | 17.98 / 6.34 / 742 ms |
+| 1 | input event 16 to walk 53 | 15.83 / 5.15 / 817 ms | 17.96 / 5.95 / 742 ms |
+| 2 (main 680fbfff) | frames 1350-2900 | 15.65 / 6.58 / 350 ms | 17.33 / 5.97 / 767 ms |
+| 2 | input event 16 to walk 53 | 15.50 / 5.51 / 800 ms | 17.30 / 6.02 / 767 ms |
+
+In A/B 1 both sides also carried the replay-mark fix that later merged as #1335, applied the same
+way to each. The average is 11 to 13% higher. Between the same two points of the route the branch is
+better on all three figures. Over the frame range its 1% low and worst frame look worse; "A frame
+range is not a stretch of the route" in the A/B section below explains why. Peak VRAM over a
+10-minute session went from 7613 to 7089 MiB.
+
 ### Tests for each step
 
 - A CPU write after a GPU write: the next draw sees the CPU's bytes.
@@ -1410,6 +1444,16 @@ build's 1% low looked better. Over the same frames both builds meet the same sta
 range that holds one, `--skip-frames FIRST-LAST` leaves the intervals ending on those frames out of
 the figures and reports them apart (count, time, longest); make it wide enough for where both
 builds stall.
+A frame range is not a stretch of the route either. The game moves by the clock, not by the frame,
+so a faster build reaches each place of the walk at an earlier frame. A stall tied to a place (not
+to a scripted point) can then fall inside the faster build's range and outside the slower one's. The
+target copies' A/Bs (frames 1350 to 2900) showed this: a stall of about 770 ms when the walk reaches
+one spot (walk 51) fell at frames 2790 to 2886 for the branch and at frames 3164 to 3219 for main,
+so only the branch's 1% low and worst frame held it. Measured between the same two points of the
+route instead (input script event 16 to walk 53), both builds hold it and the branch was better on
+all three figures. When a faster build's 1% low or worst frame looks worse, check where the slow
+frames fall on the route (the input script's `walk N: arrived ... frame F` lines in the boot log)
+before reading it as a cost.
 `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
 
 ### Re-measured over frames 1250-3000 (November 2026)

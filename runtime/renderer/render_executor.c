@@ -25,6 +25,7 @@
 #include "runtime/gcn.h"
 #include "runtime/gcn_spirv.h"
 #include "runtime/launch_progress.h"
+#include "runtime/linear_copy.h"
 #include "runtime/rect_list.h"
 #include "runtime/render_calls.h"
 #include "runtime/tile_copy.h"
@@ -380,6 +381,8 @@ typedef struct {
     gcn_table_copy copy;
     int fill;                        /* the read scan: the program is a constant fill (gcn_fill_shape) */
     gcn_fill fill_shape;
+    int linear;                      /* the read scan: the program is a linear copy (gcn_linear_copy_shape) */
+    gcn_linear_copy linear_shape;
 } scan_entry;
 
 /* A range of guest memory. A dispatch's reads and stores are kept as up to DISPATCH_SPANS of them (span_add). */
@@ -6872,6 +6875,115 @@ static target_entry *fill_target(rt_executor *x, const rt_compute_shader *c, con
     return t;
 }
 
+/* Whether a drawn render target other than `except`, or a depth target's unwritten depth, overlaps the memory. */
+static int other_unwritten_in(const rt_executor *x, const target_entry *except, uint64_t address, uint64_t bytes)
+{
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *o = &x->targets[i];
+        if (o != except && o->drawn && o->address < address + bytes && address < o->address + target_span(o)) return 1;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < address + bytes && address < x->depths[i].z_address + depth_span(&x->depths[i])) return 1;
+    return 0;
+}
+
+/* A dispatch of a linear copy (gcn_linear_copy_shape) of 32-bit elements whose source is a render target
+   drawn into since its write-back (from the target's first byte, through at least its memory), as the
+   game copies whole targets: done on the GPU's own copies instead of writing the target back into host
+   memory for the shader to read it there and store it into host memory again (in Iosefka's Clinic about
+   seven a frame, 8 to 16 MB each). A destination that is a render target of the same shape takes the
+   source's image (an image copy; it counts as drawn, its memory gets the texels when it is written back);
+   any other destination memory takes the source's texels tiled as the source lays them out (its linear
+   rows tiled straight into the destination, the source's own memory left for its write-back). Bytes past
+   the source target's memory are copied in guest memory. 1 when copied so, 0 when the dispatch runs as
+   usual, -1 with the reason. */
+static int target_copy(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3], char *error,
+                       size_t error_size)
+{
+    enum { DFMT_32 = 4, NFMT_UINT = 4, NFMT_SINT = 5, NFMT_FLOAT = 7, SELECT_X = 4, SELECT_FIRST_MASK = 7, ELEMENT_BYTES = 4 };
+    const uint32_t swizzle = 1u << 31, add_tid = 1u << 23;
+    scan_entry *scan = scan_for(x, c->code, 0, 3);
+    if (!scan || !scan->used || !scan->linear || groups[1] != 1 || groups[2] != 1 || c->threads[1] != 1 || c->threads[2] != 1 ||
+        c->workgroup_id_enables != 1)
+        return 0;
+    const gcn_linear_copy *shape = &scan->linear_shape;
+    if (shape->workgroup_sgpr != c->user_sgprs || c->threads[0] != shape->group_elements) return 0;
+    uint32_t source[4], destination[4];
+    const gcn_resource_origin s = {.sgpr = shape->source_sgpr}, d = {.sgpr = shape->destination_sgpr};
+    char reason[200];
+    if (descriptor_words(x, "compute", c->code, &s, user, c->user_sgprs, user_set, source, 4, reason, sizeof reason) ||
+        descriptor_words(x, "compute", c->code, &d, user, c->user_sgprs, user_set, destination, 4, reason, sizeof reason))
+        return 0;
+    if (((source[1] | destination[1]) & swizzle) || ((source[3] | destination[3]) & add_tid) || vsharp_stride(source) != ELEMENT_BYTES ||
+        vsharp_stride(destination) != ELEMENT_BYTES)
+        return 0;
+    if (shape->format) { /* a 32-bit format loads and stores an element's bits as they are */
+        const uint32_t data_format = source[3] >> 15 & 0xf, number_format = source[3] >> 12 & 7;
+        if (data_format != DFMT_32 || (destination[3] >> 15 & 0xf) != DFMT_32 || (destination[3] >> 12 & 7) != number_format ||
+            (number_format != NFMT_UINT && number_format != NFMT_SINT && number_format != NFMT_FLOAT) || (source[3] & SELECT_FIRST_MASK) != SELECT_X)
+            return 0;
+    }
+    /* the elements stored: the workgroups' threads, up to the destination's records (its range check) */
+    const uint64_t threads = (uint64_t)groups[0] * c->threads[0], count = threads < destination[2] ? threads : destination[2];
+    const uint64_t bytes = count * ELEMENT_BYTES, from = vsharp_base(source), to = vsharp_base(destination);
+    if (!count || source[2] < count || (from < to + bytes && to < from + bytes)) return 0;
+    if (from < x->guest_base || from - x->guest_base > x->size || bytes > x->size - (from - x->guest_base) || to < x->guest_base ||
+        to - x->guest_base > x->size || bytes > x->size - (to - x->guest_base))
+        return 0;
+    target_entry *t = find_target(x, from);
+    if (!t || !t->drawn || t->address != from || target_span(t) > bytes || !tile_copy_moves(x, t->element_bytes)) return 0;
+    const uint64_t span = target_span(t);
+    target_entry *into = find_target(x, to);
+    const int same = into && into->address == to && into->width == t->width && into->height == t->height && into->tile_index == t->tile_index &&
+                     into->element_bytes == t->element_bytes && same_texel_bytes(into->format, t->format) && target_span(into) == span;
+    if (other_unwritten_in(x, t, from, bytes) || other_unwritten_in(x, same ? into : NULL, to, bytes)) return 0;
+    rt_tiling layout;
+    uint64_t laid_out;
+    if (target_memory(x, t, &layout, &laid_out, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    note_work(x, c->code, 0, groups[0]);
+    if (same) {
+        image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        image_barrier(commands, into->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                          VK_ACCESS_TRANSFER_WRITE_BIT,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT);
+        const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .extent = {t->width, t->height, 1}};
+        vkCmdCopyImage(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, into->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        image_barrier(commands, into->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
+        target_drawn(x, into);
+        into->loaded_change = x->change_count;
+    } else {
+        if (record_target_copy(x, t, 1, error, error_size) || record_tile_copy(x, &t->plan, to, 1, error, error_size)) return -1;
+        batch_writes(x, to, span, 0);
+        metadata_stored(x, to);
+    }
+    if (bytes > span) { /* the rest, past the target's memory, in guest memory */
+        const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+        const VkBufferCopy rest = {.srcOffset = from + span - x->guest_base, .dstOffset = to + span - x->guest_base, .size = bytes - span};
+        vkCmdCopyBuffer(commands, x->buffer, x->buffer, 1, &rest);
+        batch_reads(x, from + span, bytes - span);
+        batch_writes(x, to + span, bytes - span, 0);
+    }
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
+                         &after, 0, NULL, 0, NULL);
+    return 1;
+}
+
 /* After a fill's first workgroup (fill_target): its elements, stored at the start of the target's memory,
    are copied into the target's linear rows and doubled until the rows are full, then into its image, all
    on the GPU, with the batch. The target counts as drawn: its memory gets the fill when it is written
@@ -6956,6 +7068,7 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
             if (scan->used) {
                 memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
                 scan->fill = gcn_fill_shape(code, dwords, &scan->fill_shape);
+                scan->linear = gcn_linear_copy_shape(code, dwords, &scan->linear_shape);
             }
         }
     }
@@ -7100,6 +7213,8 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     else
         for (unsigned i = 0; i < store_count; i++) span_add(stores, &store_span_count, store_ranges[i][0], store_ranges[i][1]);
     if (!groups) span_add(reads, &read_count, arguments, INDIRECT_ARGUMENT_BYTES); /* drawn targets over them are written back too */
+    const int copied = groups ? target_copy(x, c, s->compute_user, s->compute_user_set, groups, error, error_size) : 0;
+    if (copied) return copied < 0 ? -1 : 0;
     /* a fill of a render target overwrites all its draws: only what it reads is written back first */
     target_entry *const filled = reads_anywhere ? NULL : fill_target(x, c, s->compute_user, s->compute_user_set, groups, reads, read_count, error,
                                                                      error_size);
