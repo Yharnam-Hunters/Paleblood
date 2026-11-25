@@ -539,6 +539,20 @@ Instead:
        a one-word NOP (its control word) before their SET_SH_REG, and the call stands at the NOP, so the
        mark follows a NOP into the packet after it; otherwise a descriptor rewritten in the same layout
        would pass on the NOP alone.
+     - **Calls a NOP now covers** (found in Iosefka's Clinic, 25 November 2026): with both marks in,
+       main still stopped on the shader at 0x20d1b00800 in about two clinic boots in five. Caught at
+       submission: the dispatch came from a 256-byte compute buffer submitted again with no new call,
+       whose first packet, a NOP with the game's control word 0x68750777, had been widened to cover the
+       whole buffer: its wait, user data and dispatch were now the NOP's body, which the GPU skips. The
+       calls' own packets were unchanged, so every mark matched, and the old dispatch ran with a table
+       address whose ring slot by then held floats. Each submission now walks the buffer's PM4 headers
+       from its start and takes only the calls that stand at a packet the GPU reaches (`live_calls` in
+       `render_calls.c`); a call inside an earlier packet's body is left out of that submission but
+       kept in the list, so the calls run again if the game narrows the NOP back. A buffer that does
+       not walk as type-3 packets up to a call keeps its calls from there on (the submission's own
+       walk in `runtime/syslib/gnm.c` stops on such a buffer). In a clinic boot one buffer in about
+       150,000 submissions had calls left out this way (three user-data calls and the dispatch, all
+       inside that NOP); none fell inside any other kind of packet.
      - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
        command buffers from rings, so the record sees new buffer addresses all the time, and the
        runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
