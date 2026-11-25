@@ -6758,12 +6758,17 @@ static void span_add(memory_span *spans, unsigned *count, uint64_t address, uint
 
 /* A buffer descriptor's (V#) base, stride and NUM_RECORDS (the Sea Islands manual: word 0 BASE_ADDRESS
    bits 0-31, word 1 its bits 32-39 in 0-7, STRIDE 16-29, SWIZZLE_ENABLE 31; word 2 NUM_RECORDS; word
-   3 DST_SEL_X/Y/Z bits 0-8, NUM_FORMAT 12-14, DATA_FORMAT 15-18, ADD_TID_ENABLE 23), and the bytes its
-   range checking lets accesses reach. */
-enum { VSHARP_STRIDE_SHIFT = 16, VSHARP_STRIDE_MASK = 0x3fff, VSHARP_BASE_HIGH_MASK = 0xff };
+   3 DST_SEL_X/Y/Z bits 0-8, NUM_FORMAT 12-14, DATA_FORMAT 15-18, ADD_TID_ENABLE 23), its formats, and
+   the bytes its range checking lets accesses reach. */
+enum {
+    VSHARP_STRIDE_SHIFT = 16, VSHARP_STRIDE_MASK = 0x3fff, VSHARP_BASE_HIGH_MASK = 0xff, VSHARP_NFMT_SHIFT = 12,
+    VSHARP_NFMT_MASK = 7, VSHARP_DFMT_SHIFT = 15, VSHARP_DFMT_MASK = 0xf
+};
 static uint64_t vsharp_base(const uint32_t *w) { return w[0] | (uint64_t)(w[1] & VSHARP_BASE_HIGH_MASK) << 32; }
 static uint64_t vsharp_stride(const uint32_t *w) { return w[1] >> VSHARP_STRIDE_SHIFT & VSHARP_STRIDE_MASK; }
 static uint64_t vsharp_bytes(const uint32_t *w) { return vsharp_stride(w) ? vsharp_stride(w) * w[2] : w[2]; }
+static uint32_t vsharp_number_format(const uint32_t *w) { return w[3] >> VSHARP_NFMT_SHIFT & VSHARP_NFMT_MASK; }
+static uint32_t vsharp_data_format(const uint32_t *w) { return w[3] >> VSHARP_DFMT_SHIFT & VSHARP_DFMT_MASK; }
 
 /* The table-driven copy's real memory (gcn_table_copy_shape): its table, read now by the CPU, gives
    each workgroup's first source and destination elements, and the copy reaches the workgroup's width of
@@ -6790,7 +6795,7 @@ static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gc
     if (((table[1] | source[1] | destination[1]) & swizzle) || ((table[3] | source[3] | destination[3]) & add_tid) || !vsharp_stride(table) ||
         !vsharp_stride(source) || !vsharp_stride(destination))
         return 0;
-    const uint32_t data_format = table[3] >> 15 & 0xf, number_format = table[3] >> 12 & 7;
+    const uint32_t data_format = vsharp_data_format(table), number_format = vsharp_number_format(table);
     if (shape->table_format && ((data_format != DFMT_32_32_32 && data_format != DFMT_32_32_32_32) ||
                                 (number_format != NFMT_UINT && number_format != NFMT_SINT && number_format != NFMT_FLOAT) ||
                                 (table[3] & SELECT_MASK) != SELECT_XYZ))
@@ -6888,15 +6893,14 @@ static int other_unwritten_in(const rt_executor *x, const target_entry *except, 
 }
 
 /* A dispatch of a linear copy (gcn_linear_copy_shape) of 32-bit elements whose source is a render target
-   drawn into since its write-back (from the target's first byte, through at least its memory), as the
-   game copies whole targets: done on the GPU's own copies instead of writing the target back into host
-   memory for the shader to read it there and store it into host memory again (in Iosefka's Clinic about
-   seven a frame, 8 to 16 MB each). A destination that is a render target of the same shape takes the
-   source's image (an image copy; it counts as drawn, its memory gets the texels when it is written back);
-   any other destination memory takes the source's texels tiled as the source lays them out (its linear
-   rows tiled straight into the destination, the source's own memory left for its write-back). Bytes past
-   the source target's memory are copied in guest memory. 1 when copied so, 0 when the dispatch runs as
-   usual, -1 with the reason. */
+   drawn into since its write-back (from the target's first byte, through at least its memory), that is
+   a copy of a whole target: done on the GPU's own copies instead of writing the target back into host
+   memory for the shader to read it there and store it into host memory again. A destination that is a
+   render target of the same shape takes the source's image (an image copy; it counts as drawn, its
+   memory gets the texels when it is written back); any other destination memory takes the source's
+   texels tiled as the source lays them out (its linear rows tiled straight into the destination, the
+   source's own memory left for its write-back). Bytes past the source target's memory are copied in
+   guest memory. 1 when copied so, 0 when the dispatch runs as usual, -1 with the reason. */
 static int target_copy(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3], char *error,
                        size_t error_size)
 {
@@ -6918,10 +6922,14 @@ static int target_copy(rt_executor *x, const rt_compute_shader *c, const uint32_
         vsharp_stride(destination) != ELEMENT_BYTES)
         return 0;
     if (shape->format) { /* a 32-bit format loads and stores an element's bits as they are */
-        const uint32_t data_format = source[3] >> 15 & 0xf, number_format = source[3] >> 12 & 7;
-        if (data_format != DFMT_32 || (destination[3] >> 15 & 0xf) != DFMT_32 || (destination[3] >> 12 & 7) != number_format ||
-            (number_format != NFMT_UINT && number_format != NFMT_SINT && number_format != NFMT_FLOAT) || (source[3] & SELECT_FIRST_MASK) != SELECT_X)
+        const uint32_t number_format = vsharp_number_format(source);
+        if (vsharp_data_format(source) != DFMT_32 || vsharp_data_format(destination) != DFMT_32 ||
+            vsharp_number_format(destination) != number_format ||
+            (number_format != NFMT_UINT && number_format != NFMT_SINT && number_format != NFMT_FLOAT) ||
+            (source[3] & SELECT_FIRST_MASK) != SELECT_X)
             return 0;
+    } else if (!vsharp_data_format(source) || !vsharp_data_format(destination)) {
+        return 0; /* the invalid data format 0: run as usual rather than rely on how untyped accesses treat it */
     }
     /* the elements stored: the workgroups' threads, up to the destination's records (its range check) */
     const uint64_t threads = (uint64_t)groups[0] * c->threads[0], count = threads < destination[2] ? threads : destination[2];
