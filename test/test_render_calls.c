@@ -483,7 +483,7 @@ static void calls_inside_packets(void)
     checked_memory[0x18 / 4] = user[0], checked_memory[0x1c / 4] = user[1];
     checked_memory[0x20 / 4] = 0xc0031502u, checked_memory[0x24 / 4] = 1;           /* DISPATCH_DIRECT */
     checked_memory[0x28 / 4] = 1, checked_memory[0x2c / 4] = 1, checked_memory[0x30 / 4] = 1;
-    checked_memory[0x34 / 4] = 0xc0071000u;                                         /* NOP to the end */
+    checked_memory[0x34 / 4] = 0xc0011000u;                                         /* NOP to the end (3 words) */
     CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 2, user, 2, error, sizeof error) == 0);
     CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
     rt_render_call *taken = rt_render_take(CHECKED_BUFFER, SIZE, &count);

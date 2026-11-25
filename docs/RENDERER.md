@@ -550,9 +550,10 @@ Instead:
        `render_calls.c`); a call inside an earlier packet's body is left out of that submission but
        kept in the list, so the calls run again if the game narrows the NOP back. A buffer that does
        not walk as type-3 packets up to a call keeps its calls from there on (the submission's own
-       walk in `runtime/syslib/gnm.c` stops on such a buffer). In a clinic boot one buffer in about
-       150,000 submissions had calls left out this way (three user-data calls and the dispatch, all
-       inside that NOP); none fell inside any other kind of packet.
+       walk in `runtime/syslib/gnm.c` stops on such a buffer). Counted over two clinic boots of about
+       150,000 submissions each, calls were left out of one buffer in all (three user-data calls and
+       the dispatch, inside that NOP); every buffer walked, and no call fell inside any other kind of
+       packet.
      - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
        command buffers from rings, so the record sees new buffer addresses all the time, and the
        runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
