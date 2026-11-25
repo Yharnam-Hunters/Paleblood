@@ -241,17 +241,19 @@ typedef struct {
     uint32_t depth_clamp;                               /* z is not clipped but clamped to the viewport's range (PA_CL_CLIP_CNTL) */
 } depth_plan;
 
-/* The image standing for a depth target, found by its depth and stencil buffers' addresses and the
-   slice a view names: written only by draws, so it starts cleared; drawn says whether a draw has
-   written it since, which a test that reads it needs (its contents in guest memory are never loaded).
-   Its depth is written back to the guest memory under it (write_back_depths) like a colour target's
-   texels, for shaders that read that memory. */
+/* The image standing for a depth target, found by its depth and stencil addresses and slice. It
+   starts cleared; drawn says whether a draw has written it since. Its depth is written back for
+   readers of guest memory. Stencil shares memory with colour image views through transfer_stencil. */
 typedef struct {
     uint64_t z_address, stencil_address;
     uint32_t slice;                  /* DB_DEPTH_VIEW's slice: each slice of an array target is an image of its own */
     uint32_t width, height;
     uint32_t tile_index;             /* DB_Z_INFO's TILE_MODE_INDEX: the depth's layout in memory */
     uint64_t span;                   /* its depth's bytes in memory (depth_span), worked out once */
+    uint64_t stencil_span;           /* one slice of the separate 8-bit stencil plane */
+    int stencil_dirty;               /* a stencil draw has changed the attachment */
+    int stencil_reload;              /* a storage image has replaced bytes under the attachment */
+    tile_plan stencil_plan;          /* made only when a storage image uses the stencil's memory */
     int drawn;
     int unwritten;                   /* its depth changed since it was last written back */
     uint64_t drawn_serial;           /* counts the draws and clears into it (image_from_depth) */
@@ -329,6 +331,7 @@ typedef struct {
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
     int written_back;                /* its texels written since are in the guest memory too (write_back_image) */
     int stored;                      /* a dispatch has stored to it: stored_as holds that dispatch's descriptor */
+    int stencil_alias;               /* these stores must reach guest memory before the next stencil draw */
     rt_image_descriptor stored_as;   /* how the memory under it lays its texels out, for a later write-back */
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
@@ -1035,14 +1038,18 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
     return 0;
 }
 
-/* Whether a planned draw writes the depth target: depth writes, or a stencil operation other than keep. */
-static int plan_writes(const depth_plan *plan)
+static int plan_writes_stencil(const depth_plan *plan)
 {
-    if (plan->depth_test && plan->depth_write) return 1;
     for (unsigned face = 0; plan->stencil_test && face < 2; face++)
         for (unsigned k = 0; k < 3; k++)
             if (plan->stencil_ops[face][k] != VK_STENCIL_OP_KEEP) return 1;
     return 0;
+}
+
+/* Whether a planned draw writes the depth target: depth writes, or a stencil operation other than keep. */
+static int plan_writes(const depth_plan *plan)
+{
+    return (plan->depth_test && plan->depth_write) || plan_writes_stencil(plan);
 }
 
 /* The channels a draw writes in a slot: CB_TARGET_MASK and the pixel shader's CB_SHADER_MASK, four bits
@@ -3441,16 +3448,17 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
        + 1 tiles of 64 elements each (shadPS4's regs_depth.h, GetDepthSliceSize), so that writing the slice
        back reaches its own memory */
     enum { SLICE_TILE_MAX_MASK = 0x3fffff, TILE_ELEMENTS = 64 };
-    const uint64_t slice_elements = (uint64_t)slice * ((r[DEPTH_SLICE] & SLICE_TILE_MAX_MASK) + 1) * TILE_ELEMENTS;
+    const uint64_t slice_pixels = (uint64_t)((r[DEPTH_SLICE] & SLICE_TILE_MAX_MASK) + 1) * TILE_ELEMENTS;
+    const uint64_t slice_elements = slice * slice_pixels;
     const uint32_t depth_bytes = depth_texel_bytes(format);
     const uint32_t stencil_bytes = format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : 1;
     const uint64_t z_address = ((uint64_t)r[Z_WRITE_BASE] << 8) + slice_elements * depth_bytes,
-                   stencil_address = ((uint64_t)r[STENCIL_WRITE_BASE] << 8) + slice_elements * stencil_bytes;
+                   stencil_address = stencil_bytes ? ((uint64_t)r[STENCIL_WRITE_BASE] << 8) + slice_elements : 0;
     const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *d = &x->depths[i];
         if (d->z_address != z_address || d->stencil_address != stencil_address || d->slice != slice) continue;
-        if (d->width == width && d->height == height && d->format == format) return d;
+        if (d->width == width && d->height == height && d->format == format && d->stencil_span == slice_pixels * stencil_bytes) return d;
         failed(error, error_size, "depth target %#llx changed size or format: not drawn yet", (unsigned long long)z_address);
         return NULL;
     }
@@ -3460,7 +3468,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     }
     depth_entry *d = &x->depths[x->depth_count];
     *d = (depth_entry){.htile.resolved = UINT64_MAX, .z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
-                       .tile_index = r[Z_INFO] >> 20 & 7, .format = format};
+                       .tile_index = r[Z_INFO] >> 20 & 7, .format = format, .stencil_span = slice_pixels * stencil_bytes};
     d->span = depth_layout_span(d);
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -3580,7 +3588,8 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
    its tile mode (runtime/tiling.h): copied into linear rows and tiled into place on the GPU, with the
    batch, as colour targets are (write_back_targets calls it first). Depth targets of 16-bit unorm or
    32-bit float depth (depth_written_back), in a layout runtime/tiling.h has; others keep their memory as
-   it was (nothing read it so far). The stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
+   it was (nothing read it so far). Stencil write-backs have their own path. 1 when any depth was
+   written back, 0 when none, -1 with the reason. */
 /* The bytes of a depth target's depth in memory: its tile mode's size, or its texels' bytes (4 for a
    stencil-only target) when that is not laid out here. Worked out when the depth target is made
    (depth_layout_span), as a colour target's. */
@@ -3596,6 +3605,49 @@ static uint64_t depth_layout_span(const depth_entry *z)
 static uint64_t depth_span(const depth_entry *z)
 {
     return z->span;
+}
+
+/* A colour image can reuse the storage of the separate stencil plane. Move the S8 bytes through
+   linear rows so each view uses its own tile layout and the depth aspect keeps its contents. */
+static int transfer_stencil(rt_executor *x, depth_entry *z, int to_memory, char *error, size_t error_size)
+{
+    tile_plan *plan = &z->stencil_plan;
+    if (!plan->table.buffer) {
+        rt_tiling layout;
+        char reason[160];
+        if (!tile_copy_moves(x, 1) || rt_tiling_layout(z->tile_index, 1, z->width, z->height, &layout, reason, sizeof reason) ||
+            rt_tiling_size(&layout, 1) > z->stencil_span || z->stencil_address < x->guest_base ||
+            z->stencil_address - x->guest_base > x->size || z->stencil_span > x->size - (z->stencil_address - x->guest_base))
+            return failed(error, error_size, "cannot copy the stencil plane at %#llx", (unsigned long long)z->stencil_address);
+        if (tile_plan_make(x, plan, &layout, z->width, z->height, 1, error, error_size)) return -1;
+    }
+    if (!to_memory && record_tile_copy(x, plan, z->stencil_address, 0, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkImageAspectFlags aspects = VK_IMAGE_ASPECT_STENCIL_BIT | (depth_texel_bytes(z->format) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0);
+    const VkImageLayout attachment = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    const VkImageLayout transfer = to_memory ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    const VkAccessFlags attachment_access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    const VkAccessFlags transfer_access = to_memory ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = attachment_access,
+                                    .dstAccessMask = transfer_access, .oldLayout = attachment, .newLayout = transfer,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = z->image, .subresourceRange = {aspects, 0, 1, 0, 1}};
+    const VkMemoryBarrier rows = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                  .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &rows, 0, NULL, 1, &barrier);
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, .imageExtent = {z->width, z->height, 1}};
+    if (to_memory) vkCmdCopyImageToBuffer(commands, z->image, transfer, plan->linear.buffer, 1, &copy);
+    else vkCmdCopyBufferToImage(commands, plan->linear.buffer, z->image, transfer, 1, &copy);
+    barrier.srcAccessMask = transfer_access, barrier.dstAccessMask = attachment_access;
+    barrier.oldLayout = transfer, barrier.newLayout = attachment;
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    if (to_memory) {
+        if (record_tile_copy(x, plan, z->stencil_address, 1, error, error_size)) return -1;
+        batch_writes(x, z->stencil_address, z->stencil_span, 0);
+    }
+    z->stencil_dirty = 0, z->stencil_reload = 0;
+    return 0;
 }
 
 static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size)
@@ -5144,6 +5196,10 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     const int uses_depth = plan->depth_test || plan->stencil_test || plan->depth_bounds;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
+    if (z && plan->stencil_test && z->stencil_reload) {
+        const memory_span stencil = {z->stencil_address, z->stencil_span};
+        if (write_back_targets_in(x, &stencil, 1, error, error_size) || transfer_stencil(x, z, 0, error, error_size)) return -1;
+    }
     if (z && resolve_depth_fast_clear(x, s, z, error, error_size)) return -1;
     if (z && plan->reads && !z->drawn)
         return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
@@ -5338,7 +5394,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     x->draws_synced = !stores && !tess && !gs; /* the pass stays open for the next draw (commands_outside_pass ends it) */
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
         if (targets[slot]) target_drawn(x, targets[slot]);
-    if (z && plan_writes(plan)) depth_drawn(x, z);
+    if (z) {
+        const int stencil_written = plan_writes_stencil(plan);
+        if (stencil_written) z->stencil_dirty = 1;
+        if (stencil_written || (plan->depth_test && plan->depth_write)) depth_drawn(x, z);
+    }
     return 0; /* the run-time stop words are checked once the batch has run */
 }
 
@@ -6086,6 +6146,18 @@ static image_entry *image_to_evict(rt_executor *x)
     return oldest;
 }
 
+/* The colour views that can transfer their whole logical rectangle through guest memory. */
+static uint64_t stencil_alias_image_span(const rt_executor *x, const rt_image_descriptor *d, const texel_format *f)
+{
+    if (d->type != RT_IMAGE_2D || d->layers != 1 || d->last_level || d->pitch < d->width || f->block != 1 ||
+        f->bytes == 1 || !tile_copy_moves(x, f->bytes))
+        return 0;
+    rt_tiling layout;
+    char reason[160];
+    if (rt_tiling_layout(d->tiling_index, f->bytes, d->pitch, d->height, &layout, reason, sizeof reason) || !tile_copy_pieces(&layout)) return 0;
+    return rt_tiling_size(&layout, 1);
+}
+
 static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, const texel_format *f, unsigned access, char *error,
                               size_t error_size)
 {
@@ -6094,15 +6166,26 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
        and the target takes the image's at its next draw (take_written_image) */
     /* a depth target's 16-bit unorm or 32-bit float depth is written back to its memory (write_back_depths)
        before an image over it loads (unwritten_target_over), so a shader may read it as an image of the same
-       layout and texel size; its stencil is not written back, and nothing writes a depth target's memory as
-       an image */
+       layout and texel size. A distinct colour view over the stencil plane takes its backing bytes,
+       including texels the new shader may leave alone. */
+    uint64_t alias_span = 0;
+    int stencil_alias = 0;
     for (size_t i = 0; i < x->depth_count; i++) {
-        const depth_entry *z = &x->depths[i];
-        if (z->z_address != d->address && (!z->stencil_address || z->stencil_address != d->address)) continue; /* 0: no stencil buffer */
-        if (z->z_address != d->address || (access & GCN_IMAGE_WRITE) || !depth_written_back(x, z) || f->bytes != depth_texel_bytes(z->format) || f->block != 1 ||
-            d->tiling_index != z->tile_index) {
+        depth_entry *z = &x->depths[i];
+        const int same_depth = depth_texel_bytes(z->format) && z->z_address == d->address;
+        if (z->stencil_span && d->address < z->stencil_address + z->stencil_span &&
+            (d->address >= z->stencil_address || (access & GCN_IMAGE_WRITE))) {
+            if (!alias_span) alias_span = stencil_alias_image_span(x, d, f);
+            if (alias_span && z->stencil_address < d->address + alias_span) {
+                stencil_alias = 1;
+                if (z->stencil_dirty && transfer_stencil(x, z, 1, error, error_size)) return NULL;
+            }
+        }
+        if ((!same_depth && z->stencil_span && z->stencil_address == d->address && !alias_span) ||
+            (same_depth && ((access & GCN_IMAGE_WRITE) || !depth_written_back(x, z) || f->bytes != depth_texel_bytes(z->format) ||
+                            f->block != 1 || d->tiling_index != z->tile_index))) {
             failed(error, error_size, "an image at %#llx that is also a depth target (%s, tiling index %u, the depth's %u): not done yet",
-                   (unsigned long long)d->address, z->z_address != d->address ? "its stencil" : (access & GCN_IMAGE_WRITE) ? "written" : "read",
+                   (unsigned long long)d->address, !same_depth ? "its stencil" : (access & GCN_IMAGE_WRITE) ? "written" : "read",
                    d->tiling_index, z->tile_index);
             return NULL;
         }
@@ -6202,11 +6285,14 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
                d->tiling_index);
         return NULL;
     }
-    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written) {
+    if (stencil_alias) {
+        const memory_span memory = {d->address, alias_span};
+        if (write_back_targets_in(x, &memory, 1, error, error_size) || load_texels(x, e, d, f, error, error_size)) return NULL;
+    } else if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written) {
         const int taken = take_written_alias(x, e, error, error_size);
         if (taken < 0 || (!taken && load_texels(x, e, d, f, error, error_size))) return NULL;
     }
-    if (access & GCN_IMAGE_WRITE) e->gpu_written = 1, e->written_back = 0;
+    if (access & GCN_IMAGE_WRITE) e->gpu_written = 1, e->written_back = 0, e->stencil_alias = stencil_alias;
     return e;
 }
 
@@ -6230,7 +6316,8 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     if (d != &e->stored_as) e->stored = 1, e->stored_as = *d;
     texel_format f;
     const target_entry *target = find_target(x, d->address);
-    if ((target && target_takes_image(target->format, e->format, e->type)) || e->type == RT_IMAGE_3D || image_format(d, &f, error, error_size))
+    if ((!e->stencil_alias && target && target_takes_image(target->format, e->format, e->type)) || e->type == RT_IMAGE_3D ||
+        image_format(d, &f, error, error_size))
         return 0;
     rt_tiling layout;
     char reason[160];
@@ -6267,6 +6354,13 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     if (record_tile_copy(x, &e->plan, d->address, 1, error, error_size)) return -1;
     batch_writes(x, d->address, span, 0); /* the CPU reads it once the batch has run */
     e->written_back = 1;
+    if (e->stencil_alias) {
+        for (size_t i = 0; i < x->depth_count; i++) {
+            depth_entry *z = &x->depths[i];
+            if (z->stencil_span && spans_overlap(&memory, 1, z->stencil_address, z->stencil_span)) z->stencil_reload = 1;
+        }
+        e->gpu_written = 0, e->loaded_change = x->change_count, e->loaded_span = span;
+    }
     return 0;
 }
 
@@ -7684,6 +7778,7 @@ void rt_executor_close(rt_executor *x)
         for (size_t i = 0; i < x->depth_count; i++) {
             vkDestroyImageView(x->device, x->depths[i].view, NULL);
             tile_plan_free(x, &x->depths[i].plan);
+            tile_plan_free(x, &x->depths[i].stencil_plan);
             vkDestroyImage(x->device, x->depths[i].image, NULL);
             vkFreeMemory(x->device, x->depths[i].memory, NULL);
         }

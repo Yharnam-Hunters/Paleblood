@@ -2543,6 +2543,63 @@ static void depth_and_strips(rt_executor *x)
     memcpy(colors, saved_colors, sizeof saved_colors);
 }
 
+/* A colour storage image shares the stencil's base, but uses four-byte texels and another tiling
+   mode. One lane changes only its first texel. A later stencil test sees those four bytes in the
+   S8 layout, and the rest of the plane retains the values the earlier draw wrote. */
+static void stencil_storage_alias(rt_executor *x)
+{
+    enum { DEPTH = 0x3940000, STENCIL = 0x3980000, MARK = 0x3990000, TESTED = 0x3991000,
+           DRAW = 0xc1510000, COMPUTE = 0xc1520000, CODE = 0x3200,
+           WIDTH = 256, HEIGHT = 128, PLANE_BYTES = WIDTH * HEIGHT, COLOUR_PITCH = 128, MARK_VALUE = 0x7f };
+    char error[256] = "";
+    uint8_t *stencil_memory = (uint8_t *)(uintptr_t)at(STENCIL);
+    memset(stencil_memory, 0xa5, PLANE_BYTES + 1);
+    memset((void *)(uintptr_t)at(TESTED), 0, SIZE * SIZE * 4);
+    const uint32_t depth = (uint32_t)(at(DEPTH) >> 8), stencil = (uint32_t)(at(STENCIL) >> 8);
+#define ALIASED_DEPTH {0xa010, 3}, {0xa011, 0x20000001}, {0xa014, depth}, {0xa015, stencil}, \
+                      {0xa016, (WIDTH / 8 - 1) | (HEIGHT / 8 - 1) << 11}, {0xa017, PLANE_BYTES / 64 - 1}, {0xa002, 0}
+    const uint32_t mark[][2] = {ALIASED_DEPTH, {0xa10c, 0xffff00 | MARK_VALUE}, {0xa10b, 0x30030}, {0xa200, 1 | 7u << 8}};
+    CHECK(run_counted(x, DRAW, at(MARK), mark, sizeof mark / sizeof *mark, 3, error, sizeof error) == 0);
+
+    memcpy((void *)(uintptr_t)at(CODE), image_clear_tile, sizeof image_clear_tile);
+    const uint64_t code = at(CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 3, 16 << 1, 1, 1, 1};
+    uint32_t image[8];
+    image_descriptor(image, at(STENCIL), 6, 7, SIZE, SIZE);
+    image[3] = (image[3] & ~0xfffu) | 0x3ac | 14u << 20; /* RGB with constant alpha, Thin2DThin */
+    image[4] = (COLOUR_PITCH - 1) << 13;
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+    CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 8, image, 8, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+    const int stored = rt_executor_run(x, COMPUTE, 0x40, error, sizeof error);
+    if (stored) fprintf(stderr, "colour storage over stencil: %s\n", error);
+    CHECK(stored == 0);
+    if (stored) return;
+
+    const uint32_t packed = small_float_bits(0.25f, 6) | small_float_bits(0.5f, 6) << 11 | small_float_bits(0.75f, 5) << 22;
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(0, 1, WIDTH, HEIGHT, &layout, error, sizeof error) == 0);
+    uint8_t expected[PLANE_BYTES] = {0};
+    for (unsigned y = 0; y < SIZE; y++)
+        for (unsigned px = 0; px < SIZE; px++) expected[rt_tiling_offset(&layout, px, y, 0)] = MARK_VALUE;
+    memcpy(expected, &packed, sizeof packed);
+    CHECK(memcmp(stencil_memory, expected, sizeof expected) == 0);
+    CHECK(stencil_memory[PLANE_BYTES] == 0xa5);
+
+    const uint32_t test[][2] = {ALIASED_DEPTH, {0xa10c, 0xffff00 | MARK_VALUE}, {0xa10b, 0}, {0xa200, 1 | 2u << 8}};
+    CHECK(run_counted(x, DRAW, at(TESTED), test, sizeof test / sizeof *test, 3, error, sizeof error) == 0);
+    uint32_t pixels[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(TESTED), pixels, SIZE, SIZE, error, sizeof error) == 0);
+    unsigned misses = 0;
+    for (unsigned y = 0; y < SIZE; y++)
+        for (unsigned px = 0; px < SIZE; px++)
+            misses += ((pixels[y * SIZE + px] >> 24) == 0xff) != (expected[rt_tiling_offset(&layout, px, y, 0)] == MARK_VALUE);
+    CHECK(misses == 0);
+#undef ALIASED_DEPTH
+}
+
 /* A vertex shader calling a fetch shader (vertex_calling_fetch, fetch_position_color): its user data
    holds the fetch shader's address and a pointer to a table of the two vertex buffers' descriptors
    (32_32_32_32 float, DST_SEL x, y, z, w); the triangle draws the reference image. */
@@ -4221,6 +4278,7 @@ int main(void)
     const uint32_t line_strips[][2] = {{0xc242, 5}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
+    stencil_storage_alias(x);
     clip_control(x);
     multiple_targets(x);
     compute_cleared_target(x);
