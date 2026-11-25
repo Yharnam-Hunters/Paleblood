@@ -252,7 +252,7 @@ typedef struct {
     uint64_t span;                   /* its depth's bytes in memory (depth_span), worked out once */
     uint64_t stencil_span;           /* one slice of the separate 8-bit stencil plane */
     int stencil_dirty;               /* a stencil draw has changed the attachment */
-    int stencil_reload;              /* a storage image has replaced bytes under the attachment */
+    int stencil_reload;              /* another depth view or storage image has newer stencil bytes */
     tile_plan stencil_plan;          /* made only when a storage image uses the stencil's memory */
     int drawn;
     int unwritten;                   /* its depth changed since it was last written back */
@@ -3455,12 +3455,26 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     const uint64_t z_address = ((uint64_t)r[Z_WRITE_BASE] << 8) + slice_elements * depth_bytes,
                    stencil_address = stencil_bytes ? ((uint64_t)r[STENCIL_WRITE_BASE] << 8) + slice_elements : 0;
     const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
+    const uint32_t tile_index = r[Z_INFO] >> 20 & 7;
+    const uint64_t stencil_span = slice_pixels * stencil_bytes;
+    const memory_span stencil = {stencil_address, stencil_span};
+    int shared_stencil = 0;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *d = &x->depths[i];
-        if (d->z_address != z_address || d->stencil_address != stencil_address || d->slice != slice) continue;
-        if (d->width == width && d->height == height && d->format == format && d->stencil_span == slice_pixels * stencil_bytes) return d;
-        failed(error, error_size, "depth target %#llx changed size or format: not drawn yet", (unsigned long long)z_address);
-        return NULL;
+        if (d->z_address == z_address && d->stencil_address == stencil_address && d->slice == slice) {
+            if (d->width == width && d->height == height && d->format == format && d->stencil_span == stencil_span && d->tile_index == tile_index)
+                return d;
+            failed(error, error_size, "depth target %#llx changed size or format or tiling: not drawn yet", (unsigned long long)z_address);
+            return NULL;
+        }
+        if (stencil_span && d->stencil_span && spans_overlap(&stencil, 1, d->stencil_address, d->stencil_span)) {
+            if (d->stencil_address != stencil_address || d->stencil_span != stencil_span || d->width != width || d->height != height ||
+                d->tile_index != tile_index || d->slice != slice) {
+                failed(error, error_size, "stencil planes overlap with different extents or layouts: not drawn yet");
+                return NULL;
+            }
+            shared_stencil = 1;
+        }
     }
     if (x->depth_count == MAX_TARGETS) {
         failed(error, error_size, "more depth targets than the executor keeps");
@@ -3468,7 +3482,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     }
     depth_entry *d = &x->depths[x->depth_count];
     *d = (depth_entry){.htile.resolved = UINT64_MAX, .z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
-                       .tile_index = r[Z_INFO] >> 20 & 7, .format = format, .stencil_span = slice_pixels * stencil_bytes};
+                       .tile_index = tile_index, .format = format, .stencil_span = stencil_span, .stencil_reload = shared_stencil};
     d->span = depth_layout_span(d);
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -5197,6 +5211,14 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
     if (z && plan->stencil_test && z->stencil_reload) {
+        /* A new or stale view takes the whole shared plane from a current peer. Even a clean peer
+           may hold the initial clear that has never reached memory. Stale peers must not publish. */
+        for (size_t i = 0; i < x->depth_count; i++) {
+            depth_entry *other = &x->depths[i];
+            if (other == z || !other->stencil_span || other->stencil_address != z->stencil_address || other->stencil_reload) continue;
+            if (transfer_stencil(x, other, 1, error, error_size)) return -1;
+            break;
+        }
         const memory_span stencil = {z->stencil_address, z->stencil_span};
         if (write_back_targets_in(x, &stencil, 1, error, error_size) || transfer_stencil(x, z, 0, error, error_size)) return -1;
     }
@@ -5396,7 +5418,13 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         if (targets[slot]) target_drawn(x, targets[slot]);
     if (z) {
         const int stencil_written = plan_writes_stencil(plan);
-        if (stencil_written) z->stencil_dirty = 1;
+        if (stencil_written) {
+            z->stencil_dirty = 1;
+            for (size_t i = 0; i < x->depth_count; i++) {
+                depth_entry *other = &x->depths[i];
+                if (other != z && other->stencil_span && other->stencil_address == z->stencil_address) other->stencil_reload = 1;
+            }
+        }
         if (stencil_written || (plan->depth_test && plan->depth_write)) depth_drawn(x, z);
     }
     return 0; /* the run-time stop words are checked once the batch has run */
