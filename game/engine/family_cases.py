@@ -3460,3 +3460,9 @@ MUTANTS.update({
     'calls_0x022dc040_then_sets_byte_0x60': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
     'frees_0x10_bytes_through_0x05ac8288': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero'],
 })
+
+
+# allocates_page_into_table_from_0x02795780 (arena_page_table.h), from #1158.
+CASES['allocates_page_into_table_from_0x02795780'] = _load('arena_page_table_cases').cases
+# No call (and no write), and the neighbouring value's replacement (verify adds it).
+MUTANTS['allocates_page_into_table_from_0x02795780'] = ['bb_mutant_does_nothing', 'bb_mutant_returns_zero']
