@@ -182,6 +182,10 @@ void rt_executor_launch_compiles(rt_executor *executor, size_t *shaders, size_t 
 /* The same for the pipeline catalog's draw pipelines: those made again at launch and those of them the
    driver compiled (Vulkan executor). */
 void rt_executor_launch_pipelines(rt_executor *executor, size_t *pipelines, size_t *compiled);
+/* A function each launch worker calls as it starts making a draw pipeline, before making it, from the
+   worker's thread (NULL: none, the default); set before rt_executor_open. For tests: a worker held there
+   keeps its pipeline being made. */
+void rt_executor_set_launch_pipeline_hook(void (*hook)(void));
 
 void rt_executor_close(rt_executor *executor);
 
