@@ -1941,7 +1941,7 @@ render_compose_record_encoding_fields,recorded,,19,19,0,0,c6bfe3dc4c1e12ad,2026-
 render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-12
 render_configure_record_shader,recorded,,382,382,0,0,f676035c0f6f2a49,2026-11-12
 render_configure_record_shader,edge,,18,18,0,0,f676035c0f6f2a49,2026-11-12
-render_configure_record_shader_secondary,edge,,195,195,0,0,7cb20871ee23d460,2026-11-19
+render_configure_record_shader_secondary,edge,,195,195,0,0,7cb20871ee23d460,2026-11-25
 render_configure_screen_scissor,recorded,,78,78,0,0,26090706b37974bd,2026-11-12
 render_configure_screen_scissor,edge,,13,13,0,0,26090706b37974bd,2026-11-12
 render_configure_viewport,recorded,,134,134,0,0,3d87385231a22e92,2026-11-12
