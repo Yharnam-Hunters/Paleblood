@@ -4137,7 +4137,7 @@ static void launch_compiles(const rt_executor_memory *shared)
 static void launch_makes_pipelines(int fd)
 {
     enum { PIPELINE_BUFFER = 0xc0e60000, PIPELINE_TARGET = 0x3640000 };
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, NULL};
     char directory[] = "/tmp/pb-recipes-XXXXXX", catalog[64], recipes[64], translations[2][64], pipelines[2][64], error[256] = "";
     CHECK(mkdtemp(directory) != NULL);
     snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);

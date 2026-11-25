@@ -339,9 +339,15 @@ void rt_display_window_show(const uint32_t *pixels, uint32_t width, uint32_t hei
     else if (shown != VK_SUCCESS) rt_fatal("display window", "the window could not show the frame");
 }
 
-void rt_display_window_title(const char *status)
+int rt_display_window_title(const char *status)
 {
+    if (!SDL_IsMainThread()) return 0; /* SDL's main thread here: the one that opened the window */
     char title[128];
     snprintf(title, sizeof title, status[0] ? "Paleblood - %s" : "Paleblood", status);
-    SDL_SetWindowTitle(vk.window, title);
+    static int failure_told; /* the display's lock is held */
+    if (!SDL_SetWindowTitle(vk.window, title) && !failure_told) {
+        failure_told = 1;
+        fprintf(stderr, "display window: the title could not change (%s)\n", SDL_GetError());
+    }
+    return 1;
 }

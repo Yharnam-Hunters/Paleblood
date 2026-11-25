@@ -6,7 +6,6 @@
 #include "runtime/launch_progress.h"
 
 #include <pthread.h>
-#include <semaphore.h>
 #include <stdio.h>
 
 static int failures;
@@ -28,42 +27,66 @@ static void listen(void *context, size_t done)
     if (heard_count < sizeof heard / sizeof *heard) heard[heard_count++] = done;
 }
 
+/* The order the workers tell in: main lets one worker at a time go (turn) and waits until it has
+   told (finished). A mutex and condition variables, which every host's threads have. */
+static pthread_mutex_t order_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t turn_changed = PTHREAD_COND_INITIALIZER, worker_finished = PTHREAD_COND_INITIALIZER;
+static int turn, finished; /* the worker let go (0: none yet); how many workers have told */
+
 typedef struct {
     launch_progress *progress;
-    size_t done;          /* the count this worker got from its increment */
-    sem_t *go, *finished; /* waits for go, then tells, then posts finished */
+    int name;    /* the turn it waits for */
+    size_t done; /* the count this worker got from its increment */
     int told;
 } worker;
 
 static void *tell_when_let(void *argument)
 {
     worker *w = argument;
-    sem_wait(w->go);
+    pthread_mutex_lock(&order_lock);
+    while (turn != w->name) pthread_cond_wait(&turn_changed, &order_lock);
+    pthread_mutex_unlock(&order_lock);
     w->told = launch_progress_publish(w->progress, w->done, listen, NULL);
-    sem_post(w->finished);
+    pthread_mutex_lock(&order_lock);
+    finished++;
+    pthread_cond_signal(&worker_finished);
+    pthread_mutex_unlock(&order_lock);
     return NULL;
+}
+
+/* Lets worker name tell, and waits until it has. */
+static void let_tell(int name)
+{
+    pthread_mutex_lock(&order_lock);
+    const int before = finished;
+    turn = name;
+    pthread_cond_broadcast(&turn_changed);
+    while (finished == before) pthread_cond_wait(&worker_finished, &order_lock);
+    pthread_mutex_unlock(&order_lock);
 }
 
 int main(void)
 {
     launch_progress progress;
-    launch_progress_init(&progress);
+    if (launch_progress_init(&progress)) {
+        fprintf(stderr, "launch progress: its lock could not be made\n");
+        return 1;
+    }
     CHECK(launch_progress_publish(&progress, 0, listen, NULL)); /* 0 of COUNT as the workers start */
-    sem_t go_a, go_b, finished;
-    sem_init(&go_a, 0, 0), sem_init(&go_b, 0, 0), sem_init(&finished, 0, 0);
-    worker a = {&progress, 1, &go_a, &finished, -1}, b = {&progress, COUNT, &go_b, &finished, -1};
+    worker a = {&progress, 'A', 1, -1}, b = {&progress, 'B', COUNT, -1};
     pthread_t threads[2];
-    CHECK(pthread_create(&threads[0], NULL, tell_when_let, &a) == 0);
-    CHECK(pthread_create(&threads[1], NULL, tell_when_let, &b) == 0);
-    sem_post(&go_b), sem_wait(&finished); /* B, which counted last, tells first */
-    sem_post(&go_a), sem_wait(&finished); /* then A's stale count */
+    const int started_a = pthread_create(&threads[0], NULL, tell_when_let, &a) == 0;
+    const int started_b = pthread_create(&threads[1], NULL, tell_when_let, &b) == 0;
+    CHECK(started_a && started_b);
+    if (!started_a || !started_b) return 1;
+    let_tell('B'); /* B, which counted last, tells first */
+    let_tell('A'); /* then A's stale count */
     pthread_join(threads[0], NULL), pthread_join(threads[1], NULL);
     CHECK(b.told == 1 && a.told == 0);
     CHECK(heard_count == 2 && heard[0] == 0 && heard[1] == COUNT);
     CHECK(heard_count > 0 && heard[heard_count - 1] == COUNT); /* the last thing heard: done */
     CHECK(!launch_progress_publish(&progress, COUNT, listen, NULL)); /* nothing told twice */
     launch_progress_destroy(&progress);
-    sem_destroy(&go_a), sem_destroy(&go_b), sem_destroy(&finished);
     if (failures) fprintf(stderr, "launch progress: %d failures\n", failures);
     return failures != 0;
 }

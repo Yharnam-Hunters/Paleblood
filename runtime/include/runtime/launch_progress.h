@@ -20,10 +20,11 @@ typedef struct {
     size_t last;      /* the last count told */
 } launch_progress;
 
-static inline void launch_progress_init(launch_progress *p)
+/* 0, or pthread_mutex_init's error (then p is not to be used or destroyed). */
+static inline int launch_progress_init(launch_progress *p)
 {
-    pthread_mutex_init(&p->lock, NULL);
     p->told = 0, p->last = 0;
+    return pthread_mutex_init(&p->lock, NULL);
 }
 
 static inline void launch_progress_destroy(launch_progress *p) { pthread_mutex_destroy(&p->lock); }
