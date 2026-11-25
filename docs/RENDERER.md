@@ -535,6 +535,10 @@ Instead:
        read through that descriptor too: the fault was in the record, not in the shader's range
        checks. The mark is now the whole packet (the header and the body it counts, up to 64 words,
        folded into 64 bits), so a rewrite with other values forgets the earlier calls.
+       The game's descriptor writers, and its four-word, eight-word and counted user-data writers, put
+       a one-word NOP (its control word) before their SET_SH_REG, and the call stands at the NOP, so the
+       mark follows a NOP into the packet after it; otherwise a descriptor rewritten in the same layout
+       would pass on the NOP alone.
      - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
        command buffers from rings, so the record sees new buffer addresses all the time, and the
        runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen

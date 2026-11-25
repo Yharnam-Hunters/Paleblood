@@ -794,20 +794,32 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
    register alone are not enough: a new use of the buffer in the same layout writes the same headers
    with other values, and the clinic's compute buffers do (each dispatch's table address is user data
    behind the same SET_SH_REG header), so an old call would run with an address from an earlier frame
-   whose memory now holds other data. Called with lists_lock held. */
+   whose memory now holds other data.
+   A NOP is followed into the packet after it: the game's descriptor writers (and its four-word,
+   eight-word and counted user-data writers) put a one-word NOP before their SET_SH_REG, and the call
+   stands at the NOP, so the NOP alone would leave the descriptor's words unmarked. Called with
+   lists_lock held. */
 enum { MARK_BODY_MAX = 64 };
 static uint64_t mark_at(uint64_t buffer, uint32_t offset, uint32_t size)
 {
-    enum { PM4_TYPE3 = 3, PM4_TYPE_SHIFT = 30 };
+    enum { PM4_TYPE3 = 3, PM4_TYPE_SHIFT = 30, PM4_OPCODE_SHIFT = 8, PM4_OPCODE_MASK = 0xff, PM4_NOP = 0x10 };
     const uint64_t fnv_offset = 0xcbf29ce484222325ull, fnv_prime = 0x100000001b3ull;
-    const uint32_t header = read_word(buffer + offset);
-    uint32_t words = 2;
-    if (header >> PM4_TYPE_SHIFT == PM4_TYPE3) {
-        const uint32_t body = PM4_COUNT(header) + 1;
-        words = 1 + (body < MARK_BODY_MAX ? body : MARK_BODY_MAX);
+    uint64_t mark = fnv_offset;
+    for (int packet = 0; packet < 2; packet++) {
+        const uint32_t header = read_word(buffer + offset);
+        uint32_t words = 2;
+        const int type3 = header >> PM4_TYPE_SHIFT == PM4_TYPE3;
+        if (type3) {
+            const uint32_t body = PM4_COUNT(header) + 1;
+            words = 1 + (body < MARK_BODY_MAX ? body : MARK_BODY_MAX);
+        }
+        mark = (mark ^ header) * fnv_prime;
+        uint32_t i = 1;
+        for (; i < words && offset + 4ull * (i + 1) <= size; i++) mark = (mark ^ read_word(buffer + offset + 4ull * i)) * fnv_prime;
+        const int nop = type3 && ((header >> PM4_OPCODE_SHIFT) & PM4_OPCODE_MASK) == PM4_NOP;
+        if (!nop || i < words || offset + 4ull * (words + 1) > size) break;
+        offset += 4 * words;
     }
-    uint64_t mark = (fnv_offset ^ header) * fnv_prime;
-    for (uint32_t i = 1; i < words && offset + 4ull * (i + 1) <= size; i++) mark = (mark ^ read_word(buffer + offset + 4ull * i)) * fnv_prime;
     return mark;
 }
 
