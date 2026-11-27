@@ -126,8 +126,11 @@ static uint64_t submissions;        /* buffers submitted so far (queue_lock) */
 /* The CPU's writes (runtime/write_watch.h) are collected at most once for all the buffers submitted
    before the collect: running_submission is the buffer being run, collected_through the last buffer
    submitted before the last collect. Scanning the watched memory for each buffer would cost more than
-   the reloads it saves (the character creation screen submits 70 buffers at once). */
+   the reloads it saves (the character creation screen submits 70 buffers at once). A wait step the
+   renderer's thread performed (holds) makes the next collect due all the same: the game may write
+   what the work after the wait reads after submitting it (what it waits for is written last). */
 static uint64_t running_submission, collected_through;
+static int waited_since_collect;
 static pid_t thread_process;        /* a child after fork has no renderer thread: it starts its own */
 /* How far the game may submit ahead of the renderer's thread: a submission returns only once the
    renderer has taken a buffer at most RENDER_LAG_LIMIT before it (queue_lock). The console's GPU starts
@@ -195,6 +198,11 @@ static void defer_step(const rt_gpu_step *step, uint64_t ticket, const rt_execut
 {
     deferred *const d = malloc(sizeof *d);
     if (!d) rt_fatal(step->function, "no memory for a GPU step");
+    if (step->memory[1]) { /* it writes on the completion thread, at no point the work after it is ordered against */
+        lock_renderer();
+        if (executor) rt_executor_deferred_writes(executor, step->memory[0], step->memory[1]);
+        unlock_renderer();
+    }
     *d = (deferred){*step, ticket, NULL, snapshot != NULL, snapshot ? *snapshot : (rt_executor_snapshot){0, 0}};
     pthread_mutex_lock(&deferred_lock);
     if (deferred_started && deferred_process != getpid()) deferred_started = 0, deferred_busy = 0, deferred_head = deferred_tail = NULL;
@@ -406,6 +414,7 @@ static void perform_step(const rt_gpu_step *step)
     set_step_waiting(1);
     step->perform(step);
     set_step_waiting(0);
+    waited_since_collect = 1;
 }
 
 static void run_batch(batch *b)
@@ -440,6 +449,9 @@ static void run_batch(batch *b)
         lock_renderer();
         char error[RENDER_ERROR_BYTES];
         if (executor && rt_executor_finish(executor, error, sizeof error)) rt_fatal(b->steps[i].function, error);
+        /* what it writes (a wait only reads; RT_GPU_STEP_ANY_MEMORY bytes when not known) */
+        _Static_assert(RT_GPU_STEP_ANY_MEMORY == UINT64_MAX, "rt_executor_cpu_writes takes UINT64_MAX bytes as memory of no known range");
+        if (executor && !b->steps[i].holds) rt_executor_cpu_writes(executor, b->steps[i].memory[0], b->steps[i].memory[1]);
         recorded_write_count = 0; /* every recorded write has run */
         unlock_renderer();
         perform_step(&b->steps[i]);
@@ -549,8 +561,9 @@ void rt_renderer_submit(const char *function, unsigned queue, const void *buffer
 }
 
 /* The executor's collect (on the renderer's thread): nothing new for a buffer submitted before the
-   last collect, whose writes before it that collect has reported. */
-static int cpu_writes_due(void) { return running_submission > collected_through; }
+   last collect, whose writes before it that collect has reported, unless a wait step was performed
+   since (waited_since_collect). */
+static int cpu_writes_due(void) { return running_submission > collected_through || waited_since_collect; }
 
 static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context)
@@ -560,7 +573,7 @@ static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*
     const uint64_t through = submissions;
     pthread_mutex_unlock(&queue_lock);
     if (rt_write_watch_collect(ranges, count, written, context)) return -1;
-    collected_through = through;
+    collected_through = through, waited_since_collect = 0;
     return 0;
 }
 

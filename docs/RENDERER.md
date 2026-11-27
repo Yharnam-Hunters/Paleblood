@@ -901,7 +901,8 @@ Instead:
         - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
           `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
           recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus
-          the first index, 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
+          the first index (or, with the write watch, a device-local copy of that range: "Index ranges
+          in device-local memory" below), 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
           `MAX_SIZE`, which the library sets to the count, is taken as counting from `INDEX_OFFSET`, as
           shadPS4 reads it and the game's draws need (they start past it): inferred, not documented.
           The game's logo pass draws this way, blended, into the image its fullscreen pass then reads.
@@ -1190,7 +1191,8 @@ target again at every submitted buffer.
    buffer the renderer reads the written pages with `PAGEMAP_SCAN`, which protects them again in
    the same step (`PM_SCAN_WP_MATCHING`), so a write between the read and the protection cannot
    be lost. The executor first asks whether a collect is due (`cpu_writes_due`: the renderer
-   collects once for all the buffers submitted before the last collect), and only then gathers and
+   collects once for all the buffers submitted before the last collect, and again after it performed a
+   wait step since then, as the CPU's writes the wait released must reach the index copies), and only then gathers and
    sorts the ranges it asks about. The facts behind this are shadPS4's page manager (write watchers on cached memory)
    and the kernel's userfaultfd and pagemap documentation; they are used as facts only. A
    userfaultfd limited to user-mode faults (`UFFD_USER_MODE_ONLY`) needs no privilege, so
@@ -1312,6 +1314,71 @@ way to each. The average is 11 to 13% higher. Between the same two points of the
 better on all three figures. Over the frame range its 1% low and worst frame look worse; "A frame
 range is not a stretch of the route" in the A/B section below explains why. Peak VRAM over a
 10-minute session went from 7613 to 7089 MiB.
+
+### Index ranges in device-local memory (November 2026)
+
+Before, an indexed draw read its indices straight from guest memory, which the GPU reaches over
+PCIe, at every draw, and the game draws the same index ranges frame after frame. `index_copy_for` and
+`index_copy_record` (`runtime/renderer/render_executor.c`) now copy each range once into a
+device-local buffer and bind it from there while the range's memory has not changed since the copy.
+A change is any of:
+
+- a CPU write the write watch reports (the copied ranges are added to what `note_cpu_writes` asks
+  about);
+- a GPU write as it is recorded (dispatch stores, write-backs, fills, copies; counted per 64 KB
+  chunk);
+- a vertex or pixel draw whose shaders may store (their stores have no known range: every copy
+  counts as changed);
+- a store by a tessellated or geometry draw's local, hull, export or geometry stage: through a
+  buffer descriptor whose range is known when the draw is recorded, that range and the 3 bytes past
+  it a dword starting at its last byte reaches (a store into a table the same stage loads a
+  descriptor from counts as a store anywhere); image, flat, GDS and
+  indexed (`IDXEN`) stores, and descriptors that are not known or cannot be read without waiting for
+  earlier work, count as stores anywhere. The geometry passes' ring stores (`buffer_store_dword*`
+  with GLC and SLC, which the translator sends to the renderer's own rings) do not count;
+- a step the renderer performs: a CPU-ordered step (`rt_executor_cpu_write_ready`), or another step
+  once the GPU's work before it has run (`rt_executor_cpu_writes`). A `DMA_DATA` step from packet
+  data into the GDS now carries no guest memory instead of "not known", so it no longer counts as a
+  write anywhere;
+- a step the renderer defers (performed on another thread): copies over its memory are read from
+  guest memory from then on, and no new copy is made there.
+
+Not seen: a CPU rewrite of the descriptor table a tessellated or geometry stage loads its store
+descriptors from, made after the draw is recorded and before it runs (vertex, pixel and compute
+stages have their tables snapshotted; these stages do not).
+
+Copies are placed one after the other; once the buffer or its 2048-entry table is full, all of them
+are dropped and placed again from the start, and two drops within 64 submissions pause copying for
+4096. A range whose memory changed three times in a row, the second and third change each within 64
+submissions of the copy before it, is read from guest memory again until the next drop. Without the write watch nothing is copied.
+`PB_INDEX_COPY_BYTES` sets the buffer's size in bytes (32 MB by default, at most 1 GB; 0 turns copies off).
+
+On the clinic walk (one boot each, counters added locally, never committed): with tessellated and
+geometry draws counted as storing anywhere and `DMA_DATA` steps as writing anywhere, only 40% of 3.2
+million indexed draws read a current copy and 44.7 GB were copied per boot, more than reading guest
+memory costs. As shipped (5925 frames; counters
+read at 3.4 million indexed draws): 93.6% read a current copy, 6.2% read guest memory because their
+range kept changing, 1584 copied a changed range again, 2730 ranges were placed, the buffer was
+dropped twice, and 132.7 MB were copied in all.
+
+Measured with `tools/ab_bench.py` on the clinic walk (main e0f825c6, warm caches, quiet machine, A B
+alternated, three runs per side), as are the VRAM peaks and frames below, on the code before its last
+review round, whose two fixes count more of tessellated and geometry draws' stores (up to 3 bytes past
+a range; a store over the stage's own descriptor table) and change no other path. Average fps / 1% low / worst frame, mean of three runs:
+
+| window | main | branch |
+|---|---|---|
+| frames 1350-2900 | 17.74 / 5.84 / 817 ms | 18.05 / 5.87 / 789 ms |
+| input event 16 to walk 53 | 17.72 / 5.67 / 817 ms | 18.07 / 5.91 / 789 ms |
+
+The average is 0.32 fps (1.8%) higher, above the noise floor of 0.24 (the largest spread between two
+runs of one side); the 1% low and worst frame are within their noise floors. The walk from input
+event 16 to walk 53 took 91.2 s on average instead of 93.2 s.
+
+Peak VRAM over a 10-minute session was 7619 MiB, against 7555 and 7281 MiB in two sessions of main
+(the buffer is 32 MB). Frames taken at the same points of the route differ from one main session's by a
+mean of 0.10 to 1.13 of 255 and from the other's by 1.60 to 5.14, within what the two sessions of
+main differ by (1.58 to 5.16).
 
 ### Tests for each step
 

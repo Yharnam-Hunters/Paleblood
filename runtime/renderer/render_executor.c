@@ -51,6 +51,17 @@
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16 };
+/* Indexed draws' index ranges kept in device-local memory (index_copy_for): at most MAX_INDEX_COPIES
+   ranges in a table of twice as many slots, each placed at a multiple of INDEX_COPY_ALIGN in a buffer of
+   INDEX_COPY_BYTES unless PB_INDEX_COPY_BYTES says otherwise (0: none; at most INDEX_COPY_BYTES_MAX, the
+   smallest maxBufferSize Vulkan allows a device, VkPhysicalDeviceMaintenance4Properties). A range whose memory changed
+   INDEX_COPY_CHANGES times in a row, each change after the first within INDEX_COPY_WINDOW submissions of
+   the copy before it (however that copy came), is drawn from the guest memory again; two drops within INDEX_COPY_WINDOW submissions pause copying for
+   INDEX_COPY_PAUSE submissions. */
+enum { MAX_INDEX_COPIES = 2048, INDEX_COPY_SLOTS = 2 * MAX_INDEX_COPIES, INDEX_COPY_ALIGN = 256, INDEX_COPY_CHANGES = 3,
+       INDEX_COPY_WINDOW = 64, INDEX_COPY_PAUSE = 4096 };
+#define INDEX_COPY_BYTES (32ull << 20)
+#define INDEX_COPY_BYTES_MAX (1ull << 30)
 /* the run-time stop words (stop_slot): a power of two, well above the distinct shaders a walk meets, so that
    each shader has a word of its own */
 enum { STOP_SLOT_BITS = 13, STOP_SLOTS = 1 << STOP_SLOT_BITS };
@@ -369,7 +380,8 @@ typedef struct {
     uint64_t code, callee;
     int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan, 3 the read scan,
                                         4 the memory-write scan (count: 1 when the program writes memory), 5 the called read
-                                        scan (gcn_called_memory_reads, a fetch shader's reads included) */
+                                        scan (gcn_called_memory_reads, a fetch shader's reads included), 6 and 7 the stage-store
+                                        scans (stage_store_kinds; count: its STAGE_STORES_* bits; 7 in a geometry layout) */
     int unknown;                     /* the buffer-store scan: some store's descriptor has no known origin; the read scans: some load's */
     uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
     size_t dwords, callee_dwords;
@@ -611,6 +623,32 @@ struct rt_executor {
     unsigned push_range_count;
     gpu_buffer tess_lds, tess_factors;
     gpu_buffer gs_esgs, gs_gsvs, gs_strips; /* the geometry shader's rings and its strips' indices (gcn_spirv.h) */
+    /* Index ranges copied into device-local memory (index_copy_for): the buffer (made on first use),
+       its size (0: no copies) and the bytes placed so far, the ranges and the table finding them (an
+       entry's place in index_copies plus one; 0: empty). */
+    gpu_buffer index_buffer;
+    VkDeviceSize index_buffer_bytes, index_buffer_used;
+    int index_buffer_failed;         /* no device memory for it: indices are read from the guest memory */
+    struct index_copy {
+        uint64_t offset, bytes;      /* the indices' guest-memory offset and length */
+        VkDeviceSize at;             /* the copy's place in index_buffer */
+        uint64_t loaded_change;      /* change_count when it was last copied */
+        unsigned changes;            /* the times its memory changed after a copy, each soon after the one before */
+        uint64_t changed_at;         /* `submitted` when it was last copied, first or again */
+        int direct;                  /* it kept changing: drawn from the guest memory, and no longer watched */
+    } index_copies[MAX_INDEX_COPIES];
+    uint32_t index_copy_count;
+    uint16_t index_copy_slots[INDEX_COPY_SLOTS];
+    uint64_t index_dropped_after;    /* `submitted` plus one at the last drop; 0: no drop yet */
+    uint64_t index_paused_until;     /* no copies while `submitted` is below it (drops came too fast) */
+    uint64_t index_copies_stale;     /* change_count when a write of no known range was last noted: a draw whose shaders may
+                                        store (a tessellated or geometry draw's stages: when stage_stores_noted finds no
+                                        range), or a step the renderer performs on the CPU (rt_executor_cpu_writes) */
+    memory_span deferred_writes[DISPATCH_SPANS]; /* what deferred steps write (rt_executor_deferred_writes): no copies there */
+    int unlisted_stores_unfinished;  /* a draw storing to guest memory the batches do not list (batch_may_store) is recorded
+                                        since the last batch_finish: a storing vertex or pixel shader, or tessellation and
+                                        geometry stages' stores (stage_stores_noted) */
+    unsigned deferred_write_count;
     VkPipelineLayout tess_layout;
     struct {
         uint64_t code, callee;
@@ -670,8 +708,9 @@ struct rt_executor {
     int (*cpu_writes_due)(void);
     int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
     void (*unguard)(uint64_t address, uint64_t length);
-    /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
-    uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS][2];
+    /* what note_cpu_writes asks about: the loaded images' and targets' memory, their metadata, and the
+       index ranges copied into device-local memory (index_copy_for) */
+    uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS + MAX_INDEX_COPIES][2];
     /* The batches: slots[current] is the open one (batch_open) or the next to open. A batch is
        submitted when a buffer's calls end (batch_submit), without waiting: the CPU waits only where it
        reads what submitted work produces (the run-time stop words, guest memory a dispatch or
@@ -1532,6 +1571,9 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     x->snapshot_memory = snapshot_local && !strcmp(snapshot_local, "0") ? MAPPED : MAPPED_LOCAL;
     const char *rows_limit = getenv("BB_COPY_ROWS_LIMIT");
     x->copy_rows_limit = rows_limit ? strtoull(rows_limit, NULL, 0) : 0;
+    const char *index_copy_bytes = getenv("PB_INDEX_COPY_BYTES");
+    x->index_buffer_bytes = index_copy_bytes ? strtoull(index_copy_bytes, NULL, 0) : INDEX_COPY_BYTES;
+    if (x->index_buffer_bytes > INDEX_COPY_BYTES_MAX) x->index_buffer_bytes = INDEX_COPY_BYTES_MAX;
     x->draw_push_stages = x->vertex_stages | VK_SHADER_STAGE_FRAGMENT_BIT;
     x->push_range_count = x->draw_snapshots ? 1 : STAGES;
     const VkPushConstantRange ranges[STAGES] = {
@@ -2227,6 +2269,7 @@ static int batch_finish(rt_executor *x, char *error, size_t error_size)
     if (batch_submit(x, error, error_size)) return -1;
     for (unsigned k = 0; k < BATCH_SLOTS; k++) /* oldest first */
         if (slot_retire(x, &x->slots[(x->current + k) % BATCH_SLOTS], error, error_size)) return -1;
+    x->unlisted_stores_unfinished = 0;
     return 0;
 }
 
@@ -2344,6 +2387,8 @@ static void note_cpu_writes(rt_executor *x)
         const metadata_state *m = &x->depths[i].htile;
         if (m->bytes) x->watch_ranges[n][0] = m->address - x->guest_base, x->watch_ranges[n++][1] = m->bytes;
     }
+    for (uint32_t i = 0; i < x->index_copy_count; i++)
+        if (!x->index_copies[i].direct) x->watch_ranges[n][0] = x->index_copies[i].offset, x->watch_ranges[n++][1] = x->index_copies[i].bytes;
     qsort(x->watch_ranges, n, sizeof *x->watch_ranges, by_start);
     size_t runs = 0;
     for (size_t i = 0; i < n; i++) {
@@ -2415,6 +2460,7 @@ static void batch_writes(rt_executor *x, uint64_t address, uint64_t size, int di
 }
 
 static void span_add(memory_span *spans, unsigned *count, uint64_t address, uint64_t bytes);
+static void index_copies_written(rt_executor *x, uint64_t address, uint64_t bytes);
 
 /* Notes that the open batch's work reads `bytes` of guest memory at `address` in place as it runs: the
    part of it the CPU-ordered writes may reach (x->watched), so a write there waits until the batch has
@@ -2452,6 +2498,7 @@ static int batch_may_touch(const rt_executor *x, unsigned k, uint64_t done, uint
 int rt_executor_cpu_write_ready(rt_executor *x, uint64_t address, uint64_t bytes)
 {
     if (!bytes) return 1;
+    index_copies_written(x, address, bytes); /* the write comes, now or after the GPU's work */
     for (unsigned i = 0; i < x->watched_count; i++) {
         const memory_span *w = &x->watched[i];
         if (w->address <= address && address + bytes <= w->address + w->bytes) {
@@ -5029,6 +5076,8 @@ static int draw_stores(rt_executor *x, const draw_state *s, int depth_only, int 
     return program_writes_memory(x, "pixel", s->pixel.code, stores, error, error_size);
 }
 
+static void stage_stores_noted(rt_executor *x, const draw_state *s, int tess, int gs);
+
 /* A draw stage's table snapshot (gcn_spirv.h, Table snapshots), taken as the draw is recorded: a block
    in the open batch's buffer holding the mask, then each entry's words copied from guest memory. An
    entry whose pointer is not set, whose words are outside the memory, or where open or submitted work
@@ -5067,6 +5116,149 @@ static uint64_t draw_snapshot(rt_executor *x, const gcn_table_snapshot *tables, 
     const uint64_t address = b->snapshots.address + b->snapshot_used;
     b->snapshot_used += bytes;
     return address;
+}
+
+/* ---- index ranges in device-local memory ---- */
+
+/* An indexed draw reads its indices from the guest memory, which the GPU reaches over the bus, at every
+   draw; the game draws the same ranges frame after frame. So each range is copied once into
+   index_buffer (device-local) and drawn from there while its memory has not changed since the copy
+   (memory_changed_since: the CPU's writes, which the watch reports for these ranges too
+   (note_cpu_writes), and the GPU's as they are recorded), no step the renderer performs on the CPU
+   was about to write it (rt_executor_cpu_write_ready, rt_executor_cpu_writes), and no write of no
+   known range has been noted since (index_copies_stale: a draw any of whose shaders may store, a
+   step writing memory of no known range). Only with the watch: without it all memory counts as
+   changed at each buffer. Copies are placed one after the other; once the buffer or the table is
+   full all of them are dropped and placed again from the start, the copy's barrier ordering it after
+   the work that read the place before; drops that come too fast pause copying for a while. A range
+   whose own memory changed three times in quick succession (counted per 64 KB chunk, and any change
+   that may reach all memory counts; a write of no known range does not) is drawn from the guest
+   memory again, until the next drop. A deferred step's write (renderer.c: a work-done label or an
+   occlusion block, written on the completion thread once the work before it has run, at no point the
+   work after it is ordered against) has no copy over it: ranges there are drawn from the guest memory,
+   as before the copies (rt_executor_deferred_writes). */
+typedef struct {
+    VkDeviceSize at;                 /* the copy's place in index_buffer */
+    int copy;                        /* copy the indices there first (index_copy_record) */
+    uint32_t entry, slot;            /* the range's entry, or for a new one its table slot */
+    int found;                       /* the range has an entry */
+    unsigned changes;                /* a found entry's changes once copied again */
+    int drop;                        /* the buffer or the table is full: drop every copy, then place this one at the start */
+} index_copy_plan;
+
+/* Whether `bytes` at the guest address `address` meet the guest memory. */
+static int guest_range_meets(const rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    return bytes && address < x->guest_base + x->size && (bytes > UINT64_MAX - address || address + bytes > x->guest_base);
+}
+
+/* Whether a range meets what deferred steps write (rt_executor_deferred_writes). */
+static int deferred_write_over(const rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    for (unsigned i = 0; i < x->deferred_write_count; i++) {
+        const memory_span *d = &x->deferred_writes[i];
+        if (d->address < address + bytes && address < d->address + d->bytes) return 1;
+    }
+    return 0;
+}
+
+static void index_copies_drop(rt_executor *x)
+{
+    memset(x->index_copy_slots, 0, sizeof x->index_copy_slots);
+    x->index_copy_count = 0, x->index_buffer_used = 0;
+}
+
+/* Notes a write of `bytes` of guest memory at `address` that the change counts do not see: by the CPU
+   (a step the renderer performs, rt_executor_cpu_write_ready and rt_executor_cpu_writes) or by a
+   tessellated or geometry draw's stage stores (stage_stores_noted): the copies of index ranges there
+   are copied again before their next draw. */
+static void index_copies_written(rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    const uint64_t end = bytes > UINT64_MAX - address ? UINT64_MAX : address + bytes;
+    for (uint32_t i = 0; i < x->index_copy_count; i++) {
+        struct index_copy *c = &x->index_copies[i];
+        const uint64_t start = x->guest_base + c->offset;
+        if (start < end && address < start + c->bytes) c->loaded_change = UINT64_MAX;
+    }
+}
+
+/* Whether the draw of `bytes` of indices at guest-memory offset `offset` reads them from index_buffer,
+   with the plan for it. It notes no copy yet (index_copy_record does, as it records the copy): a draw
+   that stops before then leaves the copies as they were. It may only mark a range that keeps changing
+   as drawn from the guest memory (direct), which needs no copy. 0: the draw reads the guest memory. */
+static int index_copy_for(rt_executor *x, uint64_t offset, uint64_t bytes, index_copy_plan *plan)
+{
+    *plan = (index_copy_plan){0};
+    if (!x->collect_cpu_writes || !x->index_buffer_bytes || x->index_buffer_failed || !bytes || bytes > x->index_buffer_bytes / 4 ||
+        x->submitted < x->index_paused_until)
+        return 0;
+    if (!x->index_buffer.buffer && gpu_buffer_make(x, &x->index_buffer, x->index_buffer_bytes, 0) &&
+        (!reclaim_image_memory(x, 0) || gpu_buffer_make(x, &x->index_buffer, x->index_buffer_bytes, 0))) { /* the device's memory is full */
+        x->index_buffer_failed = 1;
+        return 0;
+    }
+    /* the table is never more than half full: the probe meets an empty slot */
+    _Static_assert(INDEX_COPY_SLOTS == 1 << 12 && MAX_INDEX_COPIES * 2 <= INDEX_COPY_SLOTS && MAX_INDEX_COPIES < 1 << 16,
+                   "the start slot takes the hash's top 12 bits; entries fit the table's 16-bit slots");
+    const uint32_t start = (uint32_t)(((offset ^ bytes << 40) * 0x9e3779b97f4a7c15ull) >> 52);
+    for (uint32_t probe = 0;; probe++) {
+        const uint32_t slot = (start + probe) % INDEX_COPY_SLOTS;
+        const uint32_t held = x->index_copy_slots[slot];
+        if (!held) {
+            plan->slot = slot;
+            break;
+        }
+        struct index_copy *c = &x->index_copies[held - 1];
+        if (c->offset != offset || c->bytes != bytes) continue;
+        if (c->direct) return 0; /* also over a deferred step's write (rt_executor_deferred_writes) */
+        const int changed = memory_changed_since(x, x->guest_base + offset, bytes, c->loaded_change);
+        if (!changed && x->index_copies_stale <= c->loaded_change) {
+            plan->at = c->at, plan->entry = held - 1, plan->found = 1;
+            return 1;
+        }
+        /* only changes to its own memory count: a write of no known range says nothing about this range */
+        const unsigned changes = changed ? (x->submitted - c->changed_at > INDEX_COPY_WINDOW ? 0 : c->changes) + 1 : c->changes;
+        if (changes >= INDEX_COPY_CHANGES) {
+            c->direct = 1; /* it keeps changing */
+            return 0;
+        }
+        plan->at = c->at, plan->entry = held - 1, plan->found = 1, plan->copy = 1, plan->changes = changes;
+        return 1;
+    }
+    if (deferred_write_over(x, x->guest_base + offset, bytes)) return 0;
+    const VkDeviceSize place = (x->index_buffer_used + INDEX_COPY_ALIGN - 1) / INDEX_COPY_ALIGN * INDEX_COPY_ALIGN;
+    const int full = x->index_copy_count == MAX_INDEX_COPIES || place > x->index_buffer_bytes || bytes > x->index_buffer_bytes - place;
+    plan->at = full ? 0 : place, plan->slot = full ? start : plan->slot, plan->drop = full, plan->copy = 1;
+    return 1;
+}
+
+/* Records the plan's copy (outside a render pass) and notes it: a new range takes its entry, dropping
+   every copy first when the buffer or the table is full (index_copy_for planned it at the start). */
+static void index_copy_record(rt_executor *x, VkCommandBuffer commands, uint64_t offset, uint64_t bytes, const index_copy_plan *plan)
+{
+    if (plan->found) {
+        struct index_copy *c = &x->index_copies[plan->entry];
+        c->changes = plan->changes, c->changed_at = x->submitted, c->loaded_change = x->change_count;
+    } else {
+        if (plan->drop) {
+            if (x->index_dropped_after && x->submitted + 1 - x->index_dropped_after <= INDEX_COPY_WINDOW) /* more ranges than room, each frame */
+                x->index_paused_until = x->submitted + INDEX_COPY_PAUSE;
+            index_copies_drop(x);
+            x->index_dropped_after = x->submitted + 1;
+        }
+        x->index_copies[x->index_copy_count] = (struct index_copy){offset, bytes, plan->at, x->change_count, 0, x->submitted, 0};
+        x->index_copy_slots[plan->slot] = (uint16_t)(++x->index_copy_count);
+        x->index_buffer_used = plan->at + bytes;
+    }
+    /* after what earlier work wrote there and read from the place; before this draw's index reads */
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+    const VkBufferCopy region = {.srcOffset = offset, .dstOffset = plan->at, .size = bytes};
+    vkCmdCopyBuffer(commands, x->buffer, x->index_buffer.buffer, 1, &region);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_INDEX_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &after, 0, NULL, 0, NULL);
 }
 
 /* A draw of index_count vertices (indices, when given, index them), or, with `indirect` not 0, of the
@@ -5241,7 +5433,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
        (its targets' accesses are in order there; across passes the pass's dependency orders them). A
        draw that records work of its own first (indirect arguments, the tessellation and geometry
        passes) leaves the pass and takes the barrier. */
-    const int synced = x->draws_synced && !indirect && !tess && !gs;
+    /* indices from device-local memory; copying them there leaves the render pass */
+    const uint64_t index_bytes = indices ? (uint64_t)index_count * (indices->type == VK_INDEX_TYPE_UINT16 ? 2 : 4) : 0;
+    index_copy_plan index_copy = {0};
+    const int index_copied = indices && !tess && !gs && !indirect && index_copy_for(x, indices->offset, index_bytes, &index_copy);
+    const int synced = x->draws_synced && !indirect && !tess && !gs && !index_copy.copy;
     const int same_pass = synced && x->open_pass == render_pass && x->open_framebuffer == framebuffer;
     VkCommandBuffer commands = same_pass ? x->slots[x->current].commands : batch_commands(x, error, error_size);
     if (!commands) return -1;
@@ -5257,6 +5453,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                                                                                      VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT : 0) |
                                  (gs ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0),
                              0, 1, &earlier, 0, NULL, 0, NULL);
+    if (index_copy.copy) index_copy_record(x, commands, indices->offset, index_bytes, &index_copy);
     VkDeviceSize strip_draw = 0; /* the strips' draw in the batch's indirect buffer (geometry_passes) */
     if (tess || gs) { /* an indexed draw's indices are read by the local or export pass, at their GPU address */
         const uint64_t index_address = indices ? x->guest_base + indices->offset + x->address_offset : 0;
@@ -5322,13 +5519,17 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         vkCmdBindIndexBuffer(commands, x->gs_strips.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexedIndirect(commands, x->slots[x->current].indirect.buffer, strip_draw, 1, 0);
     } else if (indices && !tess) {
-        vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
+        if (index_copied) vkCmdBindIndexBuffer(commands, x->index_buffer.buffer, index_copy.at, indices->type);
+        else vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
         vkCmdDrawIndexed(commands, index_count, instances, 0, 0, 0);
     } else if (indirect) {
         vkCmdDrawIndirect(commands, x->slots[x->current].indirect.buffer, (VkDeviceSize)indirect_entry, 1, 0);
     } else {
         vkCmdDraw(commands, index_count, instances, 0, 0);
     }
+    /* index copies made before it that it may store to are copied again (index_copy_for) */
+    if (stores) x->index_copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1;
+    else if (tess || gs) stage_stores_noted(x, s, tess, gs);
     if (x->watched_count) { /* what it reads in place as it runs (batch_reads) */
         if (tess || gs || indirect) {
             batch_reads_anywhere(x);
@@ -6355,19 +6556,29 @@ static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, ui
 /* A descriptor's words as the shader sees them (runtime/gcn_spirv.h, gcn_resource_origin): from the
    user data, or from the guest memory at the user data's pointer (48 bits, as s_load takes it) plus the
    offset, read as the draw or dispatch runs. 0, or -1 with the reason, which names the shader (its
-   stage and code address). */
+   stage and code address). descriptor_words_in gives the reason alone; with `wait` 0 it does not wait
+   for open or submitted work that may store to a descriptor in memory (guest_memory_settled), and
+   fails instead. */
 static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
-                               uint32_t *words, unsigned count, char *error, size_t error_size);
+                               uint32_t *words, unsigned count, int wait, char *error, size_t error_size);
 static int descriptor_words(rt_executor *x, const char *stage, uint64_t code, const gcn_resource_origin *origin, const uint32_t *user,
                             uint32_t user_sgprs, uint32_t user_set, uint32_t *words, unsigned count, char *error, size_t error_size)
 {
     char reason[256];
-    if (!descriptor_words_in(x, origin, user, user_sgprs, user_set, words, count, reason, sizeof reason)) return 0;
+    if (!descriptor_words_in(x, origin, user, user_sgprs, user_set, words, count, 1, reason, sizeof reason)) return 0;
     return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
 }
 
+/* Where a descriptor loaded from memory lies: its pointer (in the user data, which must hold it) plus its offset. */
+static uint64_t descriptor_address(const gcn_resource_origin *origin, const uint32_t *user)
+{
+    enum { POINTER_HIGH_MASK = 0xffff };
+    const uint64_t pointer = (uint64_t)(user[origin->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[origin->pointer_sgpr];
+    return pointer + origin->offset;
+}
+
 static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
-                               uint32_t *words, unsigned count, char *error, size_t error_size)
+                               uint32_t *words, unsigned count, int wait, char *error, size_t error_size)
 {
     const unsigned first = origin->from_memory ? origin->pointer_sgpr : origin->sgpr, width = origin->from_memory ? 2 : count;
     const uint32_t slots = (uint32_t)(((1ull << width) - 1) << first);
@@ -6383,10 +6594,14 @@ static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin
     if (origin->pointer_sgpr + 2 > user_sgprs)
         return failed(error, error_size, "a descriptor loaded through s[%u:%u], which is not in the user data", origin->pointer_sgpr,
                       origin->pointer_sgpr + 1);
-    enum { POINTER_HIGH_MASK = 0xffff };
-    const uint64_t pointer = (uint64_t)(user[origin->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[origin->pointer_sgpr];
-    const uint64_t address = pointer + origin->offset, bytes = count * sizeof *words;
-    if (guest_memory_settled(x, address, bytes, error, error_size)) return -1; /* the batch may store the descriptor */
+    const uint64_t address = descriptor_address(origin, user), bytes = count * sizeof *words;
+    if (!wait) {
+        for (unsigned k = 0; k < BATCH_SLOTS; k++)
+            if (batch_may_store(x, k, address, bytes, 0))
+                return failed(error, error_size, "a descriptor at %#llx that open or submitted work may store to", (unsigned long long)address);
+    } else if (guest_memory_settled(x, address, bytes, error, error_size)) {
+        return -1; /* the batch may store the descriptor */
+    }
     if (address % 4 || address < x->guest_base || address - x->guest_base > x->size || bytes > x->size - (address - x->guest_base))
         return failed(error, error_size, "a descriptor at %#llx (s[%u:%u] + %u) outside the GPU-visible memory", (unsigned long long)address,
                       origin->pointer_sgpr, origin->pointer_sgpr + 1, origin->offset);
@@ -6701,29 +6916,42 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
 }
 
 /* Records a dispatch of the current compute shader into the batch; its writes reach the guest memory once the batch has run. */
+/* The buffer descriptors a program's buffer stores write through (gcn_buffer_store_resources), into
+   origins (GCN_MAX_IMAGES room), with *unknown; the scan is kept (kind 2). 0, or -1 with the reason
+   (the decoder's alone). */
+static int buffer_store_origins(rt_executor *x, uint64_t code, gcn_resource_origin *origins, unsigned *count, int *unknown, char *error,
+                                size_t error_size)
+{
+    scan_entry *scan = scan_for(x, code, 0, 2);
+    if (scan && scan->used) {
+        *count = scan->count, *unknown = scan->unknown;
+        memcpy(origins, scan->sampler_origins, *count * sizeof *origins);
+        return 0;
+    }
+    if (gcn_buffer_store_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), origins, GCN_MAX_IMAGES,
+                                   count, unknown, error, error_size))
+        return -1;
+    if (scan) scan_keep(x, scan, *count, NULL, origins), scan->unknown = *unknown;
+    return 0;
+}
+
 /* The memory a compute shader's buffer stores may reach as it is dispatched now: for each buffer
-   descriptor its stores write through (gcn_buffer_store_resources, the scan kept), the descriptor's range
-   (range checking keeps every store inside it: NUM_RECORDS bytes from the base with stride 0, NUM_RECORDS
-   records of the stride otherwise). *anywhere when a store's descriptor is not known (or there are more
-   than GCN_MAX_IMAGES): its stores may reach any memory. 0, or -1 with the reason. */
+   descriptor its stores write through (buffer_store_origins), the descriptor's range (range checking
+   keeps each store's first byte inside it: NUM_RECORDS bytes from the base with stride 0, NUM_RECORDS
+   records of the stride otherwise; a dword whose first byte is the range's last reaches 3 bytes past it,
+   inside the same 64 KB chunk of the change counts when the dword is aligned, and an indexed store through a
+   strided descriptor may reach further: issue #1348). *anywhere when a store's descriptor is not known
+   (or there are more than GCN_MAX_IMAGES): its stores may reach any memory. 0, or -1 with the reason. */
 static int dispatch_store_ranges(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, uint64_t ranges[][2],
                                  unsigned *count, int *anywhere, char *error, size_t error_size)
 {
     enum { STRIDE_SHIFT = 16, STRIDE_MASK = 0x3fff, BASE_HIGH_MASK = 0xff };
     gcn_resource_origin origins[GCN_MAX_IMAGES];
     *count = 0, *anywhere = 0;
-    scan_entry *scan = scan_for(x, c->code, 0, 2);
     unsigned n = 0;
-    if (scan && scan->used) {
-        n = scan->count, *anywhere = scan->unknown;
-        memcpy(origins, scan->sampler_origins, n * sizeof *origins);
-    } else {
-        char reason[300];
-        if (gcn_buffer_store_resources((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4), origins,
-                                       GCN_MAX_IMAGES, &n, anywhere, reason, sizeof reason))
-            return failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-        if (scan) scan_keep(x, scan, n, NULL, origins), scan->unknown = *anywhere;
-    }
+    char reason[300];
+    if (buffer_store_origins(x, c->code, origins, &n, anywhere, reason, sizeof reason))
+        return failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
     for (unsigned i = 0; i < n; i++) {
         uint32_t words[4];
         if (descriptor_words(x, "compute", c->code, &origins[i], user, c->user_sgprs, user_set, words, 4, error, error_size)) return -1;
@@ -6767,8 +6995,127 @@ enum {
 static uint64_t vsharp_base(const uint32_t *w) { return w[0] | (uint64_t)(w[1] & VSHARP_BASE_HIGH_MASK) << 32; }
 static uint64_t vsharp_stride(const uint32_t *w) { return w[1] >> VSHARP_STRIDE_SHIFT & VSHARP_STRIDE_MASK; }
 static uint64_t vsharp_bytes(const uint32_t *w) { return vsharp_stride(w) ? vsharp_stride(w) * w[2] : w[2]; }
+/* The bytes a stage's buffer stores through the descriptor may write: its range and the 3 bytes a dword
+   whose first byte is the range's last reaches past it (stage_store_kinds). */
+static uint64_t vsharp_stage_store_bytes(const uint32_t *w) { return vsharp_bytes(w) ? vsharp_bytes(w) + 3 : 0; }
 static uint32_t vsharp_number_format(const uint32_t *w) { return w[3] >> VSHARP_NFMT_SHIFT & VSHARP_NFMT_MASK; }
 static uint32_t vsharp_data_format(const uint32_t *w) { return w[3] >> VSHARP_DFMT_SHIFT & VSHARP_DFMT_MASK; }
+
+/* The memory writes a tessellated or geometry draw's stage makes (stage_store_kinds): buffer stores and
+   atomics without IDXEN, which stay inside their descriptor's range but for up to 3 bytes past its end
+   (range checking counts SOFFSET in for them, and checks each dword's first byte only: gcn_spirv.c,
+   checked_store_dword; an indexed access checks only the index and the offset inside the record, so its SOFFSET
+   reaches past the range), and any other (an indexed buffer write, an image, flat or GDS write), which
+   may reach any memory. In the export and geometry stages (`ring_stage`) a buffer_store_dword* with GLC
+   and SLC and without IDXEN is a ring access (runtime/gcn_spirv.h, "Geometry shaders"; gcn_spirv.c
+   translates it so), which writes the rings, not guest memory, and counts as neither. The answer is
+   kept with the program's scans (kind 6, or 7 for a ring stage). 0 with *kinds, or -1 with the reason. */
+enum { STAGE_STORES_BUFFER = 1, STAGE_STORES_ANYWHERE = 2 };
+
+static int stage_store_kinds(rt_executor *x, uint64_t code, int ring_stage, unsigned *kinds, char *error, size_t error_size)
+{
+    scan_entry *scan = scan_for(x, code, 0, ring_stage ? 7 : 6);
+    if (scan && scan->used) {
+        *kinds = scan->count;
+        return 0;
+    }
+    enum { MUBUF_IDXEN_BIT = 13, MUBUF_GLC_BIT = 14, MUBUF_SLC_BIT = 22 };
+    const uint32_t *words = (const uint32_t *)(uintptr_t)code;
+    const long program = gcn_program_dwords(words, (size_t)((x->guest_base + x->size - code) / 4));
+    if (program < 0) return failed(error, error_size, "no program end found");
+    *kinds = 0;
+    for (long at = 0; at < program;) {
+        gcn_instruction ins;
+        if (gcn_decode(words + at, (size_t)(program - at), &ins) || !ins.name)
+            return failed(error, error_size, "dword %ld: an instruction the decoder cannot name", at);
+        const int memory = ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF || ins.encoding == GCN_MIMG || ins.encoding == GCN_FLAT;
+        const int gds = ins.encoding == GCN_DS && (!strcmp(ins.name, "ds_append") || !strcmp(ins.name, "ds_consume") || strstr(ins.name, "gws"));
+        if ((memory && (strstr(ins.name, "store") || strstr(ins.name, "atomic"))) || gds) {
+            const uint32_t *w = words + at;
+            const int buffer = (ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF) &&
+                               (!strncmp(ins.name, "buffer_store", strlen("buffer_store")) ||
+                                !strncmp(ins.name, "tbuffer_store", strlen("tbuffer_store")) ||
+                                !strncmp(ins.name, "buffer_atomic", strlen("buffer_atomic")));
+            const int indexed = buffer && (w[0] >> MUBUF_IDXEN_BIT & 1); /* MTBUF's IDXEN is the same bit */
+            const int ring = ring_stage && ins.encoding == GCN_MUBUF && !strncmp(ins.name, "buffer_store_dword", strlen("buffer_store_dword")) &&
+                             (w[0] >> MUBUF_GLC_BIT & 1) && (w[1] >> MUBUF_SLC_BIT & 1) && !indexed;
+            if (!ring) *kinds |= buffer && !indexed ? STAGE_STORES_BUFFER : STAGE_STORES_ANYWHERE;
+        }
+        at += ins.dwords;
+    }
+    if (scan) scan_keep(x, scan, *kinds, NULL, NULL);
+    return 0;
+}
+
+/* Notes what a tessellated draw's local and hull shaders, or a geometry draw's export and geometry
+   shaders, may store to guest memory, for the index copies (index_copies_written), as the draw is
+   recorded: the range of each descriptor their buffer stores write through (as dispatch_store_ranges
+   finds it). A descriptor in the user data is the one the draw keeps; one loaded from memory (the
+   game's hull shaders load the tessellation-factor ring's) is read there now, as dispatch_store_ranges
+   reads it, while the shader reads it as it runs: so only while no open or submitted work may store to
+   it (batch_may_store, which does not list draws' stores: after a draw storing to guest memory since the
+   last batch_finish, unlisted_stores_unfinished, none is read so). The steps the renderer performs that
+   write memory wait for the draw first, as it counts as reading anywhere (batch_reads_anywhere). A
+   write by the game's CPU between the draw's recording and its run is not seen: these stages take no
+   table snapshot (gcn_spirv.h, "Table snapshots"), so the shader's own stores would then go through
+   the new words, a case the renderer does not handle for these draws in any case. The export and
+   geometry shaders' ring accesses write no guest memory
+   (stage_store_kinds). A hull shader's stores through a descriptor based in the tessellation-factor
+   ring reach the factor buffer instead (gcn_spirv.c, buffer_base): noting the descriptor's range anyway
+   notes more, never less. Any other write, a store whose descriptor has no known origin, a scan that
+   fails or a descriptor not readable so counts as a write of no known range (index_copies_stale). A
+   stage's store whose range meets a table the same stage loads a descriptor from (which could move that
+   descriptor's later stores) counts so too. A noted range in guest memory, or a write of no known range,
+   sets unlisted_stores_unfinished. It never fails the draw. */
+static void stage_stores_noted(rt_executor *x, const draw_state *s, int tess, int gs)
+{
+    const struct {
+        uint64_t code;
+        const uint32_t *user;
+        uint32_t user_sgprs, user_set;
+        int ring_stage;
+    } stages[4] = {
+        {s->local.code, s->tess_user[0], s->local.user_sgprs, s->tess_user_set[0], 0},
+        {s->hull.code, s->tess_user[1], s->hull.user_sgprs, s->tess_user_set[1], 0},
+        {s->export_stage.code, s->gs_user[0], s->export_stage.user_sgprs, s->gs_user_set[0], 1},
+        {s->geometry.code, s->gs_user[1], s->geometry.user_sgprs, s->gs_user_set[1], 1},
+    };
+    int anywhere = 0;
+    for (int i = 0; i < 4 && !anywhere; i++) {
+        if (!(i < 2 ? tess : gs)) continue;
+        char reason[300];
+        unsigned kinds = 0, n = 0;
+        int unknown = 0;
+        gcn_resource_origin origins[GCN_MAX_IMAGES];
+        if (stage_store_kinds(x, stages[i].code, stages[i].ring_stage, &kinds, reason, sizeof reason) || kinds & STAGE_STORES_ANYWHERE) {
+            anywhere = 1;
+        } else if (kinds && (buffer_store_origins(x, stages[i].code, origins, &n, &unknown, reason, sizeof reason) || unknown)) {
+            anywhere = 1;
+        } else {
+            uint64_t ranges[GCN_MAX_IMAGES][2];
+            const int pending = x->unlisted_stores_unfinished;
+            for (unsigned d = 0; kinds && d < n && !anywhere; d++) {
+                uint32_t w[4];
+                if ((origins[d].from_memory && pending) ||
+                    descriptor_words_in(x, &origins[d], stages[i].user, stages[i].user_sgprs, stages[i].user_set, w, 4, 0, reason, sizeof reason))
+                    anywhere = 1;
+                else
+                    ranges[d][0] = vsharp_base(w), ranges[d][1] = vsharp_stage_store_bytes(w);
+            }
+            /* a store of this stage into a table it loads a descriptor from moves that descriptor's later stores */
+            for (unsigned d = 0; kinds && d < n && !anywhere; d++)
+                for (unsigned t = 0; origins[d].from_memory && t < n && !anywhere; t++) {
+                    const uint64_t table = descriptor_address(&origins[d], stages[i].user), end = ranges[t][1] > UINT64_MAX - ranges[t][0] ? UINT64_MAX : ranges[t][0] + ranges[t][1];
+                    anywhere = ranges[t][1] && ranges[t][0] < table + 4 * sizeof(uint32_t) && table < end;
+                }
+            for (unsigned d = 0; kinds && d < n && !anywhere; d++) {
+                index_copies_written(x, ranges[d][0], ranges[d][1]);
+                if (guest_range_meets(x, ranges[d][0], ranges[d][1])) x->unlisted_stores_unfinished = 1;
+            }
+        }
+    }
+    if (anywhere) x->index_copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1; /* may store anywhere */
+}
 
 /* The table-driven copy's real memory (gcn_table_copy_shape): its table, read now by the CPU, gives
    each workgroup's first source and destination elements, and the copy reaches the workgroup's width of
@@ -7516,6 +7863,31 @@ void rt_executor_set_wait_limit(rt_executor *x, uint64_t nanoseconds) { x->wait_
 
 int rt_executor_finish(rt_executor *x, char *error, size_t error_size) { return batch_finish(x, error, error_size); }
 
+void rt_executor_deferred_writes(rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    if (!bytes) return;
+    if (bytes > UINT64_MAX - address) bytes = UINT64_MAX - address; /* RT_GPU_STEP_ANY_MEMORY from 0: all memory */
+    for (unsigned i = 0; i < x->deferred_write_count; i++) /* the same labels come back each frame */
+        if (x->deferred_writes[i].address <= address && address + bytes <= x->deferred_writes[i].address + x->deferred_writes[i].bytes) return;
+    span_add(x->deferred_writes, &x->deferred_write_count, address, bytes);
+    const memory_span *grown = NULL; /* the span that now holds it, maybe merged with others */
+    for (unsigned i = 0; i < x->deferred_write_count && !grown; i++)
+        if (x->deferred_writes[i].address <= address && address + bytes <= x->deferred_writes[i].address + x->deferred_writes[i].bytes)
+            grown = &x->deferred_writes[i];
+    for (uint32_t i = 0; i < x->index_copy_count; i++) {
+        struct index_copy *c = &x->index_copies[i];
+        const uint64_t start = x->guest_base + c->offset;
+        if (grown->address < start + c->bytes && start < grown->address + grown->bytes) c->direct = 1;
+    }
+}
+
+void rt_executor_cpu_writes(rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    if (!bytes) return;
+    if (bytes == UINT64_MAX) x->index_copies_stale = ++x->change_count; /* anywhere */
+    else index_copies_written(x, address, bytes);
+}
+
 /* Records the buffer's calls into the batch, in order, keeping the state they set. */
 /* A draw call: its checks, then the draw (or nothing, when check_state finds nothing to draw). */
 static int draw_call(rt_executor *x, draw_state *s, const rt_render_call *c, char *error, size_t error_size)
@@ -7836,6 +8208,7 @@ void rt_executor_close(rt_executor *x)
         if (x->tess_vertex) vkDestroyShaderModule(x->device, x->tess_vertex, NULL);
         gpu_buffer_free(x, &x->tess_lds), gpu_buffer_free(x, &x->tess_factors);
         gpu_buffer_free(x, &x->gs_esgs), gpu_buffer_free(x, &x->gs_gsvs), gpu_buffer_free(x, &x->gs_strips);
+        gpu_buffer_free(x, &x->index_buffer);
         if (x->tess_layout) vkDestroyPipelineLayout(x->device, x->tess_layout, NULL);
         for (size_t i = 0; i < x->pass_count; i++) {
             vkDestroyFramebuffer(x->device, x->passes[i].framebuffer, NULL);

@@ -132,6 +132,16 @@ uint64_t rt_executor_done_ticket(rt_executor *executor);
    there; 0 when the write must wait for the GPU. The first ask for memory starts noting the batches'
    reads of it, and answers 0 (nothing earlier noted them). Not for another thread. */
 int rt_executor_cpu_write_ready(rt_executor *executor, uint64_t address, uint64_t bytes);
+/* Notes that the CPU is about to write `bytes` of guest memory at `address` (UINT64_MAX bytes: memory of
+   no known range; 0: none) once the GPU's work has run (a step the renderer performs after
+   rt_executor_finish): what the executor keeps of that memory on the GPU (index ranges' copies) is
+   copied again before its next use. Not for another thread. */
+void rt_executor_cpu_writes(rt_executor *executor, uint64_t address, uint64_t bytes);
+/* Notes that a step the renderer defers (performed on another thread once the work before it has run)
+   writes `bytes` of guest memory at `address` (UINT64_MAX bytes: memory of no known range; 0: none):
+   the executor keeps no copy of that memory on the GPU (index ranges there are read where they are)
+   from now on. Not for another thread. */
+void rt_executor_deferred_writes(rt_executor *executor, uint64_t address, uint64_t bytes);
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
 int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);

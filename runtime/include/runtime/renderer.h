@@ -69,9 +69,10 @@ void rt_renderer_configure(int enabled);
    step not yet performed, nor a fill or copy recorded into the GPU's work, writes it; otherwise as
    any other step. PB_CPU_ORDERED_STEPS=0 in the environment performs them all as other steps.
 
-   memory is the guest memory a step writes (a deferrable step, a fill, a CPU-ordered step) or reads (a
-   wait): its address and bytes, 0 bytes for none, RT_GPU_STEP_ANY_MEMORY bytes when not known. The
-   renderer orders recorded fills against it. */
+   memory is the guest memory a step writes (a deferrable step, a fill, a CPU-ordered step, a DMA_DATA
+   step) or reads (a wait): its address and bytes, 0 bytes for none, RT_GPU_STEP_ANY_MEMORY bytes when
+   not known. The renderer orders recorded fills against it, and tells the executor what a step it
+   performs or defers writes (rt_executor_cpu_writes, rt_executor_deferred_writes). */
 enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1, RT_GPU_STEP_SHOWS_TARGET = 2, RT_GPU_STEP_FILLS = 4,
        RT_GPU_STEP_COPIES = 8, RT_GPU_STEP_CPU_ORDERED = 16 };
 #define RT_GPU_STEP_ANY_MEMORY UINT64_MAX
