@@ -524,6 +524,37 @@ static void calls_inside_packets(void)
     CHECK(count == 2 && taken);
     free(taken);
     rt_render_check_placed_calls(NULL);
+    /* without a reader every call is taken, a wide NOP or not */
+    CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 2, user, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    taken = rt_render_take(CHECKED_BUFFER, SIZE, &count);
+    CHECK(count == 2 && taken);
+    free(taken);
+    rt_render_forget();
+}
+
+/* rt_render_submitted's copy of the calls left keeps up with a list that grows: a NOP covering one
+   call, then a run of two-word NOPs with a call at each, submitted with 1, 70 and then 100 of them. */
+static void calls_left_as_the_list_grows(void)
+{
+    enum { NOP = 0xc0021000u /* 4 words */, SHORT_NOP = 0xc0001000u /* 2 words */, FIRST = 0x10, STRIDE = 8 };
+    static const size_t runs[] = {1, 70, 100};
+    char error[128] = "";
+    const uint32_t one[3] = {1, 1, 1};
+    rt_render_forget();
+    memset(checked_memory, 0, sizeof checked_memory);
+    rt_render_check_placed_calls(read_checked);
+    checked_memory[0] = NOP;
+    for (uint32_t at = FIRST; at < 4 * CHECKED_WORDS; at += STRIDE) checked_memory[at / 4] = SHORT_NOP;
+    for (size_t r = 0; r < sizeof runs / sizeof *runs; r++) {
+        CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x4, one, error, sizeof error) == 0); /* inside the NOP */
+        for (size_t i = 0; i < runs[r]; i++)
+            CHECK(rt_render_record_dispatch(CHECKED_BUFFER, FIRST + STRIDE * i, one, error, sizeof error) == 0);
+        size_t count = 0;
+        const rt_render_call *calls = rt_render_submitted(CHECKED_BUFFER, 4 * CHECKED_WORDS, &count);
+        CHECK(count == runs[r] && calls && calls[0].offset == FIRST && calls[count - 1].offset == FIRST + STRIDE * (runs[r] - 1));
+    }
+    rt_render_check_placed_calls(NULL);
     rt_render_forget();
 }
 
@@ -718,6 +749,7 @@ int main(void)
     placed_ring();
     resubmitted_calls();
     calls_inside_packets();
+    calls_left_as_the_list_grows();
     compute_calls();
     many_buffers();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);

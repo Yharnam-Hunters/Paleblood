@@ -7357,10 +7357,7 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
 {
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, size, &count);
-    if (count == SIZE_MAX) {
-        snprintf(error, error_size, "no memory for a buffer's calls");
-        return -1;
-    }
+    if (count == SIZE_MAX) return failed(error, error_size, "no memory for a buffer's calls");
     return rt_executor_run_calls(x, calls, count, error, error_size);
 }
 
