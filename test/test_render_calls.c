@@ -463,7 +463,6 @@ static void resubmitted_calls(void)
     rt_render_forget();
 }
 
-/* A compute shader's register block and a dispatch. */
 /* With a reader, a call is taken only where the GPU reaches it, walking the buffer's packets from its
    start: the game turns a pass off by widening a NOP over its packets, and the clinic resubmits a
    compute buffer whose first NOP covers its wait, user data and dispatch, the calls' own packets
@@ -528,6 +527,7 @@ static void calls_inside_packets(void)
     rt_render_forget();
 }
 
+/* A compute shader's register block and a dispatch. */
 static void compute_calls(void)
 {
     enum { BUFFER = 0x700000000ull };
