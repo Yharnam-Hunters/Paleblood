@@ -194,8 +194,13 @@ index slice is reused for every instance. This follows Apple's
 No per-instance host allocation or extra DMA bound is inferred. Vertex shader cache keys include
 the input profile, both full step-rate words and written bits; the instance count remains dynamic.
 Fetch calls use the same starting-register and cache contract.
-The recorded viewport clip bounds must be standard 0 and 1 (either signed zero is accepted);
-other bounds stop explicitly. Position and enabled clip-distance vectors require float4 export
+The recorded viewport Z clamp bounds must be 0 and 1 (either signed zero is accepted).
+The backend passes the finite viewport depth endpoints to Metal in guest order. They can
+be reversed or extend beyond the clamp bounds. The depth buffer clamps the mapped depth,
+while vertex depth clipping still uses clip coordinates. See the
+[AMD CIK register reference for the viewport Z bounds](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
+and [Metal viewport mapping](https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setviewport%28_%3A%29?language=objc).
+Position and enabled clip-distance vectors require float4 export
 formats. Both clip vectors, including sparse selections of all eight distances, are supported;
 miscellaneous and cull outputs are rejected. Shader interfaces may use up to 32 located float4
 parameters. Declared vertex parameter and pixel interpolant capacities must cover the translated
@@ -239,15 +244,15 @@ writes are disabled. The shader and pipeline caches preserve the original enable
 locations, and the pipeline includes each attachment's format and effective blend state.
 
 `CB_COLOR0..7_CLEAR_WORD0/1` writes retain each independent raw 32-bit word across
-submissions, in the persistent graphics state. Reset returns these words to zero.
-They specify formatted fast-clear texel bits; writing them does not clear a target.
-The admitted uncompressed draw path does not consume them. Active fast-clear or
-compression flags and unsupported colour modes still stop before shader work.
-Only the two documented words in each of the eight banks are admitted. The
-[AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
-specify their addresses and bank stride.
+submissions. With a single 8_8_8_8 color target bound at slot zero, a CMASK whose
+declared range is entirely zero resolves by loading `CLEAR_WORD0` into every texel. The subsequent draw
+may update a subset of those texels. Once the completed target bytes are published,
+the CMASK becomes all ones. An already expanded CMASK loads the existing bytes.
+Partial clears, other compression codes and overlapping memory stop explicitly.
+The register addresses and bank stride follow the
+[AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h).
 
-A zero colour mask disables attachment writes while still executing the draw. The Metal test
+A zero colour mask disables raster color writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
 
@@ -487,8 +492,10 @@ unestablished combinations fail by format name. Integer return bits stay integer
 reads use Metal's native conversion before filtering. Its precision is checked using the
 encoded-byte rule in the [Metal language specification, section 8.7.7](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf).
 
-Samplers support normalized wrap, mirror and clamp-to-edge addressing, with equal point or
-bilinear min/mag filters. Linear filtering requires a filterable sampled image; integer images
+Samplers support normalized wrap, mirror and clamp-to-edge addressing, with matching point,
+bilinear or anisotropic bilinear min/mag filters. The anisotropic ratio maps to Metal's
+maximum of 1, 2, 4, 8 or 16 samples. Anisotropy threshold and bias must be zero for
+anisotropic filtering. Linear filtering requires a filterable sampled image; integer images
 used only by texel loads do not impose that restriction. The common translator supplies coordinate
 gradients for `image_sample`; the native unmipmapped sampler selects the view's first level. Nondefault minimum LOD, bias or reserved
 mip controls with a multi-level sampled view fail explicitly until their semantics are modeled;
@@ -669,9 +676,8 @@ bits, single-bit walks, submission routes, masked draws and later submissions.
 Fresh vertex stores, literal pixels and whole-pool canaries distinguish completed
 draws from empty success. It also checks adjacent unknown registers and active
 fast-clear/compression/mode refusals before any writes, followed by recovery.
-Exact inactive raw storage, independence and zero-on-reset are source invariants;
-the public API cannot distinguish their values while fast clears are unsupported.
-No private state getter or original hardware equivalence is claimed.
+Active CMASK cases compare the entire guest pool after a clipped draw, a masked
+draw, reuse of expanded metadata, an sRGB clear and rejected metadata values or ranges.
 
 `test_metal_depth` additionally checks depth/stencil comparisons, operations and masks, both face
 orientations and viewport signs, native read-only behavior through overlapping triangles,

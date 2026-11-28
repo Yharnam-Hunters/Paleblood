@@ -164,7 +164,7 @@ struct MetalState {
     uint32_t depth_bounds[2] = {}; /* Independent raw DB_DEPTH_BOUNDS_MIN/MAX words. */
     uint32_t step_rates[2] = {}, step_rates_set = 0;
     uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
-    uint32_t clear_words[RT_COLOR_TARGETS][2] = {}; /* Raw CB_COLORn_CLEAR_WORD0/1, inert without fast clears. */
+    uint32_t clear_words[RT_COLOR_TARGETS][2] = {}; /* Raw CB_COLORn_CLEAR_WORD0/1. */
     uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
     bool depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t depth_words[9] = {}, depth_written = 0, depth_view = 0, render_control = 0;
@@ -287,8 +287,7 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
             const unsigned slot = address - CB_BLEND0_CONTROL;
             state.blend_control[slot] = value; state.blend_set |= 1u << slot; return 0;
         }
-        /* GFX7 has two formatted clear words per target, fifteen registers apart.
-           Retain them independently; target_for still refuses active fast clears. */
+        /* GFX7 has two formatted clear words per target, fifteen registers apart. */
         if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + static_cast<unsigned>(RT_COLOR_TARGETS) * CB_COLOR_REGISTER_STRIDE &&
             (address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE < 2) {
             const unsigned relative = address - CB_COLOR0_CLEAR_WORD0;
@@ -529,7 +528,7 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
     if (format == MTLPixelFormatInvalid)
         return failed(error, size, "render target format %#x, number type %u, swap %u is not drawn yet",
                       color.format, color.number_type, color.component_swap), nullptr;
-    if (color.samples != 1 || color.first_slice || color.last_slice || color.fast_clear || color.compression)
+    if (color.samples != 1 || color.first_slice || color.last_slice || color.compression)
         return failed(error, size, "multisample, layered or compressed render targets are not drawn yet"), nullptr;
     if (!color.pitch || !color.height || color.pitch > MAX_DIMENSION || color.height > MAX_DIMENSION)
         return failed(error, size, "render target dimensions exceed the executor's 1..4096 profile"), nullptr;
@@ -562,12 +561,17 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
    that same memory. This synchronous path makes CPU, buffer, compute and overlapping-target
    accesses observe one backing store without a second dirty-image lifetime. Encoded bytes
    keep their native channel order and element width, including float attachments. */
-static void load_target(rt_executor *x, const MetalTarget &target)
+static void load_target(rt_executor *x, const MetalTarget &target, const uint32_t *clear = nullptr)
 {
     const size_t row = static_cast<size_t>(target.width) * target.layout.element_bytes;
     x->target_rows.resize(row * target.height);
-    const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
-    rt_tiling_detile(&target.layout, tiled, x->target_rows.data(), target.width, target.height, 1);
+    if (clear) {
+        for (size_t offset = 0; offset < x->target_rows.size(); offset += sizeof(uint32_t))
+            std::memcpy(x->target_rows.data() + offset,clear,sizeof(uint32_t));
+    } else {
+        const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
+        rt_tiling_detile(&target.layout, tiled, x->target_rows.data(), target.width, target.height, 1);
+    }
     [target.texture replaceRegion:MTLRegionMake2D(0, 0, target.width, target.height) mipmapLevel:0
         withBytes:x->target_rows.data() bytesPerRow:row];
 }
@@ -848,10 +852,15 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
 static id<MTLSamplerState> sampler_for(rt_executor *x, const uint32_t words[4], bool &linear, char *error, size_t size)
 {
     const unsigned magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3;
-    /* These anisotropy fields do not affect the admitted point/bilinear filters. */
-    enum { clamp_fields = 0x1ff, anisotropy_fields = (7u << 9) | (7u << 16) | (0x3fu << 21) };
-    if ((words[0] & ~(clamp_fields | anisotropy_fields)) || magnify != minify || magnify > 1)
-        return failed(error,size,"sampler options exceed equal point/bilinear, normalized color sampling"), nil;
+    enum { clamp_fields = 0x1ff, ratio_shift = 9, ratio_mask = 7u << ratio_shift,
+           anisotropy_tuning = (7u << 16) | (0x3fu << 21), anisotropic_bilinear = 3, max_ratio = 4 };
+    const bool anisotropic = magnify == anisotropic_bilinear;
+    if ((words[0] & ~(clamp_fields | ratio_mask | anisotropy_tuning)) || magnify != minify ||
+        (magnify > 1 && !anisotropic))
+        return failed(error,size,"sampler options exceed matched point, bilinear or anisotropic bilinear sampling"), nil;
+    const unsigned ratio = (words[0] & ratio_mask) >> ratio_shift;
+    if (anisotropic && (ratio > max_ratio || (words[0] & anisotropy_tuning)))
+        return failed(error,size,"sampler anisotropy ratio or tuning is outside the Metal profile"), nil;
     const MTLSamplerAddressMode modes[] = {MTLSamplerAddressModeRepeat,MTLSamplerAddressModeMirrorRepeat,MTLSamplerAddressModeClampToEdge};
     MTLSamplerDescriptor *descriptor = [MTLSamplerDescriptor new];
     unsigned address[3];
@@ -865,6 +874,7 @@ static id<MTLSamplerState> sampler_for(rt_executor *x, const uint32_t words[4], 
     if (x->samplers.size() == MAX_SAMPLERS) return failed(error,size,"sampler cache is full"), nil;
     descriptor.sAddressMode = modes[address[0]]; descriptor.tAddressMode = modes[address[1]]; descriptor.rAddressMode = modes[address[2]];
     descriptor.minFilter = descriptor.magFilter = magnify ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+    descriptor.maxAnisotropy = anisotropic ? 1u << ratio : 1u;
     descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped; descriptor.normalizedCoordinates = YES;
     descriptor.lodMinClamp = descriptor.lodMaxClamp = 0;
     id<MTLSamplerState> state = [x->device newSamplerStateWithDescriptor:descriptor];
@@ -1664,6 +1674,39 @@ static int capture_rectangle(rt_executor *x, const MetalState &state, uint32_t c
     return shader_runtime_stop(x,error,size);
 }
 
+struct MetalColorClear {
+    uint64_t address = 0, bytes = 0;
+    bool pending = false;
+};
+
+/* Uniform CMASK states are independent of the order of the per-tile nibbles.
+   0 is a full clear; 0xff in every byte is expanded color already in memory. */
+static int color_clear(rt_executor *x, const rt_color_target &descriptor, const MetalTarget &target,
+                       const MetalDepthAttachments &depth, MetalColorClear &clear, char *error, size_t size)
+{
+    if (!descriptor.fast_clear) return 0;
+    enum { CMASK_BLOCK = 128, MAX_CMASK_BYTES = (1u << 14) * CMASK_BLOCK };
+    clear.address = descriptor.cmask_address; clear.bytes = descriptor.cmask_bytes;
+    const uint32_t tiles = ((target.width + 7) / 8) * ((target.height + 7) / 8);
+    if (clear.address % 256 || clear.bytes % CMASK_BLOCK || clear.bytes < (tiles + 1) / 2 ||
+        clear.bytes > MAX_CMASK_BYTES || !pool_range(x,clear.address,clear.bytes))
+        return failed(error,size,"CMASK range or alignment is outside the modeled profile");
+    if (depth.htile_span && overlap(clear.address,clear.bytes,depth.htile_address,depth.htile_span))
+        return failed(error,size,"CMASK overlaps HTILE");
+    if (overlap(clear.address,clear.bytes,target.address,rt_tiling_size(&target.layout,1)))
+        return failed(error,size,"CMASK overlaps the color target");
+    for (const auto *plane : {&depth.z,&depth.stencil})
+        if (plane->texture && overlap(clear.address,clear.bytes,plane->address,rt_tiling_size(&plane->layout.tiles,plane->slice + 1)))
+            return failed(error,size,"CMASK overlaps a depth or stencil plane");
+    const auto *bits = static_cast<const uint8_t *>(x->view) + clear.address - x->guest_base;
+    if (bits[0] != 0 && bits[0] != 0xff)
+        return failed(error,size,"unmodeled CMASK clear or compression code");
+    if (!std::all_of(bits,bits + clear.bytes,[first = bits[0]](uint8_t byte) { return byte == first; }))
+        return failed(error,size,"partly cleared or compressed CMASK is not modeled");
+    clear.pending = bits[0] == 0;
+    return 0;
+}
+
 static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *error, size_t size,
                  const MetalIndices *indices = nullptr)
 {
@@ -1698,9 +1741,13 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         if (std::fabs(state.scale[axis]) > static_cast<float>(MAX_DIMENSION) ||
             std::fabs(state.translate[axis]) > static_cast<float>(MAX_DIMENSION))
             return failed(error, size, "viewport exceeds the executor's coordinate range");
-    if (state.scale[0] <= 0 || state.scale[1] == 0 || state.translate[2] < 0 ||
-        state.translate[2] + state.scale[2] > 1 || state.scale[2] < 0)
-        return failed(error, size, "viewport scale or depth range is not supported");
+    if (state.scale[0] <= 0 || state.scale[1] == 0)
+        return failed(error, size, "viewport scale is not supported");
+    /* Preserve the affine Z transform. The depth buffer clamps the transformed value,
+       so clipping the endpoints here would change even in-range depth values. */
+    const float far_depth = state.translate[2] + state.scale[2];
+    if (!std::isfinite(far_depth))
+        return failed(error, size, "viewport depth endpoint is not finite");
     MetalDepthAttachments depth;
     if (depth_attachments(x,state,depth,error,size)) return -1;
     const bool has_depth = depth.z.texture || depth.stencil.texture;
@@ -1710,6 +1757,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     const bool raster_rectangle = rectangle && !vertex_only;
     if (!state.pixel.code && !vertex_only && (outputs.enabled || !has_depth))
         return failed(error,size,"a draw with no pixel shader requires depth/stencil and no color writes");
+    MetalColorClear clear;
     /* Keep one bound target as the raster extent when all color writes are masked. */
     const unsigned attachments = outputs.enabled ? outputs.enabled : state.bound_colors & (0u - state.bound_colors);
     std::array<MetalTarget *,RT_COLOR_TARGETS> targets{};
@@ -1725,8 +1773,11 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         if (!(attachments & (bit - 1))) { width = descriptor.pitch; height = descriptor.height; }
         if (width != descriptor.pitch || height != descriptor.height)
             return failed(error,size,"color attachment extents differ");
+        if (descriptor.fast_clear && (state.bound_colors != 1 || descriptor.format != COLOR_8_8_8_8))
+            return failed(error,size,"CMASK clear requires one 8_8_8_8 attachment at slot zero");
         MetalTarget *target = target_for(x,descriptor,error,size);
         if (!target) return -1;
+        if (descriptor.fast_clear && color_clear(x,descriptor,*target,depth,clear,error,size)) return -1;
         color.format = target->format;
         const uint64_t span = rt_tiling_size(&target->layout,1);
         if (depth.htile_span && overlap(target->address,span,depth.htile_address,depth.htile_span))
@@ -1771,7 +1822,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     pass.renderTargetWidth = width; pass.renderTargetHeight = height;
     if (vertex_only) pass.defaultRasterSampleCount = 1;
     for (unsigned slot = 0; slot < targets.size(); ++slot) if (auto *target = targets[slot]) {
-        load_target(x,*target);
+        load_target(x,*target,clear.pending ? state.clear_words[slot] : nullptr);
         auto *attachment = pass.colorAttachments[slot];
         attachment.texture = target->texture;
         attachment.loadAction = MTLLoadActionLoad; attachment.storeAction = MTLStoreActionStore;
@@ -1816,7 +1867,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (state.clip_control & (CLIP_DISABLE | ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE)) [encoder setDepthClipMode:MTLDepthClipModeClamp];
     const double sy = std::fabs(state.scale[1]);
     const MTLViewport viewport = {state.translate[0] - state.scale[0], state.translate[1] - sy,
-        2 * state.scale[0], 2 * sy, state.translate[2], state.translate[2] + state.scale[2]};
+        2 * state.scale[0], 2 * sy, state.translate[2], far_depth};
     [encoder setViewport:viewport];
     [encoder setScissorRect:scissor];
     [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
@@ -1845,7 +1896,8 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (complete_commands(x,command,error,size)) return -1;
     if (fragment_quad_runtime_stop(x,error,size)) return -1;
     for (unsigned slot = 0; slot < targets.size(); ++slot) if (auto *target = targets[slot]) {
-        if (colors[slot].write) store_target(x,*target);
+        if (colors[slot].write || clear.pending) store_target(x,*target);
+        if (clear.pending) std::memset(static_cast<uint8_t *>(x->view) + clear.address - x->guest_base,0xff,clear.bytes);
         target->initialized = true;
     }
     store_depth_plane(x,depth.z); store_depth_plane(x,depth.stencil);
