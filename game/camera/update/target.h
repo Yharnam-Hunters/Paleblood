@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera target stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Chase subject position, establish offset targets (including optional FOV-height adjustment),
 // copy the target distance and move the fulcrum and candidate camera position.
@@ -16,8 +17,8 @@ namespace root = camera::update::root;
 using update::subject::SubjectCompensationState;
 using update::subject_transform::FreshSubjectTransformState;
 
-RT_GLOBAL(0x04d25e70, half_fov, const float);
-RT_GLOBAL(0x04d25e6c, scalar_one, const float);
+using constants::half_fov;
+using constants::scalar_one;
 RT_ORIGINAL(0x02fbe648, tangent_float, float(float));
 
 struct TargetPreparation

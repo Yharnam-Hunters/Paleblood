@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera wing escape stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "escape_yaw_storage.h"
 #include "math.h"
 // Build the wall-escape queries from the camera orientation computed earlier.
@@ -15,15 +16,15 @@ namespace packed = camera::update::math;
 namespace root = camera::update::root;
 namespace calls = camera::math_calls;
 
-RT_GLOBAL(0x04cf2630, negate_pitch_sine, const Vec4);
-RT_GLOBAL(0x04cf24e0, negate_yaw_sine, const Vec4);
-RT_GLOBAL(0x04cf24a0, unit_y, const Vec4);
-RT_GLOBAL(0x04cf24c0, unit_w, const Vec4);
-RT_GLOBAL(0x04cf24d0, xyz_bits, const Vec4);
-RT_GLOBAL(0x04cf2640, infinity_vector, const Vec4);
-RT_GLOBAL(0x04cf2650, canonical_nan_vector, const Vec4);
-RT_GLOBAL(0x04d25e88, short_distance_threshold, const float);
-RT_GLOBAL(0x04d25e8c, short_distance_replacement, const float);
+using constants::negate_pitch_sine;
+using constants::negate_yaw_sine;
+using constants::unit_y;
+using constants::unit_w;
+using constants::xyz_bits;
+inline constexpr auto infinity_vector = constants::exponent_bits;
+using constants::canonical_nan_vector;
+inline constexpr auto short_distance_threshold = constants::distance_threshold;
+using constants::short_distance_replacement;
 
 struct FulcrumFrame
 {
@@ -134,15 +135,15 @@ namespace camera::update::wing_escape
 namespace query = camera::query_calls;
 
 RT_ORIGINAL(0x02fbe648, tangent_float, float(float));
-RT_GLOBAL(0x04d25e6c, one, const float);
-RT_GLOBAL(0x04d25e74, period, const float);
-RT_GLOBAL(0x04d25e58, minimum_escape_yaw, const float);
+inline constexpr auto one = constants::scalar_one;
+inline constexpr auto period = constants::two_pi;
+inline constexpr auto minimum_escape_yaw = constants::degrees_to_radians;
 RT_GLOBAL(0x04d25e94, normal_chase_interpolation, const float);
-RT_GLOBAL(0x04d25e88, distance_division_threshold, const float);
-RT_GLOBAL(0x04cf2520, sign_mask, const Vec4);
-RT_GLOBAL(0x04cf25c0, even_coefficients_0_to_6, const Vec4);
-RT_GLOBAL(0x04cf25d0, even_coefficients_8_to_14, const Vec4);
-RT_GLOBAL(0x04cf25e0, even_coefficients_16_to_22, const Vec4);
+inline constexpr auto distance_division_threshold = constants::distance_threshold;
+using constants::sign_mask;
+using constants::even_coefficients_0_to_6;
+using constants::even_coefficients_8_to_14;
+using constants::even_coefficients_16_to_22;
 
 struct YawBasis
 {
