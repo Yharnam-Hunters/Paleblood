@@ -5,6 +5,8 @@
 
 #include "output_device_calls.h"
 #include "output_threads.h"
+#include "record_login_call.h"
+#include "start_thread_call.h"
 #include "thread_services.h"
 
 namespace {
@@ -51,16 +53,12 @@ static_assert(offsetof(RecordingOwner, first_capacity) == 0x4d0);
 static_assert(offsetof(RecordingOwner, capture_thread) == 0x550);
 static_assert(offsetof(RecordingOwner, active_port_count) == 0x6a8);
 
-RT_ORIGINAL(0x02fbff18, sce_user_service_get_login_user_id_list, int32_t(int32_t *users));
 RT_ORIGINAL(0x02fbffa8, sce_audio_in_open,
             int32_t(int32_t user, uint32_t type, uint32_t index, uint32_t samples,
                     uint32_t frequency, uint32_t format));
 RT_ORIGINAL(0x011aaea0, allocate_record_buffer,
             void *(audio::MemoryPool *, uint32_t bytes, const char *source_file, int32_t source_line,
                    uint32_t flags));
-RT_ORIGINAL(0x01118420, initialize_fmod_thread,
-            uint32_t(audio::FmodThreadStorage *, const char *, void *, void *, int32_t, uintptr_t,
-                     int32_t, uint8_t, uint32_t, void *));
 RT_ORIGINAL(0x0111be80, capture_thread_entry, void(void *));
 RT_GLOBAL(0x04c7d221, capture_thread_name, const char);
 
@@ -97,7 +95,7 @@ extern "C" uint32_t bb_audio_fmod_record_open_port(RecordingOwner *owner, Record
 {
     int32_t driver = record->port_index;
     std::array<int32_t, login_user_slots> users;
-    const int32_t login = sce_user_service_get_login_user_id_list(users.data());
+    const int32_t login = audio::sce_user_service_get_login_user_id_list(users.data());
     if (static_cast<uint32_t>(login) == login_uninitialized)
         return service_unavailable;
     if (login < 0)
@@ -144,7 +142,7 @@ extern "C" uint32_t bb_audio_fmod_record_open_port(RecordingOwner *owner, Record
     set_entry(&owner->first_capacity, port, capture_bytes);
 
     if (owner->active_port_count == 0) {
-        const uint32_t status = initialize_fmod_thread(&owner->capture_thread, capture_thread_name.address(),
+        const uint32_t status = audio::initialize_fmod_thread(&owner->capture_thread, capture_thread_name.address(),
             capture_thread_entry.address(), owner, recording_priority, 0, recording_stack_bytes, 0, 0,
             owner->service_context);
         if (status != 0)
