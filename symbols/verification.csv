@@ -133,6 +133,7 @@ ai_target_speed_record_update,recorded,,426,426,0,0,962565c5970bd876,2026-11-13
 ai_target_speed_record_update,edge,,128,128,0,0,962565c5970bd876,2026-11-13
 ai_update_time_scheduler_reserve,edge,,256,256,0,0,e3cc6b8ad40b38ed,2026-11-14
 audio_fmod_begin_timing_state,edge,,176,176,0,0,d75d0dd69fe8067d,2026-11-18
+audio_fmod_cleanup_owner,edge,,87,87,0,0,15a6ea4daf2f6d69,2026-11-28
 audio_fmod_contribute_thread_handles,edge,,90,90,0,0,484811458ba47605,2026-11-18
 audio_fmod_copy_output_label,edge,,291,291,0,0,2aed1d75f4a03466,2026-11-14
 audio_fmod_create_native_thread,edge,,264,264,0,0,ba5ade3ce59c8354,2026-11-18
