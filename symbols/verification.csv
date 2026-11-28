@@ -143,7 +143,7 @@ audio_fmod_output_close,edge,,234,234,0,0,2be5b88f604095e3,2026-11-20
 audio_fmod_output_defaults,edge,,43,43,0,0,ff2256d81343e653,2026-11-22
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
 audio_fmod_output_update_port_state,edge,,177,177,0,0,a8fc382cf6f41d62,2026-11-20
-audio_fmod_start_output_threads,edge,,154,154,0,0,2c35329420e961f5,2026-11-14
+audio_fmod_start_output_threads,edge,,154,154,0,0,2c35329420e961f5,2026-11-28
 audio_fmod_start_thread,recorded,,16,16,0,0,e778d7fce820c27f,2026-11-17
 audio_fmod_start_thread,edge,,237,237,0,0,e778d7fce820c27f,2026-11-17
 audio_fmod_stop_output_threads,edge,,181,181,0,0,7357e4defa4ca7a8,2026-11-15
