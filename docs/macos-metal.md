@@ -194,8 +194,13 @@ index slice is reused for every instance. This follows Apple's
 No per-instance host allocation or extra DMA bound is inferred. Vertex shader cache keys include
 the input profile, both full step-rate words and written bits; the instance count remains dynamic.
 Fetch calls use the same starting-register and cache contract.
-The recorded viewport clip bounds must be standard 0 and 1 (either signed zero is accepted);
-other bounds stop explicitly. Position and enabled clip-distance vectors require float4 export
+The recorded viewport Z clamp bounds must be 0 and 1 (either signed zero is accepted).
+The backend passes the finite viewport depth endpoints to Metal in guest order. They can
+be reversed or extend beyond the clamp bounds. The depth buffer clamps the mapped depth,
+while vertex depth clipping still uses clip coordinates. See the
+[AMD CIK register reference for the viewport Z bounds](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
+and [Metal viewport mapping](https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setviewport%28_%3A%29?language=objc).
+Position and enabled clip-distance vectors require float4 export
 formats. Both clip vectors, including sparse selections of all eight distances, are supported;
 miscellaneous and cull outputs are rejected. Shader interfaces may use up to 32 located float4
 parameters. Declared vertex parameter and pixel interpolant capacities must cover the translated

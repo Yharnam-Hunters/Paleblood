@@ -1698,9 +1698,13 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         if (std::fabs(state.scale[axis]) > static_cast<float>(MAX_DIMENSION) ||
             std::fabs(state.translate[axis]) > static_cast<float>(MAX_DIMENSION))
             return failed(error, size, "viewport exceeds the executor's coordinate range");
-    if (state.scale[0] <= 0 || state.scale[1] == 0 || state.translate[2] < 0 ||
-        state.translate[2] + state.scale[2] > 1 || state.scale[2] < 0)
-        return failed(error, size, "viewport scale or depth range is not supported");
+    if (state.scale[0] <= 0 || state.scale[1] == 0)
+        return failed(error, size, "viewport scale is not supported");
+    /* Preserve the affine Z transform. The depth buffer clamps the transformed value,
+       so clipping the endpoints here would change even in-range depth values. */
+    const float far_depth = state.translate[2] + state.scale[2];
+    if (!std::isfinite(far_depth))
+        return failed(error, size, "viewport depth endpoint is not finite");
     MetalDepthAttachments depth;
     if (depth_attachments(x,state,depth,error,size)) return -1;
     const bool has_depth = depth.z.texture || depth.stencil.texture;
@@ -1816,7 +1820,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (state.clip_control & (CLIP_DISABLE | ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE)) [encoder setDepthClipMode:MTLDepthClipModeClamp];
     const double sy = std::fabs(state.scale[1]);
     const MTLViewport viewport = {state.translate[0] - state.scale[0], state.translate[1] - sy,
-        2 * state.scale[0], 2 * sy, state.translate[2], state.translate[2] + state.scale[2]};
+        2 * state.scale[0], 2 * sy, state.translate[2], far_depth};
     [encoder setViewport:viewport];
     [encoder setScissorRect:scissor];
     [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
