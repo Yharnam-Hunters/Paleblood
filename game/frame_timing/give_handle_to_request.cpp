@@ -55,17 +55,26 @@ void hold_handle(HandleRequest *request, engine::RefObject *const *handle, engin
     if (value != nullptr) engine::retain(value);
 }
 
+// What both functions do first: check FrpgNetMan, then (unless the handle is empty) make the
+// request hold the handle's object and take the kind. Gives the object as first read, or null.
+GateHandle *hand_over(HandleRequest *request, engine::RefObject **handle, int32_t kind)
+{
+    check_frpg_net_man();
+    engine::RefObject *object = *handle;
+    if (object == nullptr) return nullptr;
+    hold_handle(request, handle, object);
+    request->kind = kind;
+    return as_gate_handle(object);
+}
+
 }  // namespace
 
 extern "C" bool bb_frame_timing_give_handle_to_server_request_02269e30(HandleRequest *request,
                                                                        engine::RefObject **handle, int32_t kind)
 {
-    check_frpg_net_man();
-    engine::RefObject *object = *handle;
-    if (object == nullptr) return false;
-    hold_handle(request, handle, object);
-    request->kind = kind;
-    as_gate_handle(object)->value_120 = given_to_request;
+    GateHandle *marked = hand_over(request, handle, kind);
+    if (marked == nullptr) return false;
+    marked->value_120 = given_to_request;
     request->vtable->send(request, server_request_code);
     return true;
 }
@@ -73,12 +82,8 @@ extern "C" bool bb_frame_timing_give_handle_to_server_request_02269e30(HandleReq
 extern "C" bool bb_frame_timing_give_handle_to_local_request_02269d40(HandleRequest *request,
                                                                       engine::RefObject **handle, int32_t kind)
 {
-    check_frpg_net_man();
-    engine::RefObject *object = *handle;
-    if (object == nullptr) return false;
-    hold_handle(request, handle, object);
-    request->kind = kind;
-    GateHandle *marked = as_gate_handle(object);
+    GateHandle *marked = hand_over(request, handle, kind);
+    if (marked == nullptr) return false;
     marked->value_11c = given_to_request;
     marked->value_120 = given_to_request;
     request->vtable->prepare(request);

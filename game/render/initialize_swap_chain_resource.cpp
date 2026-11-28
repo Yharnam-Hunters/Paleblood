@@ -3,9 +3,10 @@
 // Allocation failure clears the output and releases storage supplied by preparation.
 #include "swap_chain_resource_init.h"
 
+#include <bit>
+
 namespace {
 constexpr uint32_t resource_word_bits = 32;
-constexpr uint32_t resource_word_high_bit = 0x80000000u;
 constexpr uint32_t maximum_fallback_zeroes = 31;
 constexpr uint32_t multi_count_kind = 2;
 constexpr uint32_t odd_selection_disabled_flag = 2;
@@ -34,18 +35,6 @@ constexpr uint32_t object_initial_state = 1;
 constexpr uint64_t object_alignment = 8;
 
 enum class CompatibilityKind : uint32_t { unselected, initial_data, odd_selection, selected_without_primary_flags };
-
-uint32_t leading_zero_count(uint32_t value)
-{
-    if (value == 0) return resource_word_bits;
-    uint32_t count = 0;
-    while ((value & resource_word_high_bit) == 0) {
-        value <<= 1;
-        ++count;
-    }
-    return count;
-}
-
 }  // namespace
 
 extern "C" uint32_t bb_render_initialize_swap_chain_resource(
@@ -65,18 +54,15 @@ extern "C" uint32_t bb_render_initialize_swap_chain_resource(
     if (initial != nullptr) {
         uint32_t count = parameters->level_count.get();
         if (count == 0) {
-            const uint32_t first_zeroes = leading_zero_count(parameters->width.get());
-            const uint32_t second_zeroes = leading_zero_count(parameters->height.get());
+            const uint32_t first_zeroes = uint32_t(std::countl_zero(parameters->width.get()));
+            const uint32_t second_zeroes = uint32_t(std::countl_zero(parameters->height.get()));
             uint32_t minimum_zeroes = second_zeroes < maximum_fallback_zeroes ? second_zeroes : maximum_fallback_zeroes;
             if (first_zeroes < minimum_zeroes) minimum_zeroes = first_zeroes;
             count = resource_word_bits - minimum_zeroes;
         }
         count *= parameters->entries_per_level.get();  // The entry-count product wraps at 32 bits.
-        uintptr_t entry_address = reinterpret_cast<uintptr_t>(initial);
         for (uint32_t index = 0; index < count; ++index) {
-            auto *entry = reinterpret_cast<SwapResourceInitialEntry *>(entry_address);
-            if (entry->value.get() == 0) return unsupported_status;
-            entry_address += sizeof(SwapResourceInitialEntry);
+            if (initial[index].value.get() == 0) return unsupported_status;
         }
     }
     if ((secondary_flags & count_requirement_bit) != 0 &&

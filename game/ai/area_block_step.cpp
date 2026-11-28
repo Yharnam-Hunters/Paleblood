@@ -4,10 +4,12 @@
 #include "area_block_step.h"
 
 #include <cstdint>
+#include <type_traits>
 
 #include "../engine/container.h"
 #include "../engine/vector_bounds.h"
 #include "../engine/vector_operations.h"
+#include "../engine/wide_string_assign.h"
 
 namespace ai::area_block {
 namespace {
@@ -37,8 +39,6 @@ constexpr uint32_t setup_batch_normal = 1000;
 constexpr uint32_t object_pool_mask = 0x3ff;
 constexpr uint32_t map_block_no_shift = 16;
 constexpr uint32_t byte_mask = 0xff;
-constexpr uint32_t map_area_mask = 0xff000000u;
-constexpr uint32_t map_area_chalice = 0x1d000000u;
 constexpr uint64_t object_array_alignment = 16;
 constexpr uint64_t menu_alloc_size = 0x30;
 constexpr uint64_t menu_alloc_alignment = 8;
@@ -72,6 +72,37 @@ bool is_object_active(const BlockAiObject *object)
            object->index_0x134 != object_no_index && object->kind == object_kind_active;
 }
 
+// Calls `visit` on each active object of the block. The original reloads object_count after each
+// visited object.
+template <typename Visit> void for_each_active_object(AreaBlock *block, Visit visit)
+{
+    uint32_t count = static_cast<uint32_t>(block->object_count);
+    for (uint32_t i = 0; i < count; i++) {
+        BlockAiObject *object = block->objects[i];
+        if (is_object_active(object)) {
+            visit(object);
+            count = static_cast<uint32_t>(block->object_count);
+        }
+    }
+}
+
+// Builds a debug menu key for (owner, name), passes it to `use`, then destroys the key's interned
+// name before returning what `use` returned.
+template <typename Use> auto with_menu_key(void *owner, const char16_t *name, Use use)
+{
+    MenuKey key;
+    key.owner = owner;
+    interned_name_construct(&key.name, name);
+    if constexpr (std::is_void_v<decltype(use(&key))>) {
+        use(&key);
+        interned_name_destroy(&key.name);
+    } else {
+        auto result = use(&key);
+        interned_name_destroy(&key.name);
+        return result;
+    }
+}
+
 bool resources_loaded(const AreaBlock *block)
 {
     return block->parts_resource != nullptr && block->parts_resource->status == resource_status_loaded &&
@@ -80,7 +111,7 @@ bool resources_loaded(const AreaBlock *block)
 
 NvmSection *find_nvm_section(const NvmResource *nvm, uint32_t section_id)
 {
-    if (!nvm->sections || nvm->section_count <= 0) return nullptr;
+    if (!nvm->sections) return nullptr;
     for (int32_t i = 0; i < nvm->section_count; i++) {
         NvmSection *section = nvm->sections[i];
         if (section && section->section_id == section_id) return section;
@@ -305,9 +336,9 @@ void step_connect_parts(AreaBlock *block)
     }
 
     const PartsContainer *parts = block->parts_resource->data;
-    if (parts && parts->entry_count != 0) {
+    if (parts) {
         for (uint32_t i = 0; i < parts->entry_count; i++) {
-            const PartsEntry *entry_i = i < parts->entry_count ? &parts->entries[i] : nullptr;
+            const PartsEntry *entry_i = &parts->entries[i];
             NvmSection *sec_i = find_nvm_section(block->nvm_resource, entry_i->section_id);
             Transform3x3 rot_i;
             rotation_from_euler_vec(&rot_i, entry_i->rotation);
@@ -377,7 +408,7 @@ void step_clear_and_rebuild_links(AreaBlock *block)
             reserve_hk_array(node.array_a, old_a + link->data_a_count);
             node.array_a.size += link->data_a_count;
             Vec4 *dst = node.array_a.data + old_a;
-            if (dst && src && link->data_a_count != 0) {
+            if (dst && src) {
                 for (int32_t k = 0; k < link->data_a_count; k++) dst[k] = src[k];
             }
         }
@@ -394,7 +425,7 @@ void step_clear_and_rebuild_links(AreaBlock *block)
             NavLinkSlotB *slots = node.array_b.data;
             for (int32_t k = 0; k < link->data_b_count; k++) nav_link_slot_init(&slots[node.array_b.size + k]);
             node.array_b.size += link->data_b_count;
-            if (slots && src && link->data_b_count != 0) {
+            if (slots && src) {
                 const auto *pairs = reinterpret_cast<const Pair32 *>(src);
                 for (int32_t k = 0; k < link->data_b_count; k++) {
                     slots[old_b + k].field_a = pairs[k].a;
@@ -409,9 +440,8 @@ void step_clear_and_rebuild_links(AreaBlock *block)
 void step_substate_rebuild_or_clear(AreaBlock *block)
 {
     if (!world_nvm_manager_instance.get()) engine::report_missing(world_nvm_manager_name.address());
-    // Original tests (block->map_id & 0xff000000) == 0x1d000000 and discards the result before
-    // checking SprjHkAiManager.
-    (void)((block->map_id & map_area_mask) == map_area_chalice);
+    // The original also compares (map_id & 0xff000000) with 0x1d000000 here, before checking
+    // SprjHkAiManager, and leaves the result unused.
     if (!ai_manager_instance.get()) engine::report_missing(ai_manager_name.address());
     ai_manager_unknown_flag.get() = 0;
     if (!world_nvm_manager_instance.get()) engine::report_missing(world_nvm_manager_name.address());
@@ -516,25 +546,16 @@ void step_substate_setup_objects(AreaBlock *block)
 
 void step_substate_prepare_links(AreaBlock *block)
 {
-    uint32_t count = static_cast<uint32_t>(block->object_count);
-    for (uint32_t i = 0; i < count; i++) {
-        BlockAiObject *object = block->objects[i];
-        if (is_object_active(object)) {
-            block_object_prepare_links(object);
-            count = static_cast<uint32_t>(block->object_count);
-        }
-    }
+    for_each_active_object(block, [](BlockAiObject *object) { block_object_prepare_links(object); });
     block->substate = substate_attach_links;
 }
 
 void step_substate_attach_links(AreaBlock *block)
 {
     const PartsContainer *parts = block->parts_resource->data;
-    if (parts && parts->link_b_count > 0) {
+    if (parts) {
         for (int32_t i = 0; i < parts->link_b_count; i++) {
-            const PartsLinkB *link = static_cast<uint32_t>(i) < static_cast<uint32_t>(parts->link_b_count)
-                                         ? &parts->links_b[i]
-                                         : nullptr;
+            const PartsLinkB *link = &parts->links_b[i];
             BlockAiObject *object = find_block_object_by_model_id(block, link->id);
             WorldNvmManager *manager = engine::require(world_nvm_manager_instance, world_nvm_manager_name.address());
             for (int32_t j = 0; j < manager->block_count; j++) {
@@ -554,14 +575,7 @@ void step_substate_attach_links(AreaBlock *block)
 
 void step_substate_finalize_links(AreaBlock *block)
 {
-    uint32_t count = static_cast<uint32_t>(block->object_count);
-    for (uint32_t i = 0; i < count; i++) {
-        BlockAiObject *object = block->objects[i];
-        if (is_object_active(object)) {
-            block_object_finalize_links(object);
-            count = static_cast<uint32_t>(block->object_count);
-        }
-    }
+    for_each_active_object(block, [](BlockAiObject *object) { block_object_finalize_links(object); });
     block->substate = substate_register_menu;
 }
 
@@ -585,41 +599,29 @@ void step_substate_register_menu(AreaBlock *block)
     if (block->area->state != owner_area_ready) return;
 
     DebugMenuManager *menu = engine::require(debug_menu_manager_instance, debug_menu_manager_name.address());
-    MenuKey area_key;
-    area_key.owner = block->area;
-    interned_name_construct(&area_key.name, area_menu_key_name.address());
-    DebugMenuEntry *parent = debug_menu_find_by_key(menu, &area_key);
-    interned_name_destroy(&area_key.name);
+    DebugMenuEntry *parent = with_menu_key(block->area, area_menu_key_name.address(),
+                                           [&](MenuKey *key) { return debug_menu_find_by_key(menu, key); });
 
     if (parent) {
-        auto &heap = engine::temporary_heap::thread_heap();
-        if (!heap) engine::temporary_heap::create_for_thread();
-        engine::Allocator *allocator = &reinterpret_cast<ThreadHeap *>(engine::temporary_heap::thread_heap())->allocator;
+        auto *heap = reinterpret_cast<ThreadHeap *>(engine::temporary_heap::require_thread_heap());
+        engine::Allocator *allocator = &heap->allocator;
         engine::check_container_heap(allocator);
 
         engine::WideString label;
-        label.inline_text[0] = 0;
-        label.size = 0;
-        label.capacity = engine::wide_string_inline_capacity - 1;
-        label.allocator = allocator;
+        engine::wide_string_begin(&label, allocator);
         label.owns = 1;
         const uint32_t block_number = (block->map_id >> map_block_no_shift) & byte_mask;
         wide_string_format(&label, block_menu_label_format.address(), block_number);
 
-        MenuKey block_key;
-        block_key.owner = block;
-        interned_name_construct(&block_key.name, block_menu_key_name.address());
-        const char16_t *label_text = wide_string_text(label);
-        DebugMenuEntry *block_menu = debug_menu_add(parent, label_text, label_text, &block_key);
-        interned_name_destroy(&block_key.name);
+        DebugMenuEntry *block_menu = with_menu_key(block, block_menu_key_name.address(), [&](MenuKey *key) {
+            const char16_t *label_text = wide_string_text(label);
+            return debug_menu_add(parent, label_text, label_text, key);
+        });
 
         if (block_menu) {
-            MenuKey list_key;
-            list_key.owner = nullptr;
-            interned_name_construct(&list_key.name, empty_wide_text.address());
-            DebugMenuEntry *bank_menu =
-                debug_menu_add(block_menu, node_bank_list_label.address(), node_bank_list_label.address(), &list_key);
-            interned_name_destroy(&list_key.name);
+            DebugMenuEntry *bank_menu = with_menu_key(nullptr, empty_wide_text.address(), [&](MenuKey *key) {
+                return debug_menu_add(block_menu, node_bank_list_label.address(), node_bank_list_label.address(), key);
+            });
 
             menu = engine::require(debug_menu_manager_instance, debug_menu_manager_name.address());
             auto *node = static_cast<MenuItemNode *>(
@@ -653,22 +655,10 @@ void step_substate_register_menu(AreaBlock *block)
     }
 
     menu = engine::require(debug_menu_manager_instance, debug_menu_manager_name.address());
-    MenuKey block_key;
-    block_key.owner = block;
-    interned_name_construct(&block_key.name, block_menu_key_name.address());
-    DebugMenuEntry *block_menu = debug_menu_find_by_key(menu, &block_key);
-    interned_name_destroy(&block_key.name);
-
-    if (block_menu) {
-        uint32_t count = static_cast<uint32_t>(block->object_count);
-        for (uint32_t i = 0; i < count; i++) {
-            BlockAiObject *object = block->objects[i];
-            if (is_object_active(object)) {
-                block_object_add_debug_menu(object, block_menu);
-                count = static_cast<uint32_t>(block->object_count);
-            }
-        }
-    }
+    DebugMenuEntry *block_menu = with_menu_key(block, block_menu_key_name.address(),
+                                               [&](MenuKey *key) { return debug_menu_find_by_key(menu, key); });
+    if (block_menu)
+        for_each_active_object(block, [&](BlockAiObject *object) { block_object_add_debug_menu(object, block_menu); });
 
     block->substate = substate_ready;
     block->state = block_state_active;
@@ -717,19 +707,12 @@ void step_loading(AreaBlock *block)
 void step_unloading(AreaBlock *block)
 {
     if (block->unload_substate == unload_substate_clear_menus) {
-        uint32_t count = static_cast<uint32_t>(block->object_count);
-        for (uint32_t i = 0; i < count; i++) {
-            BlockAiObject *object = block->objects[i];
-            if (is_object_active(object)) {
-                DebugMenuManager *menu = engine::require(debug_menu_manager_instance, debug_menu_manager_name.address());
-                MenuKey key;
-                key.owner = object;
-                interned_name_construct(&key.name, parts_menu_key_name.address());
-                debug_menu_remove(menu, &key, menu_remove_flag_a, menu_remove_flag_b);
-                interned_name_destroy(&key.name);
-                count = static_cast<uint32_t>(block->object_count);
-            }
-        }
+        for_each_active_object(block, [](BlockAiObject *object) {
+            DebugMenuManager *menu = engine::require(debug_menu_manager_instance, debug_menu_manager_name.address());
+            with_menu_key(object, parts_menu_key_name.address(), [&](MenuKey *key) {
+                debug_menu_remove(menu, key, menu_remove_flag_a, menu_remove_flag_b);
+            });
+        });
         area_block_remove_object_menus(block);
         block->bounds_min = block_point_w.get();
         block->bounds_max = block_point_w.get();

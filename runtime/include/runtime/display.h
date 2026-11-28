@@ -50,6 +50,11 @@ int rt_display_log_frames(const char *path);
    display's own, so a flip never waits on a file). */
 void rt_display_capture_wait(void);
 
+/* A few words the window's title shows after the name until changed (the shaders compiling at
+   launch); NULL or empty: the name alone. Any thread may call it; the title changes at the next
+   frame presented on the window's own thread (runtime/display_window.h). */
+void rt_display_set_status(const char *status);
+
 #ifdef __cplusplus
 }
 #endif

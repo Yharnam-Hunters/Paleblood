@@ -24,10 +24,13 @@
 
 #include "runtime/gcn.h"
 #include "runtime/gcn_spirv.h"
+#include "runtime/launch_progress.h"
+#include "runtime/linear_copy.h"
 #include "runtime/rect_list.h"
 #include "runtime/render_calls.h"
 #include "runtime/tile_copy.h"
 #include "runtime/tiling.h"
+#include "runtime/translation_cache.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -48,9 +51,39 @@
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16 };
-/* the run-time stop words (stop_slot): a power of two, well above the shaders kept at once so that two of
-   them seldom share one */
+/* Indexed draws' index ranges kept in device-local memory (copy_for): at most MAX_INDEX_COPIES
+   ranges in a table of twice as many slots, each placed at a multiple of INDEX_COPY_ALIGN in a buffer of
+   INDEX_COPY_BYTES unless PB_INDEX_COPY_BYTES says otherwise (0: none; at most INDEX_COPY_BYTES_MAX, the
+   smallest maxBufferSize Vulkan allows a device, VkPhysicalDeviceMaintenance4Properties). A range whose memory changed
+   INDEX_COPY_CHANGES times in a row, each change after the first within INDEX_COPY_WINDOW submissions of
+   the copy before it (however that copy came), is drawn from the guest memory again; two drops within INDEX_COPY_WINDOW submissions pause copying for
+   INDEX_COPY_PAUSE submissions. */
+enum { MAX_INDEX_COPIES = 2048, INDEX_COPY_SLOTS = 2 * MAX_INDEX_COPIES, INDEX_COPY_ALIGN = 256, INDEX_COPY_CHANGES = 3,
+       INDEX_COPY_WINDOW = 64, INDEX_COPY_PAUSE = 4096 };
+#define INDEX_COPY_BYTES (32ull << 20)
+#define INDEX_COPY_BYTES_MAX (1ull << 30)
+/* Vertex shaders' vertex buffers kept in device-local memory (vertex_copies_plan): ranges of
+   VERTEX_COPY_MIN_BYTES or more (smaller ones cost little to read in place, and the game rewrites most
+   of them every frame) in a set of its own, of VERTEX_COPY_BYTES unless PB_VERTEX_COPY_BYTES says
+   otherwise (0: none; at most INDEX_COPY_BYTES_MAX); a range is taken from a multiple of
+   VERTEX_COPY_PAGE below the buffer to one above its end plus VERTEX_COPY_OVERREACH bytes (the loads
+   that range checking lets reach past it). A draw rewrites at most MAX_VERTEX_REWRITES descriptors. A
+   range is copied only once it has been seen again VERTEX_COPY_SEEN_AFTER submissions or more after it
+   was first seen (copy_set's `seen`): the game draws most large buffers once (or from a new place each
+   frame), and copying those would fill the set with copies no later draw reads. The game reads more
+   such ranges than the set holds, so a full set keeps its copies (a new range is read in place) until
+   fewer than half the bytes placed in it were read in the last VERTEX_COPY_RECENT submissions, and only
+   then drops them all (copies_unused). */
+#define VERTEX_COPY_BYTES (256ull << 20)
+enum { VERTEX_COPY_MIN_BYTES = 64 << 10, VERTEX_COPY_PAGE = 4096, VERTEX_COPY_OVERREACH = 16, MAX_VERTEX_REWRITES = 16, VERTEX_COPY_SEEN_AFTER = 32,
+       VERTEX_COPY_RECENT = 256 };
+/* the run-time stop words (stop_slot): a power of two, well above the distinct shaders a walk meets, so that
+   each shader has a word of its own */
 enum { STOP_SLOT_BITS = 13, STOP_SLOTS = 1 << STOP_SLOT_BITS };
+struct stop_owner { /* the shader a stop word was given to (stop_slot) */
+    uint64_t code;
+    int kind, given;
+};
 enum { IMAGE_BUCKETS = 4096, TABLE_BUCKETS = 2048 }; /* powers of two */
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
@@ -166,6 +199,37 @@ typedef struct {
     VkDeviceAddress address;
 } gpu_buffer;
 
+/* Ranges of guest memory copied into a device-local buffer (copy_for): the buffer (the index set's made
+   on first use, the vertex set's when the executor opens: its GPU address is in the vertex shaders'
+   translations), its size (0: no copies) and the bytes placed so far, the ranges and the table finding
+   them (an entry's place in copies plus one; 0: empty). */
+typedef struct {
+    gpu_buffer buffer;
+    VkDeviceSize bytes, used;
+    int failed;                      /* no device memory for it: the ranges are read from the guest memory */
+    struct guest_copy {
+        uint64_t offset, bytes;      /* the range's guest-memory offset and length */
+        VkDeviceSize at;             /* the copy's place in the buffer */
+        uint64_t loaded_change;      /* change_count when it was last copied */
+        unsigned changes;            /* the times its memory changed after a copy, each soon after the one before */
+        uint64_t changed_at;         /* `submitted` when it was last copied, first or again */
+        int direct;                  /* it kept changing: read from the guest memory, and no longer watched */
+        uint64_t used_at;            /* `submitted` when a draw last planned to read it */
+    } copies[MAX_INDEX_COPIES];
+    uint32_t count;
+    uint16_t slots[INDEX_COPY_SLOTS];
+    uint64_t dropped_after;          /* `submitted` plus one at the last drop; 0: no drop yet */
+    uint64_t paused_until;           /* no copies while `submitted` is below it (drops came too fast) */
+    int selective;                   /* the vertex set: a new range is copied only once seen again, and a full set is dropped
+                                        only once most of it is no longer read (copy_for) */
+    uint64_t full_checked;           /* `submitted` plus one when a selective set last found itself full and in use */
+    struct seen_range {
+        uint64_t offset, bytes;      /* a range not copied yet, by its table slot (bytes 0: none) */
+        uint64_t at;                 /* `submitted` when it was first seen there */
+    } seen[INDEX_COPY_SLOTS];
+} copy_set;
+
+
 /* How the GPU copies an image's elements between its tiled guest memory and linear rows: the table of
    offsets (runtime/tile_copy.h) and the linear rows' buffer, made for one layout and size. */
 typedef struct {
@@ -275,6 +339,9 @@ typedef struct {
     VkFramebuffer framebuffer;
 } pass_entry;
 
+/* Worker threads making pipelines a draw meets for the first time (pipeline_job). */
+enum { PIPELINE_WORKERS = 2 };
+
 typedef struct {
     VkShaderModule vertex, geometry, pixel; /* geometry: the rect-list stage, or none */
     VkRenderPass pass;
@@ -287,6 +354,7 @@ typedef struct {
     VkShaderModule control;          /* a tessellated draw's control shader (its vertex shader then the domain shader), or VK_NULL_HANDLE */
     uint32_t patch_points;           /* its control points a patch */
     VkPipeline pipeline;
+    struct pipeline_job *job;        /* while a worker thread makes it (pipeline_settle), else NULL */
     uint32_t bucket_next;            /* the next pipeline of its bucket (pipeline_buckets), index + 1; 0 none */
     uint64_t used_ticket;            /* the submission that last draws with it (pipeline_slot_to_free) */
 } pipeline_entry;
@@ -358,7 +426,9 @@ typedef struct {
     uint64_t code, callee;
     int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan, 3 the read scan,
                                         4 the memory-write scan (count: 1 when the program writes memory), 5 the called read
-                                        scan (gcn_called_memory_reads, a fetch shader's reads included) */
+                                        scan (gcn_called_memory_reads, a fetch shader's reads included), 6 and 7 the stage-store
+                                        scans (stage_store_kinds; count: its STAGE_STORES_* bits; 7 in a geometry layout), 8 the bounded-load
+                                        scan (vertex_loads_bounded; count: 1 when some load is not bounded) */
     int unknown;                     /* the buffer-store scan: some store's descriptor has no known origin; the read scans: some load's */
     uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
     size_t dwords, callee_dwords;
@@ -370,6 +440,8 @@ typedef struct {
     gcn_table_copy copy;
     int fill;                        /* the read scan: the program is a constant fill (gcn_fill_shape) */
     gcn_fill fill_shape;
+    int linear;                      /* the read scan: the program is a linear copy (gcn_linear_copy_shape) */
+    gcn_linear_copy linear_shape;
 } scan_entry;
 
 /* A range of guest memory. A dispatch's reads and stores are kept as up to DISPATCH_SPANS of them (span_add). */
@@ -480,6 +552,7 @@ typedef struct {
     VkDescriptorPool descriptors;
     staging_buffer upload;           /* guest texels on their way into images */
     uint64_t ticket;                 /* the timeline value its submission signals once it has run */
+    uint64_t first_call;             /* a draw may start binding images before it opens this batch */
     int in_flight;                   /* submitted, not yet seen to have run */
     int memory_pending;              /* it holds a dispatch, which may store to any guest memory */
     int upload_pending;              /* it copies from its upload staging buffer */
@@ -509,6 +582,8 @@ typedef struct {
     } listed[WORK_LISTED];           /* each draw and dispatch in order (the first WORK_LISTED), for the checkpoints */
 } batch_slot;
 
+enum { QUEUED_COMMANDS = 64 };
+
 struct rt_executor {
     VkInstance instance;
     VkPhysicalDevice physical;
@@ -516,6 +591,13 @@ struct rt_executor {
     VkQueue queue;
     uint32_t family;
     VkCommandPool pool;
+    /* one-time commands submitted without a wait (queue_commands), each with the fence that says when
+       its command buffer may be freed */
+    struct {
+        VkCommandBuffer commands;
+        VkFence fence;
+    } queued[QUEUED_COMMANDS];
+    size_t queued_count;
     VkPipelineLayout layout, compute_layout;
     /* compute shaders with n storage images: their descriptor set layout and pipeline layout (n >= 1) */
     VkDescriptorSetLayout image_set_layouts[GCN_MAX_IMAGES + 1];
@@ -580,11 +662,26 @@ struct rt_executor {
     /* draws take table snapshots (DRAW_PUSH_BYTES): the push constants are then one range for every
        stage, which each push names (draw_push_stages); otherwise a range a stage */
     int draw_snapshots;
+    /* the copy plans' linear rows (tile_plan_make), in bytes, and a limit on them (BB_COPY_ROWS_LIMIT, for
+       tests: 0, none but the device's memory) */
+    VkDeviceSize copy_rows_bytes, copy_rows_limit;
     int snapshot_memory;             /* the blocks' memory (gpu_buffer_make): MAPPED_LOCAL, or MAPPED with PB_SNAPSHOT_LOCAL=0 */
     VkShaderStageFlags draw_push_stages;
     unsigned push_range_count;
     gpu_buffer tess_lds, tess_factors;
     gpu_buffer gs_esgs, gs_gsvs, gs_strips; /* the geometry shader's rings and its strips' indices (gcn_spirv.h) */
+    /* Guest-memory ranges copied into device-local memory (copy_for): indexed draws' index ranges, and
+       vertex shaders' vertex buffers (vertex_copies_plan) */
+    copy_set index_set, vertex_set;
+    uint64_t vertex_window;          /* the vertex set's guest addresses (gcn_guest_copies), from rt_executor_memory's copies_base on; 0: no vertex set */
+    uint64_t copies_stale;     /* change_count when a write of no known range was last noted: a draw whose shaders may
+                                        store (a tessellated or geometry draw's stages: when stage_stores_noted finds no
+                                        range), or a step the renderer performs on the CPU (rt_executor_cpu_writes) */
+    memory_span deferred_writes[DISPATCH_SPANS]; /* what deferred steps write (rt_executor_deferred_writes): no copies there */
+    int unlisted_stores_unfinished;  /* a draw storing to guest memory the batches do not list (batch_may_store) is recorded
+                                        since the last batch_finish: a storing vertex or pixel shader, or tessellation and
+                                        geometry stages' stores (stage_stores_noted) */
+    unsigned deferred_write_count;
     VkPipelineLayout tess_layout;
     struct {
         uint64_t code, callee;
@@ -625,8 +722,10 @@ struct rt_executor {
     VkBuffer gds_buffer;
     VkDeviceMemory gds_memory;
     VkDeviceAddress gds_address;
-    volatile uint32_t *stop_words;   /* STOP_SLOTS, each written by the shaders stop_index picks */
+    volatile uint32_t *stop_words;   /* STOP_SLOTS, each written by the shader stop_slot gave it to */
     uint64_t stop_address;
+    struct stop_owner *stop_owners;  /* STOP_SLOTS: the shader each stop word was given to (stop_slot) */
+    int stop_words_shared;           /* every word was given: later shaders share their home words */
     /* What changed the guest memory, and when (memory_changed): each change counts one up, and each
        CHANGE_CHUNK of the memory keeps the count of the last change that reached it. The CPU's writes
        come from collect_cpu_writes at each buffer, the GPU's (dispatch stores, write-backs, fills) as
@@ -642,8 +741,9 @@ struct rt_executor {
     int (*cpu_writes_due)(void);
     int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
     void (*unguard)(uint64_t address, uint64_t length);
-    /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
-    uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS][2];
+    /* what note_cpu_writes asks about: the loaded images' and targets' memory, their metadata, and the
+       ranges both copy sets copied into device-local memory (copy_for) */
+    uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS + 2 * MAX_INDEX_COPIES][2];
     /* The batches: slots[current] is the open one (batch_open) or the next to open. A batch is
        submitted when a buffer's calls end (batch_submit), without waiting: the CPU waits only where it
        reads what submitted work produces (the run-time stop words, guest memory a dispatch or
@@ -704,6 +804,26 @@ struct rt_executor {
     int saver_started, saver_stop;
     pthread_mutex_t saver_lock;
     pthread_cond_t saver_wake;
+    /* translations kept from earlier runs (open_translations; NULL: none), and how many shaders were
+       found there and translated, and the time both took on the recording thread */
+    translation_cache *translations;
+    size_t translations_found, translations_made;
+    uint64_t translation_ns, translations_reported; /* the total, and when it was last reported */
+    /* the keys of the shaders made in any run, whatever the translator's version (open_translations;
+       NULL: none), and what compile_catalog did with them when the executor opened */
+    translation_cache *catalog;
+    size_t launch_shaders, launch_translated, launch_compiled;
+    struct launch_work *launch; /* the shaders compile_catalog's workers are making (NULL: none, or finished) */
+    /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
+    int async_pipelines;
+    void (*launch_progress)(size_t done, size_t count); /* rt_executor_memory's */
+    int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
+    pthread_t pipeline_workers[PIPELINE_WORKERS];
+    unsigned pipeline_worker_count;
+    pthread_mutex_t job_lock;
+    pthread_cond_t job_queued, job_done;
+    struct pipeline_job *job_head, *job_tail;
+    int jobs_stop, jobs_ready;  /* jobs_ready: the lock and conditions made (pipeline_workers_start) */
     VkPipeline tile_copies[TILE_COPY_SIZES][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
@@ -1300,6 +1420,66 @@ static void pipeline_cache_close(rt_executor *x)
     pthread_mutex_destroy(&x->saver_lock);
 }
 
+/* ---- the translation cache's file ----
+   The shaders' translations, kept from one run to the next (runtime/translation_cache.h). The file is
+   BB_TRANSLATION_CACHE (empty: none), else $XDG_CACHE_HOME/paleblood/translations.bin, else
+   ~/.cache/paleblood/translations.bin. Its version, PB_TRANSLATOR_VERSION, is a hash of the translator's
+   and this file's sources made by the build (CMakeLists.txt), so a change to either starts the file
+   again; a build without it keeps no translations. */
+/* A cache file's path: the variable named's value when it is set (empty: none), else name in
+   $XDG_CACHE_HOME/paleblood, else in ~/.cache/paleblood. */
+static void cache_file_path(char *path, size_t size, const char *variable, const char *name)
+{
+    const char *named = getenv(variable), *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    *path = 0;
+    if (named) snprintf(path, size, "%s", named);
+    else if (cache && *cache) snprintf(path, size, "%s/paleblood/%s", cache, name);
+    else if (home && *home) snprintf(path, size, "%s/.cache/paleblood/%s", home, name);
+}
+
+/* The shader catalog's version: it changes only when the keys' layout does (compute_key), never with
+   the translator. */
+static const char CATALOG_VERSION[] = "shader catalog 1";
+
+/* Opens the translation cache, and the shader catalog (BB_SHADER_CATALOG, else catalog.bin beside
+   the translations): the keys of every shader made, kept across translator versions, from which
+   compile_catalog makes the shaders again when the executor opens. */
+static void open_translations(rt_executor *x)
+{
+#ifdef PB_TRANSLATOR_VERSION
+    char path[sizeof x->pipeline_file];
+    cache_file_path(path, sizeof path, "BB_TRANSLATION_CACHE", "translations.bin");
+    x->translations = translation_cache_open(path, PB_TRANSLATOR_VERSION);
+    cache_file_path(path, sizeof path, "BB_SHADER_CATALOG", "catalog.bin");
+    if (x->translations) x->catalog = translation_cache_open(path, CATALOG_VERSION);
+#else
+    (void)x;
+#endif
+}
+
+static void finish_launch_work(rt_executor *x);
+
+void rt_executor_launch_compiles(rt_executor *x, size_t *shaders, size_t *translated, size_t *compiled)
+{
+    finish_launch_work(x);
+    *shaders = x->launch_shaders, *translated = x->launch_translated, *compiled = x->launch_compiled;
+}
+
+void rt_executor_translations(const rt_executor *x, size_t *found, size_t *made)
+{
+    *found = x->translations_found, *made = x->translations_made;
+}
+
+static void close_translations(rt_executor *x)
+{
+    if (!x->translations) return;
+    fprintf(stderr, "executor: translations: %zu from the cache, %zu translated, %.2f s\n", x->translations_found, x->translations_made,
+            (double)x->translation_ns / 1e9);
+    translation_cache_close(x->translations);
+    translation_cache_close(x->catalog);
+    x->translations = x->catalog = NULL;
+}
+
 static int open_device(rt_executor *x, char *error, size_t error_size)
 {
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_2};
@@ -1354,9 +1534,9 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
        AMD's hardware does, as Mesa's RADV driver exposes it by default with no shader-side bounds code,
        radv_physical_device.c; an NVIDIA device already defaults to it), and the diagnostics that name
        the work a lost or stuck device was running (rt_executor's set_checkpoint, fault_info). */
-    const char *extensions[4] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+    const char *extensions[5] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
     uint32_t extension_count = 1;
-    int robustness2 = 0, checkpoints = 0, device_fault = 0;
+    int robustness2 = 0, checkpoints = 0, device_fault = 0, cache_control = 0;
     {
         uint32_t offered = 0;
         vkEnumerateDeviceExtensionProperties(x->physical, NULL, &offered, NULL);
@@ -1366,12 +1546,16 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                 robustness2 |= !strcmp(names[i].extensionName, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
                 checkpoints |= !strcmp(names[i].extensionName, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
                 device_fault |= !strcmp(names[i].extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+                cache_control |= !strcmp(names[i].extensionName, VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME);
             }
         free(names);
     }
     VkPhysicalDeviceRobustness2FeaturesEXT robust = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
     VkPhysicalDeviceFaultFeaturesEXT fault = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
-    if (robustness2 || device_fault) {
+    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT cached = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT};
+    if (robustness2 || device_fault || cache_control) {
+        fault.pNext = &cached;
         robust.pNext = &fault;
         VkPhysicalDeviceFeatures2 offered = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &robust};
         vkGetPhysicalDeviceFeatures2(x->physical, &offered);
@@ -1389,6 +1573,16 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
         enable12.pNext = &enable_fault;
     } else device_fault = 0;
     if (checkpoints) extensions[extension_count++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+    /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache already holds is made at once, and one
+       that needs the compiler is reported as such instead (pipeline_for, async_pipelines) */
+    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT enable_cached = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT, .pipelineCreationCacheControl = VK_TRUE};
+    x->cache_control = cache_control && cached.pipelineCreationCacheControl;
+    if (x->cache_control) {
+        extensions[extension_count++] = VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME;
+        enable_cached.pNext = enable12.pNext;
+        enable12.pNext = &enable_cached;
+    }
     const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable, .queueCreateInfoCount = 1,
                                        .pQueueCreateInfos = &queue, .enabledExtensionCount = extension_count, .ppEnabledExtensionNames = extensions};
     if (vkCreateDevice(x->physical, &device, NULL, &x->device) != VK_SUCCESS)
@@ -1408,6 +1602,11 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     const char *draw_snapshots = getenv("PB_DRAW_SNAPSHOTS"), *snapshot_local = getenv("PB_SNAPSHOT_LOCAL");
     x->draw_snapshots = properties.limits.maxPushConstantsSize >= DRAW_PUSH_BYTES && !(draw_snapshots && !strcmp(draw_snapshots, "0"));
     x->snapshot_memory = snapshot_local && !strcmp(snapshot_local, "0") ? MAPPED : MAPPED_LOCAL;
+    const char *rows_limit = getenv("BB_COPY_ROWS_LIMIT");
+    x->copy_rows_limit = rows_limit ? strtoull(rows_limit, NULL, 0) : 0;
+    const char *index_copy_bytes = getenv("PB_INDEX_COPY_BYTES");
+    x->index_set.bytes = index_copy_bytes ? strtoull(index_copy_bytes, NULL, 0) : INDEX_COPY_BYTES;
+    if (x->index_set.bytes > INDEX_COPY_BYTES_MAX) x->index_set.bytes = INDEX_COPY_BYTES_MAX;
     x->draw_push_stages = x->vertex_stages | VK_SHADER_STAGE_FRAGMENT_BIT;
     x->push_range_count = x->draw_snapshots ? 1 : STAGES;
     const VkPushConstantRange ranges[STAGES] = {
@@ -1461,7 +1660,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
     const VkSemaphoreCreateInfo timeline = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline_type};
     if (vkCreateSemaphore(x->device, &timeline, NULL, &x->timeline) != VK_SUCCESS) return failed(error, error_size, "no timeline semaphore");
-    return pipeline_cache_open(x, error, error_size);
+    if (pipeline_cache_open(x, error, error_size)) return -1;
+    open_translations(x);
     return 0;
 }
 
@@ -1498,6 +1698,7 @@ static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsage
     return 0;
 }
 
+static void vertex_copies_open(rt_executor *x, const rt_executor_memory *memory);
 /* Our own mapping of the guest memory, imported as one buffer with a GPU address, and the GDS's host
    memory (runtime/gcn_spirv.h, "The global data share") as another. */
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
@@ -1520,6 +1721,7 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                     &x->buffer, &x->memory, &address, "the guest memory", error, error_size))
         return -1;
     x->address_offset = address - x->guest_base; /* wraps as the shaders' adds do */
+    vertex_copies_open(x, memory);
     if (!memory->gds) return 0;
     if (memory->gds_bytes != GCN_GDS_BYTES) return failed(error, error_size, "a GDS of %u bytes, not 64 KB", memory->gds_bytes);
     return import_host(x, memory->gds, memory->gds_bytes,
@@ -1548,6 +1750,8 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
         return failed(error, error_size, "no memory for the stop words");
     x->stop_words = mapped;
     memset(mapped, 0, STOP_SLOTS * sizeof(uint32_t));
+    x->stop_owners = calloc(STOP_SLOTS, sizeof *x->stop_owners);
+    if (!x->stop_owners) return failed(error, error_size, "no memory for the stop words' owners");
     const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = x->stop_buffer};
     x->stop_address = vkGetBufferDeviceAddress(x->device, &address);
     return 0;
@@ -1589,11 +1793,17 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
 
 /* Which stop word a translated shader writes (gcn_spirv.h's error_address): chosen from what the shader
    is, its kind (a graphics stage, compute, or a tessellation or geometry pass) and its code address,
-   never from the order the executor met it. Its SPIR-V holds that word's address, so a shader numbered
+   not from the order the executor met it. Its SPIR-V holds that word's address, so a shader numbered
    by order translated differently from one run to the next, and the driver's pipeline cache, which
    knows a pipeline by its SPIR-V, compiled it again in every run: in Iosefka's Clinic 150-230 s of
-   pipeline compiles on the renderer's thread in each boot (November 2026). Two shaders may share a
-   word; a stop then names each shader kept with that word. */
+   pipeline compiles on the renderer's thread in each boot (November 2026).
+
+   Each shader keeps its word for the executor's life, also after its translation is freed: its work
+   may still be in flight, and a stop must name the shader that wrote it. The word is the shader's
+   home word (stop_index), or, when another shader was given that one first, the next free word after
+   it: only those few shaders depend on the order they were met in. A word shared by two shaders made
+   a stop name every shader kept with it, and none that was freed: a stop of the LUT pass at
+   0x20d1b00800 could not be told from one of another shader with its word (November 2026). */
 enum { STOP_KIND_COMPUTE = 16, STOP_KIND_PASS = 32 }; /* graphics shaders use their stage number, below 16 */
 
 static size_t stop_index(int kind, uint64_t code)
@@ -1602,26 +1812,28 @@ static size_t stop_index(int kind, uint64_t code)
     return (size_t)(mixed >> (64 - STOP_SLOT_BITS));
 }
 
-static uint64_t stop_slot(const rt_executor *x, int kind, uint64_t code) { return x->stop_address + 4 * stop_index(kind, code); }
-
-/* The shaders that write one stop word, for its stop's reason: each kind and address once (a shader
-   kept in several translations, for other settings, writes the same word). */
-enum { STOPPED_NAMED = 4 };
-typedef struct {
-    const char *kinds[STOPPED_NAMED];
-    uint64_t codes[STOPPED_NAMED];
-    unsigned count;
-} stopped_shaders;
-
-static void add_stopped(stopped_shaders *named, const char *kind, uint64_t code)
+/* The GPU address of the stop word of the shader of `kind` at `code`, given to it on first use. With
+   every word given (more than STOP_SLOTS distinct shaders), it shares its home word. */
+static uint64_t stop_slot(rt_executor *x, int kind, uint64_t code)
 {
-    for (unsigned k = 0; k < named->count; k++)
-        if (named->codes[k] == code && !strcmp(named->kinds[k], kind)) return;
-    if (named->count < STOPPED_NAMED) named->kinds[named->count] = kind, named->codes[named->count++] = code;
+    const size_t home = stop_index(kind, code);
+    for (size_t probe = 0; probe < STOP_SLOTS; probe++) {
+        const size_t i = (home + probe) & (STOP_SLOTS - 1);
+        struct stop_owner *owner = &x->stop_owners[i];
+        if (!owner->given) *owner = (struct stop_owner){.code = code, .kind = kind, .given = 1};
+        if (owner->code == code && owner->kind == kind) return x->stop_address + 4 * i;
+    }
+    x->stop_words_shared = 1;
+    return x->stop_address + 4 * home;
+}
+
+static const char *stop_kind_name(int kind)
+{
+    return kind >= STOP_KIND_PASS ? pass_names[kind - STOP_KIND_PASS] : kind == STOP_KIND_COMPUTE ? "compute" : stage_name(kind);
 }
 
 /* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code, naming
-   the shaders kept that write that stop word (stop_index): almost always one. */
+   the shader its stop word was given to (stop_slot). */
 static int check_stop_words(rt_executor *x, char *error, size_t error_size)
 {
     const volatile uint64_t *pairs = (const volatile uint64_t *)x->stop_words; /* two words a read: the buffer is 8-byte aligned */
@@ -1633,25 +1845,12 @@ static int check_stop_words(rt_executor *x, char *error, size_t error_size)
         const uint32_t code = x->stop_words[i];
         if (!code) continue;
         x->stop_words[i] = 0;
-        char reason[512], names[STOPPED_NAMED * 48] = "";
+        char reason[512];
         stop_reason(code, reason, sizeof reason);
-        stopped_shaders named = {0};
-        for (size_t k = 0; k < x->shader_count; k++)
-            if (x->shaders[k].module && stop_index(x->shaders[k].stage, x->shaders[k].code) == i)
-                add_stopped(&named, stage_name(x->shaders[k].stage), x->shaders[k].code);
-        for (size_t k = 0; k < x->compute_count; k++)
-            if (stop_index(STOP_KIND_COMPUTE, x->computes[k].code) == i) add_stopped(&named, "compute", x->computes[k].code);
-        for (size_t k = 0; k < x->tess_pass_count; k++)
-            if (stop_index(STOP_KIND_PASS + x->tess_passes[k].kind, x->tess_passes[k].code) == i)
-                add_stopped(&named, pass_names[x->tess_passes[k].kind], x->tess_passes[k].code);
-        if (!named.count) return failed(error, error_size, "a shader no longer kept (stop word %zu): %s", i, reason);
-        size_t used = 0;
-        for (unsigned k = 0; k < named.count && used < sizeof names; k++) {
-            const int wrote = snprintf(names + used, sizeof names - used, "%sthe %s shader at %#llx", k ? " or " : "", named.kinds[k],
-                                       (unsigned long long)named.codes[k]);
-            used += wrote > 0 ? (size_t)wrote : 0;
-        }
-        return failed(error, error_size, "%s: %s", names, reason);
+        const struct stop_owner *owner = &x->stop_owners[i];
+        if (!owner->given) return failed(error, error_size, "a shader with stop word %zu, given to none: %s", i, reason);
+        return failed(error, error_size, "the %s shader at %#llx%s: %s", stop_kind_name(owner->kind), (unsigned long long)owner->code,
+                      x->stop_words_shared ? " (or a shader sharing its stop word: there were more shaders than words)" : "", reason);
     }
     return 0;
 }
@@ -1768,6 +1967,9 @@ static int sweep_skip(rt_executor *x, const char *what, char *error)
     return 1;
 }
 
+static void pipeline_workers_start(rt_executor *x);
+static void compile_catalog(rt_executor *x);
+
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
 {
     rt_executor *x = calloc(1, sizeof *x);
@@ -1779,8 +1981,12 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
         rt_executor_close(x);
         return -1;
     }
+    x->async_pipelines = memory->async_pipelines;
+    x->launch_progress = memory->launch_progress;
+    pipeline_workers_start(x);
     gcn_spirv_set_span_checks(1); /* Vulkan takes whole-span guest checks (runtime/gcn_spirv.h) */
     gcn_spirv_set_structured_control(1); /* Vulkan takes structured programs (runtime/gcn_spirv.h) */
+    compile_catalog(x);
     *executor = x;
     return 0;
 }
@@ -1806,6 +2012,45 @@ static int finish_commands(rt_executor *x, VkCommandBuffer commands)
     const int ok = vkQueueSubmit(x->queue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS && vkQueueWaitIdle(x->queue) == VK_SUCCESS;
     vkFreeCommandBuffers(x->device, x->pool, 1, &commands);
     return ok ? 0 : -1;
+}
+
+/* Frees the queued one-time commands the GPU has run (all of them with wait set, after waiting). */
+static void free_queued_commands(rt_executor *x, int wait)
+{
+    size_t kept = 0;
+    for (size_t i = 0; i < x->queued_count; i++) {
+        if (wait) vkWaitForFences(x->device, 1, &x->queued[i].fence, VK_TRUE, UINT64_MAX);
+        if (!wait && vkGetFenceStatus(x->device, x->queued[i].fence) != VK_SUCCESS) {
+            x->queued[kept++] = x->queued[i];
+            continue;
+        }
+        vkFreeCommandBuffers(x->device, x->pool, 1, &x->queued[i].commands);
+        vkDestroyFence(x->device, x->queued[i].fence, NULL);
+    }
+    x->queued_count = kept;
+}
+
+/* Submits one-time commands without waiting for them, for work that only the GPU's later work reads
+   (a new target's clear): commands later in submission order on the queue come after it (its last
+   barrier orders them, the Vulkan specification's "submission order"), and the batch that first uses
+   the target signals its ticket only once the clear has run too. Waits as finish_commands does when
+   QUEUED_COMMANDS are all still running. 0, or -1. */
+static int queue_commands(rt_executor *x, VkCommandBuffer commands)
+{
+    free_queued_commands(x, 0);
+    if (x->queued_count == QUEUED_COMMANDS) return finish_commands(x, commands);
+    const VkFenceCreateInfo fence_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence = VK_NULL_HANDLE;
+    vkEndCommandBuffer(commands);
+    const VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &commands};
+    if (vkCreateFence(x->device, &fence_info, NULL, &fence) != VK_SUCCESS || vkQueueSubmit(x->queue, 1, &submit, fence) != VK_SUCCESS) {
+        if (fence) vkDestroyFence(x->device, fence, NULL);
+        vkFreeCommandBuffers(x->device, x->pool, 1, &commands);
+        return -1;
+    }
+    x->queued[x->queued_count].commands = commands, x->queued[x->queued_count].fence = fence;
+    x->queued_count++;
+    return 0;
 }
 
 static void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout from, VkImageLayout to, VkAccessFlags src_access,
@@ -2012,6 +2257,7 @@ static batch_slot *open_batch(rt_executor *x, char *error, size_t error_size)
         failed(error, error_size, "no command buffer");
         return NULL;
     }
+    b->first_call = x->call_serial;
     x->batch_open = 1, b->indirect_count = 0, b->work_count = b->work_kinds = 0, b->snapshot_used = SNAPSHOT_BLOCK_ALIGN;
     return b;
 }
@@ -2058,6 +2304,7 @@ static int batch_finish(rt_executor *x, char *error, size_t error_size)
     if (batch_submit(x, error, error_size)) return -1;
     for (unsigned k = 0; k < BATCH_SLOTS; k++) /* oldest first */
         if (slot_retire(x, &x->slots[(x->current + k) % BATCH_SLOTS], error, error_size)) return -1;
+    x->unlisted_stores_unfinished = 0;
     return 0;
 }
 
@@ -2175,6 +2422,9 @@ static void note_cpu_writes(rt_executor *x)
         const metadata_state *m = &x->depths[i].htile;
         if (m->bytes) x->watch_ranges[n][0] = m->address - x->guest_base, x->watch_ranges[n++][1] = m->bytes;
     }
+    for (const copy_set *set = &x->index_set; set; set = set == &x->index_set ? &x->vertex_set : NULL)
+        for (uint32_t i = 0; i < set->count; i++)
+            if (!set->copies[i].direct) x->watch_ranges[n][0] = set->copies[i].offset, x->watch_ranges[n++][1] = set->copies[i].bytes;
     qsort(x->watch_ranges, n, sizeof *x->watch_ranges, by_start);
     size_t runs = 0;
     for (size_t i = 0; i < n; i++) {
@@ -2246,6 +2496,7 @@ static void batch_writes(rt_executor *x, uint64_t address, uint64_t size, int di
 }
 
 static void span_add(memory_span *spans, unsigned *count, uint64_t address, uint64_t bytes);
+static void copies_written(rt_executor *x, uint64_t address, uint64_t bytes);
 
 /* Notes that the open batch's work reads `bytes` of guest memory at `address` in place as it runs: the
    part of it the CPU-ordered writes may reach (x->watched), so a write there waits until the batch has
@@ -2283,6 +2534,7 @@ static int batch_may_touch(const rt_executor *x, unsigned k, uint64_t done, uint
 int rt_executor_cpu_write_ready(rt_executor *x, uint64_t address, uint64_t bytes)
 {
     if (!bytes) return 1;
+    copies_written(x, address, bytes); /* the write comes, now or after the GPU's work */
     for (unsigned i = 0; i < x->watched_count; i++) {
         const memory_span *w = &x->watched[i];
         if (w->address <= address && address + bytes <= w->address + w->bytes) {
@@ -2337,8 +2589,31 @@ static int gpu_buffer_make(rt_executor *x, gpu_buffer *b, VkDeviceSize bytes, in
     return 0;
 }
 
+/* The vertex set's buffer and guest addresses (gcn_guest_copies: the addresses the caller keeps free
+   of guest memory, rt_executor_memory's copies_base), made as the executor opens, since the vertex
+   shaders' translations hold them: only with the watch (copy_for) and draw snapshots (the rewrites go
+   into them), and none when the caller gives no such addresses or too few for the set, when they are
+   not whole dwords clear of the guest memory that fit a buffer descriptor's 40-bit base, or when the
+   device has no memory for the set. */
+static void vertex_copies_open(rt_executor *x, const rt_executor_memory *memory)
+{
+    const char *bytes = getenv("PB_VERTEX_COPY_BYTES");
+    x->vertex_set.bytes = bytes ? strtoull(bytes, NULL, 0) : VERTEX_COPY_BYTES;
+    x->vertex_set.selective = 1;
+    if (x->vertex_set.bytes > INDEX_COPY_BYTES_MAX) x->vertex_set.bytes = INDEX_COPY_BYTES_MAX;
+    const uint64_t end = x->guest_base + x->size, window = memory->copies_base, address_limit = 1ull << 40;
+    const int placed = window && !(window & 3) && x->vertex_set.bytes <= memory->copies_bytes && window < address_limit &&
+                       x->vertex_set.bytes <= address_limit - window && end > x->guest_base &&
+                       (window >= end || window + x->vertex_set.bytes <= x->guest_base);
+    if (x->collect_cpu_writes && x->draw_snapshots && x->vertex_set.bytes && placed && !gpu_buffer_make(x, &x->vertex_set.buffer, x->vertex_set.bytes, 0))
+        x->vertex_window = window;
+    else
+        x->vertex_set.bytes = 0;
+}
+
 static void tile_plan_free(rt_executor *x, tile_plan *p)
 {
+    x->copy_rows_bytes -= p->linear.size;
     gpu_buffer_free(x, &p->table);
     gpu_buffer_free(x, &p->linear);
     *p = (tile_plan){0};
@@ -2366,6 +2641,56 @@ static unsigned tile_copy_pieces(const rt_tiling *layout)
     return micro_bytes <= PIPE_INTERLEAVE_BYTES && pieces && !(pieces & (pieces - 1)) ? pieces : 0;
 }
 
+static void image_release(rt_executor *x, image_entry *e);
+
+/* A draw may submit its staging upload and open a new batch while binding its next texture.
+   Images bound earlier in that draw still belong to the new batch. Keep every image touched
+   since the oldest unfinished batch began recording, including the current call. */
+static uint64_t first_unfinished_image_call(const rt_executor *x, uint64_t done)
+{
+    uint64_t first = x->call_serial;
+    for (unsigned i = 0; i < BATCH_SLOTS; i++) {
+        const batch_slot *b = &x->slots[i];
+        if (((i == x->current && x->batch_open) || (b->in_flight && b->ticket > done)) && b->first_call < first)
+            first = b->first_call;
+    }
+    return first;
+}
+
+/* A copy plan can be rebuilt the next time its image is used. When a texture itself runs out of
+   device memory, release idle guest-backed textures too: a level transition can exhaust memory
+   even after their plans have been freed. Keep the only copy of shader-written texels and keep
+   everything referenced by the current call or by a batch the GPU has not finished. */
+static size_t reclaim_image_memory(rt_executor *x, int release_textures)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return 0;
+    const uint64_t first = first_unfinished_image_call(x, done);
+    size_t freed = 0;
+    for (size_t i = 0; i < x->image_count; i++) {
+        image_entry *k = &x->images[i];
+        if (!k->image || k->used_ticket > done || k->used_call >= first) continue;
+        if (release_textures && !k->gpu_written) {
+            image_release(x, k);
+        } else {
+            if (!k->plan.table.buffer && !k->level_plans) continue;
+            tile_plan_free(x, &k->plan);
+            level_plans_free(x, k);
+        }
+        freed++;
+    }
+    return freed;
+}
+
+/* Makes a plan's table (`table_bytes`, mapped) and linear rows (`rows_bytes`, device-local). 0, or -1. */
+static int tile_plan_buffers_make(rt_executor *x, tile_plan *p, VkDeviceSize table_bytes, VkDeviceSize rows_bytes)
+{
+    if (x->copy_rows_limit && x->copy_rows_bytes + rows_bytes > x->copy_rows_limit) return -1;
+    if (gpu_buffer_make(x, &p->table, table_bytes, 1) || gpu_buffer_make(x, &p->linear, rows_bytes, 0)) return -1;
+    x->copy_rows_bytes += rows_bytes;
+    return 0;
+}
+
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
    table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
    each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
@@ -2385,8 +2710,10 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
                      .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO, .pieces_log2 = pieces_log2};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
     const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices * pieces;
-    if (gpu_buffer_make(x, &p->table, entries * 4, 1) ||
-        gpu_buffer_make(x, &p->linear, (VkDeviceSize)width * height * slices * layout->element_bytes, 0)) {
+    const VkDeviceSize rows_bytes = (VkDeviceSize)width * height * slices * layout->element_bytes;
+    int made = tile_plan_buffers_make(x, p, entries * 4, rows_bytes);
+    if (made && reclaim_image_memory(x, 0)) made = tile_plan_buffers_make(x, p, entries * 4, rows_bytes); /* the device's memory is full */
+    if (made) {
         tile_plan_free(x, p);
         return failed(error, error_size, "no GPU memory for copying a %ux%u image", width, height);
     }
@@ -2669,6 +2996,7 @@ static target_entry *target_slot_to_free(rt_executor *x)
     for (size_t i = 0; i < x->image_count; i++)
         if (x->images[i].copied_from == pick) x->images[i].copied_from = NULL;
     if (pick->guarded && x->unguard) x->unguard(pick->address, target_span(pick));
+    free_queued_commands(x, 1); /* a target no batch has used yet may still have its clear queued */
     vkDestroyImageView(x->device, pick->view, NULL);
     vkDestroyImage(x->device, pick->image, NULL);
     vkFreeMemory(x->device, pick->memory, NULL);
@@ -2748,7 +3076,7 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-    if (finish_commands(x, commands)) goto fail;
+    if (queue_commands(x, commands)) goto fail;
     if (appended) x->target_count++;
     return t;
 fail:
@@ -2879,6 +3207,9 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     for (uint32_t i = x->image_buckets[image_bucket(t->address)]; i; i = x->images[i - 1].bucket_next)
         if (x->images[i - 1].address == t->address && x->images[i - 1].gpu_written && (!e || &x->images[i - 1] < e)) e = &x->images[i - 1];
     if (!e) return 0;
+    /* Taking the shader's result can make the image eligible for eviction. The target's batch
+       still needs it until its copy (and any earlier copy to an alias) has finished. */
+    e->used_ticket = x->submitted + 1, e->used_call = x->call_serial;
     /* left in the image while a target of its texel size was at its address (write_back_image), and that
        target has since been set aside for this one: the memory gets the image's texels now */
     if (!target_takes_image(t->format, e->format, e->type) && !e->written_back && e->stored &&
@@ -2969,6 +3300,46 @@ static int fill_guest_memory(rt_executor *x, uint64_t address, uint64_t bytes, u
     return 0;
 }
 
+/* Whether another render target with draws not yet in memory, or a depth target's unwritten depth,
+   overlaps a target's memory. */
+static int other_unwritten_over(const rt_executor *x, const target_entry *t)
+{
+    const uint64_t base = t->address, span = target_span(t);
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *o = &x->targets[i];
+        if (o != t && o->drawn && o->address < base + span && base < o->address + target_span(o)) return 1;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < base + span && base < x->depths[i].z_address + depth_span(&x->depths[i])) return 1;
+    return 0;
+}
+
+/* Fills a render target's linear rows with one repeated 32-bit word and copies them into its image, on
+   the GPU, with the batch: the target counts as drawn (its earlier draws replaced), its image current.
+   0, or -1 with the reason. */
+static int clear_target_rows(rt_executor *x, target_entry *t, uint32_t word, char *error, size_t error_size)
+{
+    rt_tiling layout;
+    uint64_t span;
+    if (target_memory(x, t, &layout, &span, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkDeviceSize rows = (VkDeviceSize)t->width * t->height * t->element_bytes;
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                                                                               VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before,
+                         0, NULL, 0, NULL);
+    vkCmdFillBuffer(commands, t->plan.linear.buffer, 0, rows, word);
+    const VkMemoryBarrier filled = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &filled, 0, NULL, 0, NULL);
+    if (record_target_copy(x, t, 0, error, error_size)) return -1;
+    target_drawn(x, t);
+    t->loaded_change = x->change_count;
+    return 0;
+}
+
 /* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
    8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
    0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
@@ -3010,7 +3381,8 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
                 return failed(error, error_size, "render target %#llx with a partly fast-cleared CMASK: not done yet", (unsigned long long)c->address);
         }
         uint32_t element_bytes;
-        if (target_format(c, &element_bytes, error, error_size) == VK_FORMAT_UNDEFINED) return -1;
+        const VkFormat format = target_format(c, &element_bytes, error, error_size);
+        if (format == VK_FORMAT_UNDEFINED) return -1;
         rt_tiling layout;
         char reason[160];
         if (rt_tiling_layout(c->tile_mode_index, element_bytes, c->pitch, c->height, &layout, reason, sizeof reason))
@@ -3020,7 +3392,13 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
             return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)c->address);
         const uint32_t words = element_bytes / 4;
         int settled = !stored; /* nothing in the batch still stores to the CMASK */
-        if (words == 1 || s->clear_words[slot][0] == s->clear_words[slot][1]) {
+        const int one_word = words == 1 || s->clear_words[slot][0] == s->clear_words[slot][1];
+        const int in_image = one_word && t && target_has_shape(t, c, format) && !other_unwritten_over(x, t);
+        if (in_image) {
+            /* the target's own image takes the clear, through its linear rows (a uniform texel lies the
+               same way tiled or not); its memory gets it when it is written back, as a draw's would */
+            if (clear_target_rows(x, t, s->clear_words[slot][0], error, error_size)) return -1;
+        } else if (one_word) {
             /* one repeated word: filled on the GPU with the batch, after what it already does to that memory */
             if (fill_guest_memory(x, c->address, span & ~(uint64_t)3, s->clear_words[slot][0], error, error_size)) return -1;
         } else {
@@ -3037,8 +3415,10 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
         } else if (fill_guest_memory(x, cmask, c->cmask_bytes, UINT32_MAX, error, error_size)) { /* after the dispatch that cleared it */
             return -1;
         }
-        if (t) t->drawn = 0, t->loaded_change = UINT64_MAX, t->staging_current = 0;
-        memory_changed(x, c->address, span); /* images over that memory load it again */
+        if (!in_image) { /* cleared in memory: the target and the images over it load it again */
+            if (t) t->drawn = 0, t->loaded_change = UINT64_MAX, t->staging_current = 0;
+            memory_changed(x, c->address, span);
+        }
         if (m) m->cleared = 0, m->resolved = x->change_count;
     }
     return 0;
@@ -3226,7 +3606,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     to_attachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 1,
                          &to_attachment);
-    if (finish_commands(x, commands)) goto fail;
+    if (queue_commands(x, commands)) goto fail;
     x->depth_count++;
     return d;
 fail:
@@ -3463,6 +3843,99 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
 
 /* ---- shaders and pipelines ---- */
 
+static uint64_t monotonic_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
+
+/* What a translation gives besides its SPIR-V, kept with it in the cache (the SPIR-V words follow). */
+typedef struct {
+    uint32_t user_read, sgprs_read[GCN_SGPR_READ_WORDS];
+    gcn_table_snapshot tables;
+} translation_outputs;
+
+/* A translation key's first word: what it is the key of. A compute shader's key (compute_key) holds
+   all its translation takes, so that compile_catalog can translate it again from the key alone. */
+enum { KEY_COMPUTE = 1, KEY_GRAPHICS = 2 };
+
+/* Adds a program's address, its length in dwords and its words to a translation's key. */
+static void add_code(translation_key *key, uint64_t code, const uint32_t *words, size_t dwords)
+{
+    const uint64_t where[2] = {code, (uint64_t)dwords};
+    translation_key_add(key, where, sizeof where);
+    translation_key_add(key, words, dwords * 4);
+}
+
+/* The length of the program at code in the guest memory, through its end (gcn_program_dwords: the
+   translator reads no further); 0 when the decoder finds no end (the shader is then translated
+   without the cache). */
+static size_t program_dwords(const rt_executor *x, uint64_t code)
+{
+    const long dwords = gcn_program_dwords((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4));
+    return dwords > 0 ? (size_t)dwords : 0;
+}
+
+/* Adds the program at code, through its end, to a translation's key. 0, or -1 when it has no end. */
+static int add_program(translation_key *key, const rt_executor *x, uint64_t code)
+{
+    const size_t dwords = program_dwords(x, code);
+    if (!dwords) return -1;
+    add_code(key, code, (const uint32_t *)(uintptr_t)code, dwords);
+    return 0;
+}
+
+/* Adds the executor's values every layout takes (the guest memory's place on the GPU, table
+   snapshots on or off), the shader's run-time stop word, and for a vertex shader (`vertex`) the guest
+   copies it reads (vertex_guest_copies; 0 for any other stage, whose translations do not hold them). */
+enum { EXECUTOR_VALUES = 9 };
+static void add_executor_values(translation_key *key, const rt_executor *x, uint64_t error_address, int vertex)
+{
+    const gcn_guest_memory guest = guest_memory(x);
+    const uint64_t values[EXECUTOR_VALUES] = {x->address_offset, guest.base, guest.bytes, guest.sink, error_address, (uint64_t)x->draw_snapshots,
+                                              vertex ? x->vertex_window : 0, vertex ? x->vertex_set.bytes : 0,
+                                              vertex ? x->vertex_set.buffer.address : 0};
+    translation_key_add(key, values, sizeof values);
+}
+
+/* The translation kept under key: 1 with *outputs and *spirv (a copy the caller frees), else 0. Any
+   thread may call it. */
+static int find_translation(const rt_executor *x, const translation_key *key, translation_outputs *outputs, uint32_t **spirv, size_t *spirv_words)
+{
+    const void *value;
+    size_t size;
+    if (!translation_cache_find(x->translations, key, &value, &size) || size <= sizeof *outputs || (size - sizeof *outputs) % 4) return 0;
+    *spirv_words = (size - sizeof *outputs) / 4;
+    if (!(*spirv = malloc(*spirv_words * 4))) return 0; /* its own memory: the cache's bytes need not be aligned */
+    memcpy(outputs, value, sizeof *outputs);
+    memcpy(*spirv, (const unsigned char *)value + sizeof *outputs, *spirv_words * 4);
+    return 1;
+}
+
+/* Adds a translation's time (since started) to the executor's total, and while shaders are made
+   reports the totals on stderr (at most every 20 s), so runs that never close the executor still show them. */
+static void count_translation_time(rt_executor *x, uint64_t started)
+{
+    const uint64_t now = monotonic_ns();
+    x->translation_ns += now - started;
+    if (now - x->translations_reported < 20000000000ull) return;
+    x->translations_reported = now;
+    fprintf(stderr, "executor: translations so far: %zu from the cache, %zu translated, %.2f s\n", x->translations_found,
+            x->translations_made, (double)x->translation_ns / 1e9);
+}
+
+static void keep_translation(const rt_executor *x, const translation_key *key, const translation_outputs *outputs, const uint32_t *spirv, size_t spirv_words)
+{
+    unsigned char *value = malloc(sizeof *outputs + spirv_words * 4);
+    if (!value) return;
+    memcpy(value, outputs, sizeof *outputs);
+    memcpy(value + sizeof *outputs, spirv, spirv_words * 4);
+    translation_cache_add(x->translations, key, value, sizeof *outputs + spirv_words * 4);
+    free(value);
+}
+
+
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
 /* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's pixel_settings (part of the
    cache key, as are a pixel shader's input_controls: GCN_PIXEL_INPUTS words, or NULL). */
@@ -3512,6 +3985,8 @@ static long shader_to_free(rt_executor *x)
     return pick;
 }
 
+static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait);
+
 /* The entry a new shader takes: the next unused one, a slot freed before, or, with all MAX_SHADERS kept
    (walking a scene brings more shaders than that), the least recently used shader's once no unfinished
    batch draws with it, waiting for the GPU's work when every one is in use. That shader's module goes
@@ -3533,6 +4008,7 @@ static long shader_slot(rt_executor *x, char *error, size_t error_size)
             k++;
             continue;
         }
+        pipeline_settle(x, &x->pipelines[k], 1); /* a worker making it reads the module */
         vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
         x->pipelines[k] = x->pipelines[--x->pipeline_count];
     }
@@ -3541,6 +4017,17 @@ static long shader_slot(rt_executor *x, char *error, size_t error_size)
     x->shaders[pick] = (shader_entry){0};
     index_shaders(x);
     return pick;
+}
+
+/* The guest copies a vertex shader may read (gcn_guest_copies): the vertex set's. Its loads reach them
+   through a descriptor vertex_copies_rewrite based there, and also through any other address there (a
+   stale or garbage descriptor, a pointer), in any draw: such a load reads whatever the set holds where
+   it used to stop (GCN_RUNTIME_STOP_GUEST_RANGE). Its stores and atomics never reach them (the
+   translator sends those to the sink with a stop). */
+static gcn_guest_copies vertex_guest_copies(const rt_executor *x)
+{
+    if (!x->vertex_window) return (gcn_guest_copies){0};
+    return (gcn_guest_copies){.base = x->vertex_window, .bytes = x->vertex_set.bytes, .gpu = x->vertex_set.buffer.address};
 }
 
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
@@ -3583,51 +4070,86 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     uint32_t *spirv = NULL;
     size_t spirv_words = 0;
     char reason[TRANSLATION_REASON_BYTES];
-    int result;
-    /* a draw's vertex (with its fetch shader) or pixel shader takes table snapshots on a device with room
-       for their addresses; a plan that cannot be made leaves the shader without (its code then fails to
-       translate as well) */
-    const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
-    const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
-    gcn_table_snapshot planned = {0};
-    if (x->draw_snapshots && (stage == STAGE_VERTEX || stage == STAGE_PIXEL) &&
-        gcn_called_table_snapshot_plan(words, dwords, callee_words, callee_dwords, GCN_DRAW_SNAPSHOT_WORDS, &planned, reason, sizeof reason))
-        planned = (gcn_table_snapshot){0};
-    const gcn_table_snapshot *plan = planned.entry_count ? &planned : NULL;
-    if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
-        const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
-        const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
-                                          .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
-                                          .error_address = stop_slot(x, stage, code), .callee = callee_words, .callee_dwords = callee_dwords,
-                                          .code_address = code, .images = images, .image_count = image_count,
-                                          .first_binding = first_binding, .user_data_read = user_read, .sgprs_read = sgprs_read,
-                                          .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
-                                          .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
-                                          .step_rates_set = instancing.step_rates_set, .table_snapshot = plan,
-                                          .table_block_offset = VERTEX_TABLE_BLOCK};
-        result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
-    } else if (stage == STAGE_DOMAIN) {
-        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
-        layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
-        layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
-        memset(sgprs_read, 0xff, GCN_SGPR_READ_WORDS * sizeof *sgprs_read); /* not reported: taken as all read */
-        result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+    int result = 0;
+    const uint64_t started = monotonic_ns();
+    /* the translation's key: the programs, and every value the layouts below take that the shader's
+       entry does not already hold (the tessellation and geometry rings are made at their first draw) */
+    translation_key key = {0};
+    const uint64_t graphics = KEY_GRAPHICS;
+    translation_key_add(&key, &graphics, sizeof graphics);
+    if (x->translations && add_program(&key, x, code) == 0 && (!callee || add_program(&key, x, callee) == 0)) {
+        const uint64_t values[] = {(uint64_t)stage, user_sgprs, settings, first_binding, tessellation, image_count, sampler_count,
+                                   input_controls != NULL, stage == STAGE_COPY ? x->gs_gsvs.address : 0,
+                                   stage == STAGE_DOMAIN ? x->tess_lds.address : 0, stage == STAGE_DOMAIN ? x->tess_factors.address : 0};
+        add_executor_values(&key, x, stop_slot(x, stage, code), stage == STAGE_VERTEX);
+        translation_key_add(&key, values, sizeof values);
+        translation_key_add(&key, &instancing, sizeof instancing);
+        translation_key_add(&key, images, image_count * sizeof *images);
+        translation_key_add(&key, samplers, sampler_count * sizeof *samplers);
+        if (input_controls) translation_key_add(&key, input_controls, control_bytes);
     } else {
-        const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
-        const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
-                                         .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
-                                                            (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
-                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
-                                         .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
-                                         .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, stage, code),
-                                         .images = images, .image_count = image_count, .samplers = samplers,
-                                         .sampler_count = sampler_count, .input_controls = input_controls,
-                                         .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
-                                         .user_data_read = user_read, .sgprs_read = sgprs_read, .table_snapshot = plan,
-                                         .table_block_offset = PIXEL_TABLE_BLOCK};
-        result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        key.failed = 1;
     }
+    translation_outputs kept;
+    gcn_table_snapshot planned = {0};
+    if (find_translation(x, &key, &kept, &spirv, &spirv_words)) {
+        x->translations_found++;
+        *user_read = kept.user_read;
+        memcpy(sgprs_read, kept.sgprs_read, sizeof kept.sgprs_read);
+        planned = kept.tables;
+    } else {
+        /* a draw's vertex (with its fetch shader) or pixel shader takes table snapshots on a device with room
+           for their addresses; a plan that cannot be made leaves the shader without (its code then fails to
+           translate as well) */
+        const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+        const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+        if (x->draw_snapshots && (stage == STAGE_VERTEX || stage == STAGE_PIXEL) &&
+            gcn_called_table_snapshot_plan(words, dwords, callee_words, callee_dwords, GCN_DRAW_SNAPSHOT_WORDS, &planned, reason, sizeof reason))
+            planned = (gcn_table_snapshot){0};
+        const gcn_table_snapshot *plan = planned.entry_count ? &planned : NULL;
+        if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
+            const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
+            const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
+                                              .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
+                                              .error_address = stop_slot(x, stage, code), .callee = callee_words, .callee_dwords = callee_dwords,
+                                              .code_address = code, .images = images, .image_count = image_count,
+                                              .first_binding = first_binding, .user_data_read = user_read, .sgprs_read = sgprs_read,
+                                              .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
+                                              .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
+                                              .step_rates_set = instancing.step_rates_set, .table_snapshot = plan,
+                                              .table_block_offset = VERTEX_TABLE_BLOCK, .copies = copy ? (gcn_guest_copies){0} : vertex_guest_copies(x)};
+            result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        } else if (stage == STAGE_DOMAIN) {
+            gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
+            layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
+            layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
+            memset(sgprs_read, 0xff, GCN_SGPR_READ_WORDS * sizeof *sgprs_read); /* not reported: taken as all read */
+            result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        } else {
+            const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
+            const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
+                                             .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+                                                                (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
+                                             .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
+                                             .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
+                                             .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
+                                             .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, stage, code),
+                                             .images = images, .image_count = image_count, .samplers = samplers,
+                                             .sampler_count = sampler_count, .input_controls = input_controls,
+                                             .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
+                                             .user_data_read = user_read, .sgprs_read = sgprs_read, .table_snapshot = plan,
+                                             .table_block_offset = PIXEL_TABLE_BLOCK};
+            result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+        }
+        if (!result) {
+            translation_outputs outputs = {.user_read = *user_read, .tables = planned};
+            memcpy(outputs.sgprs_read, sgprs_read, sizeof outputs.sgprs_read);
+            keep_translation(x, &key, &outputs, spirv, spirv_words);
+            x->translations_made++;
+        }
+    }
+    translation_key_free(&key);
+    count_translation_time(x, started);
     sweep_shader(x, stage_name(stage), code, result ? reason : NULL, spirv, spirv_words);
     if (result) {
         failed(error, error_size, "%s shader at %#llx: %s", stage_name(stage),
@@ -3664,7 +4186,8 @@ static long pipeline_to_free(rt_executor *x)
     if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return -1;
     long pick = -1;
     for (size_t i = 0; i < x->pipeline_count; i++)
-        if (x->pipelines[i].used_ticket <= done && (pick < 0 || x->pipelines[i].used_ticket < x->pipelines[pick].used_ticket)) pick = (long)i;
+        if (!x->pipelines[i].job && x->pipelines[i].used_ticket <= done && (pick < 0 || x->pipelines[i].used_ticket < x->pipelines[pick].used_ticket))
+            pick = (long)i;
     return pick;
 }
 
@@ -3684,30 +4207,42 @@ static int free_pipeline_slot(rt_executor *x, char *error, size_t error_size)
     return 0;
 }
 
+/* A pipeline's description, kept until the driver has made it (on a worker thread when async_pipelines is
+   set): the create info and everything it points to. */
+typedef struct pipeline_job {
+    VkGraphicsPipelineCreateInfo info;
+    VkPipelineShaderStageCreateInfo stages[4];
+    VkPipelineVertexInputStateCreateInfo input;
+    VkPipelineInputAssemblyStateCreateInfo assembly;
+    VkPipelineTessellationStateCreateInfo tessellation;
+    VkPipelineViewportStateCreateInfo viewport;
+    VkPipelineRasterizationStateCreateInfo raster;
+    VkPipelineMultisampleStateCreateInfo samples;
+    VkPipelineColorBlendAttachmentState writes[RT_COLOR_TARGETS];
+    VkStencilOpState faces[2];
+    VkPipelineDepthStencilStateCreateInfo depth_stencil;
+    VkPipelineColorBlendStateCreateInfo blend;
+    VkPipelineDynamicStateCreateInfo dynamic;
+    uint64_t queued_ns;              /* when it went to the workers (ASYNC_SKIP_NS) */
+    VkPipeline pipeline;             /* job_lock: set with done */
+    VkResult result;
+    int done;
+    struct pipeline_job *next;
+} pipeline_job;
+
 /* With control set, a tessellation pipeline: the empty vertex shader, control, then vertex (the domain shader)
-   as the evaluation shader, over patches of patch_points points. */
-static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
-                               VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
-                               int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
-                               char *error, size_t error_size)
+   as the evaluation shader, over patches of patch_points points. 0, or -1 with the reason. */
+static int describe_pipeline(pipeline_job *j, VkShaderModule tess_vertex, VkShaderModule vertex, VkShaderModule geometry,
+                             VkShaderModule pixel, VkRenderPass pass, VkPipelineLayout layout, uint32_t colours,
+                             const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks, int strip, const depth_plan *depth,
+                             int has_depth, VkShaderModule control, uint32_t patch_points, char *error, size_t error_size)
 {
-    const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
-    for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
-        pipeline_entry *p = &x->pipelines[i - 1];
-        if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
-            p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
-            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points) {
-            p->used_ticket = x->submitted + 1;
-            return p->pipeline;
-        }
-    }
-    if (x->pipeline_count == MAX_PIPELINES && free_pipeline_slot(x, error, error_size)) return VK_NULL_HANDLE;
     /* the vertex stage, then the pixel stage unless the draw has none (a depth-only pass), then the
        rect-list geometry stage if any */
-    VkPipelineShaderStageCreateInfo stages[4];
+    VkPipelineShaderStageCreateInfo *stages = j->stages;
     uint32_t stage_count = 0;
     stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = control ? x->tess_vertex : vertex,
+                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = control ? tess_vertex : vertex,
                                                              .pName = "main"};
     if (control) {
         stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -3721,65 +4256,205 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     if (geometry)
         stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                                  .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"};
-    const VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    const VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+    j->input = (VkPipelineVertexInputStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    j->assembly = (VkPipelineInputAssemblyStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                              .topology = control ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
                                                                          : strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
                                                                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                                                              .primitiveRestartEnable = strip == STRIP_RESTART};
-    const VkPipelineTessellationStateCreateInfo tessellation = {.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+    j->tessellation = (VkPipelineTessellationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
                                                                 .patchControlPoints = patch_points};
-    const VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+    j->viewport = (VkPipelineViewportStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                         .viewportCount = 1, .scissorCount = 1};
-    const VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+    j->raster = (VkPipelineRasterizationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                            .depthClampEnable = depth->depth_clamp ? VK_TRUE : VK_FALSE,
                                                            .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                            .lineWidth = 1.0f};
-    const VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+    j->samples = (VkPipelineMultisampleStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                           .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
     /* one blend attachment per colour attachment, up to the last slot drawn; a slot between drawn ones
        is an unused attachment and writes nothing */
-    VkPipelineColorBlendAttachmentState writes[RT_COLOR_TARGETS];
+    VkPipelineColorBlendAttachmentState *writes = j->writes;
     unsigned slots = 0;
     for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
         writes[i] = (VkPipelineColorBlendAttachmentState){0};
         if (!(colours >> i & 1)) continue;
-        if (blend_state(blend_control[i], &writes[i], error, error_size)) return VK_NULL_HANDLE;
+        if (blend_state(blend_control[i], &writes[i], error, error_size)) return -1;
         writes[i].colorWriteMask = write_masks >> (4 * i) & CHANNELS_MASK; /* x, y, z, w: Vulkan's R, G, B, A bits */
         slots = i + 1;
     }
     /* stencil reference and masks are dynamic: the draw sets them from DB_STENCILREFMASK */
-    VkStencilOpState faces[2];
+    VkStencilOpState *faces = j->faces;
     for (unsigned f = 0; f < 2; f++)
         faces[f] = (VkStencilOpState){.failOp = (VkStencilOp)depth->stencil_ops[f][0], .passOp = (VkStencilOp)depth->stencil_ops[f][1],
                                       .depthFailOp = (VkStencilOp)depth->stencil_ops[f][2], .compareOp = (VkCompareOp)depth->stencil_ops[f][3]};
-    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+    j->depth_stencil = (VkPipelineDepthStencilStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = depth->depth_test != 0,
         .depthWriteEnable = depth->depth_write != 0, .depthCompareOp = (VkCompareOp)depth->depth_compare,
         .stencilTestEnable = depth->stencil_test != 0, .front = faces[0], .back = faces[1], .depthBoundsTestEnable = depth->depth_bounds != 0};
-    const VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+    j->blend = (VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                                        .attachmentCount = slots, .pAttachments = writes};
-    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+    static const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
                                              VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_DEPTH_BOUNDS};
-    const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+    j->dynamic = (VkPipelineDynamicStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                                       .dynamicStateCount = depth->depth_bounds ? 7 : 6, .pDynamicStates = dynamic_states};
-    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
-                                               .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
-                                               .pTessellationState = control ? &tessellation : NULL,
-                                               .pViewportState = &viewport, .pRasterizationState = &raster,
-                                               .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
-                                               .pDepthStencilState = has_depth ? &depth_stencil : NULL, .layout = layout, .renderPass = pass};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
-        failed(error, error_size, "the device refused a pipeline");
+    j->info = (VkGraphicsPipelineCreateInfo){.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
+                                               .pStages = stages, .pVertexInputState = &j->input, .pInputAssemblyState = &j->assembly,
+                                               .pTessellationState = control ? &j->tessellation : NULL,
+                                               .pViewportState = &j->viewport, .pRasterizationState = &j->raster,
+                                               .pMultisampleState = &j->samples, .pColorBlendState = &j->blend, .pDynamicState = &j->dynamic,
+                                               .pDepthStencilState = has_depth ? &j->depth_stencil : NULL, .layout = layout, .renderPass = pass};
+    return 0;
+}
+
+/* The workers: each takes the oldest queued job, has the driver make its pipeline, and marks it done. They
+   end once stopped with the queue empty. */
+static void *pipeline_worker(void *argument)
+{
+    rt_executor *x = argument;
+    pthread_mutex_lock(&x->job_lock);
+    for (;;) {
+        while (!x->job_head && !x->jobs_stop) pthread_cond_wait(&x->job_queued, &x->job_lock);
+        pipeline_job *j = x->job_head;
+        if (!j) break;
+        x->job_head = j->next;
+        if (!x->job_head) x->job_tail = NULL;
+        pthread_mutex_unlock(&x->job_lock);
+        VkPipeline made = VK_NULL_HANDLE;
+        const VkResult result = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &made);
+        pthread_mutex_lock(&x->job_lock);
+        j->pipeline = made, j->result = result, j->done = 1;
+        pthread_cond_broadcast(&x->job_done);
+    }
+    pthread_mutex_unlock(&x->job_lock);
+    return NULL;
+}
+
+/* Starts the workers when async_pipelines asks for them; without any, every pipeline is made at its draw. */
+static void pipeline_workers_start(rt_executor *x)
+{
+    pthread_mutex_init(&x->job_lock, NULL);
+    pthread_cond_init(&x->job_queued, NULL);
+    pthread_cond_init(&x->job_done, NULL);
+    x->jobs_ready = 1;
+    if (!x->async_pipelines) return;
+    while (x->pipeline_worker_count < PIPELINE_WORKERS &&
+           pthread_create(&x->pipeline_workers[x->pipeline_worker_count], NULL, pipeline_worker, x) == 0)
+        x->pipeline_worker_count++;
+}
+
+/* Lets the workers finish the queued jobs, and ends them. */
+static void pipeline_workers_stop(rt_executor *x)
+{
+    if (!x->jobs_ready) return;
+    pthread_mutex_lock(&x->job_lock);
+    x->jobs_stop = 1;
+    pthread_cond_broadcast(&x->job_queued);
+    pthread_mutex_unlock(&x->job_lock);
+    for (unsigned i = 0; i < x->pipeline_worker_count; i++) pthread_join(x->pipeline_workers[i], NULL);
+    x->pipeline_worker_count = 0;
+}
+
+/* A pipeline a worker is making: once its job is done, the pipeline in its entry. With wait set, waits
+   for the job. 0 when the entry holds its pipeline, 1 while it is still being made, -1 when the driver
+   refused it (the entry then holds none). */
+static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait)
+{
+    pipeline_job *const j = p->job;
+    if (!j) return p->pipeline ? 0 : -1;
+    pthread_mutex_lock(&x->job_lock);
+    while (wait && !j->done) pthread_cond_wait(&x->job_done, &x->job_lock);
+    const int done = j->done;
+    pthread_mutex_unlock(&x->job_lock);
+    if (!done) return 1;
+    p->pipeline = j->result == VK_SUCCESS ? j->pipeline : VK_NULL_HANDLE;
+    p->job = NULL;
+    free(j);
+    if (!p->pipeline) return -1;
+    atomic_fetch_add(&x->pipelines_made, 1);
+    return 0;
+}
+
+/* How long a draw may be left out while its pipeline is being made: past that the draw waits for it, so
+   a slow compile leaves a draw out for a second at most (LanternEngine's compile notes skip scene draws
+   for up to a second the same way; facts only, engine/docs/pipeline_compiles.md). */
+#define ASYNC_SKIP_NS (UINT64_C(1000000000))
+
+/* The draw's pipeline (see describe_pipeline). With may_skip set and worker threads running, a pipeline
+   not made yet goes to the workers and *pending is set, VK_NULL_HANDLE returned: the draw is left out
+   until it is made. Otherwise the pipeline is made (or waited for) here. VK_NULL_HANDLE with *pending
+   clear: the reason is in error. */
+static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
+                               VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
+                               int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
+                               int may_skip, int *pending, char *error, size_t error_size)
+{
+    *pending = 0;
+    may_skip = may_skip && x->pipeline_worker_count;
+    const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
+    for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
+        pipeline_entry *p = &x->pipelines[i - 1];
+        if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
+            p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
+            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points) {
+            p->used_ticket = x->submitted + 1;
+            const int settled = pipeline_settle(x, p, !may_skip || (p->job && monotonic_ns() - p->job->queued_ns >= ASYNC_SKIP_NS));
+            if (settled > 0) *pending = 1;
+            if (settled < 0) failed(error, error_size, "the device refused a pipeline");
+            return settled ? VK_NULL_HANDLE : p->pipeline;
+        }
+    }
+    if (x->pipeline_count == MAX_PIPELINES && free_pipeline_slot(x, error, error_size)) return VK_NULL_HANDLE;
+    pipeline_job *const j = calloc(1, sizeof *j);
+    if (!j) {
+        failed(error, error_size, "no memory for a pipeline");
         return VK_NULL_HANDLE;
     }
-    atomic_fetch_add(&x->pipelines_made, 1);
+    if (describe_pipeline(j, x->tess_vertex, vertex, geometry, pixel, pass, layout, colours, blend_control, write_masks, strip, depth,
+                          has_depth, control, patch_points, error, error_size)) {
+        free(j);
+        return VK_NULL_HANDLE;
+    }
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (may_skip && x->cache_control) { /* one the pipeline cache holds is made here, at once, and drawn now */
+        j->info.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+        const VkResult cached = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
+        j->info.flags &= ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+        if (cached != VK_SUCCESS) pipeline = VK_NULL_HANDLE;
+        may_skip = cached == VK_PIPELINE_COMPILE_REQUIRED_EXT;
+        if (cached != VK_SUCCESS && !may_skip) { /* refused outright */
+            free(j);
+            failed(error, error_size, "the device refused a pipeline");
+            return VK_NULL_HANDLE;
+        }
+    }
+    if (pipeline) {
+        free(j);
+        atomic_fetch_add(&x->pipelines_made, 1);
+    } else if (!may_skip) {
+        const VkResult made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
+        free(j);
+        if (made != VK_SUCCESS) {
+            failed(error, error_size, "the device refused a pipeline");
+            return VK_NULL_HANDLE;
+        }
+        atomic_fetch_add(&x->pipelines_made, 1);
+    } else {
+        j->queued_ns = monotonic_ns();
+        pthread_mutex_lock(&x->job_lock);
+        if (x->job_tail) x->job_tail->next = j;
+        else x->job_head = j;
+        x->job_tail = j;
+        pthread_cond_signal(&x->job_queued);
+        pthread_mutex_unlock(&x->job_lock);
+        *pending = 1;
+    }
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
-                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket], .used_ticket = x->submitted + 1};
+                         .pipeline = pipeline, .job = may_skip ? j : NULL, .bucket_next = x->pipeline_buckets[bucket],
+                         .used_ticket = x->submitted + 1};
     memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
     x->pipeline_buckets[bucket] = (uint32_t)x->pipeline_count;
     return pipeline;
@@ -4473,6 +5148,8 @@ static int draw_stores(rt_executor *x, const draw_state *s, int depth_only, int 
     return program_writes_memory(x, "pixel", s->pixel.code, stores, error, error_size);
 }
 
+static void stage_stores_noted(rt_executor *x, const draw_state *s, int tess, int gs);
+
 /* A draw stage's table snapshot (gcn_spirv.h, Table snapshots), taken as the draw is recorded: a block
    in the open batch's buffer holding the mask, then each entry's words copied from guest memory. An
    entry whose pointer is not set, whose words are outside the memory, or where open or submitted work
@@ -4511,6 +5188,350 @@ static uint64_t draw_snapshot(rt_executor *x, const gcn_table_snapshot *tables, 
     const uint64_t address = b->snapshots.address + b->snapshot_used;
     b->snapshot_used += bytes;
     return address;
+}
+
+/* ---- index ranges in device-local memory ---- */
+
+/* An indexed draw reads its indices from the guest memory, which the GPU reaches over the bus, at every
+   draw; the game draws the same ranges frame after frame. So each range is copied once into
+   the index set's buffer (device-local) and drawn from there while its memory has not changed since the copy
+   (memory_changed_since: the CPU's writes, which the watch reports for these ranges too
+   (note_cpu_writes), and the GPU's as they are recorded), no step the renderer performs on the CPU
+   was about to write it (rt_executor_cpu_write_ready, rt_executor_cpu_writes), and no write of no
+   known range has been noted since (copies_stale: a draw any of whose shaders may store, a
+   step writing memory of no known range). Only with the watch: without it all memory counts as
+   changed at each buffer. Copies are placed one after the other; once the buffer or the table is
+   full all of them are dropped and placed again from the start, the copy's barrier ordering it after
+   the work that read the place before; drops that come too fast pause copying for a while. A range
+   whose own memory changed three times in quick succession (counted per 64 KB chunk, and any change
+   that may reach all memory counts; a write of no known range does not) is drawn from the guest
+   memory again, until the next drop. A deferred step's write (renderer.c: a work-done label or an
+   occlusion block, written on the completion thread once the work before it has run, at no point the
+   work after it is ordered against) has no copy over it: ranges there are drawn from the guest memory,
+   as before the copies (rt_executor_deferred_writes). */
+typedef struct {
+    VkDeviceSize at;                 /* the copy's place in the set's buffer */
+    int copy;                        /* copy the range there first (copy_record) */
+    uint32_t entry, slot;            /* the range's entry, or for a new one its table slot */
+    int found;                       /* the range has an entry */
+    unsigned changes;                /* a found entry's changes once copied again */
+    int drop;                        /* the buffer or the table is full: drop every copy, then place this one at the start */
+} copy_plan;
+
+/* Whether `bytes` at the guest address `address` meet the guest memory. */
+static int guest_range_meets(const rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    return bytes && address < x->guest_base + x->size && (bytes > UINT64_MAX - address || address + bytes > x->guest_base);
+}
+
+/* Whether a range meets what deferred steps write (rt_executor_deferred_writes). */
+static int deferred_write_over(const rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    for (unsigned i = 0; i < x->deferred_write_count; i++) {
+        const memory_span *d = &x->deferred_writes[i];
+        if (d->address < address + bytes && address < d->address + d->bytes) return 1;
+    }
+    return 0;
+}
+
+static void copies_drop(copy_set *c)
+{
+    memset(c->slots, 0, sizeof c->slots);
+    c->count = 0, c->used = 0;
+}
+
+/* Notes a write of `bytes` of guest memory at `address` that the change counts do not see: by the CPU
+   (a step the renderer performs, rt_executor_cpu_write_ready and rt_executor_cpu_writes) or by a
+   tessellated or geometry draw's stage stores (stage_stores_noted): the copies (both sets) there
+   are copied again before their next draw. */
+static void copies_written(rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    const uint64_t end = bytes > UINT64_MAX - address ? UINT64_MAX : address + bytes;
+    copy_set *const sets[] = {&x->index_set, &x->vertex_set};
+    for (unsigned k = 0; k < sizeof sets / sizeof *sets; k++)
+        for (uint32_t i = 0; i < sets[k]->count; i++) {
+            struct guest_copy *c = &sets[k]->copies[i];
+            const uint64_t start = x->guest_base + c->offset;
+            if (start < end && address < start + c->bytes) c->loaded_change = UINT64_MAX;
+        }
+}
+
+/* Whether a full selective set may be dropped (copy_for): fewer than half the bytes placed in it are in
+   copies a draw planned to read in the last VERTEX_COPY_RECENT submissions (the game has moved on to
+   other buffers). The bytes placed, not its size: a table full of small copies fills less of it.
+   A set found in use is not looked at again within the same submission. */
+static int copies_unused(rt_executor *x, copy_set *set)
+{
+    if (set->full_checked == x->submitted + 1) return 0;
+    uint64_t recent = 0;
+    for (uint32_t i = 0; i < set->count; i++)
+        if (x->submitted - set->copies[i].used_at < VERTEX_COPY_RECENT) recent += set->copies[i].bytes;
+    if (recent * 2 < set->used) return 1;
+    set->full_checked = x->submitted + 1;
+    return 0;
+}
+
+/* Whether a draw reads the `bytes` at guest-memory offset `offset` (indices, or a vertex buffer) from
+   the set's copy, with the plan for it. It notes no copy yet (copy_record does, as it records the copy): a draw
+   that stops before then leaves the copies as they were. It may only mark a range that keeps changing
+   as drawn from the guest memory (direct), which needs no copy. 0: the draw reads the guest memory. */
+static int copy_for(rt_executor *x, copy_set *set, uint64_t offset, uint64_t bytes, copy_plan *plan)
+{
+    *plan = (copy_plan){0};
+    if (!x->collect_cpu_writes || !set->bytes || set->failed || !bytes || bytes > set->bytes / 4 || x->submitted < set->paused_until) return 0;
+    if (!set->buffer.buffer && gpu_buffer_make(x, &set->buffer, set->bytes, 0) &&
+        (!reclaim_image_memory(x, 0) || gpu_buffer_make(x, &set->buffer, set->bytes, 0))) { /* the device's memory is full */
+        set->failed = 1;
+        return 0;
+    }
+    /* the table is never more than half full: the probe meets an empty slot */
+    _Static_assert(INDEX_COPY_SLOTS == 1 << 12 && MAX_INDEX_COPIES * 2 <= INDEX_COPY_SLOTS && MAX_INDEX_COPIES < 1 << 16,
+                   "the start slot takes the hash's top 12 bits; entries fit the table's 16-bit slots");
+    const uint32_t start = (uint32_t)(((offset ^ bytes << 40) * 0x9e3779b97f4a7c15ull) >> 52);
+    for (uint32_t probe = 0;; probe++) {
+        const uint32_t slot = (start + probe) % INDEX_COPY_SLOTS;
+        const uint32_t held = set->slots[slot];
+        if (!held) {
+            plan->slot = slot;
+            break;
+        }
+        struct guest_copy *c = &set->copies[held - 1];
+        if (c->offset != offset || c->bytes != bytes) continue;
+        if (c->direct) return 0; /* also over a deferred step's write (rt_executor_deferred_writes) */
+        const int changed = memory_changed_since(x, x->guest_base + offset, bytes, c->loaded_change);
+        if (!changed && x->copies_stale <= c->loaded_change) {
+            plan->at = c->at, plan->entry = held - 1, plan->found = 1;
+            c->used_at = x->submitted;
+            return 1;
+        }
+        /* only changes to its own memory count: a write of no known range says nothing about this range */
+        const unsigned changes = changed ? (x->submitted - c->changed_at > INDEX_COPY_WINDOW ? 0 : c->changes) + 1 : c->changes;
+        if (changes >= INDEX_COPY_CHANGES) {
+            c->direct = 1; /* it keeps changing */
+            return 0;
+        }
+        plan->at = c->at, plan->entry = held - 1, plan->found = 1, plan->copy = 1, plan->changes = changes;
+        return 1;
+    }
+    if (set->selective) { /* only a range seen again, a while after it was first seen (VERTEX_COPY_SEEN_AFTER) */
+        struct seen_range *seen = &set->seen[start];
+        if (seen->offset != offset || seen->bytes != bytes) {
+            *seen = (struct seen_range){offset, bytes, x->submitted};
+            return 0;
+        }
+        if (x->submitted - seen->at < VERTEX_COPY_SEEN_AFTER) return 0;
+    }
+    if (deferred_write_over(x, x->guest_base + offset, bytes)) return 0;
+    const VkDeviceSize place = (set->used + INDEX_COPY_ALIGN - 1) / INDEX_COPY_ALIGN * INDEX_COPY_ALIGN;
+    const int full = set->count == MAX_INDEX_COPIES || place > set->bytes || bytes > set->bytes - place;
+    if (full && set->selective && !copies_unused(x, set)) return 0; /* the copies there are still read: this range is read in place */
+    plan->at = full ? 0 : place, plan->slot = full ? start : plan->slot, plan->drop = full, plan->copy = 1;
+    return 1;
+}
+
+/* Records the plan's copy (outside a render pass) and notes it: a new range takes its entry, dropping
+   every copy first when the buffer or the table is full (copy_for planned it at the start). */
+static void copy_record(rt_executor *x, copy_set *set, VkCommandBuffer commands, uint64_t offset, uint64_t bytes, const copy_plan *plan,
+                        VkPipelineStageFlags read_stage, VkAccessFlags read_access)
+{
+    if (plan->found) {
+        struct guest_copy *c = &set->copies[plan->entry];
+        c->changes = plan->changes, c->changed_at = x->submitted, c->loaded_change = x->change_count, c->used_at = x->submitted;
+    } else {
+        if (plan->drop) {
+            if (set->dropped_after && x->submitted + 1 - set->dropped_after <= INDEX_COPY_WINDOW) /* more ranges than room, each frame */
+                set->paused_until = x->submitted + INDEX_COPY_PAUSE;
+            copies_drop(set);
+            set->dropped_after = x->submitted + 1;
+        }
+        set->copies[set->count] = (struct guest_copy){offset, bytes, plan->at, x->change_count, 0, x->submitted, 0, x->submitted};
+        set->slots[plan->slot] = (uint16_t)(++set->count);
+        set->used = plan->at + bytes;
+    }
+    /* after what earlier work wrote there and read from the place; before this draw's reads of the copy */
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+    const VkBufferCopy region = {.srcOffset = offset, .dstOffset = plan->at, .size = bytes};
+    vkCmdCopyBuffer(commands, x->buffer, set->buffer.buffer, 1, &region);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = read_access};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, read_stage, 0, 1, &after, 0, NULL, 0, NULL);
+}
+
+static int stage_memory_reads(rt_executor *x, uint64_t code, uint64_t callee, gcn_memory_read found[GCN_MAX_IMAGES], unsigned *n, int *anywhere);
+static int settled_descriptor_words(const rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs,
+                                    uint32_t user_set, uint32_t *words, unsigned count);
+static uint64_t vsharp_base(const uint32_t *w);
+static uint64_t vsharp_bytes(const uint32_t *w);
+
+/* ---- vertex buffers in device-local memory ---- */
+
+/* A draw's vertex shader reads its vertex buffers through the guest memory too, the same static
+   meshes frame after frame. So, as index ranges are (copy_for), each vertex buffer of
+   VERTEX_COPY_MIN_BYTES or more is copied into the vertex set's buffer and read from there while its
+   memory has not changed: the draw's copy of the descriptor in its table snapshot (gcn_spirv.h, Table
+   snapshots) gets the copy's guest address (gcn_guest_copies, x->vertex_window on) as its base, which
+   the vertex shader's translation reaches the copy through. Only for descriptors the program loads
+   from a table its snapshot holds (the copy is the draw's own, so the guest memory keeps the game's
+   descriptor), without SWIZZLE_ENABLE or ADD_TID_ENABLE (which address otherwise), in a draw that
+   stores nothing (draw_stores: its own stores could reach the buffers), not tessellated, with no
+   geometry shader and not indirect. A draw copies at most one range (a second waits for a later draw
+   and is read in place this time), so a drop (copy_record) only takes away copies the draw then does
+   not use. A copy holds the buffer's range and the VERTEX_COPY_OVERREACH bytes past it, so only for a
+   program whose buffer loads stay there (vertex_loads_bounded) and for a buffer whose range plus those
+   bytes ends inside the guest memory, not for a descriptor whose first two words another s_load of the
+   program reads otherwise than as that descriptor (descriptor_overlapped: rewriting them would change
+   what it reads), nor in a program with an s_load whose address is not known before it runs (pointer 2: an
+   SGPR offset, or a pointer loaded from memory, which could be a rewritten base) or a load whose descriptor has no known origin
+   (gcn_called_memory_reads' unknown: it may be one made from a rewritten descriptor, its base moved past
+   the copy). Beyond those, the program uses the descriptor's SGPRs only to address memory, as the
+   game's fetch shaders do. */
+typedef struct {
+    gcn_resource_origin origin;      /* where the program loads the descriptor from (a table its snapshot holds) */
+    uint32_t words[4];               /* its words as planned */
+    uint64_t base;                   /* the base in the copy's guest addresses */
+} vertex_rewrite;
+
+/* Whether a vertex shader's buffer loads (with its fetch shader, callee) all stay inside their
+   descriptor's range but for the bytes an element starting at its last byte reaches past it (a dword's
+   3, an 8- or 16-bit format's element up to 10: VERTEX_COPY_OVERREACH covers both): none is indexed (IDXEN) with an SOFFSET other than
+   the inline 0, which range checking does not count for an indexed access (gcn_spirv.c,
+   buffer_in_range). Code that does not decode counts as unbounded. Kept with the program's scans (kind 8). */
+static int vertex_loads_bounded(rt_executor *x, uint64_t code, uint64_t callee)
+{
+    enum { BUFFER_IDXEN = 1u << 13, SOFFSET_SHIFT = 24, SOFFSET_ZERO = 0x80 };
+    scan_entry *scan = scan_for(x, code, callee, 8);
+    if (scan && scan->used) return scan->count == 0;
+    unsigned unbounded = 0;
+    for (int part = 0; part < 2 && !unbounded; part++) {
+        const uint64_t start = part ? callee : code;
+        if (!start) continue;
+        const uint32_t *words = (const uint32_t *)(uintptr_t)start;
+        const long program = gcn_program_dwords(words, (size_t)((x->guest_base + x->size - start) / 4));
+        unbounded = program < 0;
+        for (long at = 0; at < program && !unbounded;) {
+            gcn_instruction ins;
+            if (gcn_decode(words + at, (size_t)(program - at), &ins) || !ins.name || !ins.dwords) {
+                unbounded = 1;
+                break;
+            }
+            unbounded = (ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF) && ins.dwords >= 2 && (words[at] & BUFFER_IDXEN) &&
+                        words[at + 1] >> SOFFSET_SHIFT != SOFFSET_ZERO;
+            at += ins.dwords;
+        }
+    }
+    if (scan) scan_keep(x, scan, unbounded, NULL, NULL);
+    return !unbounded;
+}
+
+/* Whether the first two words of the descriptor loaded from `origin` (vertex_copies_plan) are read
+   other than as that descriptor: by an s_load through the same pointer (pointer 1 in found[0..n))
+   meeting them that does not load them as a whole descriptor (at a multiple of 16 bytes before it,
+   through its end). That is another descriptor's load meeting them, or one taking the base as data or as
+   a pointer (an s_load_dwordx2 of it, say); either would see the rewritten base. Every descriptor
+   loaded from memory is loaded so (gcn_memory_reads lists each such s_load). */
+static int descriptor_overlapped(const gcn_memory_read *found, unsigned n, const gcn_resource_origin *origin)
+{
+    enum { DESCRIPTOR_BYTES = 16, REWRITTEN_BYTES = 8 };
+    const uint64_t at = origin->offset;
+    for (unsigned j = 0; j < n; j++) {
+        const gcn_resource_origin *o = &found[j].origin;
+        const uint64_t from = found[j].offset, to = from + found[j].bytes;
+        if (found[j].pointer == 1 && !o->from_memory && o->sgpr == origin->pointer_sgpr && from < at + REWRITTEN_BYTES && at < to &&
+            !(from <= at && (at - from) % DESCRIPTOR_BYTES == 0 && at + DESCRIPTOR_BYTES <= to))
+            return 1;
+    }
+    return 0;
+}
+
+/* The first table entry from `first` on of a draw stage's snapshot plan that holds the words of the
+   descriptor loaded from `origin`, or -1. Several may (an entry is one load's words: an s_load_dwordx8
+   and an s_load_dwordx4 of its second half are two); the program reads the descriptor from one of them. */
+static int table_entry_holding(const gcn_table_snapshot *tables, const gcn_resource_origin *origin, unsigned first)
+{
+    enum { DESCRIPTOR_BYTES = 16 };
+    for (unsigned k = first; tables && k < tables->entry_count; k++) {
+        const gcn_table_entry *e = &tables->entries[k];
+        if (origin->from_memory && e->pointer_sgpr == origin->pointer_sgpr && origin->offset >= e->offset && (origin->offset - e->offset) % 4 == 0 &&
+            (uint64_t)origin->offset + DESCRIPTOR_BYTES <= (uint64_t)e->offset + e->dwords * 4)
+            return (int)k;
+    }
+    return -1;
+}
+
+/* The descriptors a draw's vertex shader reads from the vertex set (above), rewrites[0..count) (the
+   count returned), and the one range it copies first, if any: *copy, at guest-memory offset
+   copy_range[0], copy_range[1] bytes (copy_record). */
+static unsigned vertex_copies_plan(rt_executor *x, const draw_state *s, uint64_t callee, const gcn_table_snapshot *tables,
+                                   vertex_rewrite rewrites[MAX_VERTEX_REWRITES], copy_plan *copy, uint64_t copy_range[2])
+{
+    *copy = (copy_plan){0};
+    gcn_memory_read found[GCN_MAX_IMAGES];
+    unsigned n = 0, count = 0;
+    int anywhere = 0;
+    if (!x->vertex_window || !tables || !tables->entry_count || stage_memory_reads(x, s->vertex.code, callee, found, &n, &anywhere) || anywhere ||
+        !vertex_loads_bounded(x, s->vertex.code, callee))
+        return 0;
+    for (unsigned i = 0; i < n; i++)
+        if (found[i].pointer == 2) return 0; /* an s_load at an address not known before it runs: it may be at a rewritten base */
+    uint64_t ranges[MAX_VERTEX_REWRITES][2];
+    VkDeviceSize places[MAX_VERTEX_REWRITES];
+    for (unsigned i = 0; i < n && count < MAX_VERTEX_REWRITES; i++) {
+        const gcn_memory_read *r = &found[i];
+        uint32_t w[4];
+        if (r->pointer || table_entry_holding(tables, &r->origin, 0) < 0 || descriptor_overlapped(found, n, &r->origin) ||
+            settled_descriptor_words(x, &r->origin, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], w, 4) ||
+            w[1] >> 31 || (w[3] >> 23 & 1)) /* SWIZZLE_ENABLE, ADD_TID_ENABLE */
+            continue;
+        const uint64_t base = vsharp_base(w), bytes = vsharp_bytes(w), end = x->guest_base + x->size;
+        if (bytes < VERTEX_COPY_MIN_BYTES || base < x->guest_base || base >= end || bytes + VERTEX_COPY_OVERREACH > end - base) continue;
+        const uint64_t page = base / VERTEX_COPY_PAGE * VERTEX_COPY_PAGE, reach = base + bytes + VERTEX_COPY_OVERREACH;
+        const uint64_t start = page < x->guest_base ? x->guest_base : page;
+        const uint64_t stop = reach >= end ? end : (reach + VERTEX_COPY_PAGE - 1) / VERTEX_COPY_PAGE * VERTEX_COPY_PAGE;
+        const uint64_t offset = start - x->guest_base, length = (stop < end ? stop : end) - start;
+        unsigned same = 0;
+        while (same < count && !(ranges[same][0] == offset && ranges[same][1] == length)) same++;
+        VkDeviceSize at;
+        if (same < count) {
+            at = places[same];
+        } else {
+            copy_plan plan;
+            if (!copy_for(x, &x->vertex_set, offset, length, &plan) || (plan.copy && copy->copy)) continue; /* one copy per draw */
+            if (plan.copy) *copy = plan, copy_range[0] = offset, copy_range[1] = length;
+            at = plan.at;
+        }
+        ranges[count][0] = offset, ranges[count][1] = length, places[count] = at;
+        rewrites[count++] = (vertex_rewrite){r->origin, {w[0], w[1], w[2], w[3]}, x->vertex_window + at + (base - start)};
+    }
+    if (copy->drop) { /* the drop takes every other copy away: only the copied range is read from the set */
+        unsigned kept = 0;
+        for (unsigned i = 0; i < count; i++)
+            if (ranges[i][0] == copy_range[0] && ranges[i][1] == copy_range[1]) rewrites[kept++] = rewrites[i];
+        count = kept;
+    }
+    return count;
+}
+
+/* Writes the rewritten bases into the draw's vertex snapshot block (draw_snapshot, at block_address with
+   mask `taken`): in every taken entry holding a rewritten descriptor's words (table_entry_holding: the
+   one the program reads it from among them) while they are still those planned (the game may have
+   written the table between the plan and the snapshot). */
+static void vertex_copies_rewrite(rt_executor *x, uint64_t block_address, const gcn_table_snapshot *tables, uint32_t taken,
+                                  const vertex_rewrite *rewrites, unsigned count)
+{
+    enum { VSHARP_BASE_HIGH_BITS = 0xff };
+    const batch_slot *b = &x->slots[x->current];
+    if (!taken || block_address == b->snapshots.address) return; /* the empty block */
+    uint32_t *block = (uint32_t *)((uint8_t *)b->snapshots.mapped + (block_address - b->snapshots.address));
+    for (unsigned i = 0; i < count; i++)
+        for (int k = table_entry_holding(tables, &rewrites[i].origin, 0); k >= 0; k = table_entry_holding(tables, &rewrites[i].origin, (unsigned)k + 1)) {
+            if (!(taken >> k & 1)) continue;
+            uint32_t *words = block + 1 + tables->entries[k].first_word + (rewrites[i].origin.offset - tables->entries[k].offset) / 4;
+            if (memcmp(words, rewrites[i].words, sizeof rewrites[i].words)) continue;
+            words[0] = (uint32_t)rewrites[i].base,
+            words[1] = (rewrites[i].words[1] & ~(uint32_t)VSHARP_BASE_HIGH_BITS) | (uint32_t)(rewrites[i].base >> 32);
+        }
 }
 
 /* A draw of index_count vertices (indices, when given, index them), or, with `indirect` not 0, of the
@@ -4664,22 +5685,38 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     VkPipelineLayout layout = x->layout;
     if (has_set && graphics_layout_for(x, image_count, sampler_count, vertex_image_count, &set_layout, &layout, error, error_size)) return -1;
     const int strip = gs ? STRIP_RESTART : !tess && s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
+    int stores = 0;
+    if (draw_stores(x, s, depth_only, &stores, error, error_size)) return -1;
+    /* A draw whose pipeline is still being made may be left out (pipeline_for) when leaving it out
+       changes nothing but its targets: it stores nothing, records no work of its own first, and its depth
+       target has been drawn already (a later test reading depth no draw wrote would stop). */
+    const int may_skip = !stores && !indirect && !tess && !gs && (!z || z->drawn);
+    int pending = 0;
     const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
-                                             plan, z != NULL, control, tess ? s->hull.input_points : 0, error, error_size);
+                                             plan, z != NULL, control, tess ? s->hull.input_points : 0, may_skip, &pending, error, error_size);
+    if (pending) return 0; /* left out this time */
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (has_set && image_set(x, set_layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count, samplers, sampler_count, vertex_views,
                              vertex_image_count, &set, error, error_size))
         return -1;
 
-    int stores = 0;
-    if (draw_stores(x, s, depth_only, &stores, error, error_size)) return -1;
     /* Since the last draw's barrier only draws that store nothing were recorded: what earlier work wrote
        is visible to this draw already, and a draw into the same targets goes on in the same render pass
        (its targets' accesses are in order there; across passes the pass's dependency orders them). A
        draw that records work of its own first (indirect arguments, the tessellation and geometry
        passes) leaves the pass and takes the barrier. */
-    const int synced = x->draws_synced && !indirect && !tess && !gs;
+    /* indices from device-local memory; copying them there leaves the render pass */
+    const uint64_t index_bytes = indices ? (uint64_t)index_count * (indices->type == VK_INDEX_TYPE_UINT16 ? 2 : 4) : 0;
+    vertex_rewrite rewrites[MAX_VERTEX_REWRITES];
+    copy_plan vertex_copy = {0};
+    uint64_t vertex_copy_range[2] = {0, 0};
+    const unsigned rewrite_count = !stores && !tess && !gs && !indirect && x->draw_snapshots
+                                       ? vertex_copies_plan(x, s, callee, vertex_tables, rewrites, &vertex_copy, vertex_copy_range)
+                                       : 0;
+    copy_plan index_copy = {0};
+    const int index_copied = indices && !tess && !gs && !indirect && copy_for(x, &x->index_set, indices->offset, index_bytes, &index_copy);
+    const int synced = x->draws_synced && !indirect && !tess && !gs && !index_copy.copy && !vertex_copy.copy;
     const int same_pass = synced && x->open_pass == render_pass && x->open_framebuffer == framebuffer;
     VkCommandBuffer commands = same_pass ? x->slots[x->current].commands : batch_commands(x, error, error_size);
     if (!commands) return -1;
@@ -4695,6 +5732,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                                                                                      VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT : 0) |
                                  (gs ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0),
                              0, 1, &earlier, 0, NULL, 0, NULL);
+    if (index_copy.copy) copy_record(x, &x->index_set, commands, indices->offset, index_bytes, &index_copy, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                                        VK_ACCESS_INDEX_READ_BIT);
+    if (vertex_copy.copy)
+        copy_record(x, &x->vertex_set, commands, vertex_copy_range[0], vertex_copy_range[1], &vertex_copy, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                    VK_ACCESS_SHADER_READ_BIT);
     VkDeviceSize strip_draw = 0; /* the strips' draw in the batch's indirect buffer (geometry_passes) */
     if (tess || gs) { /* an indexed draw's indices are read by the local or export pass, at their GPU address */
         const uint64_t index_address = indices ? x->guest_base + indices->offset + x->address_offset : 0;
@@ -4741,6 +5783,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         const uint64_t pixel_block =
             draw_snapshot(x, depth_only ? NULL : pixel_tables, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], &pixel_taken);
         if (!vertex_block || !pixel_block) return failed(error, error_size, "no buffer for the draws' table snapshots");
+        vertex_copies_rewrite(x, vertex_block, vertex_tables, vertex_taken, rewrites, rewrite_count);
         /* each stage's GCN_TABLE_BLOCK_WORDS: its block's address, then its mask */
         const uint32_t blocks[2][TABLE_BLOCK_PUSH / 4] = {{(uint32_t)vertex_block, (uint32_t)(vertex_block >> 32), vertex_taken},
                                                           {(uint32_t)pixel_block, (uint32_t)(pixel_block >> 32), pixel_taken}};
@@ -4760,13 +5803,17 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         vkCmdBindIndexBuffer(commands, x->gs_strips.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexedIndirect(commands, x->slots[x->current].indirect.buffer, strip_draw, 1, 0);
     } else if (indices && !tess) {
-        vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
+        if (index_copied) vkCmdBindIndexBuffer(commands, x->index_set.buffer.buffer, index_copy.at, indices->type);
+        else vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
         vkCmdDrawIndexed(commands, index_count, instances, 0, 0, 0);
     } else if (indirect) {
         vkCmdDrawIndirect(commands, x->slots[x->current].indirect.buffer, (VkDeviceSize)indirect_entry, 1, 0);
     } else {
         vkCmdDraw(commands, index_count, instances, 0, 0);
     }
+    /* copies (both sets) made before it that it may store to are copied again (copy_for) */
+    if (stores) x->copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1;
+    else if (tess || gs) stage_stores_noted(x, s, tess, gs);
     if (x->watched_count) { /* what it reads in place as it runs (batch_reads) */
         if (tess || gs || indirect) {
             batch_reads_anywhere(x);
@@ -4785,6 +5832,104 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (z && plan_writes(plan)) depth_drawn(x, z);
     return 0; /* the run-time stop words are checked once the batch has run */
 }
+
+/* What a compute shader's translation takes: its program (words, of which the translator may read
+   dwords; key_dwords through its end, 0 when that is not known: no key), the dispatch's values and
+   the shader's run-time stop word. */
+typedef struct {
+    uint64_t code;
+    const uint32_t *words;
+    size_t dwords, key_dwords;
+    uint32_t threads[3], user_sgprs, workgroup_id_enables;
+    unsigned image_count;
+    gcn_image_binding images[GCN_MAX_IMAGES];
+    uint64_t error_address;
+} compute_request;
+
+enum { COMPUTE_VALUES = 7 };
+
+/* The key of a compute shader's translation: KEY_COMPUTE, the program, the executor's values, the
+   dispatch's values and its images, in that order (parse_compute_key reads them back). */
+static void compute_key(translation_key *key, const rt_executor *x, const compute_request *r)
+{
+    const uint64_t kind = KEY_COMPUTE;
+    translation_key_add(key, &kind, sizeof kind);
+    add_code(key, r->code, r->words, r->key_dwords);
+    add_executor_values(key, x, r->error_address, 0);
+    const uint64_t values[COMPUTE_VALUES] = {r->threads[0], r->threads[1], r->threads[2], r->user_sgprs, r->workgroup_id_enables,
+                                             r->image_count, x->gds_address};
+    translation_key_add(key, values, sizeof values);
+    translation_key_add(key, r->images, r->image_count * sizeof *r->images);
+}
+
+/* Reads a compute shader's key back into *r, its words a copy the caller frees (the executor's values
+   are left out: they are the running executor's when the key is made again). 0, or -1 for a key of
+   another kind or layout. */
+static int parse_compute_key(const unsigned char *key, size_t size, compute_request *r)
+{
+    uint64_t kind, where[2], values[COMPUTE_VALUES];
+    const size_t head = sizeof kind + sizeof where;
+    if (size < head) return -1;
+    memcpy(&kind, key, sizeof kind);
+    memcpy(where, key + sizeof kind, sizeof where);
+    if (kind != KEY_COMPUTE || !where[1] || where[1] > (size - head) / 4) return -1;
+    const size_t values_at = head + where[1] * 4 + EXECUTOR_VALUES * sizeof(uint64_t);
+    if (size < values_at + sizeof values) return -1;
+    memcpy(values, key + values_at, sizeof values);
+    if (values[5] > GCN_MAX_IMAGES || size != values_at + sizeof values + values[5] * sizeof *r->images) return -1;
+    uint32_t *words = malloc(where[1] * 4);
+    if (!words) return -1;
+    memcpy(words, key + head, where[1] * 4);
+    *r = (compute_request){.code = where[0], .words = words, .dwords = where[1], .key_dwords = where[1],
+                           .threads = {(uint32_t)values[0], (uint32_t)values[1], (uint32_t)values[2]}, .user_sgprs = (uint32_t)values[3],
+                           .workgroup_id_enables = (uint32_t)values[4], .image_count = (unsigned)values[5]};
+    memcpy(r->images, key + values_at + sizeof values, r->image_count * sizeof *r->images);
+    return 0;
+}
+
+/* A compute shader's translation, found under key or made (and kept there): 0 with *spirv (the
+   caller frees it) and *kept, *found telling which; -1 with the reason. Any thread may call it. */
+static int translate_compute(const rt_executor *x, const compute_request *r, const translation_key *key, translation_outputs *kept,
+                             uint32_t **spirv, size_t *words, int *found, char *reason, size_t reason_size)
+{
+    *found = find_translation(x, key, kept, spirv, words);
+    if (*found) return 0;
+    *kept = (translation_outputs){0};
+    if (gcn_table_snapshot_plan(r->words, r->dwords, &kept->tables, reason, reason_size)) return -1;
+    const gcn_compute_layout layout = {.local_size = {r->threads[0], r->threads[1], r->threads[2]}, .user_sgprs = r->user_sgprs,
+                                       .workgroup_id_enables = r->workgroup_id_enables, .push_constant_offset = 0,
+                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = r->error_address,
+                                       .images = r->images, .image_count = r->image_count, .user_data_read = &kept->user_read,
+                                       .gds_address = x->gds_address, .table_snapshot = &kept->tables};
+    if (gcn_translate_compute(r->words, r->dwords, &layout, spirv, words, reason, reason_size)) return -1;
+    keep_translation(x, key, kept, *spirv, *words);
+    return 0;
+}
+
+/* A shader module of SPIR-V, or VK_NULL_HANDLE when the device refuses it. */
+static VkShaderModule shader_module(const rt_executor *x, const uint32_t *spirv, size_t words)
+{
+    const VkShaderModuleCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    return vkCreateShaderModule(x->device, &info, NULL, &module) == VK_SUCCESS ? module : VK_NULL_HANDLE;
+}
+
+/* Makes a compute pipeline of module with image_count images, through the pipeline cache. */
+static VkResult make_compute_pipeline(rt_executor *x, VkShaderModule module, unsigned image_count, VkPipelineCreateFlags flags,
+                                      VkPipeline *pipeline)
+{
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .flags = flags,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
+                  .pName = "main"},
+        .layout = image_count ? x->image_layouts[image_count] : x->compute_layout};
+    *pipeline = VK_NULL_HANDLE;
+    const VkResult made = vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, pipeline);
+    if (made != VK_SUCCESS) *pipeline = VK_NULL_HANDLE;
+    return made;
+}
+
+static void meet_launch_shader(rt_executor *x, const translation_key *key);
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
    register layout. VK_NULL_HANDLE after failing. */
@@ -4806,53 +5951,246 @@ static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_comput
         failed(error, error_size, "compute shader code at %#llx is outside the GPU-visible memory", (unsigned long long)c->code);
         return NULL;
     }
-    const uint32_t *const code = (const uint32_t *)(uintptr_t)c->code;
-    const size_t code_dwords = (size_t)((x->guest_base + x->size - c->code) / 4);
+    compute_request r = {.code = c->code, .words = (const uint32_t *)(uintptr_t)c->code,
+                         .dwords = (size_t)((x->guest_base + x->size - c->code) / 4), .key_dwords = x->translations ? program_dwords(x, c->code) : 0,
+                         .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+                         .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count,
+                         .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code)};
+    memcpy(r.images, images, image_count * sizeof *images);
     char reason[TRANSLATION_REASON_BYTES];
-    gcn_table_snapshot tables;
-    if (gcn_table_snapshot_plan(code, code_dwords, &tables, reason, sizeof reason)) {
-        failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-        return NULL;
-    }
-    uint32_t user_read = 0;
-    const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
-                                       .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, STOP_KIND_COMPUTE, c->code),
-                                       .images = images, .image_count = image_count, .user_data_read = &user_read,
-                                       .gds_address = x->gds_address, .table_snapshot = &tables};
+    const uint64_t started = monotonic_ns();
+    translation_key key = {0};
+    if (r.key_dwords) compute_key(&key, x, &r);
+    else key.failed = 1;
+    meet_launch_shader(x, &key);
+    translation_outputs kept;
     uint32_t *spirv = NULL;
     size_t words = 0;
-    const int translated = gcn_translate_compute(code, code_dwords, &layout, &spirv, &words, reason, sizeof reason);
+    int found = 0;
+    const int translated = translate_compute(x, &r, &key, &kept, &spirv, &words, &found, reason, sizeof reason);
+    if (found) x->translations_found++;
+    else if (!translated) x->translations_made++;
+    count_translation_time(x, started);
     sweep_shader(x, "compute", c->code, translated ? reason : NULL, spirv, words);
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
     if (translated) {
         failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-        return NULL;
-    }
-    const VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
-    VkShaderModule module = VK_NULL_HANDLE;
-    const VkResult made = vkCreateShaderModule(x->device, &module_info, NULL, &module);
-    free(spirv);
-    if (made != VK_SUCCESS) {
+    } else if (!(module = shader_module(x, spirv, words))) {
         failed(error, error_size, "the device refused a translated compute shader");
-        return NULL;
-    }
-    const VkComputePipelineCreateInfo info = {
-        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
-                  .pName = "main"},
-        .layout = image_count ? x->image_layouts[image_count] : x->compute_layout};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
+    } else if (make_compute_pipeline(x, module, image_count, 0, &pipeline) != VK_SUCCESS) {
         vkDestroyShaderModule(x->device, module, NULL);
         failed(error, error_size, "the device refused a compute pipeline");
-        return NULL;
+    } else {
+        translation_cache_add(x->catalog, &key, "", 0);
     }
+    free(spirv);
+    translation_key_free(&key);
+    if (!pipeline) return NULL;
     atomic_fetch_add(&x->pipelines_made, 1);
     compute_entry *e = &x->computes[x->compute_count++];
-    *e = (compute_entry){.user_read = user_read, .tables = tables, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+    *e = (compute_entry){.user_read = kept.user_read, .tables = kept.tables, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                          .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count, .module = module, .pipeline = pipeline};
     memcpy(e->images, images, image_count * sizeof *images);
     return e;
+}
+
+/* ---- compiling at launch ----
+   When the executor opens, the shaders of the catalog (every compute shader any run made, by its key)
+   are translated where the translation cache lacks them (a new translator) and their pipelines made
+   where the pipeline cache lacks them (a new translator or driver), on worker threads that run while
+   the game loads: the dispatches that meet them later find both caches ready. A dispatch cannot be
+   left out as a draw can (async_pipelines), so a compute shader made in-game holds its frame for the
+   whole compile; one a worker is making when its dispatch comes is waited for, not made twice.
+   BB_LAUNCH_COMPILE=0 turns it off. */
+enum { LAUNCH_WORKERS = 8 };
+typedef struct launch_work launch_work;
+
+typedef struct {
+    unsigned char **keys;
+    size_t *sizes, count, capacity;
+} catalog_keys;
+
+static void take_catalog_key(void *context, const void *key, size_t size)
+{
+    catalog_keys *all = context;
+    if (all->count == all->capacity) {
+        const size_t capacity = all->capacity ? 2 * all->capacity : 256;
+        unsigned char **keys = realloc(all->keys, capacity * sizeof *keys);
+        if (keys) all->keys = keys;
+        size_t *sizes = realloc(all->sizes, capacity * sizeof *sizes);
+        if (sizes) all->sizes = sizes;
+        if (!keys || !sizes) return;
+        all->capacity = capacity;
+    }
+    unsigned char *copy = malloc(size);
+    if (!copy) return;
+    memcpy(copy, key, size);
+    all->keys[all->count] = copy, all->sizes[all->count++] = size;
+}
+
+/* A launch shader's state: waiting, being made by a worker, made, or taken by a dispatch that met it
+   before any worker did (the dispatch makes it then, the workers leave it). */
+enum { LAUNCH_WAITING, LAUNCH_MAKING, LAUNCH_MADE, LAUNCH_TAKEN };
+
+/* The shaders the workers make, each with its key and state; the next one to take, and what was done. */
+struct launch_work {
+    rt_executor *x;
+    compute_request *requests;
+    translation_key *keys;
+    atomic_int *states;
+    size_t count;
+    atomic_size_t next, done, translated, compiled;
+    uint64_t began;
+    _Atomic uint64_t reported; /* when the last progress line went to stderr */
+    launch_progress progress;  /* the counts told, in order (launch_progress_publish) */
+    pthread_t workers[LAUNCH_WORKERS];
+    size_t started;
+};
+
+/* Makes one shader's translation and pipeline, where the caches lack them; the pipeline is let go
+   (the pipeline cache keeps it for the dispatch that meets the shader). */
+static void make_at_launch(launch_work *w, size_t i)
+{
+    rt_executor *x = w->x;
+    translation_outputs kept;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    int found = 0;
+    char reason[TRANSLATION_REASON_BYTES];
+    if (translate_compute(x, &w->requests[i], &w->keys[i], &kept, &spirv, &words, &found, reason, sizeof reason) == 0) {
+        if (!found) atomic_fetch_add(&w->translated, 1);
+        const VkShaderModule module = shader_module(x, spirv, words);
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkResult made = VK_PIPELINE_COMPILE_REQUIRED_EXT;
+        if (module && x->cache_control) /* one the pipeline cache holds needs nothing more */
+            made = make_compute_pipeline(x, module, w->requests[i].image_count, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT,
+                                         &pipeline);
+        if (module && made == VK_PIPELINE_COMPILE_REQUIRED_EXT && make_compute_pipeline(x, module, w->requests[i].image_count, 0, &pipeline) == VK_SUCCESS) {
+            atomic_fetch_add(&w->compiled, 1);
+            atomic_fetch_add(&x->pipelines_made, 1); /* the saver writes the pipeline cache */
+        }
+        if (pipeline) vkDestroyPipeline(x->device, pipeline, NULL);
+        if (module) vkDestroyShaderModule(x->device, module, NULL);
+    }
+    free(spirv);
+}
+
+/* How often the workers write a progress line on stderr while they compile. */
+#define LAUNCH_REPORT_NS (UINT64_C(2000000000))
+
+/* Tells done of the shaders: launch_progress, and a line on stderr at most every LAUNCH_REPORT_NS, the
+   last one the summary (under launch_progress_publish's lock, so counts are told in order). */
+static void tell_launch_progress(void *context, size_t done)
+{
+    launch_work *w = context;
+    rt_executor *x = w->x;
+    if (x->launch_progress) x->launch_progress(done, w->count);
+    const uint64_t now = monotonic_ns();
+    if (done == w->count) {
+        fprintf(stderr, "executor: compiled at launch: %zu compute shaders (%zu translated, %zu pipelines compiled), %.2f s\n", w->count,
+                (size_t)atomic_load(&w->translated), (size_t)atomic_load(&w->compiled), (double)(now - w->began) / 1e9);
+        return;
+    }
+    if (done && now - atomic_load(&w->reported) >= LAUNCH_REPORT_NS) {
+        atomic_store(&w->reported, now);
+        fprintf(stderr, "executor: compiling at launch: %zu of %zu compute shaders, %.1f s\n", done, w->count, (double)(now - w->began) / 1e9);
+    }
+}
+
+/* Tells how far the workers are: a count already passed by one told from another worker is dropped,
+   so the last one told is always done == count (runtime/launch_progress.h). */
+static void report_launch_progress(launch_work *w, size_t done)
+{
+    launch_progress_publish(&w->progress, done, tell_launch_progress, w);
+}
+
+/* Takes the next waiting shaders until none is left, reporting progress after each. */
+static void *launch_worker(void *argument)
+{
+    launch_work *w = argument;
+    for (;;) {
+        const size_t i = atomic_fetch_add(&w->next, 1);
+        if (i >= w->count) return NULL;
+        int waiting = LAUNCH_WAITING;
+        if (atomic_compare_exchange_strong(&w->states[i], &waiting, LAUNCH_MAKING)) {
+            make_at_launch(w, i);
+            atomic_store(&w->states[i], LAUNCH_MADE);
+        }
+        report_launch_progress(w, atomic_fetch_add(&w->done, 1) + 1);
+    }
+}
+
+/* Before a dispatch makes the compute shader under key: a worker making it is waited for (its
+   translation and pipeline are then in the caches); one no worker has taken yet is left to the
+   dispatch. */
+static void meet_launch_shader(rt_executor *x, const translation_key *key)
+{
+    launch_work *w = x->launch;
+    if (!w || key->failed || atomic_load(&w->done) == w->count) return;
+    for (size_t i = 0; i < w->count; i++) {
+        if (w->keys[i].size != key->size || memcmp(w->keys[i].bytes, key->bytes, key->size)) continue;
+        int waiting = LAUNCH_WAITING;
+        if (atomic_compare_exchange_strong(&w->states[i], &waiting, LAUNCH_TAKEN)) return;
+        while (atomic_load(&w->states[i]) == LAUNCH_MAKING) {
+            const struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
+        return;
+    }
+}
+
+/* Waits for the launch workers and frees their work (rt_executor_launch_compiles, closing). */
+static void finish_launch_work(rt_executor *x)
+{
+    launch_work *w = x->launch;
+    if (!w) return;
+    for (size_t i = 0; i < w->started; i++) pthread_join(w->workers[i], NULL);
+    x->launch_shaders = w->count, x->launch_translated = atomic_load(&w->translated), x->launch_compiled = atomic_load(&w->compiled);
+    for (size_t i = 0; i < w->count; i++) free((void *)w->requests[i].words), translation_key_free(&w->keys[i]);
+    launch_progress_destroy(&w->progress);
+    free(w->requests), free(w->keys), free(w->states), free(w);
+    x->launch = NULL;
+}
+
+/* Makes the catalog's shaders again with this executor's values and starts up to LAUNCH_WORKERS
+   threads (one fewer than the processors) making them while the game runs; on this thread when none
+   can be started. */
+static void compile_catalog(rt_executor *x)
+{
+    const char *launch = getenv("BB_LAUNCH_COMPILE");
+    if (!x->catalog || (launch && !strcmp(launch, "0"))) return;
+    catalog_keys all = {0};
+    translation_cache_each(x->catalog, take_catalog_key, &all);
+    launch_work *w = calloc(1, sizeof *w);
+    if (w && launch_progress_init(&w->progress)) free(w), w = NULL; /* no workers then: the dispatches make what they meet */
+    const size_t room = all.count ? all.count : 1;
+    if (w) {
+        w->x = x, w->began = monotonic_ns();
+        w->requests = calloc(room, sizeof *w->requests), w->keys = calloc(room, sizeof *w->keys), w->states = calloc(room, sizeof *w->states);
+    }
+    for (size_t i = 0; i < all.count; i++) {
+        /* the key made again with this executor's values; the stop words given here, in the catalog's
+           order, are those the dispatches find later */
+        if (w && w->requests && w->keys && w->states && parse_compute_key(all.keys[i], all.sizes[i], &w->requests[w->count]) == 0) {
+            compute_request *r = &w->requests[w->count];
+            r->error_address = stop_slot(x, STOP_KIND_COMPUTE, r->code);
+            atomic_init(&w->states[w->count], LAUNCH_WAITING);
+            compute_key(&w->keys[w->count++], x, r);
+        }
+        free(all.keys[i]);
+    }
+    free(all.keys), free(all.sizes);
+    if (!w) return;
+    x->launch = w;
+    atomic_init(&w->reported, w->began);
+    if (w->count) report_launch_progress(w, 0);
+    const long processors = sysconf(_SC_NPROCESSORS_ONLN);
+    size_t wanted = processors > 1 ? (size_t)processors - 1 : 1;
+    if (wanted > LAUNCH_WORKERS) wanted = LAUNCH_WORKERS;
+    if (wanted > w->count) wanted = w->count;
+    while (w->started < wanted && pthread_create(&w->workers[w->started], NULL, launch_worker, w) == 0) w->started++;
+    if (!w->started) launch_worker(w);
 }
 
 /* ---- images ---- */
@@ -5261,11 +6599,12 @@ static image_entry *image_to_evict(rt_executor *x)
 {
     uint64_t done = 0;
     if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return NULL;
+    const uint64_t first = first_unfinished_image_call(x, done);
     image_entry *oldest = NULL;
     for (size_t i = 0; i < x->image_count; i++) {
         image_entry *k = &x->images[i];
         if (!k->image) return k; /* released earlier */
-        if (k->gpu_written || k->used_ticket > done || k->used_call == x->call_serial) continue;
+        if (k->gpu_written || k->used_ticket > done || k->used_call >= first) continue;
         if (!oldest || k->used_ticket < oldest->used_ticket) oldest = k;
     }
     return oldest;
@@ -5322,24 +6661,34 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
                                                  VK_IMAGE_USAGE_SAMPLED_BIT |
                                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-        e = slot ? slot : &x->images[x->image_count];
-        *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
-                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = d->last_level + 1,
-                           .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_change = UINT64_MAX};
-        if (vkCreateImage(x->device, &info, NULL, &e->image) != VK_SUCCESS) {
+        VkImage image;
+        if (vkCreateImage(x->device, &info, NULL, &image) != VK_SUCCESS) {
             failed(error, error_size, "the device refused a %ux%u image", d->width, d->height);
             return NULL;
         }
         VkMemoryRequirements need;
-        vkGetImageMemoryRequirements(x->device, e->image, &need);
+        vkGetImageMemoryRequirements(x->device, image, &need);
         const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size,
                                                .memoryTypeIndex = memory_type(x, need.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+        if (allocate.memoryTypeIndex == UINT32_MAX) {
+            vkDestroyImage(x->device, image, NULL);
+            failed(error, error_size, "no device-local memory type for a %ux%u image", d->width, d->height);
+            return NULL;
+        }
+        VkDeviceMemory memory;
+        VkResult result = vkAllocateMemory(x->device, &allocate, NULL, &memory);
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && reclaim_image_memory(x, 1))
+            result = vkAllocateMemory(x->device, &allocate, NULL, &memory);
+        if (result != VK_SUCCESS) {
+            vkDestroyImage(x->device, image, NULL);
+            failed(error, error_size, "no memory for a %ux%u image (vkAllocateMemory: %d)", d->width, d->height, (int)result);
+            return NULL;
+        }
         VkCommandBuffer commands = VK_NULL_HANDLE;
-        if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &e->memory) != VK_SUCCESS ||
-            vkBindImageMemory(x->device, e->image, e->memory, 0) != VK_SUCCESS || !(commands = begin_commands(x))) {
-            if (e->memory) vkFreeMemory(x->device, e->memory, NULL);
-            vkDestroyImage(x->device, e->image, NULL);
-            failed(error, error_size, "no memory for a %ux%u image", d->width, d->height);
+        if (vkBindImageMemory(x->device, image, memory, 0) != VK_SUCCESS || !(commands = begin_commands(x))) {
+            vkDestroyImage(x->device, image, NULL);
+            vkFreeMemory(x->device, memory, NULL);
+            failed(error, error_size, "could not bind or initialize a %ux%u image", d->width, d->height);
             return NULL;
         }
         /* Compressed images are loaded from guest memory before sampling. Vulkan
@@ -5347,15 +6696,22 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         const VkImageMemoryBarrier general = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                               .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
                                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                              .image = e->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, e->levels, 0, d->layers}};
+                                              .image = image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, d->layers}};
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &general);
         const VkClearColorValue zero = {{0}};
-        const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, e->levels, 0, d->layers};
-        if (f->block == 1) vkCmdClearColorImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+        const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, d->layers};
+        if (f->block == 1) vkCmdClearColorImage(commands, image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
         if (finish_commands(x, commands)) {
+            vkDestroyImage(x->device, image, NULL);
+            vkFreeMemory(x->device, memory, NULL);
             failed(error, error_size, "the GPU did not clear a new image");
             return NULL;
         }
+        e = slot ? slot : &x->images[x->image_count];
+        *e = (image_entry){.image = image, .memory = memory, .address = d->address, .format = f->format,
+                           .width = d->width, .height = d->height, .layers = d->layers,
+                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = info.mipLevels,
+                           .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_change = UINT64_MAX};
         if (!slot) x->image_count++;
         image_index_add(x, e);
     }
@@ -5409,6 +6765,9 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
         return failed(error, error_size, "the storage image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
+    /* A later draw can request this write-back through take_written_image, long after the dispatch
+       that bound the image. Its copy plan belongs to the write-back's batch until that batch finishes. */
+    e->used_call = x->call_serial;
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) { /* the same memory laid out another way */
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
@@ -5420,6 +6779,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     if (target && write_back_targets_in(x, &memory, 1, error, error_size)) return -1; /* the older draws first */
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
+    e->used_ticket = x->submitted + 1;
     const VkMemoryBarrier stored = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &stored, 0, NULL, 0, NULL);
@@ -5480,19 +6840,29 @@ static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, ui
 /* A descriptor's words as the shader sees them (runtime/gcn_spirv.h, gcn_resource_origin): from the
    user data, or from the guest memory at the user data's pointer (48 bits, as s_load takes it) plus the
    offset, read as the draw or dispatch runs. 0, or -1 with the reason, which names the shader (its
-   stage and code address). */
+   stage and code address). descriptor_words_in gives the reason alone; with `wait` 0 it does not wait
+   for open or submitted work that may store to a descriptor in memory (guest_memory_settled), and
+   fails instead. */
 static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
-                               uint32_t *words, unsigned count, char *error, size_t error_size);
+                               uint32_t *words, unsigned count, int wait, char *error, size_t error_size);
 static int descriptor_words(rt_executor *x, const char *stage, uint64_t code, const gcn_resource_origin *origin, const uint32_t *user,
                             uint32_t user_sgprs, uint32_t user_set, uint32_t *words, unsigned count, char *error, size_t error_size)
 {
     char reason[256];
-    if (!descriptor_words_in(x, origin, user, user_sgprs, user_set, words, count, reason, sizeof reason)) return 0;
+    if (!descriptor_words_in(x, origin, user, user_sgprs, user_set, words, count, 1, reason, sizeof reason)) return 0;
     return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
 }
 
+/* Where a descriptor loaded from memory lies: its pointer (in the user data, which must hold it) plus its offset. */
+static uint64_t descriptor_address(const gcn_resource_origin *origin, const uint32_t *user)
+{
+    enum { POINTER_HIGH_MASK = 0xffff };
+    const uint64_t pointer = (uint64_t)(user[origin->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[origin->pointer_sgpr];
+    return pointer + origin->offset;
+}
+
 static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
-                               uint32_t *words, unsigned count, char *error, size_t error_size)
+                               uint32_t *words, unsigned count, int wait, char *error, size_t error_size)
 {
     const unsigned first = origin->from_memory ? origin->pointer_sgpr : origin->sgpr, width = origin->from_memory ? 2 : count;
     const uint32_t slots = (uint32_t)(((1ull << width) - 1) << first);
@@ -5508,10 +6878,14 @@ static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin
     if (origin->pointer_sgpr + 2 > user_sgprs)
         return failed(error, error_size, "a descriptor loaded through s[%u:%u], which is not in the user data", origin->pointer_sgpr,
                       origin->pointer_sgpr + 1);
-    enum { POINTER_HIGH_MASK = 0xffff };
-    const uint64_t pointer = (uint64_t)(user[origin->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[origin->pointer_sgpr];
-    const uint64_t address = pointer + origin->offset, bytes = count * sizeof *words;
-    if (guest_memory_settled(x, address, bytes, error, error_size)) return -1; /* the batch may store the descriptor */
+    const uint64_t address = descriptor_address(origin, user), bytes = count * sizeof *words;
+    if (!wait) {
+        for (unsigned k = 0; k < BATCH_SLOTS; k++)
+            if (batch_may_store(x, k, address, bytes, 0))
+                return failed(error, error_size, "a descriptor at %#llx that open or submitted work may store to", (unsigned long long)address);
+    } else if (guest_memory_settled(x, address, bytes, error, error_size)) {
+        return -1; /* the batch may store the descriptor */
+    }
     if (address % 4 || address < x->guest_base || address - x->guest_base > x->size || bytes > x->size - (address - x->guest_base))
         return failed(error, error_size, "a descriptor at %#llx (s[%u:%u] + %u) outside the GPU-visible memory", (unsigned long long)address,
                       origin->pointer_sgpr, origin->pointer_sgpr + 1, origin->offset);
@@ -5826,29 +7200,42 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
 }
 
 /* Records a dispatch of the current compute shader into the batch; its writes reach the guest memory once the batch has run. */
+/* The buffer descriptors a program's buffer stores write through (gcn_buffer_store_resources), into
+   origins (GCN_MAX_IMAGES room), with *unknown; the scan is kept (kind 2). 0, or -1 with the reason
+   (the decoder's alone). */
+static int buffer_store_origins(rt_executor *x, uint64_t code, gcn_resource_origin *origins, unsigned *count, int *unknown, char *error,
+                                size_t error_size)
+{
+    scan_entry *scan = scan_for(x, code, 0, 2);
+    if (scan && scan->used) {
+        *count = scan->count, *unknown = scan->unknown;
+        memcpy(origins, scan->sampler_origins, *count * sizeof *origins);
+        return 0;
+    }
+    if (gcn_buffer_store_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), origins, GCN_MAX_IMAGES,
+                                   count, unknown, error, error_size))
+        return -1;
+    if (scan) scan_keep(x, scan, *count, NULL, origins), scan->unknown = *unknown;
+    return 0;
+}
+
 /* The memory a compute shader's buffer stores may reach as it is dispatched now: for each buffer
-   descriptor its stores write through (gcn_buffer_store_resources, the scan kept), the descriptor's range
-   (range checking keeps every store inside it: NUM_RECORDS bytes from the base with stride 0, NUM_RECORDS
-   records of the stride otherwise). *anywhere when a store's descriptor is not known (or there are more
-   than GCN_MAX_IMAGES): its stores may reach any memory. 0, or -1 with the reason. */
+   descriptor its stores write through (buffer_store_origins), the descriptor's range (range checking
+   keeps each store's first byte inside it: NUM_RECORDS bytes from the base with stride 0, NUM_RECORDS
+   records of the stride otherwise; a dword whose first byte is the range's last reaches 3 bytes past it,
+   inside the same 64 KB chunk of the change counts when the dword is aligned, and an indexed store through a
+   strided descriptor may reach further: issue #1348). *anywhere when a store's descriptor is not known
+   (or there are more than GCN_MAX_IMAGES): its stores may reach any memory. 0, or -1 with the reason. */
 static int dispatch_store_ranges(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, uint64_t ranges[][2],
                                  unsigned *count, int *anywhere, char *error, size_t error_size)
 {
     enum { STRIDE_SHIFT = 16, STRIDE_MASK = 0x3fff, BASE_HIGH_MASK = 0xff };
     gcn_resource_origin origins[GCN_MAX_IMAGES];
     *count = 0, *anywhere = 0;
-    scan_entry *scan = scan_for(x, c->code, 0, 2);
     unsigned n = 0;
-    if (scan && scan->used) {
-        n = scan->count, *anywhere = scan->unknown;
-        memcpy(origins, scan->sampler_origins, n * sizeof *origins);
-    } else {
-        char reason[300];
-        if (gcn_buffer_store_resources((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4), origins,
-                                       GCN_MAX_IMAGES, &n, anywhere, reason, sizeof reason))
-            return failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
-        if (scan) scan_keep(x, scan, n, NULL, origins), scan->unknown = *anywhere;
-    }
+    char reason[300];
+    if (buffer_store_origins(x, c->code, origins, &n, anywhere, reason, sizeof reason))
+        return failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
     for (unsigned i = 0; i < n; i++) {
         uint32_t words[4];
         if (descriptor_words(x, "compute", c->code, &origins[i], user, c->user_sgprs, user_set, words, 4, error, error_size)) return -1;
@@ -5883,12 +7270,136 @@ static void span_add(memory_span *spans, unsigned *count, uint64_t address, uint
 
 /* A buffer descriptor's (V#) base, stride and NUM_RECORDS (the Sea Islands manual: word 0 BASE_ADDRESS
    bits 0-31, word 1 its bits 32-39 in 0-7, STRIDE 16-29, SWIZZLE_ENABLE 31; word 2 NUM_RECORDS; word
-   3 DST_SEL_X/Y/Z bits 0-8, NUM_FORMAT 12-14, DATA_FORMAT 15-18, ADD_TID_ENABLE 23), and the bytes its
-   range checking lets accesses reach. */
-enum { VSHARP_STRIDE_SHIFT = 16, VSHARP_STRIDE_MASK = 0x3fff, VSHARP_BASE_HIGH_MASK = 0xff };
+   3 DST_SEL_X/Y/Z bits 0-8, NUM_FORMAT 12-14, DATA_FORMAT 15-18, ADD_TID_ENABLE 23), its formats, and
+   the bytes its range checking lets accesses reach. */
+enum {
+    VSHARP_STRIDE_SHIFT = 16, VSHARP_STRIDE_MASK = 0x3fff, VSHARP_BASE_HIGH_MASK = 0xff, VSHARP_NFMT_SHIFT = 12,
+    VSHARP_NFMT_MASK = 7, VSHARP_DFMT_SHIFT = 15, VSHARP_DFMT_MASK = 0xf
+};
 static uint64_t vsharp_base(const uint32_t *w) { return w[0] | (uint64_t)(w[1] & VSHARP_BASE_HIGH_MASK) << 32; }
 static uint64_t vsharp_stride(const uint32_t *w) { return w[1] >> VSHARP_STRIDE_SHIFT & VSHARP_STRIDE_MASK; }
 static uint64_t vsharp_bytes(const uint32_t *w) { return vsharp_stride(w) ? vsharp_stride(w) * w[2] : w[2]; }
+/* The bytes a stage's buffer stores through the descriptor may write: its range and the 3 bytes a dword
+   whose first byte is the range's last reaches past it (stage_store_kinds). */
+static uint64_t vsharp_stage_store_bytes(const uint32_t *w) { return vsharp_bytes(w) ? vsharp_bytes(w) + 3 : 0; }
+static uint32_t vsharp_number_format(const uint32_t *w) { return w[3] >> VSHARP_NFMT_SHIFT & VSHARP_NFMT_MASK; }
+static uint32_t vsharp_data_format(const uint32_t *w) { return w[3] >> VSHARP_DFMT_SHIFT & VSHARP_DFMT_MASK; }
+
+/* The memory writes a tessellated or geometry draw's stage makes (stage_store_kinds): buffer stores and
+   atomics without IDXEN, which stay inside their descriptor's range but for up to 3 bytes past its end
+   (range checking counts SOFFSET in for them, and checks each dword's first byte only: gcn_spirv.c,
+   checked_store_dword; an indexed access checks only the index and the offset inside the record, so its SOFFSET
+   reaches past the range), and any other (an indexed buffer write, an image, flat or GDS write), which
+   may reach any memory. In the export and geometry stages (`ring_stage`) a buffer_store_dword* with GLC
+   and SLC and without IDXEN is a ring access (runtime/gcn_spirv.h, "Geometry shaders"; gcn_spirv.c
+   translates it so), which writes the rings, not guest memory, and counts as neither. The answer is
+   kept with the program's scans (kind 6, or 7 for a ring stage). 0 with *kinds, or -1 with the reason. */
+enum { STAGE_STORES_BUFFER = 1, STAGE_STORES_ANYWHERE = 2 };
+
+static int stage_store_kinds(rt_executor *x, uint64_t code, int ring_stage, unsigned *kinds, char *error, size_t error_size)
+{
+    scan_entry *scan = scan_for(x, code, 0, ring_stage ? 7 : 6);
+    if (scan && scan->used) {
+        *kinds = scan->count;
+        return 0;
+    }
+    enum { MUBUF_IDXEN_BIT = 13, MUBUF_GLC_BIT = 14, MUBUF_SLC_BIT = 22 };
+    const uint32_t *words = (const uint32_t *)(uintptr_t)code;
+    const long program = gcn_program_dwords(words, (size_t)((x->guest_base + x->size - code) / 4));
+    if (program < 0) return failed(error, error_size, "no program end found");
+    *kinds = 0;
+    for (long at = 0; at < program;) {
+        gcn_instruction ins;
+        if (gcn_decode(words + at, (size_t)(program - at), &ins) || !ins.name)
+            return failed(error, error_size, "dword %ld: an instruction the decoder cannot name", at);
+        const int memory = ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF || ins.encoding == GCN_MIMG || ins.encoding == GCN_FLAT;
+        const int gds = ins.encoding == GCN_DS && (!strcmp(ins.name, "ds_append") || !strcmp(ins.name, "ds_consume") || strstr(ins.name, "gws"));
+        if ((memory && (strstr(ins.name, "store") || strstr(ins.name, "atomic"))) || gds) {
+            const uint32_t *w = words + at;
+            const int buffer = (ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF) &&
+                               (!strncmp(ins.name, "buffer_store", strlen("buffer_store")) ||
+                                !strncmp(ins.name, "tbuffer_store", strlen("tbuffer_store")) ||
+                                !strncmp(ins.name, "buffer_atomic", strlen("buffer_atomic")));
+            const int indexed = buffer && (w[0] >> MUBUF_IDXEN_BIT & 1); /* MTBUF's IDXEN is the same bit */
+            const int ring = ring_stage && ins.encoding == GCN_MUBUF && !strncmp(ins.name, "buffer_store_dword", strlen("buffer_store_dword")) &&
+                             (w[0] >> MUBUF_GLC_BIT & 1) && (w[1] >> MUBUF_SLC_BIT & 1) && !indexed;
+            if (!ring) *kinds |= buffer && !indexed ? STAGE_STORES_BUFFER : STAGE_STORES_ANYWHERE;
+        }
+        at += ins.dwords;
+    }
+    if (scan) scan_keep(x, scan, *kinds, NULL, NULL);
+    return 0;
+}
+
+/* Notes what a tessellated draw's local and hull shaders, or a geometry draw's export and geometry
+   shaders, may store to guest memory, for the copies (copies_written), as the draw is
+   recorded: the range of each descriptor their buffer stores write through (as dispatch_store_ranges
+   finds it). A descriptor in the user data is the one the draw keeps; one loaded from memory (the
+   game's hull shaders load the tessellation-factor ring's) is read there now, as dispatch_store_ranges
+   reads it, while the shader reads it as it runs: so only while no open or submitted work may store to
+   it (batch_may_store, which does not list draws' stores: after a draw storing to guest memory since the
+   last batch_finish, unlisted_stores_unfinished, none is read so). The steps the renderer performs that
+   write memory wait for the draw first, as it counts as reading anywhere (batch_reads_anywhere). A
+   write by the game's CPU between the draw's recording and its run is not seen: these stages take no
+   table snapshot (gcn_spirv.h, "Table snapshots"), so the shader's own stores would then go through
+   the new words, a case the renderer does not handle for these draws in any case. The export and
+   geometry shaders' ring accesses write no guest memory
+   (stage_store_kinds). A hull shader's stores through a descriptor based in the tessellation-factor
+   ring reach the factor buffer instead (gcn_spirv.c, buffer_base): noting the descriptor's range anyway
+   notes more, never less. Any other write, a store whose descriptor has no known origin, a scan that
+   fails or a descriptor not readable so counts as a write of no known range (copies_stale). A
+   stage's store whose range meets a table the same stage loads a descriptor from (which could move that
+   descriptor's later stores) counts so too. A noted range in guest memory, or a write of no known range,
+   sets unlisted_stores_unfinished. It never fails the draw. */
+static void stage_stores_noted(rt_executor *x, const draw_state *s, int tess, int gs)
+{
+    const struct {
+        uint64_t code;
+        const uint32_t *user;
+        uint32_t user_sgprs, user_set;
+        int ring_stage;
+    } stages[4] = {
+        {s->local.code, s->tess_user[0], s->local.user_sgprs, s->tess_user_set[0], 0},
+        {s->hull.code, s->tess_user[1], s->hull.user_sgprs, s->tess_user_set[1], 0},
+        {s->export_stage.code, s->gs_user[0], s->export_stage.user_sgprs, s->gs_user_set[0], 1},
+        {s->geometry.code, s->gs_user[1], s->geometry.user_sgprs, s->gs_user_set[1], 1},
+    };
+    int anywhere = 0;
+    for (int i = 0; i < 4 && !anywhere; i++) {
+        if (!(i < 2 ? tess : gs)) continue;
+        char reason[300];
+        unsigned kinds = 0, n = 0;
+        int unknown = 0;
+        gcn_resource_origin origins[GCN_MAX_IMAGES];
+        if (stage_store_kinds(x, stages[i].code, stages[i].ring_stage, &kinds, reason, sizeof reason) || kinds & STAGE_STORES_ANYWHERE) {
+            anywhere = 1;
+        } else if (kinds && (buffer_store_origins(x, stages[i].code, origins, &n, &unknown, reason, sizeof reason) || unknown)) {
+            anywhere = 1;
+        } else {
+            uint64_t ranges[GCN_MAX_IMAGES][2];
+            const int pending = x->unlisted_stores_unfinished;
+            for (unsigned d = 0; kinds && d < n && !anywhere; d++) {
+                uint32_t w[4];
+                if ((origins[d].from_memory && pending) ||
+                    descriptor_words_in(x, &origins[d], stages[i].user, stages[i].user_sgprs, stages[i].user_set, w, 4, 0, reason, sizeof reason))
+                    anywhere = 1;
+                else
+                    ranges[d][0] = vsharp_base(w), ranges[d][1] = vsharp_stage_store_bytes(w);
+            }
+            /* a store of this stage into a table it loads a descriptor from moves that descriptor's later stores */
+            for (unsigned d = 0; kinds && d < n && !anywhere; d++)
+                for (unsigned t = 0; origins[d].from_memory && t < n && !anywhere; t++) {
+                    const uint64_t table = descriptor_address(&origins[d], stages[i].user), end = ranges[t][1] > UINT64_MAX - ranges[t][0] ? UINT64_MAX : ranges[t][0] + ranges[t][1];
+                    anywhere = ranges[t][1] && ranges[t][0] < table + 4 * sizeof(uint32_t) && table < end;
+                }
+            for (unsigned d = 0; kinds && d < n && !anywhere; d++) {
+                copies_written(x, ranges[d][0], ranges[d][1]);
+                if (guest_range_meets(x, ranges[d][0], ranges[d][1])) x->unlisted_stores_unfinished = 1;
+            }
+        }
+    }
+    if (anywhere) x->copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1; /* may store anywhere */
+}
 
 /* The table-driven copy's real memory (gcn_table_copy_shape): its table, read now by the CPU, gives
    each workgroup's first source and destination elements, and the copy reaches the workgroup's width of
@@ -5915,7 +7426,7 @@ static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gc
     if (((table[1] | source[1] | destination[1]) & swizzle) || ((table[3] | source[3] | destination[3]) & add_tid) || !vsharp_stride(table) ||
         !vsharp_stride(source) || !vsharp_stride(destination))
         return 0;
-    const uint32_t data_format = table[3] >> 15 & 0xf, number_format = table[3] >> 12 & 7;
+    const uint32_t data_format = vsharp_data_format(table), number_format = vsharp_number_format(table);
     if (shape->table_format && ((data_format != DFMT_32_32_32 && data_format != DFMT_32_32_32_32) ||
                                 (number_format != NFMT_UINT && number_format != NFMT_SINT && number_format != NFMT_FLOAT) ||
                                 (table[3] & SELECT_MASK) != SELECT_XYZ))
@@ -5998,6 +7509,118 @@ static target_entry *fill_target(rt_executor *x, const rt_compute_shader *c, con
     for (size_t i = 0; i < x->depth_count; i++)
         if (x->depths[i].unwritten && x->depths[i].z_address < base + span && base < x->depths[i].z_address + depth_span(&x->depths[i])) return NULL;
     return t;
+}
+
+/* Whether a drawn render target other than `except`, or a depth target's unwritten depth, overlaps the memory. */
+static int other_unwritten_in(const rt_executor *x, const target_entry *except, uint64_t address, uint64_t bytes)
+{
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *o = &x->targets[i];
+        if (o != except && o->drawn && o->address < address + bytes && address < o->address + target_span(o)) return 1;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < address + bytes && address < x->depths[i].z_address + depth_span(&x->depths[i])) return 1;
+    return 0;
+}
+
+/* A dispatch of a linear copy (gcn_linear_copy_shape) of 32-bit elements whose source is a render target
+   drawn into since its write-back (from the target's first byte, through at least its memory), that is
+   a copy of a whole target: done on the GPU's own copies instead of writing the target back into host
+   memory for the shader to read it there and store it into host memory again. A destination that is a
+   render target of the same shape takes the source's image (an image copy; it counts as drawn, its
+   memory gets the texels when it is written back); any other destination memory takes the source's
+   texels tiled as the source lays them out (its linear rows tiled straight into the destination, the
+   source's own memory left for its write-back). Bytes past the source target's memory are copied in
+   guest memory. 1 when copied so, 0 when the dispatch runs as usual, -1 with the reason. */
+static int target_copy(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3], char *error,
+                       size_t error_size)
+{
+    enum { DFMT_32 = 4, NFMT_UINT = 4, NFMT_SINT = 5, NFMT_FLOAT = 7, SELECT_X = 4, SELECT_FIRST_MASK = 7, ELEMENT_BYTES = 4 };
+    const uint32_t swizzle = 1u << 31, add_tid = 1u << 23;
+    scan_entry *scan = scan_for(x, c->code, 0, 3);
+    if (!scan || !scan->used || !scan->linear || groups[1] != 1 || groups[2] != 1 || c->threads[1] != 1 || c->threads[2] != 1 ||
+        c->workgroup_id_enables != 1)
+        return 0;
+    const gcn_linear_copy *shape = &scan->linear_shape;
+    if (shape->workgroup_sgpr != c->user_sgprs || c->threads[0] != shape->group_elements) return 0;
+    uint32_t source[4], destination[4];
+    const gcn_resource_origin s = {.sgpr = shape->source_sgpr}, d = {.sgpr = shape->destination_sgpr};
+    char reason[200];
+    if (descriptor_words(x, "compute", c->code, &s, user, c->user_sgprs, user_set, source, 4, reason, sizeof reason) ||
+        descriptor_words(x, "compute", c->code, &d, user, c->user_sgprs, user_set, destination, 4, reason, sizeof reason))
+        return 0;
+    if (((source[1] | destination[1]) & swizzle) || ((source[3] | destination[3]) & add_tid) || vsharp_stride(source) != ELEMENT_BYTES ||
+        vsharp_stride(destination) != ELEMENT_BYTES)
+        return 0;
+    if (shape->format) { /* a 32-bit format loads and stores an element's bits as they are */
+        const uint32_t number_format = vsharp_number_format(source);
+        if (vsharp_data_format(source) != DFMT_32 || vsharp_data_format(destination) != DFMT_32 ||
+            vsharp_number_format(destination) != number_format ||
+            (number_format != NFMT_UINT && number_format != NFMT_SINT && number_format != NFMT_FLOAT) ||
+            (source[3] & SELECT_FIRST_MASK) != SELECT_X)
+            return 0;
+    } else if (!vsharp_data_format(source) || !vsharp_data_format(destination)) {
+        return 0; /* the invalid data format 0: run as usual rather than rely on how untyped accesses treat it */
+    }
+    /* the elements stored: the workgroups' threads, up to the destination's records (its range check) */
+    const uint64_t threads = (uint64_t)groups[0] * c->threads[0], count = threads < destination[2] ? threads : destination[2];
+    const uint64_t bytes = count * ELEMENT_BYTES, from = vsharp_base(source), to = vsharp_base(destination);
+    if (!count || source[2] < count || (from < to + bytes && to < from + bytes)) return 0;
+    if (from < x->guest_base || from - x->guest_base > x->size || bytes > x->size - (from - x->guest_base) || to < x->guest_base ||
+        to - x->guest_base > x->size || bytes > x->size - (to - x->guest_base))
+        return 0;
+    target_entry *t = find_target(x, from);
+    if (!t || !t->drawn || t->address != from || target_span(t) > bytes || !tile_copy_moves(x, t->element_bytes)) return 0;
+    const uint64_t span = target_span(t);
+    target_entry *into = find_target(x, to);
+    const int same = into && into->address == to && into->width == t->width && into->height == t->height && into->tile_index == t->tile_index &&
+                     into->element_bytes == t->element_bytes && same_texel_bytes(into->format, t->format) && target_span(into) == span;
+    if (other_unwritten_in(x, t, from, bytes) || other_unwritten_in(x, same ? into : NULL, to, bytes)) return 0;
+    rt_tiling layout;
+    uint64_t laid_out;
+    if (target_memory(x, t, &layout, &laid_out, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    note_work(x, c->code, 0, groups[0]);
+    if (same) {
+        image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        image_barrier(commands, into->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                          VK_ACCESS_TRANSFER_WRITE_BIT,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT);
+        const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .extent = {t->width, t->height, 1}};
+        vkCmdCopyImage(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, into->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        image_barrier(commands, into->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
+        target_drawn(x, into);
+        into->loaded_change = x->change_count;
+    } else {
+        if (record_target_copy(x, t, 1, error, error_size) || record_tile_copy(x, &t->plan, to, 1, error, error_size)) return -1;
+        batch_writes(x, to, span, 0);
+        metadata_stored(x, to);
+    }
+    if (bytes > span) { /* the rest, past the target's memory, in guest memory */
+        const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+        const VkBufferCopy rest = {.srcOffset = from + span - x->guest_base, .dstOffset = to + span - x->guest_base, .size = bytes - span};
+        vkCmdCopyBuffer(commands, x->buffer, x->buffer, 1, &rest);
+        batch_reads(x, from + span, bytes - span);
+        batch_writes(x, to + span, bytes - span, 0);
+    }
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
+                         &after, 0, NULL, 0, NULL);
+    return 1;
 }
 
 /* After a fill's first workgroup (fill_target): its elements, stored at the start of the target's memory,
@@ -6084,6 +7707,7 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
             if (scan->used) {
                 memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
                 scan->fill = gcn_fill_shape(code, dwords, &scan->fill_shape);
+                scan->linear = gcn_linear_copy_shape(code, dwords, &scan->linear_shape);
             }
         }
     }
@@ -6148,6 +7772,32 @@ static int snapshot_holds(const gcn_table_snapshot *tables, uint32_t taken, cons
     return 0;
 }
 
+/* The memory a shader (with its fetch shader, callee) reads (gcn_called_memory_reads), kept with its
+   scan: found[0..*n), *anywhere when it may read memory those do not bound. 0, or -1 when its code
+   does not decode. */
+static int stage_memory_reads(rt_executor *x, uint64_t code, uint64_t callee, gcn_memory_read found[GCN_MAX_IMAGES], unsigned *n, int *anywhere)
+{
+    scan_entry *scan = scan_for(x, code, callee, 5);
+    if (scan && scan->used) {
+        *n = scan->count, *anywhere = scan->unknown;
+        memcpy(found, scan->reads, *n * sizeof *found);
+        return 0;
+    }
+    char reason[300];
+    const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
+    const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+    const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+    *n = 0, *anywhere = 0;
+    if (gcn_called_memory_reads((const uint32_t *)(uintptr_t)code, dwords, callee_words, callee_dwords, found, GCN_MAX_IMAGES, n, anywhere, reason,
+                                sizeof reason))
+        return -1;
+    if (scan) {
+        scan_keep(x, scan, *n, NULL, NULL);
+        if (scan->used) memcpy(scan->reads, found, *n * sizeof *found), scan->unknown = *anywhere;
+    }
+    return 0;
+}
+
 /* Notes the memory a draw's shader (with its fetch shader, callee) reads in place as the GPU runs it
    (batch_reads): each buffer descriptor's range, and each s_load whose SGPRs its translated code reads
    (sgprs_read), unless its table snapshot holds the words (snapshot_holds: `taken`, its entries copied). An s_load nothing reads is a descriptor the executor read itself before recording the
@@ -6160,24 +7810,9 @@ static void stage_reads(rt_executor *x, uint64_t code, uint64_t callee, const ui
     gcn_memory_read found[GCN_MAX_IMAGES];
     unsigned n = 0;
     int anywhere = 0;
-    scan_entry *scan = scan_for(x, code, callee, 5);
-    if (scan && scan->used) {
-        n = scan->count, anywhere = scan->unknown;
-        memcpy(found, scan->reads, n * sizeof *found);
-    } else {
-        char reason[300];
-        const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
-        const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
-        const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
-        if (gcn_called_memory_reads((const uint32_t *)(uintptr_t)code, dwords, callee_words, callee_dwords, found, GCN_MAX_IMAGES, &n, &anywhere,
-                                    reason, sizeof reason)) {
-            batch_reads_anywhere(x);
-            return;
-        }
-        if (scan) {
-            scan_keep(x, scan, n, NULL, NULL);
-            if (scan->used) memcpy(scan->reads, found, n * sizeof *found), scan->unknown = anywhere;
-        }
+    if (stage_memory_reads(x, code, callee, found, &n, &anywhere)) {
+        batch_reads_anywhere(x);
+        return;
     }
     for (unsigned i = 0; i < n && !anywhere; i++) {
         const gcn_memory_read *r = &found[i];
@@ -6228,6 +7863,8 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     else
         for (unsigned i = 0; i < store_count; i++) span_add(stores, &store_span_count, store_ranges[i][0], store_ranges[i][1]);
     if (!groups) span_add(reads, &read_count, arguments, INDIRECT_ARGUMENT_BYTES); /* drawn targets over them are written back too */
+    const int copied = groups ? target_copy(x, c, s->compute_user, s->compute_user_set, groups, error, error_size) : 0;
+    if (copied) return copied < 0 ? -1 : 0;
     /* a fill of a render target overwrites all its draws: only what it reads is written back first */
     target_entry *const filled = reads_anywhere ? NULL : fill_target(x, c, s->compute_user, s->compute_user_set, groups, reads, read_count, error,
                                                                      error_size);
@@ -6370,6 +8007,7 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
 {
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, size, &count);
+    if (count == SIZE_MAX) return failed(error, error_size, "no memory for a buffer's calls");
     return rt_executor_run_calls(x, calls, count, error, error_size);
 }
 
@@ -6519,6 +8157,32 @@ int rt_executor_wait_ticket(rt_executor *x, uint64_t ticket, char *error, size_t
 void rt_executor_set_wait_limit(rt_executor *x, uint64_t nanoseconds) { x->wait_limit = nanoseconds; }
 
 int rt_executor_finish(rt_executor *x, char *error, size_t error_size) { return batch_finish(x, error, error_size); }
+
+void rt_executor_deferred_writes(rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    if (!bytes) return;
+    if (bytes > UINT64_MAX - address) bytes = UINT64_MAX - address; /* RT_GPU_STEP_ANY_MEMORY from 0: all memory */
+    for (unsigned i = 0; i < x->deferred_write_count; i++) /* the same labels come back each frame */
+        if (x->deferred_writes[i].address <= address && address + bytes <= x->deferred_writes[i].address + x->deferred_writes[i].bytes) return;
+    span_add(x->deferred_writes, &x->deferred_write_count, address, bytes);
+    const memory_span *grown = NULL; /* the span that now holds it, maybe merged with others */
+    for (unsigned i = 0; i < x->deferred_write_count && !grown; i++)
+        if (x->deferred_writes[i].address <= address && address + bytes <= x->deferred_writes[i].address + x->deferred_writes[i].bytes)
+            grown = &x->deferred_writes[i];
+    for (copy_set *set = &x->index_set; set; set = set == &x->index_set ? &x->vertex_set : NULL)
+        for (uint32_t i = 0; i < set->count; i++) {
+            struct guest_copy *c = &set->copies[i];
+            const uint64_t start = x->guest_base + c->offset;
+            if (grown->address < start + c->bytes && start < grown->address + grown->bytes) c->direct = 1;
+        }
+}
+
+void rt_executor_cpu_writes(rt_executor *x, uint64_t address, uint64_t bytes)
+{
+    if (!bytes) return;
+    if (bytes == UINT64_MAX) x->copies_stale = ++x->change_count; /* anywhere */
+    else copies_written(x, address, bytes);
+}
 
 /* Records the buffer's calls into the batch, in order, keeping the state they set. */
 /* A draw call: its checks, then the draw (or nothing, when check_state finds nothing to draw). */
@@ -6820,9 +8484,15 @@ void rt_executor_close(rt_executor *x)
 {
     if (!x) return;
     sweep_close(x);
+    finish_launch_work(x);
+    pipeline_workers_stop(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);
-        for (size_t i = 0; i < x->pipeline_count; i++) vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
+        free_queued_commands(x, 1);
+        for (size_t i = 0; i < x->pipeline_count; i++) {
+            pipeline_settle(x, &x->pipelines[i], 1);
+            vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
+        }
         for (size_t i = 0; i < x->shader_count; i++) vkDestroyShaderModule(x->device, x->shaders[i].module, NULL);
         for (size_t i = 0; i < x->rect_stage_count; i++) vkDestroyShaderModule(x->device, x->rect_stages[i].module, NULL);
         for (size_t i = 0; i < x->compute_count; i++) {
@@ -6834,6 +8504,8 @@ void rt_executor_close(rt_executor *x)
         if (x->tess_vertex) vkDestroyShaderModule(x->device, x->tess_vertex, NULL);
         gpu_buffer_free(x, &x->tess_lds), gpu_buffer_free(x, &x->tess_factors);
         gpu_buffer_free(x, &x->gs_esgs), gpu_buffer_free(x, &x->gs_gsvs), gpu_buffer_free(x, &x->gs_strips);
+        gpu_buffer_free(x, &x->index_set.buffer);
+        gpu_buffer_free(x, &x->vertex_set.buffer);
         if (x->tess_layout) vkDestroyPipelineLayout(x->device, x->tess_layout, NULL);
         for (size_t i = 0; i < x->pass_count; i++) {
             vkDestroyFramebuffer(x->device, x->passes[i].framebuffer, NULL);
@@ -6888,6 +8560,7 @@ void rt_executor_close(rt_executor *x)
         for (size_t i = 0; i < CALL_SLOTS; i++) free(x->calls[i].words);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
+        free(x->stop_owners);
         if (x->gds_buffer) vkDestroyBuffer(x->device, x->gds_buffer, NULL);
         if (x->gds_memory) vkFreeMemory(x->device, x->gds_memory, NULL);
         if (x->timeline) vkDestroySemaphore(x->device, x->timeline, NULL);
@@ -6896,6 +8569,7 @@ void rt_executor_close(rt_executor *x)
                 if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
         if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);
         pipeline_cache_close(x);
+        close_translations(x);
         if (x->pipeline_cache) vkDestroyPipelineCache(x->device, x->pipeline_cache, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);

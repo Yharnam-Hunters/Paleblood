@@ -110,14 +110,16 @@ uint32_t build_short_mode_three(RecordConstructorPrefix *output, const BuilderPa
     record_store_base_address(output, static_cast<uint32_t>(base >> address_shift));
     const uint32_t first_unit = static_cast<uint32_t>(first_auxiliary >> packed_shift);
     const uint32_t first_offset = align_word(static_cast<uint32_t>(packed), first_unit);
-    record_store_first_auxiliary_address(output, static_cast<uint32_t>((base + uint64_t(first_offset)) >> address_shift));
+    record_store_first_auxiliary_address(output,
+        static_cast<uint32_t>((base + uint64_t(first_offset)) >> address_shift));
     record_set_first_auxiliary_flag(output, 1);
 
     uint32_t next = static_cast<uint32_t>(packed);
     if (first_unit != 0) next = align_word(next, first_unit) + static_cast<uint32_t>(first_auxiliary);
     const uint32_t second_unit = static_cast<uint32_t>(second_auxiliary >> packed_shift);
     const uint32_t second_offset = align_word(next, second_unit);
-    record_store_second_auxiliary_address(output, static_cast<uint32_t>((base + uint64_t(second_offset)) >> address_shift));
+    record_store_second_auxiliary_address(output,
+        static_cast<uint32_t>((base + uint64_t(second_offset)) >> address_shift));
     record_set_second_auxiliary_flag(output, 1);
     return 0;
 }
@@ -195,7 +197,8 @@ uint32_t build_general(RecordConstructorPrefix *output, const BuilderParameters 
     const bool any_auxiliary = first_enabled || (parameters.flags & second_auxiliary_bit) != 0;
     uint64_t auxiliary = 0;
     const uint32_t first_selector = choose_record_constructor_selector(parameters.first_kind, first_enabled);
-    const uint32_t second_selector = combine_record_parameters(parameters.first_kind, parameters.second_kind, first_enabled);
+    const uint32_t second_selector =
+        combine_record_parameters(parameters.first_kind, parameters.second_kind, first_enabled);
     record_constructor(output, shifted_component(parameters.first, index),
         shifted_component(parameters.second, index), parameters.third, parameters.encoding,
         geometry.converted_30.get(), first_selector, second_selector,
@@ -248,8 +251,10 @@ extern "C" uint32_t bb_render_build_present_source_record(
         record_normalize_mode2(&normalized, &input, supplied, 0);
         if (normalized.status != 0) return normalized.status;
         if ((normalized.input.resource_flags & required_parameter_bit) == 0) return normalization_failed;
-        parameters = {mode_two, normalized.input.width, 1, normalized.input.entries_per_level,
-            normalized.input.level_count, normalized.mapping, normalized.supplied, 1, 0, normalized.input.secondary_flags, 0};
+        parameters = {.mode = mode_two, .first = normalized.input.width, .second = 1,
+            .third = normalized.input.entries_per_level, .count_override = normalized.input.level_count,
+            .encoding = normalized.mapping, .classification = normalized.supplied, .first_kind = 1,
+            .second_kind = 0, .flags = normalized.input.secondary_flags, .normalized_mode = 0};
         break;
     }
     case mode_three: {
@@ -269,9 +274,11 @@ extern "C" uint32_t bb_render_build_present_source_record(
         record_normalize_mode3(&normalized, &input, supplied, 0);
         if (normalized.status != 0) return normalized.status;
         if ((normalized.input.resource_flags & required_parameter_bit) == 0) return normalization_failed;
-        parameters = {mode_three, normalized.input.width, normalized.input.height,
-            normalized.input.entries_per_level, normalized.input.level_count, normalized.mapping, normalized.supplied,
-            normalized.input.layout, normalized.input.layout_parameter, normalized.input.secondary_flags, normalized.mode};
+        parameters = {.mode = mode_three, .first = normalized.input.width, .second = normalized.input.height,
+            .third = normalized.input.entries_per_level, .count_override = normalized.input.level_count,
+            .encoding = normalized.mapping, .classification = normalized.supplied,
+            .first_kind = normalized.input.layout, .second_kind = normalized.input.layout_parameter,
+            .flags = normalized.input.secondary_flags, .normalized_mode = normalized.mode};
         break;
     }
     case mode_four: {
@@ -289,9 +296,10 @@ extern "C" uint32_t bb_render_build_present_source_record(
         record_normalize_mode4(&normalized, &input, supplied, 0);
         if (normalized.status != 0) return normalized.status;
         if ((normalized.input.resource_flags & required_parameter_bit) == 0) return normalization_failed;
-        parameters = {mode_four, normalized.input.width, normalized.input.height,
-            normalized.input.entries_per_level, normalized.input.level_count, normalized.mapping, normalized.supplied,
-            1, 0, normalized.input.secondary_flags, 0};
+        parameters = {.mode = mode_four, .first = normalized.input.width, .second = normalized.input.height,
+            .third = normalized.input.entries_per_level, .count_override = normalized.input.level_count,
+            .encoding = normalized.mapping, .classification = normalized.supplied, .first_kind = 1,
+            .second_kind = 0, .flags = normalized.input.secondary_flags, .normalized_mode = 0};
         break;
     }
     default:

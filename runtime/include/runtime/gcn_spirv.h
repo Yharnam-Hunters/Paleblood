@@ -69,6 +69,19 @@ typedef struct {
     uint64_t sink;
 } gcn_guest_memory;
 
+/* Copies of guest memory in other GPU memory, which a vertex shader's loads may reach: guest addresses
+   [base, base + bytes), wholly outside the guest memory (gcn_guest_memory) and below 2^40 (a buffer
+   descriptor's base is 40 bits), read from the GPU address gpu on. The executor rewrites a buffer
+   descriptor's base into this range when the bytes the descriptor reaches have a current copy there,
+   and the program's loads through it then read the copy (any load whose address falls in the range
+   does, where outside the guest memory it would stop). Only loads reach it: a store or an atomic
+   there goes to the sink with GCN_RUNTIME_STOP_GUEST_RANGE, as one outside the guest memory does, so a
+   copy only ever holds what the guest memory held. Needs the guest memory's range; bytes 0: none. */
+typedef struct {
+    uint64_t base, bytes;
+    uint64_t gpu;
+} gcn_guest_copies;
+
 /* The run-time stop channel. Some of what a shader does is only known when it runs: a buffer
    access's data format comes from its descriptor. A shader meeting such a case it cannot do exactly
    writes a code to the 32-bit word at error_address (a GPU address, in the same space as the
@@ -333,6 +346,9 @@ typedef struct {
     const gcn_table_snapshot *table_snapshot; /* when not NULL, the program's plan (gcn_table_snapshot_plan):
                                                  its loads take the snapshot words after the user data, at
                                                  push-constant byte push_constant_offset + 4 * GCN_USER_SGPR_MAX */
+    unsigned thread_id_vgprs; /* 1=X, 2=XY, 3=XYZ; 0 preserves the existing XYZ default.
+                                 Other registers retain the translator's deterministic initial value,
+                                 not a hardware guarantee for disabled thread-ID inputs. */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
@@ -398,6 +414,7 @@ typedef struct {
        push-constant byte table_block_offset (Table snapshots, above) */
     const gcn_table_snapshot *table_snapshot;
     uint32_t table_block_offset;
+    gcn_guest_copies copies;  /* above; all 0: none (always for a copy shader) */
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
