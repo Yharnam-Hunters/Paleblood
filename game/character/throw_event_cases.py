@@ -108,6 +108,9 @@ CASES = [
     case('full_grow_keeps_capacity', capacity=4, write_index=4, count=4, grow_to=4),
     case('negative_count_no_growth', capacity=4, write_index=1, count=-1),
     case('negative_capacity_grows', capacity=-2, write_index=0, count=0, grow_to=8),
+    # Keep the write index in owned storage while the reserve argument and count wrap.
+    case('capacity_growth_wraps_sign', capacity=0x40000000, write_index=0, count=0x40000000, grow_to=8),
+    case('count_increment_wraps', capacity=0x7fffffff, write_index=0, count=0x7fffffff, grow_to=8),
     case('full_sixteen', capacity=16, write_index=16, count=16, grow_to=32),
 ]
 

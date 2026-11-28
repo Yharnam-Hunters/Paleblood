@@ -1,0 +1,11 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+engine_destroys_heap_buffer_owner_through_base_at_0x38_006d7f80,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_006d80d0,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_006dcbd0,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_006dcc40,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_006e19b0,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_006e1a90,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_028a2210,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_028a2280,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_028a2dd0,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16
+engine_destroys_heap_buffer_owner_through_base_at_0x38_028a2e40,edge,,39,39,0,0,6b3a145d66b48354,2026-11-16

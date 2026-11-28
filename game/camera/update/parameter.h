@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera parameter stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Selects and interpolates camera parameters before the null-subject return.
 // Parameter selection and interpolation precede the subject-dependent camera stages.
@@ -15,7 +16,7 @@ inline constexpr int32_t binary_search_half = 2;
 namespace scalar = camera::update::math;
 
 RT_GLOBAL(0x04d38ad0, repository_singleton_name, const char);
-RT_GLOBAL(0x04d25e58, degrees_to_radians, const float);
+using constants::degrees_to_radians;
 RT_GLOBAL(0x04d25e5c, minimum_fov_radians, const float);
 RT_GLOBAL(0x04d25e60, minimum_fov_degrees, const float);
 RT_GLOBAL(0x04d25e64, maximum_fov_degrees, const float);

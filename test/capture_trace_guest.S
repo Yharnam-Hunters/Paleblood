@@ -365,6 +365,29 @@ leaf_field:
     movzbl (%rsi), %ecx
     add %ecx, %eax
     ret
+/* 0x900: int32_t many_imports(int32_t *out, int32_t n) { int32_t s = 0; while (n--) s += fill(out, 7);
+   return s; }: more import calls in one trace than the recorder kept at first (256); a physics
+   instance's construction makes about 2,000. */
+    .org 0x900
+    push %rbx
+    push %r12
+    push %r13
+    mov %rdi, %rbx
+    mov %esi, %r12d
+    xor %r13d, %r13d
+1:  test %r12d, %r12d
+    jz 2f
+    mov %rbx, %rdi
+    mov $7, %esi
+    call import_thunk
+    add %eax, %r13d
+    dec %r12d
+    jmp 1b
+2:  mov %r13d, %eax
+    pop %r13
+    pop %r12
+    pop %rbx
+    ret
     .org 0x1000
 global:
     .long 1000
