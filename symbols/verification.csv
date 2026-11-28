@@ -2255,6 +2255,7 @@ render_update_vs_shader,edge,,199,199,0,0,7db46237e67ccfae,2026-11-13
 render_wait_register,edge,,442,442,0,0,6573ac11f48a18ec,2026-11-14
 render_yebis_allocate_storage,edge,,137,137,0,0,0d3b51e9b846155e,2026-11-28
 render_yebis_cleanup_and_free_interface,edge,,92,92,0,0,f1f8fe34e9f21902,2026-11-18
+render_yebis_cleanup_linked_interface,edge,,115,115,0,0,a3797135b5c57686,2026-11-28
 render_yebis_context_instantiate,recorded,,4,4,0,0,9b7955beb7645a7f,2026-11-17
 render_yebis_context_instantiate,edge,,135,135,0,0,9b7955beb7645a7f,2026-11-15
 render_yebis_delete_interface,edge,,116,116,0,0,c646e6894249331b,2026-11-19
@@ -2272,3 +2273,4 @@ render_yebis_initialize_interface,recorded,,6,6,0,0,f50d8e7c8bbe9565,2026-11-17
 render_yebis_initialize_interface,edge,,41,41,0,0,f50d8e7c8bbe9565,2026-11-17
 render_yebis_release_interface,recorded,,4,4,0,0,9e83e346238d9b5e,2026-11-17
 render_yebis_release_interface,edge,,227,227,0,0,9e83e346238d9b5e,2026-11-17
+render_yebis_set_allocator,edge,,148,148,0,0,2689ae23d830ca75,2026-11-28
