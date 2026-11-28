@@ -6,7 +6,7 @@
 void rt_renderer_configure(int enabled) { (void)enabled; }
 
 /* The flags and memory of the last submission's steps, for the system library's tests
-   (test/syslib/gnm_occlusion.c, gnm_constant_engine.c): with the work done at once, nothing else tells
+   (test/syslib/gnm_occlusion.c, gnm_constant_engine.c, gnm_dma_data.c): with the work done at once, nothing else tells
    a deferrable step from another. */
 enum { OBSERVED_STEPS = 16 };
 static uint32_t observed_flags[OBSERVED_STEPS];

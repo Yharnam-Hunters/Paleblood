@@ -10,28 +10,15 @@
 
 #include "../engine/allocator.h"
 #include "../engine/buffer_release.h"
+#include "../engine/load.h"
 #include "runtime/original.h"
 
 namespace menu::localize {
 
-// A load the language object holds. It is reference counted (a plain 32-bit count, not atomic);
-// the last reference destroys it through its second vtable slot and frees its memory through
-// the allocator that owns it.
-struct LocalizeLoad;
-struct LocalizeLoadVtable {
-    void *unknown_slot_0x00;
-    void (*destroy)(LocalizeLoad *);
-};
-static_assert(offsetof(LocalizeLoadVtable, destroy) == 0x8);
-
-struct LocalizeLoad {
-    const LocalizeLoadVtable *vtable;
-    uint8_t unknown_0x08[0x4];
-    int32_t state;
-    uint32_t references;   // unsigned so that a count already at 0 wraps, as the original's does
-};
-static_assert(offsetof(LocalizeLoad, state) == 0xc);
-static_assert(offsetof(LocalizeLoad, references) == 0x10);
+// A load the language object holds: the engine's load (engine/load.h). It is reference counted
+// (a plain 32-bit count, not atomic); the last reference destroys it through its second vtable
+// slot and frees its memory through the allocator that owns it.
+using LocalizeLoad = engine::Load;
 
 // The language object. What its states and its loads stand for is not established: the loads
 // are named after their place, except the two that 0x01d53420 also checks (first and second).
@@ -44,7 +31,8 @@ struct LocalizeLanguage {
     LocalizeLoad *first_load;
     LocalizeLoad *second_load;
     LocalizeLoad *load_0x40;
-    uint8_t unknown_0x48[0x10];
+    LocalizeLoad *load_0x48;   // created by the step at 0x01d53050
+    LocalizeLoad *load_0x50;   // created by the step at 0x01d52f00
     LocalizeLoad *load_0x58;
     LocalizeLoad *load_0x60;   // created by the step at 0x01d52a20
     LocalizeLoad *load_0x68;
@@ -52,11 +40,12 @@ struct LocalizeLanguage {
 static_assert(offsetof(LocalizeLanguage, state) == 0xc);
 static_assert(offsetof(LocalizeLanguage, load_0x28) == 0x28 && offsetof(LocalizeLanguage, first_load) == 0x30);
 static_assert(offsetof(LocalizeLanguage, second_load) == 0x38 && offsetof(LocalizeLanguage, load_0x40) == 0x40);
+static_assert(offsetof(LocalizeLanguage, load_0x48) == 0x48 && offsetof(LocalizeLanguage, load_0x50) == 0x50);
 static_assert(offsetof(LocalizeLanguage, load_0x58) == 0x58 && offsetof(LocalizeLanguage, load_0x60) == 0x60);
 static_assert(offsetof(LocalizeLanguage, load_0x68) == 0x68);
 
 // The state a load reaches when the language object may go on (meaning not established).
-constexpr int32_t load_state_awaited = 3;
+constexpr int32_t load_state_awaited = engine::load_state_awaited;
 // The state the last release step leaves the language object in.
 constexpr int32_t language_state_released = -1;
 

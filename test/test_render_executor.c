@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -1325,24 +1326,52 @@ static void viewport_scissor(rt_executor *x)
    green 0.5; the rest stays clear. With one patch a workgroup (first, while the factor buffer holds no
    factors at its second patch's place), the second patch is workgroup 1's (its LDS block and its
    factor-ring offset); with 15 both share one workgroup's LDS. Drawn directly and indirectly (its vertex
-   count in guest memory). */
-static int run_tessellated(rt_executor *x, uint64_t buffer, uint64_t target, uint32_t patches, uint64_t indirect, char *error, size_t error_size)
+   count in guest memory). With `stores_at` not 0, the hull shader's descriptor is `stores_bytes` of guest
+   memory there instead of the factor ring, so its factors land in that memory. With `table` not 0, the
+   hull shader loads its descriptor from guest memory there (s[4:5] in its user data), as the game's do,
+   instead of taking it in s[0:3]. With `indexed`, its first store takes IDXEN in place of OFFEN (its index
+   v3, the descriptor's stride 0): the same address for one patch a workgroup. Each hull program has its own
+   code address. Without `finish` the draw's batch is submitted and left running (rt_executor_submit_calls). */
+typedef struct {
+    uint64_t stores_at;
+    uint32_t stores_bytes;
+    uint64_t table;
+    int indexed;
+} hull_stores;
+
+static int run_tessellated_hull(rt_executor *x, uint64_t buffer, uint64_t target, uint32_t patches, uint64_t indirect, hull_stores h,
+                                int finish, char *error, size_t error_size)
 {
-    enum { LOCAL = 0x3f00000, HULL = 0x3f00400, DOMAIN = 0x3f00800 };
+    enum { LOCAL = 0x3f00000, HULL = 0x3f00400, DOMAIN = 0x3f00800, TABLE_HULL = 0x100, INDEXED_HULL = 0x200, MUBUF_OFFEN = 1u << 12,
+           MUBUF_IDXEN = 1u << 13 };
+    static const uint32_t load_descriptor[] = {
+        0xc0800500, /* s_load_dwordx4 s[0:3], s[4:5], 0x0 */
+        0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    };
+    const uint64_t stores_at = h.stores_at, table = h.table;
+    const uint32_t stores_bytes = h.stores_bytes;
+    const uint64_t hull_code = at(HULL) + (table ? TABLE_HULL : 0) + (h.indexed ? INDEXED_HULL : 0);
+    uint32_t hull_words[sizeof tess_hull / sizeof tess_hull[0]];
+    memcpy(hull_words, tess_hull, sizeof tess_hull);
+    if (h.indexed) hull_words[4] = (hull_words[4] & ~MUBUF_OFFEN) | MUBUF_IDXEN; /* the first buffer_store_dword */
     memcpy((void *)(uintptr_t)at(LOCAL), tess_local, sizeof tess_local);
-    memcpy((void *)(uintptr_t)at(HULL), tess_hull, sizeof tess_hull);
+    if (table) memcpy((void *)(uintptr_t)hull_code, load_descriptor, sizeof load_descriptor);
+    memcpy((void *)(uintptr_t)(hull_code + (table ? sizeof load_descriptor : 0)), hull_words, sizeof hull_words);
     memcpy((void *)(uintptr_t)at(DOMAIN), tess_domain, sizeof tess_domain);
     rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     const uint32_t domain[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(at(DOMAIN) >> 8), 0, 0x2, 0, 0, 0x4, 0};
     CHECK(rt_render_record_vertex_shader(buffer, offset, domain, error, error_size) == 0);
     const uint32_t local[RT_LOCAL_SHADER_WORDS] = {(uint32_t)(at(LOCAL) >> 8), 0, 0x2, 7u << 7}; /* LDS 3584 bytes */
-    const uint32_t hull[RT_HULL_SHADER_WORDS] = {(uint32_t)(at(HULL) >> 8), 0, 0x2, 8u << 1, 0x42, 0x42800000, 0x3f800000,
+    const uint32_t hull[RT_HULL_SHADER_WORDS] = {(uint32_t)(hull_code >> 8), 0, 0x2, 8u << 1, 0x42, 0x42800000, 0x3f800000,
                                                   patches | 1u << 8 | 1u << 14}; /* quads, integer, clockwise; levels 1 to 64 */
     CHECK(rt_render_record_local_shader_at(buffer + offset + 0x10, local) == 0);
     CHECK(rt_render_record_hull_shader_at(buffer + offset + 0x20, hull) == 0);
-    const uint32_t ring[4] = {(uint32_t)RT_TESSELLATION_FACTOR_RING, (uint32_t)(RT_TESSELLATION_FACTOR_RING >> 32), 128 << 10, 0};
-    CHECK(rt_render_record_user_data(buffer, offset + 0x30, RT_STAGE_HULL, 0, ring, 4, error, error_size) == 0);
+    const uint64_t base = stores_at ? stores_at : RT_TESSELLATION_FACTOR_RING;
+    const uint32_t ring[4] = {(uint32_t)base, (uint32_t)(base >> 32), stores_at ? stores_bytes : 128 << 10, 0};
+    if (table) memcpy((void *)(uintptr_t)table, ring, sizeof ring);
+    const uint32_t user[8] = {table ? 0 : ring[0], table ? 0 : ring[1], table ? 0 : ring[2], 0, (uint32_t)table, (uint32_t)(table >> 32), 0, 0};
+    CHECK(rt_render_record_user_data(buffer, offset + 0x30, RT_STAGE_HULL, 0, user, table ? 8 : 4, error, error_size) == 0);
     CHECK(rt_render_record_register(buffer, offset + 0x40, 0xa2d5, 0x45, error, error_size) == 0);
     if (indirect) {
         CHECK(rt_render_record_indirect_base(buffer, offset + 0x50, indirect, error, error_size) == 0);
@@ -1350,7 +1379,22 @@ static int run_tessellated(rt_executor *x, uint64_t buffer, uint64_t target, uin
     } else {
         CHECK(rt_render_record_draw_auto(buffer, offset + 0x60, 2, error, error_size) == 0);
     }
-    return rt_executor_run(x, buffer, offset + 0x70, error, error_size);
+    if (finish) return rt_executor_run(x, buffer, offset + 0x70, error, error_size);
+    size_t count = 0;
+    uint64_t ticket;
+    const rt_render_call *calls = rt_render_submitted(buffer, offset + 0x70, &count);
+    return count == SIZE_MAX ? -1 : rt_executor_submit_calls(x, calls, count, &ticket, error, error_size);
+}
+
+static int run_tessellated_storing(rt_executor *x, uint64_t buffer, uint64_t target, uint32_t patches, uint64_t indirect, uint64_t stores_at,
+                                   uint32_t stores_bytes, uint64_t table, char *error, size_t error_size)
+{
+    return run_tessellated_hull(x, buffer, target, patches, indirect, (hull_stores){stores_at, stores_bytes, table, 0}, 1, error, error_size);
+}
+
+static int run_tessellated(rt_executor *x, uint64_t buffer, uint64_t target, uint32_t patches, uint64_t indirect, char *error, size_t error_size)
+{
+    return run_tessellated_storing(x, buffer, target, patches, indirect, 0, 0, 0, error, error_size);
 }
 
 static void tessellated_draws(rt_executor *x)
@@ -1387,15 +1431,22 @@ static void tessellated_draws(rt_executor *x)
    half, vertex 1 the right; the band between the strips stays clear (without the cut, the strip would join
    them across it). Drawn directly (two points, one wave); through 16-bit indices: 128 points of vertex 5
    (drawn off to the right) before vertices 0 and 1, so the drawn ones are the third wave's in both rings;
-   and indirectly (two points, the count in guest memory). */
+   and indirectly (two points, the count in guest memory). The rings' descriptors (s[0:3], which ring
+   accesses do not read) are all 0, or with `described_at` not 0 `described_bytes` of guest memory there. With
+   `unringed` the export shader's stores lack SLC: no ring accesses, they store through that descriptor. */
 enum { GS_DIRECT, GS_INDEXED, GS_INDIRECT };
-static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int how, char *error, size_t error_size)
+static int run_geometry_described(rt_executor *x, uint64_t buffer, uint64_t target, int how, uint64_t described_at, uint32_t described_bytes,
+                                  int unringed, char *error, size_t error_size)
 {
     enum { EXPORT = 0x3f10000, GEOMETRY = 0x3f10400, COPY = 0x3f10c00, INDICES = 0x3f11000, ARGUMENTS = 0x3f12000, POINTS = 130, POINTLIST = 1,
            MAX_VERT_OUT = 8 };
     uint32_t *const counts = (uint32_t *)(uintptr_t)at(ARGUMENTS);
     counts[0] = 2, counts[1] = 1, counts[2] = 0, counts[3] = 0;
-    memcpy((void *)(uintptr_t)at(EXPORT), gs_export, sizeof gs_export);
+    enum { MUBUF_SLC = 1u << 22 };
+    uint32_t export_code[sizeof gs_export / sizeof gs_export[0]];
+    memcpy(export_code, gs_export, sizeof gs_export);
+    if (unringed) export_code[3] &= ~MUBUF_SLC, export_code[5] &= ~MUBUF_SLC; /* its two buffer_store_dword */
+    memcpy((void *)(uintptr_t)at(EXPORT), export_code, sizeof export_code);
     memcpy((void *)(uintptr_t)at(GEOMETRY), gs_geometry, sizeof gs_geometry);
     memcpy((void *)(uintptr_t)at(COPY), gs_copy, sizeof gs_copy);
     uint16_t *const indices = (uint16_t *)(uintptr_t)at(INDICES);
@@ -1408,7 +1459,7 @@ static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int ho
     const uint32_t geometry[RT_GEOMETRY_SHADER_WORDS] = {(uint32_t)(at(GEOMETRY) >> 8), 0, 0x2, 4u << 1, 0, 2 /* triangle strips */, 0};
     CHECK(rt_render_record_export_shader_at(buffer + offset + 0x10, export_words) == 0);
     CHECK(rt_render_record_geometry_shader_at(buffer + offset + 0x20, geometry) == 0);
-    const uint32_t user[4] = {0};
+    const uint32_t user[4] = {(uint32_t)described_at, (uint32_t)(described_at >> 32), described_at ? described_bytes : 0, 0};
     CHECK(rt_render_record_user_data(buffer, offset + 0x30, RT_STAGE_EXPORT, 0, user, 4, error, error_size) == 0);
     CHECK(rt_render_record_user_data(buffer, offset + 0x40, RT_STAGE_GEOMETRY, 0, user, 4, error, error_size) == 0);
     /* the rings' item sizes, as the GPU library's writers set them: 2 dwords a vertex in, 4 dwords x 8 vertices out */
@@ -1428,6 +1479,11 @@ static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int ho
         CHECK(rt_render_record_draw_auto(buffer, offset + 0x30, 2, error, error_size) == 0);
     }
     return rt_executor_run(x, buffer, offset + 0x40, error, error_size);
+}
+
+static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int how, char *error, size_t error_size)
+{
+    return run_geometry_described(x, buffer, target, how, 0, 0, 0, error, error_size);
 }
 
 static void geometry_shader_draws(rt_executor *x)
@@ -3136,7 +3192,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -3235,12 +3291,12 @@ static void tiled_target_memory(rt_executor *x)
 /* Records the tiled target's draw (tiled_target_memory's) into the target at TILED_TARGET without a
    submit (rt_executor_record_calls, as the renderer does) and runs the batch. */
 enum { TILED_TARGET = 0xec0000, RECORDED_BUFFER = 0xc0fa0000, RECORDED_TILING = 13 };
-static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error, size_t error_size)
+static int record_tiled_draw_into(rt_executor *x, uint64_t target, uint32_t blend, char *error, size_t error_size)
 {
     rt_render_forget(), rt_executor_reset(x);
-    uint32_t offset = record_setup(RECORDED_BUFFER, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t offset = record_setup(RECORDED_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     uint32_t words[RT_COLOR_TARGET_WORDS];
-    color_target(words, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD);
+    color_target(words, target, COLOR_8_8_8_8, SWAP_STD);
     words[5] = RECORDED_TILING;
     if (rt_render_record_color_target(RECORDED_BUFFER, offset, 0, words, error, error_size) ||
         rt_render_record_register(RECORDED_BUFFER, offset + 0x10, 0xa1e0, blend, error, error_size))
@@ -3249,6 +3305,11 @@ static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error
     const rt_render_call *calls = rt_render_submitted(RECORDED_BUFFER, record_triangle_draw(RECORDED_BUFFER, offset + 0x20), &count);
     uint64_t ticket = 0;
     return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
+}
+
+static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error, size_t error_size)
+{
+    return record_tiled_draw_into(x, at(TILED_TARGET), blend, error, error_size);
 }
 
 static int record_tiled_draw(rt_executor *x, char *error, size_t error_size) { return record_tiled_draw_blended(x, 0, error, error_size); }
@@ -3294,7 +3355,7 @@ static void guarded_targets(int fd, rt_executor *shared)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3385,7 +3446,7 @@ static void guarded_depth_read(int fd, unsigned bytes)
     enum { DEPTH_BUFFER = 0xc0f48000, GD_Z = 0x2700000, GD_HTILE = 0x2780000, GD_COLOUR = 0x2790000, GD_SAMPLED = 0x27a0000, GD_SIZE = 256,
            GD_WORDS = (GD_SIZE / 8) * (GD_SIZE / 8) };
     char error[256] = "";
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3459,7 +3520,7 @@ static void guarded_target_fill(int fd)
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     const uint64_t span = rt_tiling_size(&layout, 1);
     uint32_t *memory = (uint32_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3503,6 +3564,79 @@ static void guarded_target_fill(int fd)
     CHECK(all_filled);
     rt_executor_close(x);
     memset(&guarded, 0, sizeof guarded); /* the guard counts start again for the next test */
+}
+
+/* A whole-target copy (a linear copy, runtime/linear_copy.h) from a guarded drawn target: into
+   memory under no target (`into` 0), the copy takes the target's texels tiled as it lays them out without
+   writing the target back (its own memory still zero until rt_executor_resolve); into a drawn target of
+   the same shape (`into` 1), that target's image takes them, its memory written only at its own resolve;
+   so too when that target's draws were already written back (`into` 2: the copy makes it drawn again).
+   Either way both memories end up holding the same bytes as the draw put in the source. A dword copy
+   whose destination (`into` 3) or source (`into` 4) descriptor has the invalid data format 0 is not
+   taken over: the dispatch runs as usual, so the source is written back for the shader to read. */
+static void target_copy_test(int fd, int into)
+{
+    enum { COPY_BUFFER = 0xc0fa9000, COPY_CODE = 0x6c00, COPY_DEST = 0x3d00000, COPY_SAME = 0x3d40000, LANES = 64, USER_SGPRS = 16,
+           TGID_X_EN = 1u << 7, DFMT_32 = 4, NFMT_UINT = 4, SELECT_X = 4 };
+    /* the linear copy test_linear_copy.c takes apart: s[4:7] the source, s[12:15] the destination, s16 the workgroup */
+    static const uint32_t copy_program[] = {0x8f028610, 0x4a020002, 0xe0002000, 0x80010201, 0x7d88020e,
+                                            0xbe80246a, 0xbf8c0f70, 0xe0102000, 0x80030201, 0xbf810000};
+    const int into_target = into == 1 || into == 2;
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
+    const uint64_t span = rt_tiling_size(&layout, 1), destination = at(into_target ? COPY_SAME : COPY_DEST);
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
+    rt_executor *x = NULL;
+    CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
+    if (!x) return;
+    guarded.answer = 0;
+    uint8_t *source_memory = (uint8_t *)(uintptr_t)at(TILED_TARGET), *copied = (uint8_t *)(uintptr_t)destination;
+    memset(source_memory, 0, span), memset(copied, 0, span);
+    /* the destination has draws of its own: black (ZERO + ZERO blending), so only the copy puts the triangle there */
+    if (into_target)
+        CHECK(record_tiled_draw_into(x, destination, 1u << 30, error, sizeof error) == 0);
+    if (into == 2) CHECK(rt_executor_resolve(x, destination, 4, error, sizeof error) == 0);
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0 && tiled_memory_zero());
+    memcpy((void *)(uintptr_t)at(COPY_CODE), copy_program, sizeof copy_program);
+    const int format_zero = into == 3 || into == 4;
+    if (format_zero) { /* the dword forms of the load and store */
+        uint32_t *program = (uint32_t *)(uintptr_t)at(COPY_CODE);
+        program[2] = 0xe0302000, program[7] = 0xe0702000;
+    }
+    const uint64_t code = at(COPY_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, USER_SGPRS << 1 | TGID_X_EN, LANES, 1, 1};
+    uint32_t user[USER_SGPRS] = {0};
+    const uint32_t format = SELECT_X | NFMT_UINT << 12 | DFMT_32 << 15;
+    descriptor(user + 4, at(TILED_TARGET), 4), user[6] = (uint32_t)(span / 4), user[7] = into == 4 ? SELECT_X : format;
+    descriptor(user + 12, destination, 4), user[14] = (uint32_t)(span / 4), user[15] = into == 3 ? SELECT_X : format;
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(COPY_BUFFER, shader) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+    const uint32_t groups[3] = {(uint32_t)((span / 4 + LANES - 1) / LANES), 1, 1};
+    CHECK(rt_render_record_dispatch(COPY_BUFFER, 0x30, groups, error, sizeof error) == 0);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(COPY_BUFFER, 0x40, &count);
+    uint64_t ticket = 0;
+    const int done = rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) || rt_executor_finish(x, error, sizeof error) ? -1 : 0;
+    if (done) fprintf(stderr, "target copy: %s\n", error);
+    CHECK(done == 0);
+    if (format_zero) { /* run as usual: the source written back for the shader */
+        CHECK(!tiled_memory_zero());
+        rt_executor_close(x);
+        memset(&guarded, 0, sizeof guarded);
+        return;
+    }
+    CHECK(tiled_memory_zero()); /* the source was not written back */
+    int destination_zero = 1;
+    for (uint64_t i = 0; i < span; i++) destination_zero &= copied[i] == 0;
+    CHECK(destination_zero == into_target); /* into memory: there now; into a target: in its image */
+    if (into_target) CHECK(rt_executor_resolve(x, destination, 4, error, sizeof error) == 0);
+    CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0);
+    CHECK(!tiled_memory_zero() && memcmp(source_memory, copied, span) == 0);
+    rt_executor_close(x);
+    memset(&guarded, 0, sizeof guarded);
 }
 
 /* A half (IEEE binary16) as a float. */
@@ -3692,7 +3826,7 @@ static void collect_when_due(int fd)
 {
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0, NULL};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "executor with a due check: %s\n", error);
@@ -3729,7 +3863,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -3774,6 +3908,402 @@ static void watched_memory(int fd)
     rt_executor_close(x);
 }
 
+/* Writes the six 16-bit indices run_index_packet's draws take the last three of: three 9s, then the
+   triangle's corners 0, 1, 2 or, degenerate, 0, 0, 0. */
+static void write_indices(uint64_t offset, int degenerate)
+{
+    const uint16_t indices[6] = {9, 9, 9, 0, (uint16_t)(degenerate ? 0 : 1), (uint16_t)(degenerate ? 0 : 2)};
+    memcpy((void *)(uintptr_t)at(offset), indices, sizeof indices);
+}
+
+/* Draws the triangle with the indices at guest-memory offset `indices` into the k-th of a row of fresh
+   targets (zeroed memory, not drawn before by this executor): the pixels that differ from the triangle (all of them
+   when the indices were degenerate), or -1 when the draw stops (a failed check). */
+static int indexed_draw_misses(rt_executor *x, uint64_t indices, unsigned k)
+{
+    enum { TARGETS = 0x1110000, TARGET_STEP = 0x10000, TARGET_COUNT = 32 };
+    char error[200] = "";
+    CHECK(k < TARGET_COUNT);
+    const uint64_t target = at(TARGETS + (uint64_t)TARGET_STEP * (k % TARGET_COUNT));
+    memset((void *)(uintptr_t)target, 0, TARGET_STEP);
+    const int ran = run_index_packet(x, target, at(indices), 0, 0xc0033500u, 3, 3, 0, error, sizeof error);
+    if (ran) fprintf(stderr, "indexed draw: %s\n", error);
+    CHECK(ran == 0);
+    if (ran) return -1;
+    return differing_pixels(x, target);
+}
+
+/* The fake watch: reports the part of the write inside the ranges asked about, and forgets the rest (a
+   real one reports the rest at the first later collect whose ranges take it in). */
+static int report_writes_in_ranges(const uint64_t (*ranges)[2], size_t count,
+                                   void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context)
+{
+    const uint64_t from = reported_write.pool_offset, to = from + reported_write.length;
+    for (size_t i = 0; i < count && reported_write.length; i++) {
+        const uint64_t start = ranges[i][0] > from ? ranges[i][0] : from;
+        const uint64_t end = ranges[i][0] + ranges[i][1] < to ? ranges[i][0] + ranges[i][1] : to;
+        if (start < end) written(context, start, end - start);
+    }
+    reported_write.length = 0;
+    return 0;
+}
+
+/* An executor over the guest memory, with the fake watch (report_writes_in_ranges) or none, and the index copy
+   buffer's size from PB_INDEX_COPY_BYTES when `bytes` is given; NULL when it does not open. */
+static rt_executor *index_copy_executor(int fd, int watched, const char *bytes)
+{
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, watched ? report_writes_in_ranges : NULL, NULL, NULL, NULL, 0, NULL, 0, NULL};
+    char error[256] = "", saved[64] = "";
+    rt_executor *x = NULL;
+    const char *outside = getenv("PB_INDEX_COPY_BYTES"); /* kept for the tests after these */
+    if (outside) snprintf(saved, sizeof saved, "%s", outside);
+    if (bytes) setenv("PB_INDEX_COPY_BYTES", bytes, 1);
+    else unsetenv("PB_INDEX_COPY_BYTES");
+    const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+    if (outside) setenv("PB_INDEX_COPY_BYTES", saved, 1);
+    else unsetenv("PB_INDEX_COPY_BYTES");
+    if (opened) fprintf(stderr, "index copy executor: %s\n", error);
+    CHECK(opened == 0);
+    return opened ? NULL : x;
+}
+
+/* With the CPU's writes watched, an indexed draw's indices are copied into device-local memory and drawn
+   from there while their memory has not changed (index_copy_for): a CPU write the watch has not reported
+   leaves the copy as it was (the triangle drawn again, though the guest memory now holds a degenerate
+   one); once reported, once a dispatch stores there, or once a step the renderer performs is to write
+   there (rt_executor_cpu_write_ready), the next draw copies the new indices; a range that changed three
+   times in quick succession is drawn from the guest memory from then on. A copy buffer too small for
+   the range, none (PB_INDEX_COPY_BYTES=0) or no watch: every draw reads the guest memory. A full buffer
+   drops its copies and places them again from the start; a second drop soon after pauses copying. */
+static void index_copies(int fd)
+{
+    enum { INDICES = 0x1100000, OTHER = 0x1101000, THIRD = 0x1102000, COMPUTE = 0xc0e50000, COMPUTE_CODE = 0x1103000, ZEROS = 0x1104000,
+           STORE_CODE = 0x1105000, STORE_BUFFER = 0xc0e80000, STORE_TARGET = 0x1320000, TESS_BUFFER = 0xc0eb0000, GS_BUFFER = 0xc0ec0000,
+           STAGE_TARGET = 0x1330000, HULL_TABLE = 0x1106000, FAR_TABLE = 0x1341000, LANES = 64 };
+    const int all = SIZE * SIZE; /* every pixel differs: no triangle */
+    unsigned k = 0; /* the next fresh target, counted again for each executor */
+    rt_executor *x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        reported_write.length = 0;
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1); /* not reported: the copy stays */
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        reported_write.pool_offset = INDICES, reported_write.length = 12;
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        write_indices(INDICES, 0);
+        reported_write.pool_offset = INDICES, reported_write.length = 12;
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1); /* not reported: the new copy stays too */
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        rt_executor_close(x);
+    }
+    /* the first change after a copy is a dispatch's store, or a step the renderer is to perform */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        /* a dispatch stores scale_add's 1.0 floats over them: indices 0x3f80, 0, 0x3f80, no triangle */
+        memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+        memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+        rt_render_forget(), rt_executor_reset(x);
+        const uint64_t code = at(COMPUTE_CODE);
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+        uint32_t user[8];
+        descriptor(user, at(ZEROS), 4);
+        descriptor(user + 4, at(INDICES), 4);
+        char error[256] = "";
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) > 0);
+        rt_executor_close(x);
+    }
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1); /* as a performed step writes, unreported */
+        CHECK(rt_executor_cpu_write_ready(x, at(INDICES), 12) == 0); /* not watched before: it waits for the GPU */
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_close(x);
+    }
+    /* a draw whose pixel shader stores (pixel_late_store, its descriptor based 8 bytes before them, so
+       its dword at offset 16 lands on the triangle's last two indices: 0 or 1, then 0x4000) */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        memcpy((void *)(uintptr_t)at(STORE_CODE), pixel_late_store, sizeof pixel_late_store);
+        rt_render_forget(), rt_executor_reset(x);
+        char error[256] = "";
+        uint32_t offset = record_setup(STORE_BUFFER, at(STORE_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(STORE_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4,
+                                                       PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(STORE_BUFFER, offset, pixel, error, sizeof error) == 0);
+        uint32_t user[8] = {0};
+        descriptor(user + 4, at(INDICES - 8), 4);
+        CHECK(rt_render_record_user_data(STORE_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+        offset = record_triangle_draw(STORE_BUFFER, offset + 0x20);
+        const int ran = rt_executor_run(x, STORE_BUFFER, offset, error, sizeof error);
+        if (ran) fprintf(stderr, "storing draw: %s\n", error);
+        CHECK(ran == 0);
+        uint16_t stored[6];
+        memcpy(stored, (const void *)(uintptr_t)at(INDICES), sizeof stored);
+        CHECK(stored[4] <= 1 && stored[5] == 0x4000);
+        CHECK(indexed_draw_misses(x, INDICES, k++) > 0);
+        rt_executor_close(x);
+    }
+    /* a tessellated draw whose hull shader stores the factors to the factor ring, and a geometry draw whose
+       export shader stores to the ESGS ring (its descriptor, which ring accesses do not read, set over the
+       indices): neither stores to guest memory, so the copy stands through a write not reported */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        const int tessellated = run_tessellated(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw: %s\n", error);
+        CHECK(tessellated == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        const int geometry = run_geometry_described(x, GS_BUFFER, at(STAGE_TARGET), GS_DIRECT, at(INDICES), 48, 0, error, sizeof error);
+        if (geometry) fprintf(stderr, "geometry draw: %s\n", error);
+        CHECK(geometry == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        rt_executor_close(x);
+    }
+    /* a tessellated draw whose hull shader's descriptor is the indices' memory (48 bytes): its 1.0 factors
+       (0x3f800000) land over them, indices 0 and 0x3f80, no triangle; the copy is copied again */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        const int tessellated = run_tessellated_storing(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, at(INDICES), 48, 0, error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw storing over the indices: %s\n", error);
+        CHECK(tessellated == 0);
+        uint16_t stored[2];
+        memcpy(stored, (const void *)(uintptr_t)at(INDICES), sizeof stored);
+        CHECK(stored[0] == 0 && stored[1] == 0x3f80);
+        CHECK(indexed_draw_misses(x, INDICES, k++) > 0);
+        rt_executor_close(x);
+    }
+    /* the same with the hull shader's descriptor loaded from a table in memory, as the game's hull shaders
+       load the factor ring's: over the factor ring the copy stands through a write not reported; over the
+       indices it is copied again */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        int tessellated = run_tessellated_storing(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, 0, 0, at(HULL_TABLE), error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw, descriptor from memory: %s\n", error);
+        CHECK(tessellated == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 0);
+        rt_executor_cpu_writes(x, at(INDICES), 12);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        tessellated = run_tessellated_storing(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, at(INDICES), 48, at(HULL_TABLE), error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw storing over the indices, descriptor from memory: %s\n", error);
+        CHECK(tessellated == 0);
+        uint16_t stored[2];
+        memcpy(stored, (const void *)(uintptr_t)at(INDICES), sizeof stored);
+        CHECK(stored[0] == 0 && stored[1] == 0x3f80);
+        CHECK(indexed_draw_misses(x, INDICES, k++) > 0);
+        rt_executor_close(x);
+    }
+    /* a hull shader's descriptor of 2 bytes just before the copied indices (the draw's are bytes 6 to 11):
+       range checking takes a dword whose first byte is inside, so its first factor's high half (0x3f80)
+       lands on index 3 past the range's end; the copy is copied again */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        const int tessellated = run_tessellated_storing(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, at(INDICES) + 4, 2, 0, error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw storing past its range: %s\n", error);
+        CHECK(tessellated == 0);
+        uint16_t stored[4];
+        memcpy(stored, (const void *)(uintptr_t)at(INDICES), sizeof stored);
+        CHECK(stored[2] == 0 && stored[3] == 0x3f80);
+        CHECK(indexed_draw_misses(x, INDICES, k++) > 0);
+        rt_executor_close(x);
+    }
+    /* a hull shader whose descriptor, loaded from a table, covers that table: its stores move its own later
+       stores, which then may reach any memory; the copy is copied again though its memory did not change */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        const int tessellated = run_tessellated_storing(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, at(HULL_TABLE), 48, at(HULL_TABLE), error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw storing over its descriptor table: %s\n", error);
+        CHECK(tessellated == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) > 0);
+        rt_executor_close(x);
+    }
+    /* a geometry draw whose export shader's stores lack SLC (no ring accesses) through a descriptor over the
+       indices: they store to guest memory there, so the copy is copied again (here: the write not reported) */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        const int geometry = run_geometry_described(x, GS_BUFFER, at(STAGE_TARGET), GS_DIRECT, at(INDICES), 48, 1, error, sizeof error);
+        if (geometry) fprintf(stderr, "geometry draw storing over the indices: %s\n", error);
+        CHECK(geometry == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) > 0);
+        rt_executor_close(x);
+    }
+    /* a hull shader whose store takes IDXEN, though its descriptor is the factor ring's: an indexed store's
+       SOFFSET may reach past the range, so it counts as a write of no known range (the write not reported shows) */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        const int tessellated = run_tessellated_hull(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, (hull_stores){0, 0, 0, 1}, 1, error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw, indexed store: %s\n", error);
+        CHECK(tessellated == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_close(x);
+    }
+    /* a hull shader loading its descriptor (the factor ring's) from a table while earlier work that may store
+       there still runs: a dispatch whose descriptor covers the table (its stores land just below it), or a
+       tessellated draw storing to other guest memory (draws' stores are not listed); the table is not read
+       then, and the draw counts as a write of no known range (the write not reported shows) */
+    for (int earlier = 0; earlier < 2; earlier++) {
+        k = 0, x = index_copy_executor(fd, 1, NULL);
+        if (!x) continue;
+        char error[256] = "";
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        int submitted;
+        if (earlier == 0) {
+            enum { BELOW_TABLE = LANES * 4 }; /* the table in a 64 KB chunk of its own: the dispatch's change count leaves the indices' alone */
+            memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+            memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+            rt_render_forget(), rt_executor_reset(x);
+            const uint64_t code = at(COMPUTE_CODE);
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+            uint32_t user[8];
+            descriptor(user, at(ZEROS), 4);
+            descriptor(user + 4, at(FAR_TABLE) - BELOW_TABLE, 4); /* 0x1000 records of 4 bytes: over the table */
+            CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            const uint32_t one[3] = {1, 1, 1};
+            CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+            size_t count = 0;
+            uint64_t ticket;
+            const rt_render_call *calls = rt_render_submitted(COMPUTE, 0x40, &count);
+            submitted = count == SIZE_MAX ? -1 : rt_executor_submit_calls(x, calls, count, &ticket, error, sizeof error);
+        } else {
+            submitted = run_tessellated_hull(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, (hull_stores){at(OTHER), 48, 0, 0}, 0, error, sizeof error);
+        }
+        if (submitted) fprintf(stderr, "work before the table's hull shader (%d): %s\n", earlier, error);
+        CHECK(submitted == 0);
+        const int tessellated = run_tessellated_storing(x, TESS_BUFFER, at(STAGE_TARGET), 1, 0, 0, 0, at(FAR_TABLE), error, sizeof error);
+        if (tessellated) fprintf(stderr, "tessellated draw, its table stored to (%d): %s\n", earlier, error);
+        CHECK(tessellated == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_close(x);
+    }
+    /* a step the renderer performs once the GPU's work has run (rt_executor_cpu_writes): over the range, or
+       of no known range; writes of no known range do not count as the range's own changes, so after three
+       of them the copy still stands */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        rt_executor_cpu_writes(x, at(INDICES) + 8, 4);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_cpu_writes(x, at(OTHER), 12); /* elsewhere: the copy stands */
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        for (int write = 0; write < 3; write++) {
+            write_indices(INDICES, write % 2 == 0);
+            rt_executor_cpu_writes(x, 0, UINT64_MAX);
+            CHECK(indexed_draw_misses(x, INDICES, k++) == (write % 2 == 0 ? all : 0));
+        }
+        write_indices(INDICES, 0); /* not reported: the copy (degenerate) stands, the range is not direct */
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_close(x);
+    }
+    /* memory a deferred step writes (rt_executor_deferred_writes): a copy over it is drawn from the guest
+       memory from then on, and a range there is not copied, so a write not reported shows at once */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        rt_executor_deferred_writes(x, at(INDICES) + 4, 4);
+        write_indices(INDICES, 1);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_deferred_writes(x, at(OTHER) + 8, 4);
+        write_indices(OTHER, 0);
+        CHECK(indexed_draw_misses(x, OTHER, k++) == 0);
+        write_indices(OTHER, 1);
+        CHECK(indexed_draw_misses(x, OTHER, k++) == all);
+        rt_executor_close(x);
+    }
+    /* a range whose memory changed three times after its copy is drawn from the guest memory, so a write
+       not reported shows at once */
+    k = 0, x = index_copy_executor(fd, 1, NULL);
+    if (x) {
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        for (int change = 0; change < 3; change++) {
+            write_indices(INDICES, change % 2 == 0);
+            reported_write.pool_offset = INDICES, reported_write.length = 12;
+            CHECK(indexed_draw_misses(x, INDICES, k++) == (change % 2 == 0 ? all : 0));
+        }
+        write_indices(INDICES, 0); /* the third change made it direct: this write, not reported, shows at once */
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_close(x);
+    }
+    /* two copies fill a 512-byte buffer (each placed at a multiple of 256): the third drops both, and the
+       next drop, soon after, pauses copying (a write not reported then shows at once) */
+    k = 0, x = index_copy_executor(fd, 1, "512");
+    if (x) {
+        write_indices(INDICES, 0), write_indices(OTHER, 0), write_indices(THIRD, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        CHECK(indexed_draw_misses(x, OTHER, k++) == 0);
+        write_indices(INDICES, 1); /* not reported */
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        CHECK(indexed_draw_misses(x, THIRD, k++) == 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all); /* dropped, so copied again: the degenerate one */
+        CHECK(indexed_draw_misses(x, OTHER, k++) == 0); /* the second drop */
+        CHECK(indexed_draw_misses(x, THIRD, k++) == 0);
+        write_indices(OTHER, 1);
+        CHECK(indexed_draw_misses(x, OTHER, k++) == all);
+        rt_executor_close(x);
+    }
+    /* no copy: the range is more than a quarter of the buffer, the buffer has no bytes, or there is no
+       watch; the write not reported shows at once */
+    const struct { int watched; const char *bytes; } direct[] = {{1, "16"}, {1, "0"}, {0, NULL}};
+    for (size_t i = 0; i < sizeof direct / sizeof *direct; i++) {
+        k = 0, x = index_copy_executor(fd, direct[i].watched, direct[i].bytes);
+        if (!x) continue;
+        write_indices(INDICES, 0);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == 0);
+        write_indices(INDICES, 1);
+        CHECK(indexed_draw_misses(x, INDICES, k++) == all);
+        rt_executor_close(x);
+    }
+    reported_write.length = 0;
+}
+
 /* With the CPU's writes watched and a guard: an image that took a guarded target's texels on the GPU
    (image_from_target) holds what the target's write-back puts in its memory, so it is not loaded again
    after it: memory changed behind the watch's back (not reported) still shows the draw, as it would for
@@ -3785,7 +4315,7 @@ static void copied_image_after_write_back(int fd)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0};
+    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&watched_guarded, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3813,7 +4343,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -4092,9 +4622,20 @@ static int scale_add_dispatch(rt_executor *x, uint64_t buffer, uint64_t code, ui
    or driver), translates it and makes its pipeline as it opens, so its dispatch finds the translation
    kept; one more executor finds the translation as it opens. BB_LAUNCH_COMPILE=0 makes none. The
    workers run while the game does: a dispatch that meets the shader first, with empty caches again,
-   makes it or waits for the worker making it, and the shader is translated once. */
-static void launch_compiles(const rt_executor_memory *memory)
+   makes it or waits for the worker making it, and the shader is translated once. launch_progress
+   hears 0 of 1 as the workers start and 1 of 1 when they are done. */
+static atomic_size_t progress_calls, progress_done, progress_count;
+static void count_launch_progress(size_t done, size_t count)
 {
+    atomic_fetch_add(&progress_calls, 1);
+    atomic_store(&progress_done, done), atomic_store(&progress_count, count);
+}
+
+static void launch_compiles(const rt_executor_memory *shared)
+{
+    rt_executor_memory told = *shared;
+    told.launch_progress = count_launch_progress;
+    const rt_executor_memory *memory = &told;
     enum { LAUNCH_BUFFER = 0xc0e50000, LAUNCH_CODE = 0x3100, INPUT = 0x23000, OUTPUT = 0x24000 };
     char directory[] = "/tmp/pb-launch-XXXXXX", catalog[64], translations[3][64], pipelines[3][64], error[256] = "";
     CHECK(mkdtemp(directory) != NULL);
@@ -4113,6 +4654,7 @@ static void launch_compiles(const rt_executor_memory *memory)
         setenv("BB_PIPELINE_CACHE", pipelines[file_of_run[run]], 1);
         if (run == 3) setenv("BB_LAUNCH_COMPILE", "0", 1);
         rt_executor *x = NULL;
+        atomic_store(&progress_calls, 0);
         const int opened = rt_executor_open(memory, &x, error, sizeof error);
         unsetenv("BB_LAUNCH_COMPILE");
         CHECK(opened == 0);
@@ -4128,6 +4670,9 @@ static void launch_compiles(const rt_executor_memory *memory)
         }
         rt_executor_launch_compiles(x, &shaders, &translated, &compiled);
         if (run == 0 || run == 3) CHECK(shaders == 0 && translated == 0 && compiled == 0);
+        if (run == 0 || run == 3) CHECK(atomic_load(&progress_calls) == 0);
+        if (run == 1 || run == 2)
+            CHECK(atomic_load(&progress_calls) == 2 && atomic_load(&progress_done) == 1 && atomic_load(&progress_count) == 1);
         if (run == 1) CHECK(shaders == 1 && translated == 1 && compiled == 1);
         if (run == 2) CHECK(shaders == 1 && translated == 0 && compiled <= 1); /* compiled again without cache control */
         CHECK(scale_add_dispatch(x, LAUNCH_BUFFER, at(LAUNCH_CODE), at(INPUT), at(OUTPUT)));
@@ -4150,7 +4695,7 @@ static void async_pipelines(int fd)
 {
     enum { ASYNC_BUFFER = 0xc0e10000, ASYNC_TARGET = 0x3600000 };
     const int attempts = 3000;
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, NULL};
     rt_executor *x = NULL;
     char error[256] = "";
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
@@ -4193,7 +4738,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0, NULL};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
@@ -4270,6 +4815,7 @@ int main(void)
     metadata_store_waits(x);
     metadata_store_clears(x);
     watched_memory(fd);
+    index_copies(fd);
     collect_when_due(fd);
     watched_table_copy(fd);
     copied_image_after_write_back(fd);
@@ -4938,6 +5484,11 @@ int main(void)
     guarded_depth_read(fd, 4);
     guarded_depth_read(fd, 2);
     guarded_target_fill(fd);
+    target_copy_test(fd, 0);
+    target_copy_test(fd, 1);
+    target_copy_test(fd, 2);
+    target_copy_test(fd, 3);
+    target_copy_test(fd, 4);
     float_targets(x);
     compressed_image(x);
     bc6h_image(x);
