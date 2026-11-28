@@ -2599,6 +2599,300 @@ static void depth_and_strips(rt_executor *x)
     memcpy(colors, saved_colors, sizeof saved_colors);
 }
 
+/* A colour storage image shares the stencil's base, but uses four-byte texels and another tiling
+   mode. One lane changes only its first texel. Keep the latest stencil bytes through one owner,
+   A/B/A replacements, disjoint scissored writes and masked writes. Both depth views then compare
+   the shared plane, including the bytes changed by the colour store. */
+static void stencil_storage_alias(const rt_executor_memory *memory)
+{
+    enum { DEPTH = 0x3940000, OTHER_DEPTH = 0x3960000, STENCIL = 0x3980000, MARK = 0x3990000, TESTED = 0x3991000,
+           DRAW = 0xc1510000, COMPUTE = 0xc1520000, CODE = 0x3200, WIDTH = 256, HEIGHT = 128, PLANE_BYTES = WIDTH * HEIGHT,
+           COLOUR_PITCH = 128, MARK_VALUE = 0x7f, READBACK_TARGETS = 4,
+           PA_SC_MODE_CNTL_0 = 0xa292, PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_VPORT_SCISSOR_0_BR = 0xa095,
+           VPORT_SCISSOR_ENABLE = 2, WINDOW_OFFSET_DISABLE = 1u << 31 };
+    enum { SINGLE_OWNER, SHARED_REPLACE, SHARED_REGIONS, SHARED_MASKS, SHARED_CLEAR, SCENARIOS };
+    char error[256] = "";
+    for (unsigned scenario = SINGLE_OWNER; scenario < SCENARIOS; scenario++) {
+        rt_executor *x = NULL;
+        CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+        if (!x) return;
+        uint8_t *stencil_memory = (uint8_t *)(uintptr_t)at(STENCIL);
+        memset(stencil_memory, 0xa5, PLANE_BYTES + 1);
+        memset((void *)(uintptr_t)at(TESTED), 0, READBACK_TARGETS * SIZE * SIZE * sizeof(uint32_t));
+        uint32_t depth = (uint32_t)(at(DEPTH) >> 8);
+        const uint32_t stencil = (uint32_t)(at(STENCIL) >> 8);
+#define ALIASED_DEPTH {0xa010, 3}, {0xa011, 0x20000001}, {0xa014, depth}, {0xa015, stencil}, \
+                      {0xa016, (WIDTH / 8 - 1) | (HEIGHT / 8 - 1) << 11}, {0xa017, PLANE_BYTES / 64 - 1}, {0xa002, 0}
+        const unsigned owners = scenario == SINGLE_OWNER ? 1 : 2, draws = owners == 1 ? 1 : 3;
+        for (unsigned i = 0; i < draws; i++) {
+            depth = (uint32_t)(at(i == 1 ? OTHER_DEPTH : DEPTH) >> 8);
+            const uint32_t value = owners == 1 ? MARK_VALUE : 0x11 * (i + 1);
+            const uint32_t mask = scenario != SHARED_MASKS || i == 0 ? 0xff : i == 1 ? 0x0f : 0xf0;
+            const int scissor = scenario == SHARED_REGIONS && i != 0;
+            const uint32_t left = scissor && i == 1 ? SIZE / 2 : 0, right = scissor && i == 2 ? SIZE / 2 : SIZE;
+            const uint32_t ops = scenario == SHARED_CLEAR && i == 0 ? 0 : 0x30030;
+            const uint32_t mark[][2] = {ALIASED_DEPTH, {0xa10c, mask << 16 | 0xff00 | value}, {0xa10b, ops}, {0xa200, 1 | 7u << 8},
+                                       {PA_SC_MODE_CNTL_0, scissor ? VPORT_SCISSOR_ENABLE : 0},
+                                       {PA_SC_VPORT_SCISSOR_0_TL, WINDOW_OFFSET_DISABLE | left},
+                                       {PA_SC_VPORT_SCISSOR_0_BR, SIZE << 16 | right}};
+            const int ran = run_counted(x, DRAW, at(MARK), mark, sizeof mark / sizeof *mark, 3, error, sizeof error);
+            if (ran) fprintf(stderr, "stencil owner scenario %u, draw %u: %s\n", scenario, i, error);
+            CHECK(ran == 0);
+        }
+
+        memcpy((void *)(uintptr_t)at(CODE), image_clear_tile, sizeof image_clear_tile);
+        const uint64_t code = at(CODE);
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 3, 16 << 1, 1, 1, 1};
+        uint32_t image[8];
+        image_descriptor(image, at(STENCIL), 6, 7, SIZE, SIZE);
+        image[3] = (image[3] & ~0xfffu) | 0x3ac | 14u << 20; /* RGB with constant alpha, Thin2DThin */
+        image[4] = (COLOUR_PITCH - 1) << 13;
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 8, image, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        const int stored = rt_executor_run(x, COMPUTE, 0x40, error, sizeof error);
+        if (stored) fprintf(stderr, "colour storage over stencil: %s\n", error);
+        CHECK(stored == 0);
+        if (stored) {
+            rt_executor_close(x);
+            return;
+        }
+
+        const uint32_t packed = small_float_bits(0.25f, 6) | small_float_bits(0.5f, 6) << 11 | small_float_bits(0.75f, 5) << 22;
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(0, 1, WIDTH, HEIGHT, &layout, error, sizeof error) == 0);
+        uint8_t expected[PLANE_BYTES] = {0};
+        for (unsigned y = 0; y < SIZE; y++)
+            for (unsigned px = 0; px < SIZE; px++) {
+                uint8_t value = 0x33;
+                if (scenario == SINGLE_OWNER) value = MARK_VALUE;
+                else if (scenario == SHARED_MASKS) value = 0x32;
+                else if (scenario == SHARED_REGIONS && px >= SIZE / 2) value = 0x22;
+                expected[rt_tiling_offset(&layout, px, y, 0)] = value;
+            }
+        memcpy(expected, &packed, sizeof packed);
+        unsigned wrong_bytes = 0;
+        for (unsigned i = 0; i < sizeof expected; i++)
+            wrong_bytes += stencil_memory[i] != expected[i];
+        if (wrong_bytes) fprintf(stderr, "stencil owner scenario %u: %u incorrect bytes\n", scenario, wrong_bytes);
+        CHECK(wrong_bytes == 0);
+        CHECK(stencil_memory[PLANE_BYTES] == 0xa5);
+
+        for (unsigned owner = 0; owner < owners; owner++) {
+            depth = (uint32_t)(at(owner ? OTHER_DEPTH : DEPTH) >> 8);
+            const unsigned references = scenario == SHARED_REGIONS ? 2 : 1;
+            for (unsigned i = 0; i < references; i++) {
+                const uint32_t reference = scenario == SINGLE_OWNER ? MARK_VALUE : scenario == SHARED_MASKS ? 0x32 : i ? 0x22 : 0x33;
+                const uint64_t target = at(TESTED) + (owner * 2 + i) * SIZE * SIZE * 4;
+                const uint32_t test[][2] = {ALIASED_DEPTH, {0xa10c, 0xffff00 | reference}, {0xa10b, 0}, {0xa200, 1 | 2u << 8}};
+                CHECK(run_counted(x, DRAW, target, test, sizeof test / sizeof *test, 3, error, sizeof error) == 0);
+                uint32_t pixels[SIZE * SIZE];
+                CHECK(rt_executor_read_target(x, target, pixels, SIZE, SIZE, error, sizeof error) == 0);
+                unsigned misses = 0;
+                for (unsigned y = 0; y < SIZE; y++)
+                    for (unsigned px = 0; px < SIZE; px++)
+                        misses += ((pixels[y * SIZE + px] >> 24) == 0xff) != (expected[rt_tiling_offset(&layout, px, y, 0)] == reference);
+                CHECK(misses == 0);
+            }
+        }
+        CHECK(memcmp(stencil_memory, expected, sizeof expected) == 0);
+        CHECK(stencil_memory[PLANE_BYTES] == 0xa5);
+#undef ALIASED_DEPTH
+        rt_executor_close(x);
+    }
+}
+
+/* The two aspects have independent layouts. A zero stencil base leaves its attachment private. */
+typedef struct {
+    uint64_t depth, stencil;
+    uint32_t width, height, span, slice, depth_tile, stencil_tile;
+} stencil_view;
+
+static int run_stencil_view(rt_executor *x, const stencil_view *v, uint64_t target, uint32_t reference, uint32_t mask,
+                            unsigned left, unsigned right, char error[256])
+{
+    const uint32_t registers[][2] = {
+        {0xa010, 3 | v->depth_tile << 20}, {0xa011, 1 | v->stencil_tile << 20},
+        {0xa014, (uint32_t)(v->depth >> 8)}, {0xa015, (uint32_t)(v->stencil >> 8)},
+        {0xa016, (v->width / 8 - 1) | (v->height / 8 - 1) << 11}, {0xa017, v->span / 64 - 1},
+        {0xa002, v->slice | v->slice << 13}, {0xa10c, mask << 16 | 0xff00 | reference},
+        {0xa10b, mask ? 0x30030 : 0}, {0xa200, 1 | (mask ? 7u : 2u) << 8},
+        {0xa292, 2}, {0xa094, 1u << 31 | left}, {0xa095, SIZE << 16 | right}
+    };
+    error[0] = 0;
+    return run_counted(x, 0xc1530000, target, registers, sizeof registers / sizeof *registers, 3, error, 256);
+}
+
+static void expected_stencil_write(uint8_t *expected, const stencil_view *v, uint64_t base, uint8_t reference, uint8_t mask,
+                                    unsigned left, unsigned right)
+{
+    rt_tiling layout;
+    char error[256];
+    CHECK(rt_tiling_layout(v->stencil_tile, 1, v->width, v->height, &layout, error, sizeof error) == 0);
+    for (unsigned y = 0; y < SIZE; y++)
+        for (unsigned col = left; col < right; col++) {
+            const uint64_t offset = v->stencil + (uint64_t)v->slice * v->span - base + rt_tiling_offset(&layout, col, y, 0);
+            expected[offset] = (expected[offset] & ~mask) | (reference & mask);
+        }
+}
+
+static void check_stencil_view(rt_executor *x, const stencil_view *v, const uint8_t *expected, uint64_t base, uint64_t target,
+                               uint8_t reference)
+{
+    char error[256];
+    const int ran = run_stencil_view(x, v, target, reference, 0, 0, SIZE, error);
+    if (ran) fprintf(stderr, "shared stencil compare: %s\n", error);
+    CHECK(ran == 0);
+    if (ran) return;
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(v->stencil_tile, 1, v->width, v->height, &layout, error, sizeof error) == 0);
+    uint32_t pixels[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, target, pixels, SIZE, SIZE, error, sizeof error) == 0);
+    unsigned wrong = 0;
+    for (unsigned y = 0; y < SIZE; y++)
+        for (unsigned col = 0; col < SIZE; col++) {
+            const uint64_t offset = v->stencil + (uint64_t)v->slice * v->span - base + rt_tiling_offset(&layout, col, y, 0);
+            wrong += ((pixels[y * SIZE + col] >> 24) == 0xff) != (expected[offset] == reference);
+        }
+    if (wrong) fprintf(stderr, "stencil view %#llx, reference %#x: %u wrong pixels\n", (unsigned long long)v->depth, reference, wrong);
+    CHECK(wrong == 0);
+}
+
+/* B's first draw must load A, both for a partial write and a read-only EQUAL/KEEP test. A third
+   view takes and returns the same bytes; loading stencil must not invent valid depth for B. */
+static void stencil_late_views(const rt_executor_memory *memory)
+{
+    enum { DEPTH = 0x3a00000, STENCIL = 0x3a60000, TARGET = 0x3a80000, WIDTH = 256, HEIGHT = 128, BYTES = WIDTH * HEIGHT };
+    enum { PARTIAL_WRITE, READ_ONLY, THIRD_VIEW, SEPARATE_DEPTH_TILE, CASES };
+    char error[256];
+    for (unsigned scenario = 0; scenario < CASES; scenario++) {
+        rt_executor *x = NULL;
+        CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+        if (!x) return;
+        memset((void *)(uintptr_t)at(STENCIL), 0xa5, BYTES + 1);
+        memset((void *)(uintptr_t)at(TARGET), 0, 0x8000);
+        stencil_view views[3] = {{.depth = at(DEPTH), .stencil = at(STENCIL), .width = WIDTH, .height = HEIGHT, .span = BYTES}};
+        views[0].depth_tile = scenario == SEPARATE_DEPTH_TILE ? 1 : 0;
+        views[1] = views[0], views[1].depth = at(DEPTH + 0x20000), views[1].depth_tile = 0;
+        views[2] = views[1], views[2].depth = at(DEPTH + 0x40000);
+        uint8_t expected[BYTES] = {0};
+        CHECK(run_stencil_view(x, &views[0], at(TARGET), 0x11, 0xff, 0, SIZE, error) == 0);
+        expected_stencil_write(expected, &views[0], at(STENCIL), 0x11, 0xff, 0, SIZE);
+        if (scenario == READ_ONLY) {
+            check_stencil_view(x, &views[1], expected, at(STENCIL), at(TARGET + 0x1000), 0x11);
+            /* A loaded stencil aspect cannot satisfy a depth EQUAL test on B's unwritten depth. */
+            const uint32_t depth_test[][2] = {{0xa010, 3}, {0xa011, 1}, {0xa014, (uint32_t)(views[1].depth >> 8)},
+                {0xa015, (uint32_t)(at(STENCIL) >> 8)}, {0xa016, (WIDTH / 8 - 1) | (HEIGHT / 8 - 1) << 11},
+                {0xa017, BYTES / 64 - 1}, {0xa200, 2 | 2u << 4}};
+            CHECK(run_counted(x, 0xc1530000, at(TARGET + 0x2000), depth_test, sizeof depth_test / sizeof *depth_test, 3,
+                              error, sizeof error) == -1 && strstr(error, "no draw has written"));
+        } else {
+            CHECK(run_stencil_view(x, &views[1], at(TARGET), 0x22, 0xff, SIZE / 2, SIZE, error) == 0);
+            expected_stencil_write(expected, &views[1], at(STENCIL), 0x22, 0xff, SIZE / 2, SIZE);
+            if (scenario == THIRD_VIEW) {
+                CHECK(run_stencil_view(x, &views[2], at(TARGET), 3, 0x0f, 0, SIZE / 2, error) == 0);
+                expected_stencil_write(expected, &views[2], at(STENCIL), 3, 0x0f, 0, SIZE / 2);
+                CHECK(run_stencil_view(x, &views[0], at(TARGET), 0x44, 0xff, SIZE / 2, SIZE, error) == 0);
+                expected_stencil_write(expected, &views[0], at(STENCIL), 0x44, 0xff, SIZE / 2, SIZE);
+            }
+            for (unsigned i = 0; i < (scenario == THIRD_VIEW ? 3u : 2u); i++) {
+                check_stencil_view(x, &views[i], expected, at(STENCIL), at(TARGET + (1 + 2 * i) * 0x1000),
+                                   scenario == THIRD_VIEW ? 0x13 : 0x11);
+                check_stencil_view(x, &views[i], expected, at(STENCIL), at(TARGET + (2 + 2 * i) * 0x1000),
+                                   scenario == THIRD_VIEW ? 0x44 : 0x22);
+            }
+        }
+        CHECK(*(const uint8_t *)(uintptr_t)at(STENCIL + BYTES) == 0xa5);
+        rt_executor_close(x);
+    }
+}
+
+/* A cached stencil image is not permanent ownership of that memory. Switch to a partial overlap,
+   a wider plane or another slice, and return to both views without losing any backing bytes. */
+static void stencil_plane_reuse(const rt_executor_memory *memory)
+{
+    enum { DEPTH = 0x3b00000, STENCIL = 0x3ba0000, TARGET = 0x3bc0000, WIDTH = 256, HEIGHT = 128,
+           BYTES = WIDTH * HEIGHT, MEMORY_BYTES = 2 * BYTES + 256 };
+    enum { PARTIAL, WIDER, DISJOINT_OWNERS, SLICE, ZERO_BASE, ZERO_WIDER, ZERO_SLICE, CASES };
+    char error[256];
+    for (unsigned scenario = 0; scenario < CASES; scenario++) {
+        rt_executor *x = NULL;
+        CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+        if (!x) return;
+        memset((void *)(uintptr_t)at(STENCIL), 0xa5, MEMORY_BYTES);
+        memset((void *)(uintptr_t)at(TARGET), 0, 0x3000);
+        *(uint8_t *)(uintptr_t)at(STENCIL + MEMORY_BYTES) = 0xa5;
+        const int absent = scenario >= ZERO_BASE;
+        stencil_view a = {.depth = at(DEPTH), .stencil = absent ? 0 : at(STENCIL), .width = WIDTH, .height = HEIGHT, .span = BYTES};
+        stencil_view b = a;
+        b.depth += 0x40000;
+        if (scenario == PARTIAL) b.stencil += 256;
+        if (scenario == WIDER || scenario == DISJOINT_OWNERS || scenario == ZERO_WIDER) b.width *= 2, b.span *= 2;
+        if (scenario == SLICE) b.slice = 1, b.depth -= BYTES * 4, b.stencil -= BYTES;
+        if (scenario == ZERO_SLICE) b.slice = 1;
+        uint8_t expected[MEMORY_BYTES];
+        memset(expected, 0xa5, sizeof expected);
+        if (!absent) memset(expected, 0, BYTES); /* A starts cleared; bytes outside it retain the old memory. */
+        CHECK(run_stencil_view(x, &a, at(TARGET), 0x11, 0xff, 0, SIZE, error) == 0);
+        if (scenario == DISJOINT_OWNERS) {
+            stencil_view c = a;
+            c.depth += 0x20000, c.stencil += BYTES;
+            CHECK(run_stencil_view(x, &c, at(TARGET), 0x33, 0xff, 0, SIZE, error) == 0);
+            memset(expected + BYTES, 0, BYTES);
+            expected_stencil_write(expected, &c, at(STENCIL), 0x33, 0xff, 0, SIZE);
+        }
+        CHECK(run_stencil_view(x, &b, at(TARGET), 0x22, 0xff, SIZE / 2, SIZE, error) == 0);
+        if (absent) {
+            CHECK(run_stencil_view(x, &a, at(TARGET + 0x1000), 0x11, 0, 0, SIZE, error) == 0);
+            check_triangle(x, at(TARGET + 0x1000));
+            CHECK(run_stencil_view(x, &b, at(TARGET + 0x2000), 0x22, 0, 0, SIZE, error) == 0);
+            uint32_t pixels[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(TARGET + 0x2000), pixels, SIZE, SIZE, error, sizeof error) == 0);
+            for (unsigned y = 0; y < SIZE; y++)
+                for (unsigned col = 0; col < SIZE; col++) CHECK(((pixels[y * SIZE + col] >> 24) == 0xff) == (col >= SIZE / 2));
+        } else {
+            expected_stencil_write(expected, &a, at(STENCIL), 0x11, 0xff, 0, SIZE);
+            expected_stencil_write(expected, &b, at(STENCIL), 0x22, 0xff, SIZE / 2, SIZE);
+            check_stencil_view(x, &a, expected, at(STENCIL), at(TARGET + 0x1000), 0x11);
+            check_stencil_view(x, &b, expected, at(STENCIL), at(TARGET + 0x2000), 0x22);
+            /* Returning to A publishes B, and returning to B publishes A: every byte must agree. */
+        }
+        CHECK(memcmp((const void *)(uintptr_t)at(STENCIL), expected, sizeof expected) == 0);
+        CHECK(*(const uint8_t *)(uintptr_t)at(STENCIL + MEMORY_BYTES) == 0xa5);
+        rt_executor_close(x);
+    }
+}
+
+/* Unknown tiling, insufficient slice storage and a changed cached image still fail explicitly. */
+static void stencil_unsupported_views(const rt_executor_memory *memory)
+{
+    enum { DEPTH = 0x3c00000, STENCIL = 0x3c40000, TARGET = 0x3c60000, WIDTH = 256, HEIGHT = 128, BYTES = WIDTH * HEIGHT };
+    enum { UNKNOWN_TILE, SHORT_SPAN, CACHED_DEPTH_TILE, CACHED_STENCIL_TILE, ADJACENT, CASES };
+    char error[256];
+    for (unsigned scenario = 0; scenario < CASES; scenario++) {
+        rt_executor *x = NULL;
+        CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+        if (!x) return;
+        const stencil_view a = {.depth = at(DEPTH), .stencil = at(STENCIL), .width = WIDTH, .height = HEIGHT, .span = BYTES};
+        stencil_view b = a;
+        b.depth += 0x20000;
+        if (scenario == UNKNOWN_TILE || scenario == CACHED_STENCIL_TILE) b.stencil_tile = 1;
+        if (scenario == SHORT_SPAN) b.span /= 2;
+        if (scenario == CACHED_DEPTH_TILE || scenario == CACHED_STENCIL_TILE) b.depth = a.depth;
+        if (scenario == CACHED_DEPTH_TILE) b.depth_tile = 1;
+        if (scenario == ADJACENT) b.stencil += BYTES;
+        CHECK(run_stencil_view(x, &a, at(TARGET), 0x11, 0xff, 0, SIZE, error) == 0);
+        const int ran = run_stencil_view(x, &b, at(TARGET), 0x22, 0xff, 0, SIZE, error);
+        if (scenario == ADJACENT) CHECK(ran == 0);
+        else if (scenario == CACHED_DEPTH_TILE || scenario == CACHED_STENCIL_TILE)
+            CHECK(ran == -1 && strstr(error, "changed size or format or tiling"));
+        else CHECK(ran == -1 && strstr(error, "cannot copy the stencil plane"));
+        rt_executor_close(x);
+    }
+}
+
 /* A vertex shader calling a fetch shader (vertex_calling_fetch, fetch_position_color): its user data
    holds the fetch shader's address and a pointer to a table of the two vertex buffers' descriptors
    (32_32_32_32 float, DST_SEL x, y, z, w); the triangle draws the reference image. */
@@ -5184,6 +5478,126 @@ static void async_pipelines(int fd)
     rt_executor_close(x);
 }
 
+/* Bind the same linear RGBA8 view either for a one-texel store or as the source of a copy to
+   unrelated memory. A source-only binding exercises publication without an alias write-back. */
+static int stencil_colour_dispatch(rt_executor *x, uint64_t address, int read_only, char error[256])
+{
+    enum { CODE = 0x3400, OUTPUT = 0x3ee0000, COMPUTE = 0xc1540000 };
+    const uint32_t *program = read_only ? image_copy : image_clear_tile;
+    const size_t bytes = read_only ? sizeof image_copy : sizeof image_clear_tile;
+    memcpy((void *)(uintptr_t)at(CODE), program, bytes);
+    if (!read_only) {
+        uint32_t *words = (uint32_t *)(uintptr_t)at(CODE);
+        words[1] = 0x3f800000, words[2] = 0x7e0a0280, words[4] = 0x3f800000; /* exact UNORM (1, 0, 1, 1) */
+    }
+    const uint64_t code = at(CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 3, 16 << 1, 1, 1, 1};
+    uint32_t images[16];
+    image_descriptor(images, address, COLOR_8_8_8_8, 0, SIZE, SIZE);
+    image_descriptor(images + 8, at(OUTPUT), COLOR_8_8_8_8, 0, SIZE, SIZE);
+    images[3] |= 8u << 20, images[11] |= 8u << 20; /* linear aligned */
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+    CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, read_only ? 0 : 8, images, 8, error, 256) == 0);
+    if (read_only) CHECK(rt_render_record_user_data(COMPUTE, 0x30, RT_STAGE_COMPUTE, 8, images + 8, 8, error, 256) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(COMPUTE, 0x40, one, error, 256) == 0);
+    size_t count = 0;
+    uint64_t ticket = 0;
+    const rt_render_call *calls = rt_render_submitted(COMPUTE, 0x50, &count);
+    if (rt_executor_record_calls(x, calls, count, &ticket, error, 256)) return -1;
+    return rt_executor_finish(x, error, 256);
+}
+
+static uint32_t rgba_from_bgra(uint32_t p)
+{
+    return (p & 0xff00ff00u) | (p >> 16 & 0xff) | (p & 0xff) << 16;
+}
+
+/* Guarded colour draws stay off the backing memory until an explicit handoff. Check both
+   publication sites, an alias also matching a colour target, and a second store followed by a
+   stencil write: the cached storage image must not supersede those later stencil bytes. */
+static void stencil_colour_handoffs(const rt_executor_memory *memory)
+{
+    enum { DEPTH = 0x3d00000, STENCIL = 0x3da0000, TARGET = 0x3dc0000, WIDTH = 256, HEIGHT = 128, BYTES = WIDTH * HEIGHT };
+    enum { RELOAD_AFTER_COLOUR, READ_AFTER_COLOUR, STORE_OVER_COLOUR, SECOND_STORE, CASES };
+    char error[256];
+    for (unsigned scenario = 0; scenario < CASES; scenario++) {
+        rt_executor_memory with_guard = *memory;
+        with_guard.guard = test_guard, with_guard.unguard = test_unguard;
+        guarded.answer = 0;
+        rt_executor *x = NULL;
+        CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
+        if (!x) return;
+        memset((void *)(uintptr_t)at(STENCIL), 0, BYTES + 1);
+        *(uint8_t *)(uintptr_t)at(STENCIL + BYTES) = 0xa5;
+        memset((void *)(uintptr_t)at(TARGET), 0, 0x3000);
+        stencil_view a = {.depth = at(DEPTH), .stencil = at(STENCIL), .width = WIDTH, .height = HEIGHT, .span = BYTES}, b = a;
+        b.depth += 0x40000;
+        uint8_t expected[BYTES] = {0};
+        CHECK(run_stencil_view(x, &a, at(TARGET), 0x11, 0xff, 0, SIZE, error) == 0);
+        expected_stencil_write(expected, &a, at(STENCIL), 0x11, 0xff, 0, SIZE);
+        if (scenario != SECOND_STORE) {
+            rt_render_forget(), rt_executor_reset(x);
+            uint32_t offset = record_setup(0xc1530000, at(STENCIL), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+            CHECK(rt_render_record_register(0xc1530000, offset, 0xa200, 0, error, sizeof error) == 0);
+            size_t count = 0;
+            uint64_t ticket = 0;
+            const rt_render_call *calls = rt_render_submitted(0xc1530000, record_triangle_draw(0xc1530000, offset + 0x10), &count);
+            CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+            CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+            /* Read the image directly, without resolving the guarded target into guest memory. */
+            uint32_t pixels[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(STENCIL), pixels, SIZE, SIZE, error, sizeof error) == 0);
+            for (unsigned i = 0; i < SIZE * SIZE; i++) {
+                const uint32_t rgba = rgba_from_bgra(pixels[i]);
+                memcpy(expected + i * sizeof rgba, &rgba, sizeof rgba);
+            }
+            CHECK(*(const uint32_t *)(uintptr_t)at(STENCIL) == 0);
+        }
+        if (scenario == RELOAD_AFTER_COLOUR) {
+            check_stencil_view(x, &b, expected, at(STENCIL), at(TARGET + 0x1000), 0xff);
+        } else if (scenario == READ_AFTER_COLOUR) {
+            const int ran = stencil_colour_dispatch(x, at(STENCIL), 1, error);
+            if (ran) fprintf(stderr, "stencil colour read: %s\n", error);
+            CHECK(ran == 0);
+            uint32_t first;
+            memcpy(&first, expected, sizeof first);
+            CHECK(*(const uint32_t *)(uintptr_t)at(0x3ee0000) == first);
+        } else {
+            const int ran = stencil_colour_dispatch(x, at(STENCIL), 0, error);
+            if (ran) fprintf(stderr, "stencil colour store: %s\n", error);
+            CHECK(ran == 0);
+            const uint32_t stored = 0xffff00ffu; /* exact UNORM (1, 0, 1, 1), one texel */
+            memcpy(expected, &stored, sizeof stored);
+            if (scenario == SECOND_STORE) {
+                CHECK(run_stencil_view(x, &a, at(TARGET), 0x66, 0xff, SIZE / 2, SIZE, error) == 0);
+                expected_stencil_write(expected, &a, at(STENCIL), 0x66, 0xff, SIZE / 2, SIZE);
+                CHECK(stencil_colour_dispatch(x, at(STENCIL), 0, error) == 0);
+                CHECK(run_stencil_view(x, &a, at(TARGET), 0x77, 0xff, 0, SIZE / 2, error) == 0);
+                expected_stencil_write(expected, &a, at(STENCIL), 0x77, 0xff, 0, SIZE / 2);
+                /* Publish through a different storage-image entry, leaving the first cached entry
+                   untouched. A later colour target must load these bytes, not take that old image. */
+                CHECK(stencil_colour_dispatch(x, at(STENCIL + 256), 1, error) == 0);
+                const uint32_t keep[][2] = {{0xa200, 0}, {0xa010, 0}, {0xa011, 0}, {0xa1e0, 1u << 30 | 1u << 8}};
+                CHECK(run_counted(x, 0xc1530000, at(STENCIL), keep, sizeof keep / sizeof *keep, 3, error, sizeof error) == 0);
+                uint32_t pixels[SIZE * SIZE];
+                CHECK(rt_executor_read_target(x, at(STENCIL), pixels, SIZE, SIZE, error, sizeof error) == 0);
+                for (unsigned i = 0; i < SIZE * SIZE; i++) {
+                    uint32_t wanted;
+                    memcpy(&wanted, expected + i * sizeof wanted, sizeof wanted);
+                    CHECK(rgba_from_bgra(pixels[i]) == wanted);
+                }
+            } else {
+                check_stencil_view(x, &b, expected, at(STENCIL), at(TARGET + 0x1000), 0xff);
+            }
+        }
+        CHECK(memcmp((const void *)(uintptr_t)at(STENCIL), expected, sizeof expected) == 0);
+        CHECK(*(const uint8_t *)(uintptr_t)at(STENCIL + BYTES) == 0xa5);
+        rt_executor_close(x);
+    }
+}
+
 int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
@@ -5256,6 +5670,10 @@ int main(void)
     const uint32_t line_strips[][2] = {{0xc242, 5}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
+    stencil_storage_alias(&memory);
+    stencil_late_views(&memory);
+    stencil_plane_reuse(&memory);
+    stencil_unsupported_views(&memory);
     clip_control(x);
     multiple_targets(x);
     compute_cleared_target(x);
@@ -5961,6 +6379,7 @@ int main(void)
     image_allocation_pressure(&memory, VK_ERROR_OUT_OF_DEVICE_MEMORY, 1);
     image_allocation_pressure(&memory, VK_ERROR_OUT_OF_HOST_MEMORY, 1);
     pipeline_cache_file(&memory);
+    stencil_colour_handoffs(&memory);
     launch_compiles(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
