@@ -25,6 +25,11 @@ def cases():
             case = fixture(f'real-{suffix}-{handle:x}', receiver, f'buf:out+{offset}')
             case['imports'] = [{'name': 'scePthreadSelf', 'argc': 0, 'ret': hex(handle)}]
             rows.append(case)
+    # A second scripted handle makes an accidental repeated query observable.
+    case = fixture('query-once', 'buf:other', 'buf:out+8')
+    case['imports'] = [{'name': 'scePthreadSelf', 'argc': 0, 'ret': hex(value)}
+                       for value in (0x1122334455667788, 0xfedcba9876543210)]
+    rows.append(case)
     for name, receiver, output in [('distinct', 'buf:other', 'buf:out+24'),
                                    ('aliased', 'buf:out+8', 'buf:out+8'),
                                    ('null-out', 'buf:other', 0)]:
