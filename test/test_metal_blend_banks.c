@@ -416,7 +416,7 @@ int main(void)
         CHECK(cases == 518); CHECK(data_draws == 498); CHECK(refusals == 17); CHECK(api_calls == 518); CHECK(pool_scans == 518);
         CHECK(readbacks == data_draws); CHECK(ticket_waits == 3); CHECK(explicit_submits == 1);
         multiple_targets(f);
-        CHECK(cases == 528); CHECK(api_calls == 528); CHECK(pool_scans == 528); CHECK(refusals == 22);
+        CHECK(cases == 529); CHECK(api_calls == 529); CHECK(pool_scans == 529); CHECK(refusals == 22);
         const int finished = rt_executor_finish(f->executor, error, sizeof error);
         printf("blend-banks FINISH actual=%d\n", finished); CHECK(finished == 0); rt_executor_close(f->executor);
     }
