@@ -5,7 +5,7 @@
 #define TEST_METAL_FRAGMENT_PROGRAMS_H
 #include <stdint.h>
 
-/* User s0/s1 are ordered x/y thresholds; s2 is a red value. Interpolated attr0.xy
+/* User s0/s1 are ordered x/y thresholds; s2 is the negative of the red value. Interpolated attr0.xy
    narrows EXEC to x<s0 && y<s1. Only the red write uses whole-quad EXEC; the saved
    conditional EXEC and then the original coverage EXEC are restored before export.
    Baseline RGBA is (0,.25,.5,1), and no instruction reads the generated SCC flags. */
@@ -22,10 +22,10 @@ static const uint32_t pixel_masked_exec_wqm[] = {
     0xd0020018, 0x00000303, /* v_cmp_lt_f32_e64 s[24:25], v3, s1 */
     0x87941814, /* s_and_b64 s[20:21], s[20:21], s[24:25] */
     0xbe962414, /* s_and_saveexec_b64 s[22:23], s[20:21] */
-    0xbf880004, /* s_cbranch_execz JOIN (four dwords forward) */
+    0xbf880005, /* s_cbranch_execz JOIN (five dwords forward) */
     0xbe9a047e, /* s_mov_b64 s[26:27], exec */
     0xbefe0a7e, /* s_wqm_b64 exec, exec */
-    0x7e080202, /* v_mov_b32_e32 v4, s2 */
+    0xd2200004, 0x20010002, /* v_max_f32_e64 v4, -s2, 0 */
     0xbefe041a, /* s_mov_b64 exec, s[26:27] */
     0xbefe0416, /* JOIN: s_mov_b64 exec, s[22:23] */
     0xf800180f, 0x07060504, /* exp mrt0, v4, v5, v6, v7 done vm */

@@ -373,10 +373,16 @@ static void preserved_guards(Fixture *f)
         geometry(f, SQUARE4); Calls c = {0}; scene(&c, 0, guard == 6 ? 7 : 15); reg(&c, PRIMITIVE, 6);
         if (guard == 0) reg(&c, 0xa1e0, (1u<<30)|2u); /* unsupported SRC_COLOR */
         else if (guard < 4) reg(&c, 0xa200, guard == 3 ? 8u : 1u<<(guard-1));
-        else if (guard == 4) color_target(&c, 1, 1);
+        else if (guard == 4) {
+            color_target(&c, 1, 1);
+            c.call[c.count - 1].u.color_target.target.address = at(TARGET);
+            c.call[3].u.pixel_shader.color_formats = 0x99;
+            c.call[3].u.pixel_shader.color_mask = 0xff;
+            reg(&c, TARGET_MASK, 0xff);
+        }
         else if (guard == 5) c.call[3].u.pixel_shader.color_mask = 0xff;
         draw(&c, AUTO, 4);
-        const char *reason = guard == 0 ? "blending" : guard == 3 ? "DEPTH_BOUNDS_ENABLE" : guard < 3 ? "depth or stencil" : guard == 4 ? "render targets beyond slot 0" : guard == 5 ? "CB_SHADER_MASK" : "colour write mask";
+        const char *reason = guard == 0 ? "blending" : guard == 3 ? "DEPTH_BOUNDS_ENABLE" : guard < 3 ? "depth or stencil" : guard == 4 ? "overlapping color attachments" : guard == 5 ? "CB_SHADER_MASK" : "colour write mask";
         char id[96]; snprintf(id, sizeof id, "profile/guard%u", guard); unchanged(f, id, &c, RUN, reason);
         rt_executor_reset(f->executor); snprintf(id, sizeof id, "profile/guard%u/recovery", guard);
         positive(f, id, SQUARE4, 6, AUTO, guard & 1, 15);

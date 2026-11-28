@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera orientation stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Build the basis, restore the saved basis on NaN, then publish the chased point.
 #include "chase.h"
@@ -10,11 +11,11 @@ namespace camera::update::orientation
 namespace math = camera::update::math;
 namespace direction = camera::update::wing_escape;
 
-RT_GLOBAL(0x04cf24b0, unit_z, const Vec4);
-RT_GLOBAL(0x04cf24d0, xyz_bits, const Vec4);
-RT_GLOBAL(0x04cf2640, exponent_bits, const Vec4);
-RT_GLOBAL(0x04d25e6c, one, const float);
-RT_GLOBAL(0x04d25e88, near_vertical_threshold, const float);
+using constants::unit_z;
+using constants::xyz_bits;
+using constants::exponent_bits;
+inline constexpr auto one = constants::scalar_one;
+inline constexpr auto near_vertical_threshold = constants::distance_threshold;
 
 struct OrientationPreparation
 {

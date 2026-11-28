@@ -120,6 +120,75 @@ static void fill_levels(unsigned char *pool,const uint32_t words[8])
         rt_tiling_tile(&levels[level].layout,rows,pool+d.address-guest_base+levels[level].offset,levels[level].columns,levels[level].rows,d.layers);free(rows);
     }
 }
+static void pixel_cube(rt_executor *x, unsigned char *pool)
+{
+    enum { FACES = 6, MAX_SIDE = 8, SWIZZLE = 6 | 5 << 3 | 4 << 6 | 1 << 9 };
+    const unsigned sides[] = {1, MAX_SIDE};
+    for (unsigned shape = 0; shape < sizeof sides / sizeof sides[0]; ++shape) {
+        const unsigned side = sides[shape], tx = shape ? 1 : 0, ty = shape ? 2 : 0;
+        uint32_t user[16] = {0};
+        descriptor(user,IMAGE,10,0,side,side,8,13,RT_IMAGE_CUBE,1,0,0,0,shape ? 5 : 35,SWIZZLE);
+        rt_tiling_level layout;
+        char error[128] = "";
+        const int status = rt_tiling_mip_chain(13,4,1,0,8,side,side,side,1,FACES,&layout,error,sizeof error);
+        CHECK(status == 0);
+        if (status) return;
+        unsigned char texels[FACES * MAX_SIDE * MAX_SIDE * 4];
+        for (unsigned face = 0; face < FACES; ++face)
+            for (unsigned row = 0; row < side; ++row)
+                for (unsigned col = 0; col < side; ++col) {
+                    unsigned char *rgba = texels + ((face * side + row) * side + col) * 4;
+                    rgba[0] = 17 + face * 23;
+                    rgba[1] = 29 + row * 7;
+                    rgba[2] = 41 + col * 13;
+                    rgba[3] = 250;
+                }
+        rt_tiling_tile(&layout.layout,texels,pool + IMAGE,side,side,FACES);
+        uint32_t *input = (uint32_t *)(pool + OUTPUT_DESCRIPTOR);
+        buffer_descriptor(input,PROBE);
+        rt_executor_reset(x);
+        for (unsigned face = 0; face < FACES; ++face) {
+            const float expected[4] = {(41 + tx * 13) / 255.0f, (29 + ty * 7) / 255.0f,
+                                       (17 + face * 23) / 255.0f, 1};
+            pointer(user + 12,OUTPUT_DESCRIPTOR);
+            user[8] = 2 | 2 << 3; /* Clamp distinguishes guest face coordinates from native UVs. */
+            user[9] = user[10] = user[11] = 0;
+            user[14] = bits(1 + (tx + 0.5f) / side);
+            user[15] = bits(1 + (ty + 0.5f) / side);
+            input[4] = bits((float)face);
+            if (!probe(x,pool,image_probe_sample_cube,sizeof image_probe_sample_cube,user,0xffff,NULL))
+                float_results(pool,expected,0.00001f);
+            buffer_descriptor(user + 12,PROBE);
+            user[8] = tx; user[9] = ty; user[10] = face;
+            if (!probe(x,pool,image_probe_load,sizeof image_probe_load,user,0xffff,NULL))
+                float_results(pool,expected,0.00001f);
+        }
+        user[10] = FACES;
+        const float outside[4] = {0,0,0,1};
+        if (!probe(x,pool,image_probe_load,sizeof image_probe_load,user,0xffff,NULL))
+            float_results(pool,outside,0.00001f);
+    }
+
+    uint32_t user[16] = {0};
+    descriptor(user,IMAGE,10,0,8,8,8,13,RT_IMAGE_CUBE,1,0,0,0,5,IDENTITY);
+    buffer_descriptor(user + 12,PROBE);
+    const struct { unsigned word; uint32_t bits_to_toggle; } rejected[] = {
+        {2, 1u << 14}, /* Nonsquare face. */
+        {3, 1u << 16}, /* Additional mip. */
+        {3, 1u << 25}, /* Padded faces. */
+        {4, 1},        /* Two cubes. */
+        {5, 1},        /* Nonzero first face. */
+        {5, 1u << 13}, /* Incomplete face interval. */
+    };
+    for (unsigned i = 0; i < sizeof rejected / sizeof rejected[0]; ++i) {
+        const unsigned word = rejected[i].word;
+        user[word] ^= rejected[i].bits_to_toggle;
+        probe(x,pool,image_probe_load,sizeof image_probe_load,user,0xffff,"pixel cube requires");
+        CHECK(((uint32_t *)(pool + PROBE))[0] == SENTINEL);
+        user[word] ^= rejected[i].bits_to_toggle;
+    }
+}
+
 static void gpu_update(rt_executor *x,unsigned char *pool,unsigned destination)
 {
     memset(pool+COMPUTE_INPUT,0,64*sizeof(float));rt_render_call c[3]={{0}};
@@ -407,6 +476,7 @@ int main(void)
     rt_tiling_tile(&fp.layout,(const unsigned char *)values,pool+0x500000,2,2,1);pointer(user+12,OUTPUT_DESCRIPTOR);user[10]=1u<<20|1u<<22;user[14]=user[15]=bits(0.5f);
     rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,NULL);const float fp_result[4]={0.625f,0,1,1};float_results(pool,fp_result,0.00001f);
     rt_executor_close(x);x=NULL;CHECK(rt_executor_open(&memory,&x,error,sizeof error)==0);if(!x)return 1;
+    pixel_cube(x,pool);
     storage_interop(x,pool);
     rt_executor_close(x);CHECK(close(fd)==0);CHECK(munmap(pool,POOL)==0);
     printf("metal images: %u scenarios, %u checks, %u failures\n",scenarios,checks,failures);return failures?1:0;

@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Owned public-API blend-bank isolation tests; no game bytes or private state getter.
-   Higher-bank storage itself is unobservable while every higher target is refused. */
+/* Owned public-API blend-bank isolation and multi-target draw tests. */
 #include "runtime/render_executor.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +8,7 @@
 #include <unistd.h>
 
 enum { POOL_BYTES = 64 << 10, VS_CODE = 0x1000, PS_CODE = 0x2000,
-       POSITIONS = 0x3000, ATTRIBUTES = 0x3100, INDICES16 = 0x4000, INDICES32 = 0x4100,
+       MRT_CODE = 0x2800, POSITIONS = 0x3000, ATTRIBUTES = 0x3100, INDICES16 = 0x4000, INDICES32 = 0x4100,
        VERTEX_WRITES = 0x5000, TARGET = 0x8000, OTHER_TARGET = 0x9000,
        WIDTH = 16, HEIGHT = 16, PIXELS = WIDTH * HEIGHT, TARGET_BYTES = PIXELS * 4,
        WITNESS_WORDS = 8, CALL_LIMIT = 32, BANK_WORDS = 34,
@@ -262,6 +261,88 @@ static void ordering(Fixture *f)
     c = (Calls){0}; reg(&c, BLEND0, 0); scene(&c, 1, 0);
     success(f, "bank0/zero-mask-VS-recovery", &c, AUTO, 1, 1, RUN);
 }
+/* Six FP16_ABGR exports, each with a different RGB value and alpha one.
+   The two literal moves put the half pairs in v2 and v3. */
+static void multiple_targets(Fixture *f)
+{
+    uint32_t program[6 * 6 + 1];
+    size_t words = 0;
+    for (unsigned slot = 0; slot < 6; ++slot) {
+        const unsigned rgb = slot + 1;
+        program[words++] = 0x7e0402ff; /* v_mov_b32 v2, literal */
+        program[words++] = (rgb & 1 ? 0x3c00u : 0) | (rgb & 2 ? 0x3c000000u : 0);
+        program[words++] = 0x7e0602ff; /* v_mov_b32 v3, literal */
+        program[words++] = 0x3c000000u | (rgb & 4 ? 0x3c00u : 0);
+        program[words++] = 0xf800140fu | slot << 4 | (slot == 5 ? 0x800u : 0);
+        program[words++] = 0x00000302;
+    }
+    program[words++] = 0xbf810000;
+    memcpy(f->pool + MRT_CODE, program, words * sizeof *program);
+    rt_executor_reset(f->executor);
+
+    /* Alternate full and sparse writes with the same program. Change only bank
+       5 for one sparse draw, then return to both existing pipeline variants. */
+    const unsigned masks[] = {0x00ffffff, 0x00f000f0, 0x00f000f0, 0x00ffffff, 0x00f000f0, 0x00f000f0};
+    for (unsigned test = 0; test < sizeof masks / sizeof *masks; ++test) {
+        const int blend_to_destination = test == 2;
+        Calls c = {0};
+        scene(&c, 0, masks[test] | 0x0f000000);
+        c.call[3].u.pixel_shader.code = at(MRT_CODE);
+        c.call[3].u.pixel_shader.color_formats = 0x00444444;
+        c.call[3].u.pixel_shader.color_mask = 0x00ffffff;
+        for (unsigned slot = 1; slot <= 6; ++slot) {
+            color_target(&c, slot, 1);
+            rt_color_target *target = &c.call[c.count - 1].u.color_target.target;
+            target->address = at(TARGET + slot * TARGET_BYTES);
+            if (slot == 5) target->component_swap = 1; /* BGRA */
+            if (slot == 6) target->format = 0; /* Bound without an export. */
+        }
+        /* On the last draw keep bank 5 RGB from the shader and alpha from the
+           destination. The other active bank still writes all four channels. */
+        uint32_t control = blend_to_destination ? blend_enable | (1u << 8) : 0;
+        if (test == 5) control = blend_enable | 1u | (1u << 29) | (1u << 24);
+        reg(&c, BLEND0 + 5, control);
+        draw(&c, AUTO);
+        memset(f->pool + TARGET, CANARY, 7 * TARGET_BYTES);
+        memset(f->pool + VERTEX_WRITES, 0, WITNESS_WORDS * sizeof(uint32_t));
+        memcpy(f->expected, f->pool, POOL_BYTES);
+        for (unsigned i = 0; i < 3; ++i)
+            memcpy(f->expected + VERTEX_WRITES + i * sizeof vertex_marker, &vertex_marker, sizeof vertex_marker);
+        for (unsigned slot = 0; slot < 6; ++slot) {
+            if ((slot == 5 && blend_to_destination) || !(masks[test] >> (4 * slot) & 15u)) continue;
+            const unsigned rgb = slot + 1;
+            unsigned red = rgb & 1 ? 0xffu : 0, blue = rgb & 4 ? 0xffu : 0;
+            if (slot == 5) { const unsigned swap = red; red = blue; blue = swap; }
+            const uint32_t alpha = slot == 5 && test == 5 ? CANARY : 0xffu;
+            const uint32_t value = alpha << 24 | red | (rgb & 2 ? 0xff00u : 0) | blue << 16;
+            for (unsigned i = 0; i < PIXELS; ++i)
+                memcpy(f->expected + TARGET + slot * TARGET_BYTES + i * sizeof value, &value, sizeof value);
+        }
+        char id[64];
+        snprintf(id, sizeof id, "target/multiple-outputs/%u", test);
+        invoke(f, id, &c, RUN, NULL);
+        pool_bad(f, id);
+        ++cases;
+    }
+
+    for (unsigned test = 0; test < 5; ++test) {
+        static const char *const reasons[] = {"color attachment extents", "overlapping color attachments",
+            "colour write mask", "has no shader output", "outside the modeled range"};
+        Calls c = {0};
+        scene(&c, 0, test == 2 ? 0x7f : 0xff);
+        c.call[3].u.pixel_shader.color_formats = 0x99;
+        c.call[3].u.pixel_shader.color_mask = 0xff;
+        color_target(&c, test == 4 ? RT_COLOR_TARGETS : 1u, 1);
+        rt_color_target *target = &c.call[c.count - 1].u.color_target.target;
+        if (test == 0) target->pitch = WIDTH * 2;
+        if (test == 1) target->address = at(TARGET);
+        draw(&c, AUTO);
+        char id[64];
+        snprintf(id, sizeof id, "target/multiple-guards/%u", test);
+        unchanged(f, id, &c, RUN, reasons[test]);
+    }
+}
+
 static void routes_and_guards(Fixture *f)
 {
     for (unsigned route = DIRECT16; route <= LOGICAL16; ++route) {
@@ -270,10 +351,15 @@ static void routes_and_guards(Fixture *f)
         success(f, id, &c, (Route)route, route & 1, 0, RUN);
     }
     for (unsigned bank = 1; bank < 8; ++bank) {
-        char id[96]; Calls c = {0}; reg(&c, BLEND0 + bank, UINT32_MAX);
-        color_target(&c, bank, 1); scene(&c, 0, 15); draw(&c, AUTO);
-        snprintf(id, sizeof id, "target/bank%u/bound-refusal", bank);
-        unchanged(f, id, &c, RUN, "render targets beyond slot 0");
+        char id[96]; Calls c = {0}; scene(&c, 0, 15u | 15u << (4 * bank));
+        /* The independent alpha operation must still be ADD in each bank. */
+        reg(&c, BLEND0 + bank, blend_enable | (1u << 29) | (1u << 21));
+        color_target(&c, bank, 1);
+        c.call[3].u.pixel_shader.color_formats |= 9u << (4 * bank);
+        c.call[3].u.pixel_shader.color_mask |= 15u << (4 * bank);
+        draw(&c, AUTO);
+        snprintf(id, sizeof id, "target/bank%u/active-blend-refusal", bank);
+        unchanged(f, id, &c, RUN, "separate alpha blending operation");
         c = (Calls){0}; color_target(&c, bank, 0); scene(&c, bank & 1, 15);
         snprintf(id, sizeof id, "target/bank%u/disable-recovery", bank);
         success(f, id, &c, AUTO, bank & 1, 0, RUN);
@@ -285,12 +371,12 @@ static void routes_and_guards(Fixture *f)
         snprintf(reason, sizeof reason, "register %#x:", adjacent[i]); unchanged(f, id, &c, RUN, reason);
         c = (Calls){0}; scene(&c, i, 15); success(f, i ? "unknown/upper-recovery" : "unknown/lower-recovery", &c, AUTO, i, 0, RUN);
     }
-    /* Shader export and channel-mask restrictions remain target0-only. */
+    /* Export formats and shader channel masks must agree per slot. */
     for (unsigned guard = 0; guard < 3; ++guard) {
         Calls c = {0}; scene(&c, guard & 1, guard == 2 ? 7 : 15); reg(&c, BLEND0 + 6, UINT32_MAX);
         if (guard < 2) {
             rt_render_call *ps = &c.call[3];
-            if (guard == 0) ps->u.pixel_shader.color_formats = 0x99;
+            if (guard == 0) ps->u.pixel_shader.color_formats = 0x19;
             else ps->u.pixel_shader.color_mask = 0xff;
         }
         draw(&c, AUTO);
@@ -329,6 +415,8 @@ int main(void)
         higher_words(f); ordering(f); routes_and_guards(f);
         CHECK(cases == 518); CHECK(data_draws == 498); CHECK(refusals == 17); CHECK(api_calls == 518); CHECK(pool_scans == 518);
         CHECK(readbacks == data_draws); CHECK(ticket_waits == 3); CHECK(explicit_submits == 1);
+        multiple_targets(f);
+        CHECK(cases == 528); CHECK(api_calls == 528); CHECK(pool_scans == 528); CHECK(refusals == 22);
         const int finished = rt_executor_finish(f->executor, error, sizeof error);
         printf("blend-banks FINISH actual=%d\n", finished); CHECK(finished == 0); rt_executor_close(f->executor);
     }

@@ -19,7 +19,7 @@ static const uint64_t guest_base = UINT64_C(0x3000000000);
 static unsigned scenarios, pixels_checked, active_samples, expanded_samples, checks, failures;
 #define CHECK(condition) do { ++checks; if (!(condition)) { ++failures; \
     if (failures <= 30) fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); } } while (0)
-_Static_assert(sizeof pixel_masked_exec_wqm == 24 * sizeof(uint32_t), "owned assembled program extent");
+_Static_assert(sizeof pixel_masked_exec_wqm == 25 * sizeof(uint32_t), "owned assembled program extent");
 
 typedef struct {
     const char *name;
@@ -100,7 +100,7 @@ static unsigned setup(rt_executor *executor, rt_render_call calls[16], const Sce
     call->u.user_data.count = 3;
     call->u.user_data.words[0] = bits(scenario->x);
     call->u.user_data.words[1] = bits(scenario->y);
-    call->u.user_data.words[2] = bits(scenario->red);
+    call->u.user_data.words[2] = bits(-scenario->red);
     call = event(calls, &count, RT_CALL_DRAW_AUTO);
     call->u.draw_auto.index_count = 3;
     return count;
