@@ -201,8 +201,9 @@ miscellaneous and cull outputs are rejected. Shader interfaces may use up to 32 
 parameters. Declared vertex parameter and pixel interpolant capacities must cover the translated
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
-Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. The optional front-face input follows the perspective-center pair in VGPR2.
+Pixel exports support RGBA as FP16_ABGR or 32_ABGR at their original locations in the eight
+color slots, perspective-center inputs and no depth export. The optional front-face input
+follows the perspective-center pair in VGPR2.
 Metal supplies its winding through the native fragment built-in. The common translator encodes
 the result as signed floating-point one or integer zero/one according to
 `SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS`. Pixel-position X/Y inputs are rejected explicitly.
@@ -225,11 +226,14 @@ Linear and tiled guest memory retain each format's native encoded bytes.
 Display readback is tightly packed BGRA and requires an 8_8_8_8 target. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
-Target0 supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA factors,
-using the color factors for alpha as well. Other factors or operations, separate alpha,
-ROP3 overrides, reserved fields, non-copy color operations and partial color masks stop with a reason.
-An enabled blend flag has no effect when target 0 is unbound, its channel mask is zero or the
-colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
+Each active color slot supports RGBA8/BGRA8 UNORM or sRGB and the float formats above.
+Active attachments require matching extents and disjoint guest memory. Each has its own ADD blend state with ZERO, ONE, SRC_ALPHA or
+ONE_MINUS_SRC_ALPHA factors, using the color factors for alpha as well. Other factors or
+operations, separate alpha, ROP3 overrides, reserved fields, non-copy color operations and
+partial color masks stop with a reason. A slot without an export or with a zero target mask
+leaves its guest bytes intact. Shaders and depth/stencil operations still execute when color
+writes are disabled. The shader and pipeline caches preserve the original enabled output
+locations, and the pipeline includes each attachment's format and effective blend state.
 
 `CB_COLOR0..7_CLEAR_WORD0/1` writes retain each independent raw 32-bit word across
 submissions, in the persistent graphics state. Reset returns these words to zero.
