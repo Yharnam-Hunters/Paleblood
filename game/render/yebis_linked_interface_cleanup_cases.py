@@ -50,6 +50,7 @@ def case(cid, count=2, instance="a", other="a", flag=0,
          detail_neighbor=0xd8d8d8d8, cleanup_neighbor=0xe9e9e9e9,
          log_writes=(), assert_writes=(), virtual_writes=(), free_writes=(),
          base_writes=(), observe_memory=True, observe_lines=True,
+         assert_count_snapshot=False,
          carriers="0x13579bdf2468ace0", incoming=None, stack=()):
     """Build valid storage, distinct callback identities and typed call views."""
     assert instance in (None, "a", "b", "self", "other")
@@ -59,6 +60,7 @@ def case(cid, count=2, instance="a", other="a", flag=0,
                [count, root_gate, detail_gate, cleanup_gate, count_neighbor,
                 gate_neighbor, detail_neighbor, cleanup_neighbor])
     assert instance is None or other is not None
+    assert not assert_count_snapshot or (instance == "a" and count == 0 and flag == 0 and root_gate == 0)
     buffers = {"allocators": {"size": 128, "bytes": "e9" * 128},
                "flags": {"size": 128, "bytes": "d8" * 128},
                "object": {"size": 256, "bytes": fill * 256},
@@ -158,8 +160,14 @@ def case(cid, count=2, instance="a", other="a", flag=0,
     stubs.extend(copy.deepcopy(base) for _ in range(4))
     imports = []
     for index in range(8):
-        imports.append({"name": "_Assert", "argc": 2, "argi": [0, 1], "ret": carriers,
-                        "writes": changes(assert_writes[index] if index < len(assert_writes) else ())})
+        entry = {"name": "_Assert", "argc": 2, "argi": [0, 1], "ret": carriers,
+                 "writes": changes(assert_writes[index] if index < len(assert_writes) else ())}
+        if assert_count_snapshot and index == 0:
+            # This case's only assertion uses the count message. Observe the
+            # already-decremented DWORD before its scripted returning write.
+            entry["argmem"] = [{"arg": 0, "size": 4,
+                                "offset": value(reference) + 8 - (IMAGE + 0x04bff673 - EBOOT_BASE)}]
+        imports.append(entry)
     args = {"rdi": self_pointer, "rax": "0xabcdef0123456789", "rsi": "0x123456789abcdef0",
             "rdx": "0x100000000", "rcx": "0x8000000000000000",
             "r8": "0xffffffffffffffff", "r9": "0x1"}
@@ -213,10 +221,13 @@ def cases():
     result.append(case("count-assert-keeps-cached-reference", count=0,
                        assert_writes=[[pointer_write(pointer("object", 32), pointer("references", 96)),
                                        word(pointer("references", 24), 0)]]))
+    result.append(case("count-assert-observes-decrement", count=0, assert_count_snapshot=True,
+                       assert_writes=[[word(pointer("references", 24), 3)]]))
     logging = {"count": 1, "flag": 1, "root_gate": 1, "detail_gate": 1, "cleanup_gate": 1}
     scripted = [
         ("entry-first-clears-instance", 0, [pointer_write(pointer("object", 32), None)]),
         ("entry-second-replaces-other", 1, [pointer_write(pointer("object", 40), pointer("other", 96))]),
+        ("entry-second-replaces-allocator", 1, [pointer_write(ALLOCATOR, pointer("allocators", 64))]),
         ("entry-second-replaces-other-instance", 1,
          [pointer_write(pointer("other", 32), pointer("flags", 64))]),
         ("warning-first-replaces-other-instance", 2,
