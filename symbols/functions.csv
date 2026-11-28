@@ -70,7 +70,7 @@ address,size,name,system,status,notes
 0x0111b120,22,audio_fmod_close_output_ports,audio,original,FMOD output callback installed by 0x0111aed0; null-preserving -0x38 adjust; tail to 0x0111b7c0: drain the first port and close both; free the mix buffer; returns 0 or 0x21
 0x0111b1f0,64,audio_fmod_stop_output_threads,audio,edge-verified,FMOD output descriptor callback; stop AudioOut first and mixer only after success; return the Thread helper DWORD status
 0x0111b230,30,audio_fmod_update_output_port_state,audio,original,FMOD output callback installed by 0x0111aed0; null-preserving -0x38 adjust; 0x0111bb10 polls the second port's state and notifies on a connection change; returns zero
-0x0111b320,128,audio_fmod_record_driver_count,audio,original,Record driver count when the output is still zero: add 3 per logged-in user from sceUserServiceGetLoginUserIdList; 0x3a for user-service error 0x80960002; 0x21 for other failures
+0x0111b320,128,audio_fmod_record_driver_count,audio,replaced,When the count is zero query four login slots and add three per ID other than -1; status 0x80960002 returns 0x3a and other negative statuses return 0x21
 0x0111b3b0,24,audio_fmod_record_open,audio,original,FMOD record callback installed by 0x0111aed0; null-preserving -0x38 adjust; tail to 0x0111c050; the zero fourth argument is dead (0x0111c050 never reads it)
 0x0111b3d0,22,audio_fmod_record_close,audio,original,FMOD record callback installed by 0x0111aed0; null-preserving -0x38 adjust; tail to 0x0111c240
 0x0111b4e0,139,audio_fmod_record_lock_buffer,audio,original,Lock a record port's capture buffer as up to two regions; on wrap the second pointer is owner+0x2d0 (the buffer table itself); an offset at or past its size clears all four outputs and returns 0x25
