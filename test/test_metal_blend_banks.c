@@ -282,7 +282,7 @@ static void multiple_targets(Fixture *f)
 
     /* Alternate full and sparse writes with the same program. Change only bank
        5 for one sparse draw, then return to both existing pipeline variants. */
-    const unsigned masks[] = {0x00ffffff, 0x00f000f0, 0x00f000f0, 0x00ffffff, 0x00f000f0};
+    const unsigned masks[] = {0x00ffffff, 0x00f000f0, 0x00f000f0, 0x00ffffff, 0x00f000f0, 0x00f000f0};
     for (unsigned test = 0; test < sizeof masks / sizeof *masks; ++test) {
         const int blend_to_destination = test == 2;
         Calls c = {0};
@@ -297,7 +297,11 @@ static void multiple_targets(Fixture *f)
             if (slot == 5) target->component_swap = 1; /* BGRA */
             if (slot == 6) target->format = 0; /* Bound without an export. */
         }
-        reg(&c, BLEND0 + 5, blend_to_destination ? blend_enable | 1u << 8 : 0);
+        /* On the last draw keep bank 5 RGB from the shader and alpha from the
+           destination. The other active bank still writes all four channels. */
+        uint32_t control = blend_to_destination ? blend_enable | (1u << 8) : 0;
+        if (test == 5) control = blend_enable | 1u | (1u << 29) | (1u << 24);
+        reg(&c, BLEND0 + 5, control);
         draw(&c, AUTO);
         memset(f->pool + TARGET, CANARY, 7 * TARGET_BYTES);
         memset(f->pool + VERTEX_WRITES, 0, WITNESS_WORDS * sizeof(uint32_t));
@@ -309,7 +313,8 @@ static void multiple_targets(Fixture *f)
             const unsigned rgb = slot + 1;
             unsigned red = rgb & 1 ? 0xffu : 0, blue = rgb & 4 ? 0xffu : 0;
             if (slot == 5) { const unsigned swap = red; red = blue; blue = swap; }
-            const uint32_t value = 0xff000000u | red | (rgb & 2 ? 0xff00u : 0) | blue << 16;
+            const uint32_t alpha = slot == 5 && test == 5 ? CANARY : 0xffu;
+            const uint32_t value = alpha << 24 | red | (rgb & 2 ? 0xff00u : 0) | blue << 16;
             for (unsigned i = 0; i < PIXELS; ++i)
                 memcpy(f->expected + TARGET + slot * TARGET_BYTES + i * sizeof value, &value, sizeof value);
         }
@@ -347,13 +352,14 @@ static void routes_and_guards(Fixture *f)
     }
     for (unsigned bank = 1; bank < 8; ++bank) {
         char id[96]; Calls c = {0}; scene(&c, 0, 15u | 15u << (4 * bank));
-        reg(&c, BLEND0 + bank, UINT32_MAX);
+        /* The independent alpha operation must still be ADD in each bank. */
+        reg(&c, BLEND0 + bank, blend_enable | (1u << 29) | (1u << 21));
         color_target(&c, bank, 1);
         c.call[3].u.pixel_shader.color_formats |= 9u << (4 * bank);
         c.call[3].u.pixel_shader.color_mask |= 15u << (4 * bank);
         draw(&c, AUTO);
         snprintf(id, sizeof id, "target/bank%u/active-blend-refusal", bank);
-        unchanged(f, id, &c, RUN, "separate alpha blending");
+        unchanged(f, id, &c, RUN, "separate alpha blending operation");
         c = (Calls){0}; color_target(&c, bank, 0); scene(&c, bank & 1, 15);
         snprintf(id, sizeof id, "target/bank%u/disable-recovery", bank);
         success(f, id, &c, AUTO, bank & 1, 0, RUN);
