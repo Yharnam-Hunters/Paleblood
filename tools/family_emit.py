@@ -561,6 +561,18 @@ TEMPLATES['allocates_from_thread_allocator'] = {
 }
 
 
+# The arena page tables' page allocations: one page of K bytes into the table's slot.
+TEMPLATES['allocates_page_into_table_from_0x02795780'] = {
+    'header': ('// Every member of allocates_page_into_table_from_0x02795780 (symbols/families.csv) is a\n'
+               '// copy of the same function reaching the same arena allocate: it stores a new page of K\n'
+               '// bytes in the table\'s slot, growing the slots first. One replacement per page size K.\n'),
+    'shared': '#include "arena_page_table.h"\n',
+    'per_value': ('constexpr uint32_t page_bytes_{name} = {value};\n'
+                  'extern "C" void {symbol}(engine::arena_page_table::PageTable *table, uint64_t index)\n{{\n'
+                  '    engine::arena_page_table::add_page(table, index, page_bytes_{name});\n}}\n'),
+}
+
+
 # Constant setters (symbols/families.csv): the field K bytes into the object, or the first field,
 # gets a fixed value instead of an argument. family: (width, C constant, instruction, value).
 CONSTANT_FIELD_FAMILIES = {

@@ -921,6 +921,11 @@ static void dma_data(const char *fn, const uint32_t *packet)
         return;
     }
     collect(fn, dma_data_step, words);
+    /* what it writes: the packet's data into the GDS, which is not guest memory, or (any other byte count
+       than whole dwords, which stops as it is performed) into memory at the destination */
+    rt_gpu_step *const step = &collecting->steps[collecting->count - 1];
+    step->memory[0] = destination == DMA_DATA_TO_GDS ? 0 : destination_low | (uint64_t)destination_high << 32;
+    step->memory[1] = destination == DMA_DATA_TO_GDS ? 0 : bytes;
 }
 
 
