@@ -227,10 +227,13 @@ Display readback is tightly packed BGRA and requires an 8_8_8_8 target. Sampled 
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
 Each active color slot supports RGBA8/BGRA8 UNORM or sRGB and the float formats above.
-Active attachments require matching extents and disjoint guest memory. Each has its own ADD blend state with ZERO, ONE, SRC_ALPHA or
-ONE_MINUS_SRC_ALPHA factors, using the color factors for alpha as well. Other factors or
-operations, separate alpha, ROP3 overrides, reserved fields, non-copy color operations and
-partial color masks stop with a reason. A slot without an export or with a zero target mask
+Active attachments require matching extents and disjoint guest memory.
+Each slot supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA.
+`SEPARATE_ALPHA_BLEND` selects independent alpha factors; when clear, alpha shares the RGB
+factors and inactive alpha fields are ignored. The pipeline cache includes all four effective
+factors. Other factors or operations, ROP3 overrides, reserved fields, non-copy color operations
+and partial color masks stop with a reason.
+A slot without an export or with a zero target mask
 leaves its guest bytes intact. Shaders and depth/stencil operations still execute when color
 writes are disabled. The shader and pipeline caches preserve the original enabled output
 locations, and the pipeline includes each attachment's format and effective blend state.
@@ -677,8 +680,11 @@ state, required-register presence and canonical-memory updates. Stencil-only met
 use literal S8/BGRA results and complete pool comparisons to preserve the inactive Z plane,
 metadata bytes, padding and other slices; active metadata-dependent aspects retain prework
 refusals.
-`test_metal_alpha_blend` checks literal factor-pair results, RGB and alpha bytes, pipeline-cache
-transitions and fresh destination memory in both channel orders. Its sRGB results use the
+`test_metal_alpha_blend` checks literal shared factor-pair results and all 256 independent
+RGB/alpha factor combinations. Each fixed RGB pair exercises all 16 alpha states in one cache;
+fresh executors keep the exhaustive matrix within the existing cache capacity. Alpha-only
+state changes, shared/separate transitions and fresh destination memory are checked in both
+channel orders. Its sRGB results use the
 [IEC transfer curve](https://registry.color.org/rgb-registry/srgb); RGB is encoded while
 [alpha remains linear](https://developer.apple.com/documentation/metal/mtlpixelformat).
 Owned vertex stores and full-pool guards also cover inactive blend state and unsupported-state recovery.

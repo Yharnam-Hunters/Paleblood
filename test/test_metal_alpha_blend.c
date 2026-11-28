@@ -173,6 +173,40 @@ int main(void)
             const Case test={id,BLEND_ENABLE|factors[source]|factors[destination]<<8,0,15,1,0,
                 green,factor_goldens[source][destination],NULL};invoke(f,&test);
         }
+        /* Independent alpha uses the literal alpha column above, independently of
+           the RGB-factor pair. Holding the shader/address/format fixed also checks
+           pipeline-cache changes when only either alpha factor changes. */
+        for(unsigned source=0;source<4;++source)for(unsigned destination=0;destination<4;++destination)
+            for(unsigned alpha_source=0;alpha_source<4;++alpha_source)for(unsigned alpha_destination=0;alpha_destination<4;++alpha_destination){
+                /* Each fixed RGB pair owns a fresh executor: all 16 alpha states
+                   exercise one cache without exceeding its bounded capacity. */
+                if(!alpha_source && !alpha_destination){
+                    rt_executor_close(f->x);f->x=NULL;error[0]='\0';
+                    const int reopened=rt_executor_open(&memory,&f->x,error,sizeof error);CHECK(reopened==0);
+                    if(reopened){fprintf(stderr,"reopen: %s\n",error);exit(1);}
+                }
+                char id[80];snprintf(id,sizeof id,"separate-%u-%u-%u-%u",factors[source],factors[destination],factors[alpha_source],factors[alpha_destination]);
+                uint8_t result[4];memcpy(result,factor_goldens[source][destination],sizeof result);
+                result[3]=factor_goldens[alpha_source][alpha_destination][3];
+                const Case test={id,BLEND_ENABLE|(1u<<29)|factors[source]|factors[destination]<<8|
+                    factors[alpha_source]<<16|factors[alpha_destination]<<24,0,15,1,0,green,result,NULL};
+                invoke(f,&test);
+            }
+        const uint8_t separate_source[4]={64,191,0,64},separate_zero[4]={64,191,0,0},
+            separate_destination[4]={64,191,0,255},separate_srgb[4]={137,225,0,64};
+        const Case separate_cache[]={
+            {"separate-source",ALPHA_BLEND|(1u<<29)|(1u<<16),0,15,1,0,green,separate_source,NULL},
+            {"separate-destination",ALPHA_BLEND|(1u<<29)|(1u<<24),0,15,1,0,green,separate_destination,NULL},
+            {"separate-zero",ALPHA_BLEND|(1u<<29),0,15,1,0,green,separate_zero,NULL},
+            {"separate-source-hit",ALPHA_BLEND|(1u<<29)|(1u<<16),0,15,1,0,green,separate_source,NULL},
+            {"separate-bgra",ALPHA_BLEND|(1u<<29)|(1u<<16),1,15,1,0,green,separate_source,NULL},
+            {"separate-srgb-rgba",ALPHA_BLEND|(1u<<29)|(1u<<16),2,15,1,0,green,separate_srgb,NULL},
+            {"separate-srgb-bgra",ALPHA_BLEND|(1u<<29)|(1u<<16),3,15,1,0,green,separate_srgb,NULL},
+            {"separate-back-to-shared",ALPHA_BLEND,0,15,1,0,green,alpha_color,NULL},
+            {"separate-masked-unsupported",ALPHA_BLEND|(1u<<29)|(2u<<16)|(1u<<21),0,0,1,0,green,green,NULL},
+            {"separate-mode-zero-unsupported",ALPHA_BLEND|(1u<<29)|(2u<<24)|(1u<<21),0,15,0,0,green,green,NULL},
+        };
+        for(unsigned i=0;i<sizeof separate_cache/sizeof *separate_cache;++i)invoke(f,&separate_cache[i]);
         const Case extra[]={
             {"linear-bgra",ALPHA_BLEND,1,15,1,0,green,alpha_color,NULL},
             {"srgb-rgba",ALPHA_BLEND,2,15,1,0,green,srgb_color,NULL},
@@ -191,7 +225,9 @@ int main(void)
             {"refuse-destination-color",BLEND_ENABLE|1|(2<<8)},
             {"refuse-special-factor",BLEND_ENABLE|11},
             {"refuse-subtract",ALPHA_BLEND|(1u<<5)},
-            {"refuse-separate-alpha",ALPHA_BLEND|(1u<<29)},
+            {"refuse-alpha-subtract",ALPHA_BLEND|(1u<<29)|(1u<<21)},
+            {"refuse-alpha-source-color",ALPHA_BLEND|(1u<<29)|(2u<<16)},
+            {"refuse-alpha-destination-color",ALPHA_BLEND|(1u<<29)|(2u<<24)},
             {"refuse-disable-rop3",ALPHA_BLEND|(1u<<31)},
             {"refuse-reserved13",ALPHA_BLEND|(1u<<13)},
             {"refuse-reserved14",ALPHA_BLEND|(1u<<14)},
