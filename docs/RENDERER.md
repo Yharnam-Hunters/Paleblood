@@ -1511,6 +1511,41 @@ things keep that to the first run:
   first version that waited for the workers before the first frame delayed it by 7.0 s and saved
   only 2.0 s later, so the workers now run beside the game. With a warm pipeline cache (the 30
   translations made again) the workers took 0.10 s.
+- **Draw pipelines made while the game loads.** On a first launch the draws still had to make
+  their pipelines in game: about 520 compiles in the clinic walk, each draw left out while its
+  pipeline was made (about 2600 draws missing from their frames). So every pipeline a draw of a
+  vertex and a pixel shader makes is also kept, by its recipe, in a pipeline catalog
+  (`BB_PIPELINE_CATALOG`, else `pipelines-catalog.bin` beside the translations): both shaders'
+  translation keys, the pipeline state (colours, blend, write masks, strip, depth plan), the
+  attachments' formats, and what the layout and rect-list stage depend on. The graphics key lists
+  its values before the programs' words, so it can be read back (`graphics_key`,
+  `parse_graphics_key`, `translate_graphics`), and a render pass is described from its formats
+  alone (`make_render_pass`), so a pipeline made at launch for that canonical pass serves the
+  draw's own pass. After the compute shaders the same workers translate each recipe's shaders and
+  make its pipeline into the pipeline cache. A draw that meets a recipe a worker is making is left
+  out while it may be (the rules above), else waits. A launch recipe's draws are left out for a
+  second in all, counted from the first one left out, whatever kept them out: the worker making
+  it, or, once it is done, the pipeline cache lacking it and the draw pipeline workers making it
+  again. Past that second a draw waits for the launch worker and makes the pipeline itself if the
+  pipeline cache still lacks it. The second is the recipe's for as long as the executor is open
+  (its time is kept after the launch work is freed too): a later draw with it in a new render pass
+  is not left out again but makes its pipeline at once, in practice found in the pipeline cache.
+  One no worker has taken yet is made by the draw. Tessellated
+  and geometry-shader draws stay with the draw (their rings are made at the first one). The progress line and the title count compute shaders and draw pipelines together,
+  and stderr tells "draw pipelines: H from the pipeline cache, C compiled; L draws left out while
+  theirs were made" (at most every 10 s, and at close).
+  Measured in the clinic walk the same way (warm compute catalog, empty translation and pipeline
+  caches, the driver's disk cache off; the same binary with an empty and with a warm catalog of
+  1165 recipes from one earlier run; three rounds, 2026-11-24): the workers took 16.72 to 18.51 s
+  instead of 7.69 to 7.93 s (1237 to 1244 shaders translated, 313 to 315 draw pipelines compiled,
+  the others found in the pipeline cache); in game 10 or 11 pipelines were compiled instead of 512
+  to 520, and 0 to 8 draws were left out instead of 2507 to 2638. Start to frame 1350 went from
+  76.48, 78.39 and 77.20 s to 69.43, 70.69 and 70.82 s; frame 0 came at 1.94 to 2.03 s instead of
+  1.88 to 1.89 s. Frames 1350-2900 were unchanged within the noise: average 15.90 and 15.93 fps
+  (noise floor 0.21), 1% low 6.08 and 6.21, worst frame 378 and 483 ms (one 717 ms frame in one
+  warm round; noise floor 350). A first two-round check that day had the average 0.05 fps lower
+  with the catalog, just past its 0.03 noise floor; over all five rounds each side averaged
+  15.94 fps.
 
 ## Measuring frame rate
 

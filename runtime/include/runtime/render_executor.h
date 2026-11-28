@@ -189,6 +189,25 @@ void rt_executor_translations(const rt_executor *executor, size_t *found, size_t
    cache lacked them) and those whose pipelines the driver compiled (the pipeline cache lacked them)
    (Vulkan executor). */
 void rt_executor_launch_compiles(rt_executor *executor, size_t *shaders, size_t *translated, size_t *compiled);
+/* The same for the pipeline catalog's draw pipelines: those made again at launch and those of them the
+   driver compiled (Vulkan executor). */
+void rt_executor_launch_pipelines(rt_executor *executor, size_t *pipelines, size_t *compiled);
+/* A function each launch worker calls as it starts making a draw pipeline, with the pipeline's place among
+   the launch pipelines (the pipeline catalog's recipes that could be made again, in the order they were
+   kept), before making it, from the worker's thread (NULL: none, the default); set before
+   rt_executor_open. For tests: a worker held there keeps its pipeline being made. */
+void rt_executor_set_launch_pipeline_hook(void (*hook)(size_t pipeline));
+/* How the executors opened next look for a draw's pipeline in the pipeline cache before compiling it; set
+   before rt_executor_open. For tests: RT_PIPELINE_PROBE_DEVICE (the default) uses
+   VK_EXT_pipeline_creation_cache_control where the device has it; RT_PIPELINE_PROBE_NONE never does, as
+   on a device without it; RT_PIPELINE_PROBE_MISS finds none there, every draw's pipeline needing the
+   compiler. */
+enum { RT_PIPELINE_PROBE_DEVICE, RT_PIPELINE_PROBE_NONE, RT_PIPELINE_PROBE_MISS };
+void rt_executor_set_pipeline_probe(int probe);
+/* A function each draw pipeline worker (async_pipelines) calls as it takes a pipeline to make, before
+   making it, from the worker's thread (NULL: none, the default); set before rt_executor_open, or while
+   no executor is open. For tests: a worker held there keeps the draws with that pipeline left out. */
+void rt_executor_set_pipeline_job_hook(void (*hook)(void));
 
 void rt_executor_close(rt_executor *executor);
 

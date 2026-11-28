@@ -4658,6 +4658,330 @@ static void launch_compiles(const rt_executor_memory *shared)
     rmdir(directory);
 }
 
+/* The pipeline catalog (BB_PIPELINE_CATALOG): a run's draw pipeline is kept by its recipe; the next
+   executor, with empty translation and pipeline caches, translates its shaders and makes the pipeline
+   for a canonical render pass as it opens, so that the same draw with async_pipelines finds it in the
+   pipeline cache and is drawn at once (not left out), its shaders' translations found in the cache.
+   BB_LAUNCH_COMPILE=0 makes none. */
+static void launch_makes_pipelines(int fd)
+{
+    enum { PIPELINE_BUFFER = 0xc0e60000, PIPELINE_TARGET = 0x3640000 };
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, NULL};
+    char directory[] = "/tmp/pb-recipes-XXXXXX", catalog[64], recipes[64], translations[2][64], pipelines[2][64], error[256] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);
+    snprintf(recipes, sizeof recipes, "%s/recipes.bin", directory);
+    for (int k = 0; k < 2; k++) {
+        snprintf(translations[k], sizeof translations[k], "%s/translations%d.bin", directory, k);
+        snprintf(pipelines[k], sizeof pipelines[k], "%s/pipelines%d.bin", directory, k);
+    }
+    setenv("BB_SHADER_CATALOG", catalog, 1);
+    setenv("BB_PIPELINE_CATALOG", recipes, 1);
+    /* run 0 makes the pipeline at its draw; run 1 at launch, with the second caches; run 2 has launch
+       compiles turned off */
+    for (int run = 0; run < 3; run++) {
+        setenv("BB_TRANSLATION_CACHE", translations[run ? 1 : 0], 1);
+        setenv("BB_PIPELINE_CACHE", pipelines[run ? 1 : 0], 1);
+        if (run == 2) setenv("BB_LAUNCH_COMPILE", "0", 1);
+        rt_executor *x = NULL;
+        const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+        unsetenv("BB_LAUNCH_COMPILE");
+        CHECK(opened == 0);
+        if (opened) break;
+        size_t made_at_launch = 9, compiled = 9, found = 9, translated = 9;
+        rt_executor_launch_pipelines(x, &made_at_launch, &compiled);
+        CHECK(made_at_launch == (run == 1) && compiled == (run == 1));
+        uint32_t bgra[SIZE * SIZE];
+        int drawn = 0, tries = 0;
+        for (; tries < 3000 && !drawn; tries++) { /* run 0's first draw is left out while its pipeline is made */
+            rt_render_forget(), rt_executor_reset(x);
+            memset((void *)(uintptr_t)at(PIPELINE_TARGET), 0, SIZE * SIZE * 4);
+            const uint32_t size = record_draw(PIPELINE_BUFFER, at(PIPELINE_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+            CHECK(rt_executor_run(x, PIPELINE_BUFFER, size, error, sizeof error) == 0);
+            drawn = rt_executor_read_target(x, at(PIPELINE_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0 && bgra[SIZE * SIZE / 2 + SIZE / 2];
+            if (!drawn) usleep(1000);
+        }
+        CHECK(drawn);
+        if (run == 1) CHECK(tries == 1); /* drawn at once: its pipeline was in the cache */
+        rt_executor_translations(x, &found, &translated);
+        CHECK(run == 0 ? found == 0 && translated == 2 : found == 2 && translated == 0);
+        rt_executor_close(x);
+    }
+    setenv("BB_SHADER_CATALOG", "", 1);
+    setenv("BB_PIPELINE_CATALOG", "", 1);
+    setenv("BB_TRANSLATION_CACHE", "", 1);
+    setenv("BB_PIPELINE_CACHE", "", 1);
+    unlink(catalog), unlink(recipes);
+    for (int k = 0; k < 2; k++) unlink(translations[k]), unlink(pipelines[k]);
+    rmdir(directory);
+}
+
+/* A launch worker held as it starts making a draw pipeline (rt_executor_set_launch_pipeline_hook) until
+   launch_held_release is set; launch_held_entered counts the workers held. */
+static atomic_int launch_held_entered, launch_held_release;
+
+static void hold_launch_pipeline(size_t pipeline)
+{
+    (void)pipeline;
+    atomic_fetch_add(&launch_held_entered, 1);
+    while (!atomic_load(&launch_held_release)) usleep(1000);
+}
+
+/* Lets the held launch worker go a moment after the draw that must wait for it has started. */
+static void *release_launch_pipeline(void *unused)
+{
+    (void)unused;
+    usleep(300000);
+    atomic_store(&launch_held_release, 1);
+    return NULL;
+}
+
+static uint32_t launch_held_draw(rt_executor *x, uint32_t buffer, uint32_t target, uint32_t *bgra)
+{
+    char error[256] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    memset((void *)(uintptr_t)at(target), 0, SIZE * SIZE * 4);
+    const uint32_t size = record_draw(buffer, at(target), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_executor_run(x, buffer, size, error, sizeof error) == 0);
+    if (rt_executor_read_target(x, at(target), bgra, SIZE, SIZE, error, sizeof error)) return 0;
+    return bgra[SIZE * SIZE / 2 + SIZE / 2];
+}
+
+/* A draw whose recipe a launch worker is still making is left out for a second at most: it is left out
+   while the worker is held, and the first draw more than a second after the first one met the recipe
+   waits for the worker (released while that draw waits) and is drawn, though the worker still makes
+   the pipeline when the draw starts. */
+static void launch_pipeline_skip_deadline(int fd)
+{
+    enum { HELD_BUFFER = 0xc0e70000, HELD_TARGET = 0x3680000 };
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, NULL};
+    char directory[] = "/tmp/pb-held-XXXXXX", catalog[64], recipes[64], translations[2][64], pipelines[2][64], error[256] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);
+    snprintf(recipes, sizeof recipes, "%s/recipes.bin", directory);
+    for (int k = 0; k < 2; k++) {
+        snprintf(translations[k], sizeof translations[k], "%s/translations%d.bin", directory, k);
+        snprintf(pipelines[k], sizeof pipelines[k], "%s/pipelines%d.bin", directory, k);
+    }
+    setenv("BB_SHADER_CATALOG", catalog, 1);
+    setenv("BB_PIPELINE_CATALOG", recipes, 1);
+    uint32_t bgra[SIZE * SIZE];
+    /* run 0 keeps the draw's recipe; run 1, with empty caches, has its launch worker held on it */
+    for (int run = 0; run < 2; run++) {
+        setenv("BB_TRANSLATION_CACHE", translations[run], 1);
+        setenv("BB_PIPELINE_CACHE", pipelines[run], 1);
+        atomic_store(&launch_held_entered, 0), atomic_store(&launch_held_release, 0);
+        if (run == 1) rt_executor_set_launch_pipeline_hook(hold_launch_pipeline);
+        rt_executor *x = NULL;
+        const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+        CHECK(opened == 0);
+        if (opened) {
+            rt_executor_set_launch_pipeline_hook(NULL);
+            break;
+        }
+        if (run == 0) {
+            int drawn = 0;
+            for (int tries = 0; tries < 3000 && !drawn; tries++)
+                if (!(drawn = launch_held_draw(x, HELD_BUFFER, HELD_TARGET, bgra) != 0)) usleep(1000);
+            CHECK(drawn);
+        } else {
+            for (int tries = 0; tries < 10000 && !atomic_load(&launch_held_entered); tries++) usleep(1000);
+            CHECK(atomic_load(&launch_held_entered) == 1);
+            CHECK(launch_held_draw(x, HELD_BUFFER, HELD_TARGET, bgra) == 0); /* left out: the recipe is being made */
+            usleep(1100000); /* past the second a draw may be left out, the worker still held */
+            CHECK(atomic_load(&launch_held_entered) == 1 && !atomic_load(&launch_held_release));
+            pthread_t releaser;
+            const int started = pthread_create(&releaser, NULL, release_launch_pipeline, NULL);
+            CHECK(started == 0);
+            if (started) atomic_store(&launch_held_release, 1);
+            CHECK(launch_held_draw(x, HELD_BUFFER, HELD_TARGET, bgra) != 0); /* waited for the worker, then drawn */
+            CHECK(atomic_load(&launch_held_release)); /* it returned only after the worker was let go */
+            if (started == 0) pthread_join(releaser, NULL);
+        }
+        rt_executor_close(x);
+        rt_executor_set_launch_pipeline_hook(NULL);
+    }
+    setenv("BB_SHADER_CATALOG", "", 1);
+    setenv("BB_PIPELINE_CATALOG", "", 1);
+    setenv("BB_TRANSLATION_CACHE", "", 1);
+    setenv("BB_PIPELINE_CACHE", "", 1);
+    unlink(catalog), unlink(recipes);
+    for (int k = 0; k < 2; k++) unlink(translations[k]), unlink(pipelines[k]);
+    rmdir(directory);
+}
+
+/* Launch workers held as they start making chosen draw pipelines (bit i of launch_holding: the pipeline
+   catalog's pipeline i) until their bit is cleared; launch_entering has the bits of those that started,
+   launch_done how much launch work is done (rt_executor_memory's launch_progress). */
+static atomic_int launch_holding, launch_entering;
+static atomic_size_t launch_done;
+
+static void hold_chosen_launch_pipelines(size_t pipeline)
+{
+    const int bit = pipeline < 8 ? 1 << pipeline : 0;
+    atomic_fetch_or(&launch_entering, bit);
+    while (atomic_load(&launch_holding) & bit) usleep(1000);
+}
+
+static void note_launch_done(size_t done, size_t count)
+{
+    (void)count;
+    atomic_store(&launch_done, done);
+}
+
+/* Draw pipeline workers held as they take a pipeline to make (rt_executor_set_pipeline_job_hook) while
+   pipeline_jobs_held is set. */
+static atomic_int pipeline_jobs_held;
+
+static void hold_pipeline_jobs(void)
+{
+    while (atomic_load(&pipeline_jobs_held)) usleep(1000);
+}
+
+/* Lets the held draw pipeline workers go a moment after the draw that must wait for them has started. */
+static void *release_pipeline_jobs(void *unused)
+{
+    (void)unused;
+    usleep(300000);
+    atomic_store(&pipeline_jobs_held, 0);
+    return NULL;
+}
+
+static uint64_t test_now_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
+
+/* Sleeps until at, a test_now_ns time. */
+static void sleep_until_ns(uint64_t at)
+{
+    const uint64_t now = test_now_ns();
+    if (at > now) usleep((useconds_t)((at - now) / 1000));
+}
+
+/* Waits up to 10 s for launch_done to reach done; whether it did. */
+static int launch_done_reaches(size_t done)
+{
+    for (int tries = 0; tries < 10000 && atomic_load(&launch_done) < done; tries++) usleep(1000);
+    return atomic_load(&launch_done) >= done;
+}
+
+/* A draw left out while a launch worker made its recipe's pipeline is left out for a second in all, though
+   the worker finishes between draws: the first draw more than a second after it is drawn, whether the
+   other launch work is done or not, with the pipeline cache not used to find pipelines
+   (RT_PIPELINE_PROBE_NONE, as without VK_EXT_pipeline_creation_cache_control) or not holding the draw's
+   (RT_PIPELINE_PROBE_MISS), rather than its pipeline going to the workers for another second. And a
+   draw left out again by the draw pipeline workers after the launch worker is done counts the second
+   from the first draw left out: the first draw past it waits for them (held until it has started). */
+static void launch_pipeline_skip_completed(int fd)
+{
+    enum { DRAWS = 2, FIRST_BUFFER = 0xc0e80000, SECOND_BUFFER = 0xc0e90000, FIRST_TARGET = 0x3700000, SECOND_TARGET = 0x3780000 };
+    const uint32_t buffers[DRAWS] = {FIRST_BUFFER, SECOND_BUFFER}, targets[DRAWS] = {FIRST_TARGET, SECOND_TARGET};
+    const uint32_t swaps[DRAWS] = {SWAP_STD, SWAP_ALT}; /* two recipes: R8G8B8A8 and B8G8R8A8 targets */
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, note_launch_done};
+    char directory[] = "/tmp/pb-done-XXXXXX", catalog[64], recipes[64], translations[64], pipelines[64], error[256] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    snprintf(catalog, sizeof catalog, "%s/catalog.bin", directory);
+    snprintf(recipes, sizeof recipes, "%s/recipes.bin", directory);
+    snprintf(translations, sizeof translations, "%s/translations.bin", directory);
+    snprintf(pipelines, sizeof pipelines, "%s/pipelines.bin", directory);
+    setenv("BB_SHADER_CATALOG", catalog, 1);
+    setenv("BB_PIPELINE_CATALOG", recipes, 1);
+    setenv("BB_TRANSLATION_CACHE", translations, 1); /* the catalogs are kept beside the translations */
+    setenv("BB_PIPELINE_CACHE", pipelines, 1);
+    uint32_t bgra[SIZE * SIZE];
+    /* the first run keeps the two draws' recipes, in order: the first draw's is the catalog's pipeline 0 */
+    rt_executor *x = NULL;
+    int opened = rt_executor_open(&memory, &x, error, sizeof error);
+    CHECK(opened == 0);
+    if (opened == 0) {
+        for (size_t d = 0; d < DRAWS; d++) {
+            int drawn = 0;
+            for (int tries = 0; tries < 3000 && !drawn; tries++) {
+                rt_render_forget(), rt_executor_reset(x);
+                memset((void *)(uintptr_t)at(targets[d]), 0, SIZE * SIZE * 4);
+                const uint32_t size = record_draw(buffers[d], at(targets[d]), COLOR_8_8_8_8, swaps[d], PERSP_CENTER);
+                CHECK(rt_executor_run(x, buffers[d], size, error, sizeof error) == 0);
+                drawn = rt_executor_read_target(x, at(targets[d]), bgra, SIZE, SIZE, error, sizeof error) == 0 && bgra[SIZE * SIZE / 2 + SIZE / 2];
+                if (!drawn) usleep(1000);
+            }
+            CHECK(drawn);
+        }
+        rt_executor_close(x);
+    }
+    const int probes[2] = {RT_PIPELINE_PROBE_NONE, RT_PIPELINE_PROBE_MISS};
+    for (int run = 0; opened == 0 && run < 4; run++) {
+        const int remaining = run & 1; /* the second recipe's worker still held at the late draw */
+        unlink(pipelines);
+        setenv("BB_PIPELINE_CACHE", pipelines, 1);
+        rt_executor_set_pipeline_probe(probes[run >> 1]);
+        atomic_store(&launch_holding, remaining ? 3 : 1), atomic_store(&launch_entering, 0), atomic_store(&launch_done, 0);
+        rt_executor_set_launch_pipeline_hook(hold_chosen_launch_pipelines);
+        x = NULL;
+        opened = rt_executor_open(&memory, &x, error, sizeof error);
+        CHECK(opened == 0);
+        if (opened == 0) {
+            for (int tries = 0; tries < 10000 && !(atomic_load(&launch_entering) & 1); tries++) usleep(1000);
+            CHECK(atomic_load(&launch_entering) & 1);
+            CHECK(launch_held_draw(x, FIRST_BUFFER, FIRST_TARGET, bgra) == 0); /* left out: its recipe is being made */
+            atomic_fetch_and(&launch_holding, ~1);
+            CHECK(launch_done_reaches(remaining ? 1 : DRAWS)); /* the worker done with it */
+            usleep(1100000); /* past the second the draw may be left out */
+            CHECK(atomic_load(&launch_done) == (remaining ? 1u : (size_t)DRAWS));
+            CHECK(launch_held_draw(x, FIRST_BUFFER, FIRST_TARGET, bgra) != 0); /* drawn, not left to the workers again */
+            CHECK(!remaining || atomic_load(&launch_done) == 1); /* the other recipe still being made */
+            atomic_store(&launch_holding, 0);
+            rt_executor_close(x);
+        }
+        rt_executor_set_launch_pipeline_hook(NULL);
+        rt_executor_set_pipeline_probe(RT_PIPELINE_PROBE_DEVICE);
+    }
+    if (opened == 0) { /* the draw pipeline workers held from the second draw on, the other recipe's launch worker throughout */
+        unlink(pipelines);
+        rt_executor_set_pipeline_probe(RT_PIPELINE_PROBE_NONE);
+        atomic_store(&launch_holding, 3), atomic_store(&launch_entering, 0), atomic_store(&launch_done, 0);
+        atomic_store(&pipeline_jobs_held, 1);
+        rt_executor_set_launch_pipeline_hook(hold_chosen_launch_pipelines);
+        rt_executor_set_pipeline_job_hook(hold_pipeline_jobs);
+        x = NULL;
+        opened = rt_executor_open(&memory, &x, error, sizeof error);
+        CHECK(opened == 0);
+        if (opened == 0) {
+            for (int tries = 0; tries < 10000 && !(atomic_load(&launch_entering) & 1); tries++) usleep(1000);
+            CHECK(atomic_load(&launch_entering) & 1);
+            CHECK(launch_held_draw(x, FIRST_BUFFER, FIRST_TARGET, bgra) == 0); /* left out: its recipe is being made */
+            const uint64_t first = test_now_ns(); /* after the first draw was left out */
+            atomic_fetch_and(&launch_holding, ~1);
+            CHECK(launch_done_reaches(1)); /* the worker done with it */
+            sleep_until_ns(first + 500000000u);
+            CHECK(launch_held_draw(x, FIRST_BUFFER, FIRST_TARGET, bgra) == 0); /* left out: a held worker makes it */
+            CHECK(test_now_ns() - first < 900000000u); /* within the second from the first draw left out */
+            sleep_until_ns(first + 1100000000u);
+            pthread_t releaser;
+            const int started = pthread_create(&releaser, NULL, release_pipeline_jobs, NULL);
+            CHECK(started == 0);
+            if (started) atomic_store(&pipeline_jobs_held, 0);
+            CHECK(launch_held_draw(x, FIRST_BUFFER, FIRST_TARGET, bgra) != 0); /* waited for the worker, then drawn */
+            CHECK(!atomic_load(&pipeline_jobs_held)); /* it returned only after the worker was let go */
+            if (started == 0) pthread_join(releaser, NULL);
+            atomic_store(&pipeline_jobs_held, 0), atomic_store(&launch_holding, 0);
+            rt_executor_close(x);
+        }
+        atomic_store(&pipeline_jobs_held, 0), atomic_store(&launch_holding, 0);
+        rt_executor_set_launch_pipeline_hook(NULL);
+        rt_executor_set_pipeline_job_hook(NULL);
+        rt_executor_set_pipeline_probe(RT_PIPELINE_PROBE_DEVICE);
+    }
+    setenv("BB_SHADER_CATALOG", "", 1);
+    setenv("BB_PIPELINE_CATALOG", "", 1);
+    setenv("BB_TRANSLATION_CACHE", "", 1);
+    setenv("BB_PIPELINE_CACHE", "", 1);
+    unlink(catalog), unlink(recipes), unlink(translations), unlink(pipelines);
+    rmdir(directory);
+}
+
 /* With async_pipelines, the first draw with a pipeline neither made nor cached is left out while a worker
    thread makes the pipeline (the target keeps its zeroed memory), and a later run of the same buffer
    draws it. */
@@ -4699,6 +5023,7 @@ int main(void)
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
     setenv("BB_TRANSLATION_CACHE", "", 0); /* nor a translation cache file */
     setenv("BB_SHADER_CATALOG", "", 0); /* nor a shader catalog */
+    setenv("BB_PIPELINE_CATALOG", "", 0); /* nor a pipeline catalog */
     /* nor the drivers' own shader caches on disk: async_pipelines needs a pipeline the compiler must make */
     setenv("__GL_SHADER_DISK_CACHE", "0", 0), setenv("MESA_SHADER_CACHE_DISABLE", "true", 0);
     const int fd = map_guest_memory();
@@ -5471,6 +5796,9 @@ int main(void)
     image_allocation_pressure(&memory, VK_ERROR_OUT_OF_HOST_MEMORY, 1);
     pipeline_cache_file(&memory);
     launch_compiles(&memory);
+    launch_makes_pipelines(fd);
+    launch_pipeline_skip_deadline(fd);
+    launch_pipeline_skip_completed(fd);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

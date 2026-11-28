@@ -159,6 +159,8 @@ typedef struct {
     uint64_t tessellation;           /* a domain shader's tessellation settings (tessellation_key), 0 otherwise */
     vertex_instancing instancing;    /* a vertex shader's instancing inputs (vertex_instancing_of), zero otherwise */
     gcn_table_snapshot tables;       /* a vertex or pixel shader's table snapshot plan (draw_snapshot); no entries otherwise */
+    unsigned char *key;              /* its translation's key (graphics_key), for the pipeline recipes made with it; NULL: none */
+    size_t key_size;
     VkShaderModule module;           /* VK_NULL_HANDLE: a slot freed (shader_slot), none kept there */
     uint32_t bucket_next;            /* the next shader of its bucket (shader_buckets), index + 1; 0 none */
     uint64_t used_ticket;            /* the submission that last draws with it (shader_to_free) */
@@ -779,12 +781,22 @@ struct rt_executor {
     /* the keys of the shaders made in any run, whatever the translator's version (open_translations;
        NULL: none), and what compile_catalog did with them when the executor opened */
     translation_cache *catalog;
+    translation_cache *pipeline_catalog; /* the recipes of the pipelines draws made (pipeline_recipe_key) */
     size_t launch_shaders, launch_translated, launch_compiled;
+    size_t launch_pipelines, launch_pipelines_compiled;
+    size_t pipelines_cached, pipelines_compiled, draws_left_out; /* report_draw_pipelines */
+    uint64_t pipelines_reported;
     struct launch_work *launch; /* the shaders compile_catalog's workers are making (NULL: none, or finished) */
+    /* the launch recipes whose draws were left out, kept when the launch work is freed, and when the
+       first such draw of each was left out (launch_left_out_since) */
+    translation_key *left_out_recipes;
+    uint64_t *left_out_since;
+    size_t left_out_count;
     /* the threads making pipelines off the recording thread (pipeline_job), and their queue */
     int async_pipelines;
     void (*launch_progress)(size_t done, size_t count); /* rt_executor_memory's */
     int cache_control;               /* VK_EXT_pipeline_creation_cache_control: a pipeline the cache holds is made without the compiler */
+    int probe_misses;                /* rt_executor_set_pipeline_probe: RT_PIPELINE_PROBE_MISS */
     pthread_t pipeline_workers[PIPELINE_WORKERS];
     unsigned pipeline_worker_count;
     pthread_mutex_t job_lock;
@@ -1407,6 +1419,9 @@ static void cache_file_path(char *path, size_t size, const char *variable, const
 /* The shader catalog's version: it changes only when the keys' layout does (compute_key), never with
    the translator. */
 static const char CATALOG_VERSION[] = "shader catalog 1";
+/* The pipeline catalog's version: it changes when the recipes' layout does (pipeline_recipe_key,
+   graphics_key). */
+static const char PIPELINE_CATALOG_VERSION[] = "pipeline catalog 1";
 
 /* Opens the translation cache, and the shader catalog (BB_SHADER_CATALOG, else catalog.bin beside
    the translations): the keys of every shader made, kept across translator versions, from which
@@ -1419,12 +1434,21 @@ static void open_translations(rt_executor *x)
     x->translations = translation_cache_open(path, PB_TRANSLATOR_VERSION);
     cache_file_path(path, sizeof path, "BB_SHADER_CATALOG", "catalog.bin");
     if (x->translations) x->catalog = translation_cache_open(path, CATALOG_VERSION);
+    cache_file_path(path, sizeof path, "BB_PIPELINE_CATALOG", "pipelines-catalog.bin");
+    if (x->translations) x->pipeline_catalog = translation_cache_open(path, PIPELINE_CATALOG_VERSION);
 #else
     (void)x;
 #endif
 }
 
 static void finish_launch_work(rt_executor *x);
+static void report_draw_pipelines(rt_executor *x, int now);
+
+void rt_executor_launch_pipelines(rt_executor *x, size_t *pipelines, size_t *compiled)
+{
+    finish_launch_work(x);
+    *pipelines = x->launch_pipelines, *compiled = x->launch_pipelines_compiled;
+}
 
 void rt_executor_launch_compiles(rt_executor *x, size_t *shaders, size_t *translated, size_t *compiled)
 {
@@ -1442,10 +1466,17 @@ static void close_translations(rt_executor *x)
     if (!x->translations) return;
     fprintf(stderr, "executor: translations: %zu from the cache, %zu translated, %.2f s\n", x->translations_found, x->translations_made,
             (double)x->translation_ns / 1e9);
+    if (x->pipelines_cached || x->pipelines_compiled) report_draw_pipelines(x, 1);
     translation_cache_close(x->translations);
     translation_cache_close(x->catalog);
-    x->translations = x->catalog = NULL;
+    translation_cache_close(x->pipeline_catalog);
+    x->translations = x->catalog = x->pipeline_catalog = NULL;
 }
+
+/* How the executors opened next look for a draw's pipeline in the pipeline cache (rt_executor_set_pipeline_probe). */
+static int pipeline_probe = RT_PIPELINE_PROBE_DEVICE;
+
+void rt_executor_set_pipeline_probe(int probe) { pipeline_probe = probe; }
 
 static int open_device(rt_executor *x, char *error, size_t error_size)
 {
@@ -1545,11 +1576,13 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT enable_cached = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT, .pipelineCreationCacheControl = VK_TRUE};
     x->cache_control = cache_control && cached.pipelineCreationCacheControl;
+    x->probe_misses = pipeline_probe == RT_PIPELINE_PROBE_MISS;
     if (x->cache_control) {
         extensions[extension_count++] = VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME;
         enable_cached.pNext = enable12.pNext;
         enable12.pNext = &enable_cached;
     }
+    if (pipeline_probe == RT_PIPELINE_PROBE_NONE) x->cache_control = 0;
     const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable, .queueCreateInfoCount = 1,
                                        .pQueueCreateInfos = &queue, .enabledExtensionCount = extension_count, .ppEnabledExtensionNames = extensions};
     if (vkCreateDevice(x->physical, &device, NULL, &x->device) != VK_SUCCESS)
@@ -2900,6 +2933,8 @@ static uint64_t target_span(const target_entry *t)
    that draw into it with the pipelines made for them. NULL when no target can go: the one set aside
    longest first (a game moving its targets through memory leaves them behind), then the least recently
    used. */
+static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait);
+
 static target_entry *target_slot_to_free(rt_executor *x)
 {
     uint64_t done = 0;
@@ -2926,6 +2961,7 @@ static target_entry *target_slot_to_free(rt_executor *x)
                 k++;
                 continue;
             }
+            pipeline_settle(x, &x->pipelines[k], 1); /* a worker making it reads the render pass */
             vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
             x->pipelines[k] = x->pipelines[--x->pipeline_count];
             removed_pipelines = 1;
@@ -3694,16 +3730,66 @@ static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned 
     return any;
 }
 
+/* The render pass of colour attachments of formats (VK_FORMAT_UNDEFINED: a slot not drawn; slots up to the
+   last one drawn, one between drawn ones unused) and a depth attachment of depth_format (VK_FORMAT_UNDEFINED:
+   none). Every pass of the same formats is described alike, so a pipeline made for one (as the launch
+   workers do for a canonical pass, compile_catalog) is made for all of them, and the driver's pipeline
+   cache finds it. */
+static VkResult make_render_pass(const rt_executor *x, const VkFormat formats[RT_COLOR_TARGETS], VkFormat depth_format, VkRenderPass *made)
+{
+    VkAttachmentDescription attachments[RT_COLOR_TARGETS + 1];
+    VkAttachmentReference color_references[RT_COLOR_TARGETS];
+    unsigned count = 0, slots = 0;
+    VkAttachmentReference depth_reference = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    for (unsigned i = 0; i < RT_COLOR_TARGETS; i++)
+        if (formats[i] != VK_FORMAT_UNDEFINED) slots = i + 1;
+    for (unsigned i = 0; i < slots; i++) {
+        color_references[i] = (VkAttachmentReference){VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        if (formats[i] == VK_FORMAT_UNDEFINED) continue;
+        color_references[i].attachment = count;
+        attachments[count++] = (VkAttachmentDescription){.format = formats[i], .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                                         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                                         .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                                         .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    }
+    const int depth = depth_format != VK_FORMAT_UNDEFINED;
+    if (depth) {
+        depth_reference.attachment = count;
+        attachments[count++] = (VkAttachmentDescription){.format = depth_format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                                         .initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                         .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    }
+    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = slots,
+                                          .pColorAttachments = slots ? color_references : NULL,
+                                          .pDepthStencilAttachment = depth ? &depth_reference : NULL};
+    /* The targets' writes by earlier passes come before this pass's reads and writes of them: draws in a
+       row go without a barrier between them (draw), and without this the implicit dependency on what
+       came before orders nothing (the Vulkan specification's render pass chapter, "implicit subpass
+       dependency"). */
+    const VkPipelineStageFlags attachment_stages =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    const VkSubpassDependency earlier_passes = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0, .srcStageMask = attachment_stages, .dstStageMask = attachment_stages,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+    const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = count, .pAttachments = attachments,
+                                         .subpassCount = 1, .pSubpasses = &subpass, .dependencyCount = 1, .pDependencies = &earlier_passes};
+    *made = VK_NULL_HANDLE;
+    return vkCreateRenderPass(x->device, &pass, NULL, made);
+}
+
 static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_TARGETS], const depth_entry *depth, char *error,
                             size_t error_size)
 {
     int c[RT_COLOR_TARGETS];
     const target_entry *first = NULL;
-    unsigned slots = 0; /* colour attachments: up to the last slot drawn */
     for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
         c[i] = colors[i] ? (int)(colors[i] - x->targets) : -1;
         if (!colors[i]) continue;
-        slots = i + 1;
         if (!first) first = colors[i];
         else if (colors[i]->width != first->width || colors[i]->height != first->height) {
             failed(error, error_size, "colour targets of different sizes (%ux%u and %ux%u) in one draw: not drawn yet", first->width, first->height,
@@ -3723,52 +3809,19 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
                depth->height);
         return NULL;
     }
-    VkAttachmentDescription attachments[RT_COLOR_TARGETS + 1];
+    VkFormat formats[RT_COLOR_TARGETS];
     VkImageView views[RT_COLOR_TARGETS + 1];
-    VkAttachmentReference color_references[RT_COLOR_TARGETS];
     unsigned count = 0;
-    VkAttachmentReference depth_reference = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    for (unsigned i = 0; i < slots; i++) {
-        color_references[i] = (VkAttachmentReference){VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        if (!colors[i]) continue;
-        color_references[i].attachment = count;
-        attachments[count] = (VkAttachmentDescription){.format = colors[i]->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-                                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                                       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                                                       .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                                       .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        views[count++] = colors[i]->view;
+    for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
+        formats[i] = colors[i] ? colors[i]->format : VK_FORMAT_UNDEFINED;
+        if (colors[i]) views[count++] = colors[i]->view;
     }
-    if (depth) {
-        depth_reference.attachment = count;
-        attachments[count] = (VkAttachmentDescription){.format = depth->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-                                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-                                                       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                                       .initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                                       .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-        views[count++] = depth->view;
-    }
-    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = slots,
-                                          .pColorAttachments = slots ? color_references : NULL,
-                                          .pDepthStencilAttachment = depth ? &depth_reference : NULL};
+    if (depth) views[count++] = depth->view;
     pass_entry *p = &x->passes[x->pass_count];
     *p = (pass_entry){.depth = z};
     memcpy(p->color, c, sizeof c);
-    /* The targets' writes by earlier passes come before this pass's reads and writes of them: draws in a
-       row go without a barrier between them (draw), and without this the implicit dependency on what
-       came before orders nothing (the Vulkan specification's render pass chapter, "implicit subpass
-       dependency"). */
-    const VkPipelineStageFlags attachment_stages =
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    const VkSubpassDependency earlier_passes = {
-        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0, .srcStageMask = attachment_stages, .dstStageMask = attachment_stages,
-        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
-    const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = count, .pAttachments = attachments,
-                                         .subpassCount = 1, .pSubpasses = &subpass, .dependencyCount = 1, .pDependencies = &earlier_passes};
     const uint32_t width = first ? first->width : depth->width, height = first ? first->height : depth->height;
-    if (vkCreateRenderPass(x->device, &pass, NULL, &p->pass) != VK_SUCCESS) {
+    if (make_render_pass(x, formats, depth ? depth->format : VK_FORMAT_UNDEFINED, &p->pass) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a render pass");
         return NULL;
     }
@@ -3817,15 +3870,6 @@ static size_t program_dwords(const rt_executor *x, uint64_t code)
 {
     const long dwords = gcn_program_dwords((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4));
     return dwords > 0 ? (size_t)dwords : 0;
-}
-
-/* Adds the program at code, through its end, to a translation's key. 0, or -1 when it has no end. */
-static int add_program(translation_key *key, const rt_executor *x, uint64_t code)
-{
-    const size_t dwords = program_dwords(x, code);
-    if (!dwords) return -1;
-    add_code(key, code, (const uint32_t *)(uintptr_t)code, dwords);
-    return 0;
 }
 
 /* Adds the executor's values every layout takes (the guest memory's place on the GPU, table
@@ -3924,8 +3968,6 @@ static long shader_to_free(rt_executor *x)
     return pick;
 }
 
-static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait);
-
 /* The entry a new shader takes: the next unused one, a slot freed before, or, with all MAX_SHADERS kept
    (walking a scene brings more shaders than that), the least recently used shader's once no unfinished
    batch draws with it, waiting for the GPU's work when every one is in use. That shader's module goes
@@ -3953,9 +3995,153 @@ static long shader_slot(rt_executor *x, char *error, size_t error_size)
     }
     index_pipelines(x);
     vkDestroyShaderModule(x->device, module, NULL);
+    free(x->shaders[pick].key);
     x->shaders[pick] = (shader_entry){0};
     index_shaders(x);
     return pick;
+}
+
+static VkShaderModule shader_module(const rt_executor *x, const uint32_t *spirv, size_t words);
+
+/* What a vertex, copy, domain or pixel shader's translation takes: its programs (words, of which the
+   translator may read dwords; key_dwords through its end, 0 when that is not known: no key), the draw's
+   values and the shader's run-time stop word. tess: a domain shader's draw (its tessellation settings). */
+typedef struct {
+    int stage;
+    uint64_t code, callee;           /* callee: a vertex shader's fetch shader, or 0 */
+    const uint32_t *words, *callee_words;
+    size_t dwords, key_dwords, callee_dwords, callee_key_dwords;
+    uint32_t user_sgprs, settings;   /* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's pixel_settings */
+    unsigned first_binding, image_count, sampler_count;
+    gcn_image_binding images[GCN_MAX_IMAGES];
+    gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
+    int has_input_controls;
+    uint32_t input_controls[GCN_PIXEL_INPUTS]; /* a pixel shader's SPI_PS_INPUT_CNTL words, when set */
+    vertex_instancing instancing;
+    uint64_t tessellation;           /* tessellation_key, for a domain shader */
+    const draw_state *tess;
+    uint64_t error_address;
+} graphics_request;
+
+enum { GRAPHICS_VALUES = 15 };
+
+/* The key of a vertex or pixel shader's translation: KEY_GRAPHICS, the request's values, the executor's
+   values, the instancing inputs, images, samplers and input controls, then the programs' words, in that
+   order (parse_graphics_key reads them back). The tessellation and geometry rings, made at their first
+   draw, are in the values of the stages that read them. */
+static void graphics_key(translation_key *key, const rt_executor *x, const graphics_request *r)
+{
+    const uint64_t kind = KEY_GRAPHICS;
+    const uint64_t values[GRAPHICS_VALUES] = {(uint64_t)r->stage, r->code, r->key_dwords, r->callee, r->callee_key_dwords, r->user_sgprs,
+                                              r->settings, r->first_binding, r->tessellation, r->image_count, r->sampler_count,
+                                              (uint64_t)r->has_input_controls, r->stage == STAGE_COPY ? x->gs_gsvs.address : 0,
+                                              r->stage == STAGE_DOMAIN ? x->tess_lds.address : 0,
+                                              r->stage == STAGE_DOMAIN ? x->tess_factors.address : 0};
+    translation_key_add(key, &kind, sizeof kind);
+    translation_key_add(key, values, sizeof values);
+    add_executor_values(key, x, r->error_address);
+    translation_key_add(key, &r->instancing, sizeof r->instancing);
+    translation_key_add(key, r->images, r->image_count * sizeof *r->images);
+    translation_key_add(key, r->samplers, r->sampler_count * sizeof *r->samplers);
+    if (r->has_input_controls) translation_key_add(key, r->input_controls, sizeof r->input_controls);
+    translation_key_add(key, r->words, r->key_dwords * 4);
+    if (r->callee) translation_key_add(key, r->callee_words, r->callee_key_dwords * 4);
+}
+
+/* Reads a vertex or pixel shader's key back into *r, its words copies the caller frees (the executor's
+   values are left out: they are the running executor's when the key is made again). 0, or -1 for a key
+   of another kind, stage or layout (a copy or domain shader's rings are made at its first draw). */
+static int parse_graphics_key(const unsigned char *key, size_t size, graphics_request *r)
+{
+    uint64_t kind, v[GRAPHICS_VALUES];
+    const size_t head = sizeof kind + sizeof v + EXECUTOR_VALUES * sizeof(uint64_t);
+    if (size < head + sizeof r->instancing) return -1;
+    memcpy(&kind, key, sizeof kind);
+    memcpy(v, key + sizeof kind, sizeof v);
+    if (kind != KEY_GRAPHICS || (v[0] != STAGE_VERTEX && v[0] != STAGE_PIXEL) || !v[2] || v[9] > GCN_MAX_IMAGES || v[10] > GCN_MAX_SAMPLERS ||
+        v[2] > size / 4 || v[4] > size / 4 || (!v[3]) != (!v[4]))
+        return -1;
+    *r = (graphics_request){.stage = (int)v[0], .code = v[1], .key_dwords = v[2], .dwords = v[2], .callee = v[3], .callee_key_dwords = v[4],
+                            .callee_dwords = v[4], .user_sgprs = (uint32_t)v[5], .settings = (uint32_t)v[6], .first_binding = (unsigned)v[7],
+                            .image_count = (unsigned)v[9], .sampler_count = (unsigned)v[10], .has_input_controls = v[11] != 0};
+    const size_t images = r->image_count * sizeof *r->images, samplers = r->sampler_count * sizeof *r->samplers,
+                 controls = r->has_input_controls ? sizeof r->input_controls : 0;
+    const size_t words_at = head + sizeof r->instancing + images + samplers + controls;
+    if (v[8] || size != words_at + (r->key_dwords + r->callee_key_dwords) * 4) return -1;
+    const unsigned char *at = key + head;
+    memcpy(&r->instancing, at, sizeof r->instancing), at += sizeof r->instancing;
+    memcpy(r->images, at, images), at += images;
+    memcpy(r->samplers, at, samplers), at += samplers;
+    memcpy(r->input_controls, at, controls);
+    uint32_t *words = malloc(r->key_dwords * 4), *callee = r->callee ? malloc(r->callee_key_dwords * 4) : NULL;
+    if (!words || (r->callee && !callee)) {
+        free(words), free(callee);
+        return -1;
+    }
+    memcpy(words, key + words_at, r->key_dwords * 4);
+    if (callee) memcpy(callee, key + words_at + r->key_dwords * 4, r->callee_key_dwords * 4);
+    r->words = words, r->callee_words = callee;
+    return 0;
+}
+
+/* A vertex, copy, domain or pixel shader's translation, found under key or made (and kept there): 0 with
+   *spirv (the caller frees it) and *kept, *found telling which; -1 with the reason. Any thread may call
+   it for a vertex or pixel shader. */
+static int translate_graphics(const rt_executor *x, const graphics_request *r, const translation_key *key, translation_outputs *kept,
+                              uint32_t **spirv, size_t *spirv_words, int *found, char *reason, size_t reason_size)
+{
+    *found = find_translation(x, key, kept, spirv, spirv_words);
+    if (*found) return 0;
+    *kept = (translation_outputs){0};
+    const int stage = r->stage;
+    const uint32_t settings = r->settings;
+    const uint32_t *input_controls = r->has_input_controls ? r->input_controls : NULL;
+    /* a draw's vertex (with its fetch shader) or pixel shader takes table snapshots on a device with room
+       for their addresses; a plan that cannot be made leaves the shader without (its code then fails to
+       translate as well) */
+    if (x->draw_snapshots && (stage == STAGE_VERTEX || stage == STAGE_PIXEL) &&
+        gcn_called_table_snapshot_plan(r->words, r->dwords, r->callee_words, r->callee_dwords, GCN_DRAW_SNAPSHOT_WORDS, &kept->tables, reason,
+                                       reason_size))
+        kept->tables = (gcn_table_snapshot){0};
+    const gcn_table_snapshot *plan = kept->tables.entry_count ? &kept->tables : NULL;
+    int result;
+    if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
+        const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
+        const gcn_vertex_layout layout = {.user_sgprs = r->user_sgprs, .output_control = settings,
+                                          .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
+                                          .error_address = r->error_address, .callee = r->callee_words, .callee_dwords = r->callee_dwords,
+                                          .code_address = r->code, .images = r->images, .image_count = r->image_count,
+                                          .first_binding = r->first_binding, .user_data_read = &kept->user_read, .sgprs_read = kept->sgprs_read,
+                                          .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
+                                          .instance_vgprs = r->instancing.vgprs, .step_rates = {r->instancing.step_rates[0], r->instancing.step_rates[1]},
+                                          .step_rates_set = r->instancing.step_rates_set, .table_snapshot = plan,
+                                          .table_block_offset = VERTEX_TABLE_BLOCK};
+        result = gcn_translate_vertex(r->words, r->dwords, &layout, spirv, spirv_words, reason, reason_size);
+    } else if (stage == STAGE_DOMAIN) {
+        gcn_tessellation_layout layout = tessellation_layout(x, &r->tess->hull, r->tess->local.lds_bytes, r->user_sgprs, r->error_address);
+        layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = r->images;
+        layout.image_count = r->image_count, layout.first_binding = r->first_binding, layout.user_data_read = &kept->user_read;
+        memset(kept->sgprs_read, 0xff, sizeof kept->sgprs_read); /* not reported: taken as all read */
+        result = gcn_translate_domain(r->words, r->dwords, &layout, spirv, spirv_words, reason, reason_size);
+    } else {
+        const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
+        const gcn_pixel_layout layout = {.user_sgprs = r->user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
+                                         .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+                                                            (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
+                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
+                                         .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
+                                         .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
+                                         .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = r->error_address,
+                                         .images = r->images, .image_count = r->image_count, .samplers = r->samplers,
+                                         .sampler_count = r->sampler_count, .input_controls = input_controls,
+                                         .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
+                                         .user_data_read = &kept->user_read, .sgprs_read = kept->sgprs_read, .table_snapshot = plan,
+                                         .table_block_offset = PIXEL_TABLE_BLOCK};
+        result = gcn_translate_pixel(r->words, r->dwords, &layout, spirv, spirv_words, reason, reason_size);
+    }
+    if (result) return -1;
+    if (!key->failed) keep_translation(x, key, kept, *spirv, *spirv_words);
+    return 0;
 }
 
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
@@ -3993,113 +4179,57 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     }
     const long slot = shader_slot(x, error, error_size);
     if (slot < 0) return VK_NULL_HANDLE;
-    const uint32_t *words = (const uint32_t *)(uintptr_t)code;
-    const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
+    graphics_request r = {.stage = stage, .code = code, .callee = callee, .words = (const uint32_t *)(uintptr_t)code,
+                          .dwords = (size_t)((x->guest_base + x->size - code) / 4), .user_sgprs = user_sgprs, .settings = settings,
+                          .first_binding = first_binding, .image_count = image_count, .sampler_count = sampler_count,
+                          .has_input_controls = input_controls != NULL, .instancing = instancing, .tessellation = tessellation, .tess = tess,
+                          .error_address = stop_slot(x, stage, code)};
+    if (callee) r.callee_words = (const uint32_t *)(uintptr_t)callee, r.callee_dwords = (size_t)((x->guest_base + x->size - callee) / 4);
+    memcpy(r.images, images, image_count * sizeof *images);
+    memcpy(r.samplers, samplers, sampler_count * sizeof *samplers);
+    if (input_controls) memcpy(r.input_controls, input_controls, control_bytes);
+    char reason[TRANSLATION_REASON_BYTES];
+    const uint64_t started = monotonic_ns();
+    /* the translation's key: the programs through their ends and every value the layouts take */
+    translation_key key = {0};
+    if (x->translations && (r.key_dwords = program_dwords(x, code)) && (!callee || (r.callee_key_dwords = program_dwords(x, callee))))
+        graphics_key(&key, x, &r);
+    else
+        key.failed = 1;
+    translation_outputs kept;
     uint32_t *spirv = NULL;
     size_t spirv_words = 0;
-    char reason[TRANSLATION_REASON_BYTES];
-    int result = 0;
-    const uint64_t started = monotonic_ns();
-    /* the translation's key: the programs, and every value the layouts below take that the shader's
-       entry does not already hold (the tessellation and geometry rings are made at their first draw) */
-    translation_key key = {0};
-    const uint64_t graphics = KEY_GRAPHICS;
-    translation_key_add(&key, &graphics, sizeof graphics);
-    if (x->translations && add_program(&key, x, code) == 0 && (!callee || add_program(&key, x, callee) == 0)) {
-        const uint64_t values[] = {(uint64_t)stage, user_sgprs, settings, first_binding, tessellation, image_count, sampler_count,
-                                   input_controls != NULL, stage == STAGE_COPY ? x->gs_gsvs.address : 0,
-                                   stage == STAGE_DOMAIN ? x->tess_lds.address : 0, stage == STAGE_DOMAIN ? x->tess_factors.address : 0};
-        add_executor_values(&key, x, stop_slot(x, stage, code));
-        translation_key_add(&key, values, sizeof values);
-        translation_key_add(&key, &instancing, sizeof instancing);
-        translation_key_add(&key, images, image_count * sizeof *images);
-        translation_key_add(&key, samplers, sampler_count * sizeof *samplers);
-        if (input_controls) translation_key_add(&key, input_controls, control_bytes);
-    } else {
-        key.failed = 1;
-    }
-    translation_outputs kept;
-    gcn_table_snapshot planned = {0};
-    if (find_translation(x, &key, &kept, &spirv, &spirv_words)) {
-        x->translations_found++;
-        *user_read = kept.user_read;
-        memcpy(sgprs_read, kept.sgprs_read, sizeof kept.sgprs_read);
-        planned = kept.tables;
-    } else {
-        /* a draw's vertex (with its fetch shader) or pixel shader takes table snapshots on a device with room
-           for their addresses; a plan that cannot be made leaves the shader without (its code then fails to
-           translate as well) */
-        const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
-        const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
-        if (x->draw_snapshots && (stage == STAGE_VERTEX || stage == STAGE_PIXEL) &&
-            gcn_called_table_snapshot_plan(words, dwords, callee_words, callee_dwords, GCN_DRAW_SNAPSHOT_WORDS, &planned, reason, sizeof reason))
-            planned = (gcn_table_snapshot){0};
-        const gcn_table_snapshot *plan = planned.entry_count ? &planned : NULL;
-        if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
-            const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
-            const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
-                                              .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset, .guest = guest_memory(x),
-                                              .error_address = stop_slot(x, stage, code), .callee = callee_words, .callee_dwords = callee_dwords,
-                                              .code_address = code, .images = images, .image_count = image_count,
-                                              .first_binding = first_binding, .user_data_read = user_read, .sgprs_read = sgprs_read,
-                                              .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
-                                              .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
-                                              .step_rates_set = instancing.step_rates_set, .table_snapshot = plan,
-                                              .table_block_offset = VERTEX_TABLE_BLOCK};
-            result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
-        } else if (stage == STAGE_DOMAIN) {
-            gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
-            layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
-            layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
-            memset(sgprs_read, 0xff, GCN_SGPR_READ_WORDS * sizeof *sgprs_read); /* not reported: taken as all read */
-            result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
-        } else {
-            const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
-            const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
-                                             .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
-                                                                (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
-                                             .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
-                                             .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
-                                             .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
-                                             .address_offset = x->address_offset, .guest = guest_memory(x), .error_address = stop_slot(x, stage, code),
-                                             .images = images, .image_count = image_count, .samplers = samplers,
-                                             .sampler_count = sampler_count, .input_controls = input_controls,
-                                             .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
-                                             .user_data_read = user_read, .sgprs_read = sgprs_read, .table_snapshot = plan,
-                                             .table_block_offset = PIXEL_TABLE_BLOCK};
-            result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
-        }
-        if (!result) {
-            translation_outputs outputs = {.user_read = *user_read, .tables = planned};
-            memcpy(outputs.sgprs_read, sgprs_read, sizeof outputs.sgprs_read);
-            keep_translation(x, &key, &outputs, spirv, spirv_words);
-            x->translations_made++;
-        }
-    }
-    translation_key_free(&key);
+    int found = 0;
+    const int result = translate_graphics(x, &r, &key, &kept, &spirv, &spirv_words, &found, reason, sizeof reason);
+    if (found) x->translations_found++;
+    else if (!result) x->translations_made++;
     count_translation_time(x, started);
     sweep_shader(x, stage_name(stage), code, result ? reason : NULL, spirv, spirv_words);
     if (result) {
+        translation_key_free(&key);
         failed(error, error_size, "%s shader at %#llx: %s", stage_name(stage),
                (unsigned long long)code, reason);
         return VK_NULL_HANDLE;
     }
-    const VkShaderModuleCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = spirv_words * 4, .pCode = spirv};
-    VkShaderModule module = VK_NULL_HANDLE;
-    const VkResult made = vkCreateShaderModule(x->device, &info, NULL, &module);
+    const VkShaderModule module = shader_module(x, spirv, spirv_words);
     free(spirv);
-    if (made != VK_SUCCESS) {
+    if (!module) {
+        translation_key_free(&key);
         failed(error, error_size, "the device refused a translated shader");
         return VK_NULL_HANDLE;
     }
+    *user_read = kept.user_read;
+    memcpy(sgprs_read, kept.sgprs_read, sizeof kept.sgprs_read);
     if ((size_t)slot == x->shader_count) x->shader_count++;
     shader_entry *e = &x->shaders[slot];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
-                        .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
-                        .tessellation = tessellation, .instancing = instancing, .tables = planned, .module = module,
+                        .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = kept.user_read,
+                        .tessellation = tessellation, .instancing = instancing, .tables = kept.tables, .module = module,
                         .bucket_next = x->shader_buckets[bucket], .used_ticket = x->submitted + 1, .used_call = x->call_serial};
     x->shader_buckets[bucket] = (uint32_t)(slot + 1);
-    memcpy(e->sgprs_read, sgprs_read, sizeof e->sgprs_read);
+    if (!key.failed && (e->key = malloc(key.size))) memcpy(e->key, key.bytes, key.size), e->key_size = key.size;
+    translation_key_free(&key);
+    memcpy(e->sgprs_read, kept.sgprs_read, sizeof e->sgprs_read);
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;
@@ -4151,7 +4281,7 @@ typedef struct pipeline_job {
     VkPipelineDepthStencilStateCreateInfo depth_stencil;
     VkPipelineColorBlendStateCreateInfo blend;
     VkPipelineDynamicStateCreateInfo dynamic;
-    uint64_t queued_ns;              /* when it went to the workers (ASYNC_SKIP_NS) */
+    uint64_t queued_ns;              /* when it went to the workers, or a launch recipe's first draw was left out (ASYNC_SKIP_NS) */
     VkPipeline pipeline;             /* job_lock: set with done */
     VkResult result;
     int done;
@@ -4236,6 +4366,11 @@ static int describe_pipeline(pipeline_job *j, VkShaderModule tess_vertex, VkShad
     return 0;
 }
 
+/* Called by a draw pipeline worker as it takes a job, before making its pipeline (NULL: nothing); for tests. */
+static void (*pipeline_job_hook)(void);
+
+void rt_executor_set_pipeline_job_hook(void (*hook)(void)) { pipeline_job_hook = hook; }
+
 /* The workers: each takes the oldest queued job, has the driver make its pipeline, and marks it done. They
    end once stopped with the queue empty. */
 static void *pipeline_worker(void *argument)
@@ -4249,6 +4384,7 @@ static void *pipeline_worker(void *argument)
         x->job_head = j->next;
         if (!x->job_head) x->job_tail = NULL;
         pthread_mutex_unlock(&x->job_lock);
+        if (pipeline_job_hook) pipeline_job_hook();
         VkPipeline made = VK_NULL_HANDLE;
         const VkResult result = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &made);
         pthread_mutex_lock(&x->job_lock);
@@ -4309,14 +4445,70 @@ static int pipeline_settle(rt_executor *x, pipeline_entry *p, int wait)
    for up to a second the same way; facts only, engine/docs/pipeline_compiles.md). */
 #define ASYNC_SKIP_NS (UINT64_C(1000000000))
 
+/* ---- pipeline recipes ----
+   A pipeline made for a draw of a vertex and a pixel shader (no tessellation or geometry shader) is kept in
+   the pipeline catalog (BB_PIPELINE_CATALOG, else pipelines-catalog.bin beside the translations) by its
+   recipe: its shaders' translation keys and everything else its description takes, from which
+   compile_catalog makes it again when the executor opens. */
+enum { KEY_PIPELINE = 3 };
+
+/* What a pipeline's recipe holds besides its shaders' keys: the draw's state, the formats of the pass's
+   attachments (VK_FORMAT_UNDEFINED: none) and what its pipeline layout and rect-list stage depend on.
+   Words only, no padding: it is a catalog key's bytes. */
+typedef struct {
+    uint32_t colours, blend_control[RT_COLOR_TARGETS], write_masks, strip, has_depth;
+    depth_plan depth;
+    uint32_t formats[RT_COLOR_TARGETS], depth_format; /* VkFormat */
+    uint32_t images, samplers, vertex_images;         /* graphics_layout_for's n, m and v */
+    uint32_t rect, rect_parameters, rect_clip_distances; /* a rect list's geometry stage (rect_stage_module) */
+    uint32_t vertex_key_size, pixel_key_size;         /* the keys' bytes, after it (no pixel shader: 0) */
+} recipe_state;
+
+/* The shader made as module (shader_for), or NULL. */
+static const shader_entry *shader_of_module(const rt_executor *x, VkShaderModule module)
+{
+    for (size_t i = 0; module && i < x->shader_count; i++)
+        if (x->shaders[i].module == module) return &x->shaders[i];
+    return NULL;
+}
+
+/* The catalog key of a pipeline of state with a vertex and (unless VK_NULL_HANDLE) a pixel shader: KEY_PIPELINE,
+   the state, then the shaders' translation keys. 0, or -1 when a shader has no key. */
+static int pipeline_recipe_key(const rt_executor *x, translation_key *key, const recipe_state *state, VkShaderModule vertex, VkShaderModule pixel)
+{
+    const shader_entry *v = shader_of_module(x, vertex), *p = shader_of_module(x, pixel);
+    if (!x->pipeline_catalog || !v || v->stage != STAGE_VERTEX || !v->key || (pixel && (!p || p->stage != STAGE_PIXEL || !p->key))) return -1;
+    recipe_state kept = *state;
+    kept.vertex_key_size = (uint32_t)v->key_size, kept.pixel_key_size = pixel ? (uint32_t)p->key_size : 0;
+    const uint64_t kind = KEY_PIPELINE;
+    translation_key_add(key, &kind, sizeof kind);
+    translation_key_add(key, &kept, sizeof kept);
+    translation_key_add(key, v->key, v->key_size);
+    if (pixel) translation_key_add(key, p->key, p->key_size);
+    return key->failed ? -1 : 0;
+}
+
+/* How many pipelines draws made since the executor opened, found in the pipeline cache or compiled, and
+   how many draws were left out while theirs were made; on stderr at most every 10 s (now: at once). */
+static void report_draw_pipelines(rt_executor *x, int now)
+{
+    const uint64_t at = monotonic_ns();
+    if (!now && at - x->pipelines_reported < 10000000000ull) return;
+    x->pipelines_reported = at;
+    fprintf(stderr, "executor: draw pipelines: %zu from the pipeline cache, %zu compiled; %zu draws left out while theirs were made\n",
+            x->pipelines_cached, x->pipelines_compiled, x->draws_left_out);
+}
+
+static int meet_launch_pipeline(rt_executor *x, const translation_key *key, int *may_skip, uint64_t **left_out_since);
+
 /* The draw's pipeline (see describe_pipeline). With may_skip set and worker threads running, a pipeline
    not made yet goes to the workers and *pending is set, VK_NULL_HANDLE returned: the draw is left out
    until it is made. Otherwise the pipeline is made (or waited for) here. VK_NULL_HANDLE with *pending
-   clear: the reason is in error. */
+   clear: the reason is in error. recipe: the draw's state for the pipeline catalog (NULL: not kept). */
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
                                VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
                                int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
-                               int may_skip, int *pending, char *error, size_t error_size)
+                               const recipe_state *recipe, int may_skip, int *pending, char *error, size_t error_size)
 {
     *pending = 0;
     may_skip = may_skip && x->pipeline_worker_count;
@@ -4334,42 +4526,41 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         }
     }
     if (x->pipeline_count == MAX_PIPELINES && free_pipeline_slot(x, error, error_size)) return VK_NULL_HANDLE;
-    pipeline_job *const j = calloc(1, sizeof *j);
-    if (!j) {
-        failed(error, error_size, "no memory for a pipeline");
+    /* the draw's recipe: kept in the pipeline catalog once made; one a launch worker is making is not made twice */
+    translation_key recipe_key = {0};
+    if (!recipe || pipeline_recipe_key(x, &recipe_key, recipe, vertex, pixel)) recipe_key.failed = 1;
+    uint64_t *left_out_since = NULL; /* a launch recipe's: when its first draw was left out (0: none yet) */
+    if (meet_launch_pipeline(x, &recipe_key, &may_skip, &left_out_since)) {
+        translation_key_free(&recipe_key);
+        *pending = 1;
         return VK_NULL_HANDLE;
     }
-    if (describe_pipeline(j, x->tess_vertex, vertex, geometry, pixel, pass, layout, colours, blend_control, write_masks, strip, depth,
-                          has_depth, control, patch_points, error, error_size)) {
+    pipeline_job *const j = calloc(1, sizeof *j);
+    if (!j || describe_pipeline(j, x->tess_vertex, vertex, geometry, pixel, pass, layout, colours, blend_control, write_masks, strip, depth,
+                                has_depth, control, patch_points, error, error_size)) {
+        if (!j) failed(error, error_size, "no memory for a pipeline");
         free(j);
+        translation_key_free(&recipe_key);
         return VK_NULL_HANDLE;
     }
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (may_skip && x->cache_control) { /* one the pipeline cache holds is made here, at once, and drawn now */
+    VkResult made = VK_PIPELINE_COMPILE_REQUIRED_EXT;
+    if (x->cache_control && !x->probe_misses) { /* one the pipeline cache holds is made here, at once, and drawn now */
         j->info.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
-        const VkResult cached = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
+        made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
         j->info.flags &= ~(VkPipelineCreateFlags)VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
-        if (cached != VK_SUCCESS) pipeline = VK_NULL_HANDLE;
-        may_skip = cached == VK_PIPELINE_COMPILE_REQUIRED_EXT;
-        if (cached != VK_SUCCESS && !may_skip) { /* refused outright */
-            free(j);
-            failed(error, error_size, "the device refused a pipeline");
-            return VK_NULL_HANDLE;
-        }
+        if (made == VK_SUCCESS) x->pipelines_cached++;
+        else pipeline = VK_NULL_HANDLE;
     }
-    if (pipeline) {
-        free(j);
-        atomic_fetch_add(&x->pipelines_made, 1);
-    } else if (!may_skip) {
-        const VkResult made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
-        free(j);
-        if (made != VK_SUCCESS) {
-            failed(error, error_size, "the device refused a pipeline");
-            return VK_NULL_HANDLE;
-        }
-        atomic_fetch_add(&x->pipelines_made, 1);
-    } else {
+    may_skip = may_skip && made == VK_PIPELINE_COMPILE_REQUIRED_EXT;
+    if (made == VK_PIPELINE_COMPILE_REQUIRED_EXT) x->pipelines_compiled++;
+    if (made == VK_PIPELINE_COMPILE_REQUIRED_EXT && !may_skip)
+        made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &j->info, NULL, &pipeline);
+    if (may_skip) {
+        /* a launch recipe's draws are left out for a second in all, from the first one left out */
         j->queued_ns = monotonic_ns();
+        if (left_out_since && !*left_out_since) *left_out_since = j->queued_ns;
+        if (left_out_since) j->queued_ns = *left_out_since;
         pthread_mutex_lock(&x->job_lock);
         if (x->job_tail) x->job_tail->next = j;
         else x->job_head = j;
@@ -4377,7 +4568,18 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         pthread_cond_signal(&x->job_queued);
         pthread_mutex_unlock(&x->job_lock);
         *pending = 1;
+    } else {
+        free(j);
+        if (made != VK_SUCCESS) {
+            translation_key_free(&recipe_key);
+            failed(error, error_size, "the device refused a pipeline");
+            return VK_NULL_HANDLE;
+        }
+        atomic_fetch_add(&x->pipelines_made, 1);
     }
+    translation_cache_add(x->pipeline_catalog, &recipe_key, "", 0);
+    translation_key_free(&recipe_key);
+    report_draw_pipelines(x, 0);
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
@@ -4399,6 +4601,8 @@ static unsigned clip_distance_count(uint32_t output_control)
     return count;
 }
 
+static VkShaderModule rect_stage_module(rt_executor *x, unsigned parameters, unsigned clip_distances, char *error, size_t error_size);
+
 /* The rect-list geometry stage for a vertex shader's outputs; VK_NULL_HANDLE after failing. */
 static VkShaderModule rect_stage_for(rt_executor *x, const rt_vertex_shader *vertex, char *error, size_t error_size)
 {
@@ -4406,7 +4610,13 @@ static VkShaderModule rect_stage_for(rt_executor *x, const rt_vertex_shader *ver
         failed(error, error_size, "a rect list: the Vulkan device has no geometry shaders, which drawing one needs here");
         return VK_NULL_HANDLE;
     }
-    const unsigned parameters = vertex->parameter_count, clip_distances = clip_distance_count(vertex->output_control);
+    return rect_stage_module(x, vertex->parameter_count, clip_distance_count(vertex->output_control), error, error_size);
+}
+
+/* The rect-list geometry stage for parameters vertex parameters and clip_distances clip distances, made on
+   first use; VK_NULL_HANDLE after failing. */
+static VkShaderModule rect_stage_module(rt_executor *x, unsigned parameters, unsigned clip_distances, char *error, size_t error_size)
+{
     for (size_t i = 0; i < x->rect_stage_count; i++)
         if (x->rect_stages[i].parameters == parameters && x->rect_stages[i].clip_distances == clip_distances) return x->rect_stages[i].module;
     if (x->rect_stage_count == MAX_RECT_STAGES) {
@@ -5418,10 +5628,22 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
        changes nothing but its targets: it stores nothing, records no work of its own first, and its depth
        target has been drawn already (a later test reading depth no draw wrote would stop). */
     const int may_skip = !stores && !indirect && !tess && !gs && (!z || z->drawn);
+    recipe_state recipe = {.colours = colours, .write_masks = write_masks, .strip = (uint32_t)strip, .has_depth = z != NULL, .depth = *plan,
+                           .depth_format = z ? (uint32_t)z->format : 0, .images = image_count, .samplers = sampler_count,
+                           .vertex_images = vertex_image_count, .rect = (uint32_t)rect_list,
+                           .rect_parameters = rect_list ? s->vertex.parameter_count : 0,
+                           .rect_clip_distances = rect_list ? clip_distance_count(s->vertex.output_control) : 0};
+    memcpy(recipe.blend_control, blend_control, sizeof recipe.blend_control);
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) recipe.formats[slot] = targets[slot] ? (uint32_t)targets[slot]->format : 0;
     int pending = 0;
     const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
-                                             plan, z != NULL, control, tess ? s->hull.input_points : 0, may_skip, &pending, error, error_size);
-    if (pending) return 0; /* left out this time */
+                                             plan, z != NULL, control, tess ? s->hull.input_points : 0, tess || gs ? NULL : &recipe, may_skip,
+                                             &pending, error, error_size);
+    if (pending) { /* left out this time */
+        x->draws_left_out++;
+        report_draw_pipelines(x, 0);
+        return 0;
+    }
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (has_set && image_set(x, set_layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count, samplers, sampler_count, vertex_views,
@@ -5717,8 +5939,11 @@ static const compute_entry *compute_pipeline_for(rt_executor *x, const rt_comput
    where the pipeline cache lacks them (a new translator or driver), on worker threads that run while
    the game loads: the dispatches that meet them later find both caches ready. A dispatch cannot be
    left out as a draw can (async_pipelines), so a compute shader made in-game holds its frame for the
-   whole compile; one a worker is making when its dispatch comes is waited for, not made twice.
-   BB_LAUNCH_COMPILE=0 turns it off. */
+   whole compile; one a worker is making when its dispatch comes is waited for, not made twice. The
+   pipeline catalog's draw pipelines follow (pipeline recipes, above), made for canonical render passes
+   described as the draws' are: a draw that meets one finds its translations and its pipeline cached and
+   is drawn at once instead of being left out (async_pipelines) or waiting for the compiler; one a worker
+   is making is waited for, or left out while it may be. BB_LAUNCH_COMPILE=0 turns it off. */
 enum { LAUNCH_WORKERS = 8 };
 typedef struct launch_work launch_work;
 
@@ -5745,18 +5970,45 @@ static void take_catalog_key(void *context, const void *key, size_t size)
     all->keys[all->count] = copy, all->sizes[all->count++] = size;
 }
 
-/* A launch shader's state: waiting, being made by a worker, made, or taken by a dispatch that met it
-   before any worker did (the dispatch makes it then, the workers leave it). */
+/* A launch shader's or pipeline's state: waiting, being made by a worker, made, or taken by a dispatch or
+   draw that met it before any worker did (it makes it then, the workers leave it). */
 enum { LAUNCH_WAITING, LAUNCH_MAKING, LAUNCH_MADE, LAUNCH_TAKEN };
 
-/* The shaders the workers make, each with its key and state; the next one to take, and what was done. */
+/* A draw pipeline the workers make from its recipe: its vertex and pixel shaders' requests and keys, its
+   state, and the canonical render pass, pipeline layout and rect-list stage made for it as the executor
+   opens. */
+typedef struct {
+    graphics_request stages[2];
+    translation_key keys[2];
+    recipe_state state;
+    VkRenderPass pass;
+    VkPipelineLayout layout;
+    VkShaderModule rect;
+} launch_pipeline;
+
+/* The canonical render passes of the launch pipelines, one per tuple of attachment formats (make_render_pass). */
+enum { LAUNCH_PASSES = 64 };
+typedef struct {
+    uint32_t formats[RT_COLOR_TARGETS], depth_format;
+    VkRenderPass pass;
+} launch_pass;
+
+/* The shaders, then the pipelines, the workers make, each with its key and state; the next one to take,
+   and what was done. */
 struct launch_work {
     rt_executor *x;
     compute_request *requests;
     translation_key *keys;
     atomic_int *states;
     size_t count;
-    atomic_size_t next, done, translated, compiled;
+    launch_pipeline *pipelines;
+    translation_key *recipes;        /* each pipeline's recipe made again with this executor's values */
+    atomic_int *pipeline_states;
+    uint64_t *left_out_since;        /* when the first draw with each one was left out (0: none has); ASYNC_SKIP_NS */
+    size_t pipeline_count;
+    launch_pass passes[LAUNCH_PASSES];
+    size_t pass_count;
+    atomic_size_t next, done, translated, compiled, pipelines_compiled;
     uint64_t began;
     _Atomic uint64_t reported; /* when the last progress line went to stderr */
     launch_progress progress;  /* the counts told, in order (launch_progress_publish) */
@@ -5792,46 +6044,107 @@ static void make_at_launch(launch_work *w, size_t i)
     free(spirv);
 }
 
+/* Makes one draw pipeline's translations and the pipeline, where the caches lack them, for its canonical
+   render pass; the pipeline is let go (the pipeline cache keeps it for the draw that meets it, whose own
+   pass is described alike). */
+static void make_pipeline_at_launch(launch_work *w, size_t i)
+{
+    rt_executor *x = w->x;
+    const launch_pipeline *p = &w->pipelines[i];
+    VkShaderModule modules[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    const unsigned stages = p->state.pixel_key_size ? 2 : 1;
+    char reason[TRANSLATION_REASON_BYTES];
+    int ready = 1;
+    for (unsigned k = 0; k < stages && ready; k++) {
+        translation_outputs kept;
+        uint32_t *spirv = NULL;
+        size_t words = 0;
+        int found = 0;
+        if (translate_graphics(x, &p->stages[k], &p->keys[k], &kept, &spirv, &words, &found, reason, sizeof reason) == 0) {
+            if (!found) atomic_fetch_add(&w->translated, 1);
+            modules[k] = shader_module(x, spirv, words);
+        }
+        free(spirv);
+        ready = modules[k] != VK_NULL_HANDLE;
+    }
+    pipeline_job job;
+    const recipe_state *s = &p->state;
+    if (ready && describe_pipeline(&job, x->tess_vertex, modules[0], p->rect, modules[1], p->pass, p->layout, s->colours, s->blend_control,
+                                   s->write_masks, (int)s->strip, &s->depth, (int)s->has_depth, VK_NULL_HANDLE, 0, reason, sizeof reason) == 0) {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkResult made = VK_PIPELINE_COMPILE_REQUIRED_EXT;
+        if (x->cache_control) { /* one the pipeline cache holds needs nothing more */
+            job.info.flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT;
+            made = vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &job.info, NULL, &pipeline);
+            job.info.flags = 0;
+            if (made != VK_SUCCESS) pipeline = VK_NULL_HANDLE;
+        }
+        if (made == VK_PIPELINE_COMPILE_REQUIRED_EXT && vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &job.info, NULL, &pipeline) == VK_SUCCESS) {
+            atomic_fetch_add(&w->pipelines_compiled, 1);
+            atomic_fetch_add(&x->pipelines_made, 1); /* the saver writes the pipeline cache */
+        } else if (made == VK_PIPELINE_COMPILE_REQUIRED_EXT) {
+            pipeline = VK_NULL_HANDLE;
+        }
+        if (pipeline) vkDestroyPipeline(x->device, pipeline, NULL);
+    }
+    for (unsigned k = 0; k < stages; k++)
+        if (modules[k]) vkDestroyShaderModule(x->device, modules[k], NULL);
+}
+
 /* How often the workers write a progress line on stderr while they compile. */
 #define LAUNCH_REPORT_NS (UINT64_C(2000000000))
 
-/* Tells done of the shaders: launch_progress, and a line on stderr at most every LAUNCH_REPORT_NS, the
+/* Tells done of the shaders and pipelines: launch_progress, and a line on stderr at most every LAUNCH_REPORT_NS, the
    last one the summary (under launch_progress_publish's lock, so counts are told in order). */
 static void tell_launch_progress(void *context, size_t done)
 {
     launch_work *w = context;
     rt_executor *x = w->x;
-    if (x->launch_progress) x->launch_progress(done, w->count);
+    const size_t total = w->count + w->pipeline_count;
+    if (x->launch_progress) x->launch_progress(done, total);
     const uint64_t now = monotonic_ns();
-    if (done == w->count) {
-        fprintf(stderr, "executor: compiled at launch: %zu compute shaders (%zu translated, %zu pipelines compiled), %.2f s\n", w->count,
-                (size_t)atomic_load(&w->translated), (size_t)atomic_load(&w->compiled), (double)(now - w->began) / 1e9);
+    if (done == total) {
+        fprintf(stderr, "executor: compiled at launch: %zu compute shaders and %zu draw pipelines (%zu shaders translated, %zu compute and "
+                "%zu draw pipelines compiled), %.2f s\n", w->count, w->pipeline_count, (size_t)atomic_load(&w->translated),
+                (size_t)atomic_load(&w->compiled), (size_t)atomic_load(&w->pipelines_compiled), (double)(now - w->began) / 1e9);
         return;
     }
     if (done && now - atomic_load(&w->reported) >= LAUNCH_REPORT_NS) {
         atomic_store(&w->reported, now);
-        fprintf(stderr, "executor: compiling at launch: %zu of %zu compute shaders, %.1f s\n", done, w->count, (double)(now - w->began) / 1e9);
+        fprintf(stderr, "executor: compiling at launch: %zu of %zu compute shaders and draw pipelines, %.1f s\n", done, total,
+                (double)(now - w->began) / 1e9);
     }
 }
 
 /* Tells how far the workers are: a count already passed by one told from another worker is dropped,
-   so the last one told is always done == count (runtime/launch_progress.h). */
+   so the last one told is always all of them (runtime/launch_progress.h). */
 static void report_launch_progress(launch_work *w, size_t done)
 {
     launch_progress_publish(&w->progress, done, tell_launch_progress, w);
 }
 
-/* Takes the next waiting shaders until none is left, reporting progress after each. */
+/* Called by a launch worker as it starts making a draw pipeline (its place among the launch pipelines), before it is
+   made (NULL: nothing); for tests. */
+static void (*launch_pipeline_hook)(size_t pipeline);
+
+void rt_executor_set_launch_pipeline_hook(void (*hook)(size_t pipeline)) { launch_pipeline_hook = hook; }
+
+/* Takes the next waiting shaders, then pipelines, until none is left, reporting progress after each. */
 static void *launch_worker(void *argument)
 {
     launch_work *w = argument;
+    const size_t total = w->count + w->pipeline_count;
     for (;;) {
         const size_t i = atomic_fetch_add(&w->next, 1);
-        if (i >= w->count) return NULL;
+        if (i >= total) return NULL;
+        const int pipeline = i >= w->count;
+        atomic_int *state = pipeline ? &w->pipeline_states[i - w->count] : &w->states[i];
         int waiting = LAUNCH_WAITING;
-        if (atomic_compare_exchange_strong(&w->states[i], &waiting, LAUNCH_MAKING)) {
-            make_at_launch(w, i);
-            atomic_store(&w->states[i], LAUNCH_MADE);
+        if (atomic_compare_exchange_strong(state, &waiting, LAUNCH_MAKING)) {
+            if (pipeline && launch_pipeline_hook) launch_pipeline_hook(i - w->count);
+            if (pipeline) make_pipeline_at_launch(w, i - w->count);
+            else make_at_launch(w, i);
+            atomic_store(state, LAUNCH_MADE);
         }
         report_launch_progress(w, atomic_fetch_add(&w->done, 1) + 1);
     }
@@ -5843,7 +6156,7 @@ static void *launch_worker(void *argument)
 static void meet_launch_shader(rt_executor *x, const translation_key *key)
 {
     launch_work *w = x->launch;
-    if (!w || key->failed || atomic_load(&w->done) == w->count) return;
+    if (!w || key->failed || atomic_load(&w->done) == w->count + w->pipeline_count) return;
     for (size_t i = 0; i < w->count; i++) {
         if (w->keys[i].size != key->size || memcmp(w->keys[i].bytes, key->bytes, key->size)) continue;
         int waiting = LAUNCH_WAITING;
@@ -5856,6 +6169,68 @@ static void meet_launch_shader(rt_executor *x, const translation_key *key)
     }
 }
 
+/* Where the time of the first left-out draw with the launch recipe key is kept (0 there: none yet), or
+   NULL when key is no launch recipe; *index is its place in the launch work, or SIZE_MAX once that is
+   freed (finish_launch_work keeps the times of the recipes whose draws were left out). Draws come from
+   the recording thread only, and the launch work is freed on it too, so these times are its own. */
+static uint64_t *launch_left_out_since(rt_executor *x, const translation_key *key, size_t *index)
+{
+    launch_work *w = x->launch;
+    *index = SIZE_MAX;
+    if (key->failed) return NULL;
+    if (w) {
+        for (size_t i = 0; i < w->pipeline_count; i++)
+            if (w->recipes[i].size == key->size && !memcmp(w->recipes[i].bytes, key->bytes, key->size)) return *index = i, &w->left_out_since[i];
+        return NULL;
+    }
+    for (size_t i = 0; i < x->left_out_count; i++)
+        if (x->left_out_recipes[i].size == key->size && !memcmp(x->left_out_recipes[i].bytes, key->bytes, key->size)) return &x->left_out_since[i];
+    return NULL;
+}
+
+/* Whether a draw may still be left out (*may_skip, cleared here) when the first draw with its recipe was
+   left out at since (0: none yet): for ASYNC_SKIP_NS from then, in all, whatever made it wait since. */
+static int may_still_skip(uint64_t since, int *may_skip)
+{
+    if (*may_skip && since && monotonic_ns() - since >= ASYNC_SKIP_NS) *may_skip = 0;
+    return *may_skip;
+}
+
+/* Before a draw makes the pipeline of recipe key. For a launch recipe *left_out_since is where the time of
+   its first left-out draw is kept (else NULL), and *may_skip is cleared once its draws have been left out
+   for ASYNC_SKIP_NS, so that the draw is drawn now: its pipeline made at once if the pipeline cache lacks
+   it, never left to the workers again. One no worker has taken yet is left to the draw; one a worker is
+   making is waited for (it is then in the pipeline cache) unless the draw may still be left out: then 1,
+   the draw is left out, and its time kept if it is the first. Otherwise 0. */
+static int meet_launch_pipeline(rt_executor *x, const translation_key *key, int *may_skip, uint64_t **left_out_since)
+{
+    size_t i;
+    uint64_t *since = *left_out_since = launch_left_out_since(x, key, &i);
+    if (!since) return 0;
+    may_still_skip(*since, may_skip); /* only to clear *may_skip once the second is over */
+    if (i == SIZE_MAX) return 0;
+    launch_work *w = x->launch;
+    int waiting = LAUNCH_WAITING;
+    if (atomic_compare_exchange_strong(&w->pipeline_states[i], &waiting, LAUNCH_TAKEN)) return 0;
+    while (atomic_load(&w->pipeline_states[i]) == LAUNCH_MAKING) {
+        if (may_still_skip(*since, may_skip)) {
+            if (!*since) *since = monotonic_ns();
+            return 1;
+        }
+        const struct timespec pause = {0, 1000000};
+        nanosleep(&pause, NULL);
+    }
+    return 0;
+}
+
+static void free_launch_pipeline(launch_pipeline *p)
+{
+    for (unsigned k = 0; k < 2; k++) {
+        free((void *)p->stages[k].words), free((void *)p->stages[k].callee_words);
+        translation_key_free(&p->keys[k]);
+    }
+}
+
 /* Waits for the launch workers and frees their work (rt_executor_launch_compiles, closing). */
 static void finish_launch_work(rt_executor *x)
 {
@@ -5863,32 +6238,113 @@ static void finish_launch_work(rt_executor *x)
     if (!w) return;
     for (size_t i = 0; i < w->started; i++) pthread_join(w->workers[i], NULL);
     x->launch_shaders = w->count, x->launch_translated = atomic_load(&w->translated), x->launch_compiled = atomic_load(&w->compiled);
+    x->launch_pipelines = w->pipeline_count, x->launch_pipelines_compiled = atomic_load(&w->pipelines_compiled);
     for (size_t i = 0; i < w->count; i++) free((void *)w->requests[i].words), translation_key_free(&w->keys[i]);
+    /* the recipes whose draws were left out keep their times (launch_left_out_since), in the arrays they had */
+    size_t kept = 0;
+    for (size_t i = 0; i < w->pipeline_count; i++) {
+        free_launch_pipeline(&w->pipelines[i]);
+        if (!w->left_out_since[i]) {
+            translation_key_free(&w->recipes[i]);
+            continue;
+        }
+        w->recipes[kept] = w->recipes[i], w->left_out_since[kept++] = w->left_out_since[i];
+    }
+    x->left_out_recipes = w->recipes, x->left_out_since = w->left_out_since, x->left_out_count = kept;
+    for (size_t i = 0; i < w->pass_count; i++) vkDestroyRenderPass(x->device, w->passes[i].pass, NULL);
     launch_progress_destroy(&w->progress);
-    free(w->requests), free(w->keys), free(w->states), free(w);
+    free(w->requests), free(w->keys), free(w->states), free(w->pipelines), free(w->pipeline_states), free(w);
     x->launch = NULL;
 }
 
-/* Makes the catalog's shaders again with this executor's values and starts up to LAUNCH_WORKERS
-   threads (one fewer than the processors) making them while the game runs; on this thread when none
-   can be started. */
+/* The canonical render pass for state's attachment formats, made on first use; VK_NULL_HANDLE when there
+   is no room or the device refuses it. */
+static VkRenderPass launch_pass_for(rt_executor *x, launch_work *w, const recipe_state *state)
+{
+    for (size_t i = 0; i < w->pass_count; i++)
+        if (!memcmp(w->passes[i].formats, state->formats, sizeof state->formats) && w->passes[i].depth_format == state->depth_format)
+            return w->passes[i].pass;
+    VkFormat formats[RT_COLOR_TARGETS];
+    for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) formats[i] = (VkFormat)state->formats[i];
+    launch_pass *p = &w->passes[w->pass_count];
+    if (w->pass_count == LAUNCH_PASSES || make_render_pass(x, formats, (VkFormat)state->depth_format, &p->pass) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    memcpy(p->formats, state->formats, sizeof p->formats);
+    p->depth_format = state->depth_format;
+    w->pass_count++;
+    return p->pass;
+}
+
+/* Reads a recipe (pipeline_recipe_key) into *p and makes it again with this executor's values: its
+   shaders' keys (with the stop words given here, in the catalog's order: those the draws find later)
+   and *recipe; the canonical pass, layout and rect-list stage it needs are made here, on the executor's
+   thread. 0, or -1 for a recipe that cannot be made (*p then holds nothing to free). */
+static int prepare_launch_pipeline(rt_executor *x, launch_work *w, const unsigned char *bytes, size_t size, launch_pipeline *p,
+                                   translation_key *recipe)
+{
+    uint64_t kind;
+    *p = (launch_pipeline){0};
+    if (size < sizeof kind + sizeof p->state) return -1;
+    memcpy(&kind, bytes, sizeof kind);
+    memcpy(&p->state, bytes + sizeof kind, sizeof p->state);
+    recipe_state *s = &p->state;
+    const size_t keys_at = sizeof kind + sizeof *s;
+    if (kind != KEY_PIPELINE || size != keys_at + (size_t)s->vertex_key_size + s->pixel_key_size) return -1;
+    const unsigned stages = s->pixel_key_size ? 2 : 1;
+    char error[256];
+    int ready = parse_graphics_key(bytes + keys_at, s->vertex_key_size, &p->stages[0]) == 0 && p->stages[0].stage == STAGE_VERTEX;
+    if (ready && stages == 2)
+        ready = parse_graphics_key(bytes + keys_at + s->vertex_key_size, s->pixel_key_size, &p->stages[1]) == 0 && p->stages[1].stage == STAGE_PIXEL;
+    for (unsigned k = 0; k < stages && ready; k++) {
+        graphics_request *r = &p->stages[k];
+        r->error_address = stop_slot(x, r->stage, r->code);
+        graphics_key(&p->keys[k], x, r);
+        ready = !p->keys[k].failed;
+    }
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    p->layout = x->layout;
+    if (ready && (s->images || s->samplers || s->vertex_images))
+        ready = s->images <= GCN_MAX_IMAGES && s->samplers <= GCN_MAX_SAMPLERS && s->vertex_images <= GCN_MAX_IMAGES &&
+                graphics_layout_for(x, s->images, s->samplers, s->vertex_images, &set_layout, &p->layout, error, sizeof error) == 0;
+    if (ready && s->rect) ready = x->geometry_shaders && (p->rect = rect_stage_module(x, s->rect_parameters, s->rect_clip_distances, error, sizeof error));
+    if (ready) ready = (p->pass = launch_pass_for(x, w, s)) != VK_NULL_HANDLE;
+    if (ready) {
+        s->vertex_key_size = (uint32_t)p->keys[0].size, s->pixel_key_size = stages == 2 ? (uint32_t)p->keys[1].size : 0;
+        const uint64_t pipeline = KEY_PIPELINE;
+        translation_key_add(recipe, &pipeline, sizeof pipeline);
+        translation_key_add(recipe, s, sizeof *s);
+        for (unsigned k = 0; k < stages; k++) translation_key_add(recipe, p->keys[k].bytes, p->keys[k].size);
+        ready = !recipe->failed;
+    }
+    if (!ready) free_launch_pipeline(p), translation_key_free(recipe);
+    return ready ? 0 : -1;
+}
+
+/* Makes the catalogs' shaders and pipelines again with this executor's values and starts up to
+   LAUNCH_WORKERS threads (one fewer than the processors) making them while the game runs; on this
+   thread when none can be started. */
 static void compile_catalog(rt_executor *x)
 {
     const char *launch = getenv("BB_LAUNCH_COMPILE");
     if (!x->catalog || (launch && !strcmp(launch, "0"))) return;
-    catalog_keys all = {0};
+    catalog_keys all = {0}, recipes = {0};
     translation_cache_each(x->catalog, take_catalog_key, &all);
+    translation_cache_each(x->pipeline_catalog, take_catalog_key, &recipes);
     launch_work *w = calloc(1, sizeof *w);
     if (w && launch_progress_init(&w->progress)) free(w), w = NULL; /* no workers then: the dispatches make what they meet */
-    const size_t room = all.count ? all.count : 1;
+    const size_t room = all.count ? all.count : 1, pipeline_room = recipes.count ? recipes.count : 1;
     if (w) {
         w->x = x, w->began = monotonic_ns();
         w->requests = calloc(room, sizeof *w->requests), w->keys = calloc(room, sizeof *w->keys), w->states = calloc(room, sizeof *w->states);
+        w->pipelines = calloc(pipeline_room, sizeof *w->pipelines), w->recipes = calloc(pipeline_room, sizeof *w->recipes);
+        w->pipeline_states = calloc(pipeline_room, sizeof *w->pipeline_states);
+        w->left_out_since = calloc(pipeline_room, sizeof *w->left_out_since);
     }
+    const int ready = w && w->requests && w->keys && w->states && w->pipelines && w->recipes && w->pipeline_states && w->left_out_since;
     for (size_t i = 0; i < all.count; i++) {
         /* the key made again with this executor's values; the stop words given here, in the catalog's
            order, are those the dispatches find later */
-        if (w && w->requests && w->keys && w->states && parse_compute_key(all.keys[i], all.sizes[i], &w->requests[w->count]) == 0) {
+        if (ready && parse_compute_key(all.keys[i], all.sizes[i], &w->requests[w->count]) == 0) {
             compute_request *r = &w->requests[w->count];
             r->error_address = stop_slot(x, STOP_KIND_COMPUTE, r->code);
             atomic_init(&w->states[w->count], LAUNCH_WAITING);
@@ -5896,15 +6352,22 @@ static void compile_catalog(rt_executor *x)
         }
         free(all.keys[i]);
     }
-    free(all.keys), free(all.sizes);
+    for (size_t i = 0; i < recipes.count; i++) {
+        const size_t n = w ? w->pipeline_count : 0;
+        if (ready && prepare_launch_pipeline(x, w, recipes.keys[i], recipes.sizes[i], &w->pipelines[n], &w->recipes[n]) == 0)
+            atomic_init(&w->pipeline_states[w->pipeline_count++], LAUNCH_WAITING);
+        free(recipes.keys[i]);
+    }
+    free(all.keys), free(all.sizes), free(recipes.keys), free(recipes.sizes);
     if (!w) return;
     x->launch = w;
     atomic_init(&w->reported, w->began);
-    if (w->count) report_launch_progress(w, 0);
+    if (w->count + w->pipeline_count) report_launch_progress(w, 0);
     const long processors = sysconf(_SC_NPROCESSORS_ONLN);
+    const size_t total = w->count + w->pipeline_count;
     size_t wanted = processors > 1 ? (size_t)processors - 1 : 1;
     if (wanted > LAUNCH_WORKERS) wanted = LAUNCH_WORKERS;
-    if (wanted > w->count) wanted = w->count;
+    if (wanted > total) wanted = total;
     while (w->started < wanted && pthread_create(&w->workers[w->started], NULL, launch_worker, w) == 0) w->started++;
     if (!w->started) launch_worker(w);
 }
@@ -8189,6 +8652,8 @@ void rt_executor_close(rt_executor *x)
     if (!x) return;
     sweep_close(x);
     finish_launch_work(x);
+    for (size_t i = 0; i < x->left_out_count; i++) translation_key_free(&x->left_out_recipes[i]);
+    free(x->left_out_recipes), free(x->left_out_since);
     pipeline_workers_stop(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);
@@ -8197,7 +8662,7 @@ void rt_executor_close(rt_executor *x)
             pipeline_settle(x, &x->pipelines[i], 1);
             vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
         }
-        for (size_t i = 0; i < x->shader_count; i++) vkDestroyShaderModule(x->device, x->shaders[i].module, NULL);
+        for (size_t i = 0; i < x->shader_count; i++) vkDestroyShaderModule(x->device, x->shaders[i].module, NULL), free(x->shaders[i].key);
         for (size_t i = 0; i < x->rect_stage_count; i++) vkDestroyShaderModule(x->device, x->rect_stages[i].module, NULL);
         for (size_t i = 0; i < x->compute_count; i++) {
             vkDestroyPipeline(x->device, x->computes[i].pipeline, NULL);
