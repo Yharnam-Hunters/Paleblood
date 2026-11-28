@@ -44,6 +44,41 @@ static _Thread_local struct {
     int persistent;
 } pressure;
 
+/* Watch the source of the reshape test's write-back while its command buffer is still unsubmitted.
+   A wrong eviction would otherwise send invalid GPU work to the driver: fail before destroying it. */
+static _Thread_local struct {
+    int active, submitted;
+    VkImage image;
+    VkCommandBuffer commands;
+} pending_target_copy;
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImageToBuffer(VkCommandBuffer commands, VkImage image, VkImageLayout layout, VkBuffer buffer,
+                                                 uint32_t count, const VkBufferImageCopy *regions)
+{
+    if (pending_target_copy.active && !pending_target_copy.image)
+        pending_target_copy.image = image, pending_target_copy.commands = commands;
+    ((PFN_vkCmdCopyImageToBuffer)dlsym(RTLD_NEXT, "vkCmdCopyImageToBuffer"))(commands, image, layout, buffer, count, regions);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence)
+{
+    const VkResult result = ((PFN_vkQueueSubmit)dlsym(RTLD_NEXT, "vkQueueSubmit"))(queue, count, submits, fence);
+    if (result == VK_SUCCESS && pending_target_copy.active && pending_target_copy.image)
+        for (uint32_t i = 0; i < count; i++)
+            for (uint32_t k = 0; k < submits[i].commandBufferCount; k++)
+                if (submits[i].pCommandBuffers[k] == pending_target_copy.commands) pending_target_copy.submitted = 1;
+    return result;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyImage(VkDevice device, VkImage image, const VkAllocationCallbacks *allocator)
+{
+    if (pending_target_copy.active && image == pending_target_copy.image && !pending_target_copy.submitted) {
+        fprintf(stderr, "target eviction destroyed the source of an unsubmitted write-back\n");
+        _Exit(1);
+    }
+    ((PFN_vkDestroyImage)dlsym(RTLD_NEXT, "vkDestroyImage"))(device, image, allocator);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo *info, const VkAllocationCallbacks *allocator,
                                                 VkDeviceMemory *memory)
 {
@@ -1748,6 +1783,36 @@ static void many_targets(rt_executor *x)
     check_triangle(x, at(MANY_FIRST));
 }
 
+/* Filling the target cache must retain the source of a snapshot recorded since its last draw.
+   The next draw needs another slot while that copy is still in an unsubmitted command buffer. */
+static void snapshot_before_target_eviction(const rt_executor_memory *memory)
+{
+    enum { BUFFER = 0xc1500000, FIRST = 0x3000000, TARGETS = 512, BYTES = SIZE * SIZE * 4 };
+    rt_executor *x = NULL;
+    char error[256] = "";
+    CHECK(rt_executor_open(memory, &x, error, sizeof error) == 0);
+    if (!x) return;
+    for (unsigned i = 0; i < TARGETS; i++) {
+        rt_render_forget(), rt_executor_reset(x);
+        const uint32_t bytes = record_draw(BUFFER, at(FIRST + i * BYTES), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_executor_run(x, BUFFER, bytes, error, sizeof error) == 0);
+    }
+    rt_executor_snapshot snapshot;
+    CHECK(rt_executor_snapshot_target(x, at(FIRST), &snapshot, error, sizeof error) == 0);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint64_t next = at(FIRST + TARGETS * BYTES);
+    const uint32_t bytes = record_draw(BUFFER, next, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const int ran = rt_executor_run(x, BUFFER, bytes, error, sizeof error);
+    if (ran) fprintf(stderr, "snapshot before eviction: %s\n", error);
+    CHECK(ran == 0);
+    uint32_t pixels[SIZE * SIZE];
+    CHECK(rt_executor_read_snapshot(x, &snapshot, pixels, SIZE, SIZE, error, sizeof error) == 0);
+    check_triangle_pixels(pixels);
+    check_triangle(x, next);
+    rt_executor_release_snapshot(x, &snapshot);
+    rt_executor_close(x);
+}
+
 /* More pipelines than the executor keeps (MAX_PIPELINES, 1024): 1,210 draws into one target, each with
    another blend state (11 source x 11 destination factors x 5 functions, under two target masks), each
    buffer run to the end. Every draw is made: the least recently used pipeline whose batch has run gives
@@ -3311,6 +3376,54 @@ static void test_unguard(uint64_t address, uint64_t length)
 {
     CHECK(length > 0);
     guarded.unguarded = address, guarded.unguards++;
+}
+
+/* A guarded target's finished draw is still only in its image. With the cache full, a format change
+   records its write-back and sets it aside; eviction must keep that source until the copy runs. */
+static void write_back_before_target_eviction(int fd)
+{
+    enum { BUFFER = 0xc1600000, FIRST = 0x3000000, TARGETS = 512, BYTES = SIZE * SIZE * 4 };
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL, 0, 0};
+    rt_executor *x = NULL;
+    char error[256] = "";
+    guarded.answer = 0;
+    CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
+    if (!x) return;
+    memset((void *)(uintptr_t)at(FIRST), 0, (size_t)TARGETS * BYTES);
+    size_t count = 0;
+    uint64_t ticket = 0;
+    for (unsigned i = 0; i < TARGETS; i++) {
+        rt_render_forget(), rt_executor_reset(x);
+        const uint32_t bytes = record_draw(BUFFER, at(FIRST + i * BYTES), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const rt_render_call *calls = rt_render_submitted(BUFFER, bytes, &count);
+        CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    }
+    CHECK(rt_executor_resolve(x, at(FIRST + BYTES), (uint64_t)(TARGETS - 1) * BYTES, error, sizeof error) == 0);
+    const uint32_t *pixels = (const uint32_t *)(uintptr_t)at(FIRST);
+    const uint32_t zero[SIZE * SIZE] = {0};
+    CHECK(memcmp(pixels, zero, sizeof zero) == 0);
+    CHECK(*(const uint32_t *)(uintptr_t)at(FIRST + BYTES) != 0);
+    rt_render_forget();
+    const uint32_t offset = record_setup(BUFFER, at(FIRST), COLOR_8_8_8_8, SWAP_ALT, PERSP_CENTER);
+    CHECK(rt_render_record_register(BUFFER, offset, 0xa1e0, 1u << 30 | 1u << 8, error, sizeof error) == 0); /* ZERO + ONE */
+    const rt_render_call *calls = rt_render_submitted(BUFFER, record_triangle_draw(BUFFER, offset + 0x10), &count);
+    memset(&pending_target_copy, 0, sizeof pending_target_copy);
+    pending_target_copy.active = 1;
+    const int ran = rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error);
+    if (ran) fprintf(stderr, "write-back before eviction: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(pending_target_copy.image != VK_NULL_HANDLE && !pending_target_copy.submitted);
+    pending_target_copy.active = 0;
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    CHECK(rt_executor_resolve(x, at(FIRST), BYTES, error, sizeof error) == 0);
+    for (unsigned y = 0; y < SIZE; y++)
+        for (unsigned col = 0; col < SIZE; col++) {
+            const uint32_t pixel = pixels[y * SIZE + col]; /* guest bytes are red first */
+            CHECK(near(pixel & 0xff, (col + 0.5f) / SIZE) && near(pixel >> 8 & 0xff, (y + 0.5f) / SIZE) &&
+                  near(pixel >> 16 & 0xff, 0.25f) && (pixel >> 24) == 0xff);
+        }
+    rt_executor_close(x);
 }
 
 /* Recorded buffers and the CPU (rt_executor_memory's guard): with a guard, the tiled target's draw
@@ -5263,6 +5376,7 @@ int main(void)
     null_image_descriptor(x);
     reshaped_target(x);
     many_targets(x);
+    snapshot_before_target_eviction(&memory);
     pipelines_after_freed_targets(x);
     pipelines_past_the_limit(x);
     shaders_past_the_limit(x);
@@ -5962,6 +6076,7 @@ int main(void)
     image_allocation_pressure(&memory, VK_ERROR_OUT_OF_HOST_MEMORY, 1);
     pipeline_cache_file(&memory);
     launch_compiles(&memory);
+    write_back_before_target_eviction(fd);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

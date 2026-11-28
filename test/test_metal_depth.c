@@ -193,7 +193,8 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
     enum { METADATA = 0x440000, WIDTH = 256, HEIGHT = 24, BYTES = 16384 + 64 };
     const char *const reasons[] = {NULL,NULL,NULL,"partly fast-cleared HTILE","compressed HTILE depth tiles",
         "HTILE base is unaligned or outside","HTILE depth clear requires DB_DEPTH_CLEAR",
-        "HTILE overlaps a depth or stencil plane","HTILE requires tiled","HTILE depth clear value"};
+        "HTILE overlaps a depth or stencil plane","HTILE requires tiled","HTILE depth clear value",
+        "color target overlaps HTILE",NULL};
     for (unsigned trial = 0; trial < sizeof reasons / sizeof *reasons; ++trial) {
         Scene s = scene();
         s.geometry = 0x001d0c40; s.width = WIDTH; s.height = HEIGHT; s.pixels = 65536; s.slice = 0;
@@ -212,7 +213,7 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
         memcpy(want,pool + METADATA,BYTES);
         for (unsigned y = 0; y < HEIGHT; y += 8) for (unsigned col = 0; col < WIDTH; col += 8) {
             const size_t offset = (size_t)rt_tiling_htile_offset(WIDTH,col,y);
-            uint32_t tag = trial == 2 ? 15u : 0u;
+            uint32_t tag = trial == 2 || trial >= 10 ? 15u : 0u;
             if (!col && !y && trial == 3) tag = 15;
             if (!col && !y && trial == 4) tag = 7;
             const uint32_t word = 0x4cb71000u | col << 4 | y << 16 | tag;
@@ -220,11 +221,34 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
             const uint32_t after = trial < 2 ? word | 15u : word;
             memcpy(want + offset,&after,sizeof after);
         }
+        if (trial >= 10) {
+            /* The two draws differ only in whether MRT5 aliases HTILE. */
+            enum { MULTI_PS = PS + 256 };
+            const uint32_t exports[] = {
+                0xf800140f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 compr vm */
+                0xf8001c5f, 0x00000706, /* exp mrt5, v6, v6, v7, v7 done compr vm */
+                0xbf810000,             /* s_endpgm */
+            };
+            const size_t prefix = sizeof pixel_color - 3 * sizeof(uint32_t);
+            memcpy(pool + MULTI_PS,pixel_color,prefix);
+            memcpy(pool + MULTI_PS + prefix,exports,sizeof exports);
+            calls[3].u.pixel_shader.code = base + MULTI_PS;
+            const unsigned slot = 5;
+            rt_render_call *higher = event(RT_CALL_COLOR_TARGET);
+            higher->u.color_target = calls[0].u.color_target;
+            higher->u.color_target.slot = slot;
+            higher->u.color_target.target.address = base + (trial == 10 ? METADATA : COLOR_BASE + 4096);
+            memset(pool + COLOR_BASE + 4096,0x55,W * H * 4);
+            calls[3].u.pixel_shader.color_formats |= 4u << (4 * slot);
+            calls[3].u.pixel_shader.color_mask |= 15u << (4 * slot);
+        }
         const int result = submit(x,reasons[trial]);
         if (!result) {
             if (trial < 2) expected(&s,0,clear,WIDTH,HEIGHT);
             if (trial == 1) expected(&s,0,bits(0.25f),W,H);
             check_color(pool,trial != 0);
+            if (trial == 11)
+                for (unsigned i = 0; i < W * H * 4; ++i) CHECK(pool[COLOR_BASE + 4096 + i] == 255);
         }
         const int metadata_match = memcmp(pool + METADATA,want,BYTES) == 0;
         CHECK(metadata_match);
