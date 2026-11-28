@@ -26,9 +26,12 @@ struct OutputPortContext {
     const OutputServiceContext *service_context;
     std::byte unknown_0x0068[8];
     OutputPortListener *listener;
-    std::byte unknown_0x0078[0x634];
+    std::byte unknown_0x0078[0x1d0];
+    uint8_t counters_registered;
+    std::byte unknown_0x0249[0x463];
     int32_t audio_out_port;  // sceAudioOut port handle; zero when closed
-    std::byte unknown_0x06b0[0x18];
+    std::byte unknown_0x06b0[0x14];
+    uint32_t mix_buffer_contribution;
     void *mix_buffer;  // released with the ports
     std::byte unknown_0x06d0[0x2b0];  // OutputThreadContext's two Thread objects
     // A second sceAudioOut port, closed together with the first; its purpose is unknown.
@@ -39,7 +42,9 @@ struct OutputPortContext {
 };
 static_assert(offsetof(OutputPortContext, service_context) == 0x60);
 static_assert(offsetof(OutputPortContext, listener) == 0x70);
+static_assert(offsetof(OutputPortContext, counters_registered) == 0x248);
 static_assert(offsetof(OutputPortContext, audio_out_port) == 0x6ac);
+static_assert(offsetof(OutputPortContext, mix_buffer_contribution) == 0x6c4);
 static_assert(offsetof(OutputPortContext, mix_buffer) == 0x6c8);
 static_assert(offsetof(OutputPortContext, second_audio_out_port) == 0x980);
 static_assert(offsetof(OutputPortContext, second_port_disconnected) == 0x984);
