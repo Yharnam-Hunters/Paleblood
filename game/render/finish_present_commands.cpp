@@ -70,14 +70,14 @@ void release_blocks(CommandFinishStateView *state)
     const uint32_t link_index = state->block_link_index;
     uintptr_t block = state->block_head;
     if (block == 0) return;
-    uintptr_t next = block_word(block, link_index);
-    release_one_block(owner, block);
-    block = next;
-    while (block != 0) {
-        owner = state->block_owner;
-        next = block_word(block, link_index);
+    for (;;) {
+        const uintptr_t next = block_word(block, link_index);
         release_one_block(owner, block);
         block = next;
+        if (block == 0) return;
+        // Only the first owner is null-checked. As in the native, every later block
+        // reloads the owner before its link read and has no second null check.
+        owner = state->block_owner;
     }
 }
 
@@ -98,10 +98,9 @@ void finish_snapshot(CommandFinishStateView *state, CommandFinishStateView *comm
         copy_finish_snapshot_reverse(frame.snapshot, state->buffer);
     } else {
         constexpr uint32_t minimum_words = 7;
-        constexpr uint32_t word_bytes = sizeof(uint32_t);
         const uintptr_t limit = packet_limit(&state->buffer.commands);
         const uintptr_t cursor = packet_cursor(&state->buffer.commands);
-        const uint32_t available = static_cast<uint32_t>((limit - cursor) / word_bytes);
+        const uint32_t available = static_cast<uint32_t>((limit - cursor) / packet_word_bytes);
         if (available < minimum_words) {
             const uintptr_t argument = packet_callback_argument(&state->buffer.commands);
             const auto callback = packet_callback<PacketSpaceCallback>(&state->buffer.commands);
