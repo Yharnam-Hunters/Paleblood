@@ -201,9 +201,14 @@ miscellaneous and cull outputs are rejected. Shader interfaces may use up to 32 
 parameters. Declared vertex parameter and pixel interpolant capacities must cover the translated
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
-Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs are rejected explicitly. Whole-quad mask expansion has
-the restricted fragment-control profile described below. Other color layouts, output masks, barycentric modes and depth
+Pixel exports support RGBA as FP16_ABGR or 32_ABGR at their original locations in the eight
+color slots, perspective-center inputs and no depth export. The optional front-face input
+follows the perspective-center pair in VGPR2.
+Metal supplies its winding through the native fragment built-in. The common translator encodes
+the result as signed floating-point one or integer zero/one according to
+`SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS`. Pixel-position X/Y inputs are rejected explicitly.
+Whole-quad mask expansion has the restricted fragment-control profile described below.
+Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
 against slots explicitly written for that stage since reset; writing zero establishes a value,
@@ -221,11 +226,14 @@ Linear and tiled guest memory retain each format's native encoded bytes.
 Display readback is tightly packed BGRA and requires an 8_8_8_8 target. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
-Target0 supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA factors,
-using the color factors for alpha as well. Other factors or operations, separate alpha,
-ROP3 overrides, reserved fields, non-copy color operations and partial color masks stop with a reason.
-An enabled blend flag has no effect when target 0 is unbound, its channel mask is zero or the
-colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
+Each active color slot supports RGBA8/BGRA8 UNORM or sRGB and the float formats above.
+Active attachments require matching extents and disjoint guest memory. Each has its own ADD blend state with ZERO, ONE, SRC_ALPHA or
+ONE_MINUS_SRC_ALPHA factors, using the color factors for alpha as well. Other factors or
+operations, separate alpha, ROP3 overrides, reserved fields, non-copy color operations and
+partial color masks stop with a reason. A slot without an export or with a zero target mask
+leaves its guest bytes intact. Shaders and depth/stencil operations still execute when color
+writes are disabled. The shader and pipeline caches preserve the original enabled output
+locations, and the pipeline includes each attachment's format and effective blend state.
 
 `CB_COLOR0..7_CLEAR_WORD0/1` writes retain each independent raw 32-bit word across
 submissions, in the persistent graphics state. Reset returns these words to zero.
@@ -398,19 +406,34 @@ for active-lane reductions, helper invocations and discard behavior.
 
 Ordinary numeric-only quad reads require one inlined, straight-line guest block. A separate
 fragment-control pass admits a finite forward chain of guest blocks when every live wave-wide
-vote can be removed by proof. It removes unread, nonvolatile, alias-free function state and
+vote can be removed by proof. It also admits one three-case forward diamond: the first case
+chooses whether to visit a single block of scalar local math before a shared terminal case.
+All quad operations must execute in the common prefix. The optional block has no external
+reads, writes or termination; its extended math is limited to scalar GLSL Log2/Exp2. The
+terminal case has no quad, derivative, image or extended operations. The original Boolean
+SSA decision and its branch orientation are preserved without assuming that its value is
+uniform. It removes unread, nonvolatile, alias-free function state and assignments with no
+reachable read before overwrite or function exit. Paths that cycle without an overwrite remain
+unproved. It
 only elides an EXECZ skip when always visiting its body with empty EXEC preserves all live state
 and external effects. It then removes the artificial dispatcher, exposing the actual physical
 control flow to the quad-read checks. Observable wave results, real loops, escaping locals,
-atomics, volatile or coherent memory decorations, extension instructions and unproved control
+atomics, volatile or coherent memory decorations, unknown extension instructions and unproved control
 remain explicit refusals. This does not
 emulate a GCN wave with the native SIMD-group width.
 
-Removing an unused physical descriptor read additionally requires an exact typed address proof:
-an unchanged entry user-SGPR pair, the backend address offset and a bounded constant byte offset.
-Every removed read must fit a descriptor span already validated by the host. Descriptor origins
-are part of the shader cache key; their live pointers and complete spans are checked again before
-every draw, including cache hits. Uncovered or volatile reads are not silently discarded.
+Removing an unused physical read additionally requires an exact typed address proof: an entry
+user-SGPR pair, the backend address offset and a bounded constant byte offset. A later local
+assignment is harmless only if actual CFG edges prove it cannot reach that particular capture
+load. An unproved read is retained during control preparation; the final removal pass remains
+strict. Every removed read must fit a descriptor span already validated by the host or pass an
+independent current-draw pool check. That check requires both declared and written SGPR words,
+an aligned 48-bit pointer, checked offset arithmetic and the complete guest and native GPU spans.
+The translation anchor can use ordinary unsigned subtraction wrap. Descriptor origins remain
+part of the shader cache key. All removed-read requirements from both passes are stored with
+the compiled shader and checked against current draw state on every cache hit, including after
+reset. No callback or borrowed user-data pointer is retained. Uncovered or volatile reads are
+not silently discarded.
 
 Boolean quad swaps acquire all four participation bits and Boolean values in one `uint2 quad_or`
 reduction, then select the XOR peer from the acquired bits. The call is materialized before later
@@ -426,8 +449,14 @@ missing-source fault. `metal_fragment_control` checks independently owned prepar
 refusals. `metal_boolean_quads` checks all Boolean truth tables, swap directions and incomplete
 participation. `metal_fragment_runtime` exercises an independently assembled GFX7 shader through
 the public executor, comparing masked EXEC and whole-quad expansion with a mathematical pixel
-oracle across user-data changes, retained state, resets and cached shaders. Device qualification
-establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
+oracle across user-data changes, retained state, resets and cached shaders.
+`metal_fragment_diamonds_cpu` checks independently assembled control, address, liveness and
+transactional-refusal cases. `metal_fragment_diamonds` checks the original decision, both branch
+orientations, conditional local math, exact quad data and Boolean packets under full and tiny
+raster coverage. `metal_fragment_ranges` uses owned GFX7 shaders through the public executor,
+checking current pointer bounds on cache misses, cache hits and retained caches after reset,
+with complete pool guards, vertex-store markers and retained presentation data on refusal.
+Device qualification establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
 comparison.
 
 The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling

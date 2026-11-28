@@ -316,11 +316,17 @@ static void routes_and_guards(Fixture *f)
     success(f, "legacy-depth/recovery", &c, AUTO, 1, 0, RUN);
     for (unsigned guard = 0; guard < 4; ++guard) {
         c = (Calls){0}; scene(&c, guard & 1, guard == 3 ? 7 : 15); reg(&c, BOUNDS_MAX, UINT32_MAX);
-        if (guard == 0) color_target(&c, 1, 1);
-        else if (guard == 1) c.call[3].u.pixel_shader.color_formats = 0x99;
+        if (guard == 0) {
+            color_target(&c, 1, 1);
+            c.call[c.count - 1].u.color_target.target.address = at(TARGET);
+            c.call[3].u.pixel_shader.color_formats = 0x99;
+            c.call[3].u.pixel_shader.color_mask = 0xff;
+            reg(&c, TARGET_MASK, 0xff);
+        }
+        else if (guard == 1) c.call[3].u.pixel_shader.color_formats = 0x19;
         else if (guard == 2) c.call[3].u.pixel_shader.color_mask = 0xff;
         draw(&c, AUTO);
-        const char *reason = guard == 0 ? "render targets beyond slot 0" : guard == 1 ? "SPI_SHADER_COL_FORMAT" : guard == 2 ? "CB_SHADER_MASK" : "colour write mask";
+        const char *reason = guard == 0 ? "overlapping color attachments" : guard == 1 ? "SPI_SHADER_COL_FORMAT" : guard == 2 ? "CB_SHADER_MASK" : "colour write mask";
         char id[80]; snprintf(id, sizeof id, "legacy-profile/%u", guard); unchanged(f, id, &c, RUN, reason);
         c = (Calls){0}; if (guard == 0) color_target(&c, 1, 0); scene(&c, guard & 1, 15);
         snprintf(id, sizeof id, "legacy-profile/%u/recovery", guard); success(f, id, &c, AUTO, guard & 1, 0, RUN);
