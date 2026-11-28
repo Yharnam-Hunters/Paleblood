@@ -39,6 +39,7 @@ target_link_libraries(pbmetal_executor PUBLIC pbgcn_spirv pbrender_calls pbtilin
     PRIVATE spirv-cross-msl ${PB_METAL_FRAMEWORK} ${PB_FOUNDATION_FRAMEWORK})
 if(PB_ENABLE_METAL_SMOKE_TEST)
     include(${PROJECT_SOURCE_DIR}/cmake/ComputeThreadIdTests.cmake)
+    include(${PROJECT_SOURCE_DIR}/cmake/ComputeWaveVoteTests.cmake)
     add_executable(test_metal_fragment_diamonds test/test_metal_fragment_diamonds.mm)
     target_include_directories(test_metal_fragment_diamonds PRIVATE runtime/renderer runtime/include)
     target_compile_options(test_metal_fragment_diamonds PRIVATE -fobjc-arc -fobjc-exceptions -fblocks -fno-modules
