@@ -52,7 +52,12 @@ struct MetalResourceBindings {
     id<MTLTexture> textures[GCN_MAX_IMAGES]{};
     id<MTLSamplerState> states[GCN_MAX_SAMPLERS]{};
 };
-struct MetalPixelResources : MetalResourceBindings { bool nondefault_lod = false; };
+using MetalPixelInputs = std::array<uint32_t, GCN_PIXEL_INPUTS>;
+
+struct MetalPixelResources : MetalResourceBindings {
+    bool nondefault_lod = false;
+    MetalPixelInputs input_controls{};
+};
 struct MetalComputeResources : MetalResourceBindings {
     rt_image_descriptor descriptors[GCN_MAX_IMAGES]{};
     rt_tiling layouts[GCN_MAX_IMAGES]{};
@@ -98,6 +103,7 @@ struct MetalShader {
     std::vector<uint32_t> program, fetch;
     std::vector<gcn_image_binding> images;
     std::vector<gcn_resource_origin> samplers;
+    MetalPixelInputs input_controls;
     std::vector<pb::MetalFragmentRead> removed_fragment_reads;
     id<MTLFunction> function;
 };
@@ -155,6 +161,11 @@ struct MetalState {
     float zmin = 0, zmax = 1;
     rt_vertex_shader vertex{};
     rt_pixel_shader pixel{};
+    MetalPixelInputs pixel_inputs = [] {
+        MetalPixelInputs identity{};
+        for (unsigned i = 0; i < identity.size(); ++i) identity[i] = i;
+        return identity;
+    }();
     rt_compute_shader compute{};
     bool compute_set = false;
     uint32_t compute_user[GCN_USER_SGPR_MAX] = {};
@@ -239,7 +250,7 @@ enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
        CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
        VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9,
-       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32,
+       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191,
        PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_VPORT_SCISSOR_0_BR = 0xa095, PA_SC_VPORT_SCISSOR_LAST = 0xa0b3, PA_SC_MODE_CNTL_0 = 0xa292, PA_CL_CLIP_CNTL = 0xa204 };
 /* PA_CL_CLIP_CNTL (gfx_7_2_sh_mask.h): CLIP_DISABLE, DX_RASTERIZATION_KILL, ZCLIP_NEAR_DISABLE, ZCLIP_FAR_DISABLE. Where z
    is not clipped the depth is clamped to the viewport's range: Metal's MTLDepthClipModeClamp, as the Vulkan executor's
@@ -296,8 +307,11 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
         }
         /* the other viewports' scissors: a draw uses viewport 0 */
         if (address > PA_SC_VPORT_SCISSOR_0_BR && address <= PA_SC_VPORT_SCISSOR_LAST) return 0;
-        /* SPI_PS_INPUT_CNTL_n: only attribute n reading vertex output n, interpolated, is in the profile */
-        if (address >= SPI_PS_INPUT_CNTL_0 && address < SPI_PS_INPUT_CNTL_0 + PS_INPUTS) return value == address - SPI_PS_INPUT_CNTL_0 ? 0 : -1;
+        if (address >= SPI_PS_INPUT_CNTL_0 && address < SPI_PS_INPUT_CNTL_0 + unsigned(GCN_PIXEL_INPUTS)) {
+            if (value & ~uint32_t(GCN_PS_INPUT_OFFSET_MASK)) return -1;
+            state.pixel_inputs[address - SPI_PS_INPUT_CNTL_0] = value;
+            return 0;
+        }
         return -1;
     }
 }
@@ -698,6 +712,7 @@ static bool same_images(const std::vector<gcn_image_binding> &stored, const gcn_
 static bool same_pixel_resources(const MetalShader &shader, const MetalPixelResources *resources)
 {
     const unsigned images = resources ? resources->image_count : 0, samplers = resources ? resources->sampler_count : 0;
+    if (resources && shader.input_controls != resources->input_controls) return false;
     if (!same_images(shader.images,resources ? resources->images : nullptr,images) || shader.samplers.size() != samplers) return false;
     for (unsigned i = 0; i < samplers; ++i) if (!same_origin(shader.samplers[i],resources->samplers[i])) return false;
     return true;
@@ -885,6 +900,7 @@ static id<MTLSamplerState> sampler_for(rt_executor *x, const uint32_t words[4], 
 
 static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelResources &out, char *error, size_t size)
 {
+    out.input_controls = state.pixel_inputs;
     MetalProgram program;
     if (program_view(x,state.pixel.code,false,program,error,size)) return -1;
     char reason[256] = {}; gcn_image_resource images[GCN_MAX_IMAGES]{};
@@ -1001,6 +1017,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         }
     if (x->shaders.size() + x->compute_pipelines.size() >= MAX_SHADERS) return failed(error, error_size, "shader cache is full"), nil;
     uint32_t *spirv = nullptr; size_t count = 0; char reason[256] = {};
+    unsigned required_parameters = 0;
     int result;
     if (vertex) {
         gcn_vertex_layout layout{};
@@ -1023,6 +1040,8 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.user_data_read = &user_read;
         layout.images = pixel->images; layout.image_count = pixel->image_count;
         layout.samplers = pixel->samplers; layout.sampler_count = pixel->sampler_count;
+        layout.input_controls = pixel->input_controls.data();
+        layout.required_inputs = &required_parameters;
         result = gcn_translate_pixel(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     }
     if (result) return failed(error, error_size, "%s shader translation: %s", vertex ? "vertex" : "pixel", reason), nil;
@@ -1076,7 +1095,6 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         }
         const auto resources = compiler.get_shader_resources();
         const auto &parameters = vertex ? resources.stage_outputs : resources.stage_inputs;
-        unsigned required_parameters = 0;
         for (const auto &parameter : parameters) {
             if (compiler.has_decoration(parameter.id, spv::DecorationBuiltIn)) continue;
             const auto &type = compiler.get_type(parameter.type_id);
@@ -1085,7 +1103,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
                 return failed(error, error_size, "shader parameter interface is not a located float4"), nil;
             const unsigned location = compiler.get_decoration(parameter.id, spv::DecorationLocation);
             if (location >= PARAMETER_LIMIT) return failed(error, error_size, "shader parameter location exceeds the modeled range"), nil;
-            required_parameters = std::max(required_parameters, location + 1);
+            if (vertex) required_parameters = std::max(required_parameters, location + 1);
         }
         if (required_parameters > parameter_capacity)
             return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
@@ -1112,7 +1130,8 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
             rectangle != nullptr, vertex_only, rectangle ? *rectangle : MetalRectangleShader{}, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
-            pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},std::move(removed_fragment_reads),function});
+            pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},
+            pixel ? pixel->input_controls : MetalPixelInputs{}, std::move(removed_fragment_reads),function});
         return function;
     } catch (const std::exception &exception) { return failed(error, error_size, "SPIR-V to MSL: %s", exception.what()), nil; }
 }

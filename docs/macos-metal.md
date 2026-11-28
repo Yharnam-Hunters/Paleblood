@@ -205,6 +205,9 @@ formats. Both clip vectors, including sparse selections of all eight distances, 
 miscellaneous and cull outputs are rejected. Shader interfaces may use up to 32 located float4
 parameters. Declared vertex parameter and pixel interpolant capacities must cover the translated
 interface, including on shader-cache hits; larger unused allocations are accepted.
+SPI_PS_INPUT_CNTL offset-only words select which vertex parameter feeds each perspective-center
+pixel input. A mapping persists across submissions, forms part of fragment shader cache
+identity, and resets to matching input and output indices. The declared pixel capacity applies to the logical input slot.
 
 Pixel exports support RGBA as FP16_ABGR or 32_ABGR at their original locations in the eight
 color slots, perspective-center inputs and no depth export. The optional front-face input

@@ -8,6 +8,7 @@
 #include "pixel_constant_wqm_programs.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,15 +204,17 @@ static void check_clipped_gradient(rt_executor *x, uint64_t target, unsigned lef
     CHECK(bad == 0);
 }
 
-static void check_two_parameters(rt_executor *x, uint64_t target)
+static void check_two_parameters(rt_executor *x, uint64_t target, bool remapped)
 {
     uint32_t pixels[16 * 16]; char error[256] = "";
     CHECK(rt_executor_read_target(x, target, pixels, 16, 16, error, sizeof error) == 0);
     unsigned bad = 0;
     for (unsigned y = 0; y < 16; ++y) for (unsigned col = 0; col < 16; ++col) {
         uint32_t p = pixels[y * 16 + col];
-        if (!near(p >> 16 & 255, ((float)y + 0.5f) / 16) ||
-            !near(p >> 8 & 255, ((float)col + 0.5f) / 16) || !near(p & 255, 0.5f) || p >> 24 != 255) bad++;
+        const float u = ((float)col + 0.5f) / 16, v = ((float)y + 0.5f) / 16;
+        const float blue = remapped ? fminf(1.0f, 0.25f + u) : 0.5f;
+        if (!near(p >> 16 & 255, v) || !near(p >> 8 & 255, remapped ? v : u) ||
+            !near(p & 255, blue) || p >> 24 != 255) bad++;
     }
     CHECK(bad == 0);
 }
@@ -989,10 +992,50 @@ int main(void)
         CHECK(rt_render_record_vertex_shader(buffer, size, two_vertex, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_pixel_shader(buffer, size, two_pixel, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        if (!run(x, buffer, size)) check_two_parameters(x, at(0x9c0000));
+        if (!run(x, buffer, size)) check_two_parameters(x, at(0x9c0000), false);
         scenarios++;
         rt_executor_reset(x);
     }
+    /* Pixel input 3 reads vertex output 4 with four logical interpolants. The same
+       shader and vertex interface then read output 0 and restore the first mapping. */
+    {
+        uint32_t vertex_program[sizeof vertex_two_parameters / sizeof *vertex_two_parameters];
+        uint32_t pixel_program[sizeof pixel_two_parameters / sizeof *pixel_two_parameters];
+        memcpy(vertex_program, vertex_two_parameters, sizeof vertex_program);
+        memcpy(pixel_program, pixel_two_parameters, sizeof pixel_program);
+        vertex_program[7] = 0xf800024f; /* exp param4 instead of param1 */
+        pixel_program[5] = 0xc8100c00; /* v_interp_p1_f32 v4, v0, attr3.x */
+        pixel_program[6] = 0xc8110c01; /* v_interp_p2_f32 v4, v1, attr3.x */
+        pixel_program[7] = 0xc8140d00; /* v_interp_p1_f32 v5, v0, attr3.y */
+        pixel_program[8] = 0xc8150d01; /* v_interp_p2_f32 v5, v1, attr3.y */
+        memcpy(pool + TWO_VERTEX_CODE, vertex_program, sizeof vertex_program);
+        memcpy(pool + TWO_PIXEL_CODE, pixel_program, sizeof pixel_program);
+        const uint64_t target = at(0x9c0000), buffer = 0x1600;
+        const uint32_t input_3 = 0xa194;
+        const uint32_t mappings[] = {4, 0, 4};
+        two_vertex[4] = (5 - 1) << 1;
+        two_pixel[8] = 4;
+        for (unsigned i = 0; i < sizeof mappings / sizeof *mappings; ++i) {
+            size = 0;
+            if (!i) {
+                size = record_setup(buffer, target, 16, 16, 0, scale, translate, COLORS);
+                CHECK(rt_render_record_vertex_shader(buffer, size, two_vertex, error, sizeof error) == 0); size += 0x10;
+                CHECK(rt_render_record_pixel_shader(buffer, size, two_pixel, error, sizeof error) == 0); size += 0x10;
+            }
+            CHECK(rt_render_record_register(buffer + i, size, input_3, mappings[i], error, sizeof error) == 0); size += 0x10;
+            CHECK(rt_render_record_draw_auto(buffer + i, size, 3, error, sizeof error) == 0); size += 0x10;
+            if (!run(x, buffer + i, size)) check_two_parameters(x, target, mappings[i] == 0);
+            scenarios++;
+        }
+        size = 0;
+        CHECK(rt_render_record_register(buffer + 3, size, input_3, 4 | 0x400, error, sizeof error) == 0); size += 0x10;
+        expect_error(x, buffer + 3, size, "register");
+        scenarios++;
+        rt_executor_reset(x);
+        memcpy(pool + TWO_VERTEX_CODE, vertex_two_parameters, sizeof vertex_two_parameters);
+        memcpy(pool + TWO_PIXEL_CODE, pixel_two_parameters, sizeof pixel_two_parameters);
+    }
+
     /* Cached shader interfaces still enforce smaller declared parameter/interpolant allocations. */
     for (unsigned stage = 0; stage < 2; ++stage) {
         uint64_t buffer = 125 + stage;

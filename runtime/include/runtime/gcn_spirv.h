@@ -461,6 +461,7 @@ typedef struct {
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
     const uint32_t *input_controls; /* GCN_PIXEL_INPUTS SPI_PS_INPUT_CNTL words, or NULL (above) */
+    unsigned *required_inputs; /* highest logical interpolant index plus one, or zero if unused */
     uint32_t depth_export;    /* DB_SHADER_CONTROL's export enables (GCN_DEPTH_EXPORT_*), 0 when SPI_SHADER_Z_FORMAT exports nothing */
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
     uint32_t *sgprs_read;     /* when not NULL, set on success to GCN_SGPR_READ_WORDS words (SGPRs read, below) */
