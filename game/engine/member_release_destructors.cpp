@@ -12,12 +12,12 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "callback_handle.h"
 #include "runtime/guest.h"
 #include "runtime/original.h"
 
 namespace {
 
-RT_ORIGINAL(0x02450560, release_member_0x10, void(void *member));
 RT_ORIGINAL(0x02fbe588, operator_delete, void(void *object));
 RT_ORIGINAL(0x01401720, release_member_through_0x01401720, void(void *member));
 RT_ORIGINAL(0x02fa1c20, free_sized, uint64_t(void *allocator, void *object, uint64_t size, uint64_t alignment));
@@ -61,7 +61,7 @@ void release_member_and_store_vtable(void *object)
     auto *holder = static_cast<Holder0x10 *>(object);
     holder->vtable = rt_guest(class_table);
     if (holder->member) {
-        release_member_0x10(holder->member);
+        engine::callback_release_handle(holder->member);
         holder->member = nullptr;
     }
 }

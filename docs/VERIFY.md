@@ -85,9 +85,12 @@ tools/capture_loop.py --captures "$BB_CAPTURES"
    data): a new game through character creation, each save checkpoint (`savedata_from`), with the
    input script and keyboard text that get there. Each boot holds the GPU lock;
 2. the edge cases of every function with recordings, written to `CAPTURES/NAME/edge` by the
-   generator beside its replacement;
+   generator beside its replacement (a generator for several functions is run with each variant
+   its usage line offers: `OUT_DIR a|b`, `OUT_DIR ADDRESS` with the function's address, or
+   `OUT_DIR MODE` with the modes listed after `MODE:` or described as `mode (0xADDRESS)`);
 3. `tools/promote.py --check-unreviewed`: reviewed functions whose recorded and edge cases all
-   pass become `verified`; those that pass without a review are listed as awaiting one (the
+   pass become `verified`; those that pass without a review are listed as awaiting one (failing
+   cases quarantined for that case set don't count, reviewed or not; the
    independent review, CONTRIBUTING.md); a failure is reported (a bug to fix, or a quarantine with
    its reason, below).
 
@@ -142,7 +145,9 @@ reused run ID and case number cannot silently replace an existing recording.
   NID is computed); `argc` arguments are recorded and compared. An import's write is made through an
   argument (`arg`, `offset`) or at a fixed place (`addr`: `buf:NAME+off` or an image address, as in
   `memory`), which recorded cases use for what an import changed in a buffer or the image, since
-  the register it was seen through need not be an argument. Both imports and stubs accept
+  the register it was seen through need not be an argument. An import's `rdx` (default 0) is
+  what it leaves in rdx, for a library function returning a 16-byte struct in rax and rdx
+  (`ldiv`: `ret` the quotient, `rdx` the remainder). Both imports and stubs accept
   `argi`, `argu8`, `argu32`, `argmem`, and `argf32` as described below. A write may give `size`: a
   write whose bytes do not have that length is reported as an error (a truncated capture).
   For long runs of the same call (a wait that polls the clock), one entry can stand for many

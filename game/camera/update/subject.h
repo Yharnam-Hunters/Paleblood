@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera subject stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Prepare angular-pivot compensation, apply it to prior camera/subject state, add translation,
 // Fulcrum-distance calculation and later control/fresh-subject-transform stages are excluded.
@@ -44,12 +45,12 @@ static_assert(offsetof(EarlyPivotOwner, link) == 0x3b0);
 static_assert(offsetof(EarlySubjectContext, pivot_owner) == 0x08);
 static_assert(offsetof(EarlySubjectPrefix, context) == 0x58);
 
-RT_GLOBAL(0x04d25e6c, scalar_one, const float);
-RT_GLOBAL(0x04cf24a0, unit_y, const Vec4);
-RT_GLOBAL(0x04cf24b0, unit_z, const Vec4);
-RT_GLOBAL(0x04cf24c0, unit_w, const Vec4);
-RT_GLOBAL(0x04cf24d0, xyz_bits, const Vec4);
-RT_GLOBAL(0x04cf24e0, negate_x_scale, const Vec4);
+using constants::scalar_one;
+using constants::unit_y;
+using constants::unit_z;
+using constants::unit_w;
+using constants::xyz_bits;
+inline constexpr auto negate_x_scale = constants::negate_yaw_sine;
 
 struct CompensationPreparation
 {

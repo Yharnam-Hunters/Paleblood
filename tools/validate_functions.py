@@ -381,8 +381,10 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
             total_bytes += int(m['size'])
             if not m['extent'].isdigit() or int(m['extent']) < fam.HOOK_JUMP or int(m['extent']) < int(m['size']):
                 errs.append(f"{mw}: extent {m['extent']} must be at least the size and {fam.HOOK_JUMP} (the hook's jump)")
-            elif export and a in next_start and int(a, 16) + int(m['extent']) != next_start[a]:
-                errs.append(f"{mw}: extent {m['extent']} does not reach the next function in the export")
+            elif export and a in next_start and int(a, 16) + int(m['extent']) > next_start[a]:
+                # it may end earlier, at a function the export misses (one a relocation points at);
+                # tools/family_scan.py check, which reads the executable, checks the exact extent
+                errs.append(f"{mw}: extent {m['extent']} passes the next function in the export")
             elif export and a not in next_start:
                 errs.append(f'{mw}: the last function in the export cannot be a member (no known extent)')
             if (m['value'] == '') != (shape.field is None):

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera free input stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Free input shares the rotation-release tail after preparing its controls.
 #include "rotation_dispatch.h"
@@ -35,9 +36,9 @@ static_assert(offsetof(FollowCamera, rotation_control_rate) == 0x130);
 static_assert(offsetof(FollowCamera, rotation_control_wait_remaining) == 0x134);
 static_assert(offsetof(FollowCamera, rotation_control_end_wait_time) == 0x1e0);
 
-RT_GLOBAL(0x04cf25c0, even_coefficients_0_to_6, const Vec4);
-RT_GLOBAL(0x04cf25d0, even_coefficients_8_to_14, const Vec4);
-RT_GLOBAL(0x04cf25e0, even_coefficients_16_to_22, const Vec4);
+using constants::even_coefficients_0_to_6;
+using constants::even_coefficients_8_to_14;
+using constants::even_coefficients_16_to_22;
 RT_GLOBAL(0x04cf25f0, reciprocal_period, const Vec4);
 RT_GLOBAL(0x04cf2600, magnitude_mask, const Vec4);
 RT_GLOBAL(0x04cf2610, conversion_threshold_bits, const Vec4);

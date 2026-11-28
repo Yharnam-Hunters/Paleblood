@@ -3,6 +3,8 @@
 #define PB_METAL_FRAGMENT_QUADS_HPP
 
 #include "spirv_msl.hpp"
+#include "metal_fragment_control.hpp"
+#include "metal_fragment_wqm_source.hpp"
 #include <cstdint>
 #include <map>
 #include <set>
@@ -37,25 +39,13 @@ public:
     MetalFragmentQuadCompiler(const uint32_t *words, size_t count, uint64_t fault_address)
         : CompilerMSL(words, count), fault_address_(fault_address)
     {
-        if (get_execution_model() != spv::ExecutionModelFragment) return;
-        for (size_t at = 5; at < count;) {
-            const uint32_t extent = words[at] >> 16;
-            if (!extent || extent > count - at) throw std::runtime_error("invalid fragment instruction extent");
-            guarded_ |= (words[at] & 0xffffu) == spv::OpGroupNonUniformQuadBroadcast;
-            at += extent;
-        }
-        if (!guarded_) return;
-        validate_control(words, count);
-        if (!fault_address_ || fault_address_ % sizeof(uint32_t))
-            throw std::runtime_error("a quad shader needs an aligned atomic fault word");
-        for (;;) {
-            bool collision = get_entry_point().name == helper_namespace_;
-            for (uint32_t id = 1; id < get_current_id_bound(); ++id)
-                collision |= get_name(id) == helper_namespace_;
-            if (!collision) break;
-            helper_namespace_ += '_';
-        }
-        add_header_line(metal_fragment_quad_source(helper_namespace_));
+        initialize(words, count);
+    }
+
+    MetalFragmentQuadCompiler(const MetalPreparedFragment &prepared, uint64_t fault_address)
+        : CompilerMSL(prepared.words.data(), prepared.words.size()), fault_address_(fault_address), controlled_(true)
+    {
+        initialize(prepared.words.data(), prepared.words.size());
     }
 
 protected:
@@ -94,6 +84,26 @@ protected:
 
     void emit_subgroup_op(const spirv_cross::Instruction &instruction) override
     {
+        if (guarded_ && controlled_ && instruction.op == spv::OpGroupNonUniformQuadSwap) {
+            if (instruction.length != 5)
+                throw std::runtime_error("invalid Boolean fragment quad swap operand count");
+            const auto *operands = stream(instruction);
+            const auto &type = get<spirv_cross::SPIRType>(operands[0]);
+            const auto *scope = maybe_get<spirv_cross::SPIRConstant>(operands[2]);
+            const auto *direction = maybe_get<spirv_cross::SPIRConstant>(operands[4]);
+            if (!scalar_boolean(type) || !scalar_boolean(expression_type(operands[3])) ||
+                !integer_constant(scope) || scope->scalar() != spv::ScopeSubgroup ||
+                !integer_constant(direction) || direction->scalar() >= 3)
+                throw std::runtime_error("a Boolean fragment quad swap needs a constant subgroup direction in 0-2");
+            const std::string result = helper_namespace_ + "::swap(" + to_unpacked_expression(operands[3]) + ", " +
+                std::to_string(direction->scalar() + 1) + "u, " + lane_name_ +
+                ", reinterpret_cast<device atomic_uint *>(ulong(" + std::to_string(fault_address_) + "ul)))";
+            /* Each call must run before a later logical OR can short-circuit its peers. */
+            emit_op(operands[0], operands[1], result, false);
+            inherit_expression_dependencies(operands[1], operands[3]);
+            register_control_dependent_expression(operands[1]);
+            return;
+        }
         if (!guarded_ || instruction.op != spv::OpGroupNonUniformQuadBroadcast) {
             CompilerMSL::emit_subgroup_op(instruction);
             return;
@@ -128,6 +138,38 @@ protected:
     }
 
 private:
+    void initialize(const uint32_t *words, size_t count)
+    {
+        if (get_execution_model() != spv::ExecutionModelFragment) {
+            if (controlled_) throw std::runtime_error("prepared quad control requires a fragment entry");
+            return;
+        }
+        for (size_t at = 5; at < count;) {
+            const uint32_t extent = words[at] >> 16;
+            if (!extent || extent > count - at) throw std::runtime_error("invalid fragment instruction extent");
+            const auto opcode = static_cast<spv::Op>(words[at] & 0xffffu);
+            if (controlled_ && (opcode == spv::OpSwitch || opcode == spv::OpLoopMerge ||
+                                opcode == spv::OpGroupNonUniformAny))
+                throw std::runtime_error("prepared fragment still contains unproved wave or dispatch control");
+            guarded_ |= opcode == spv::OpGroupNonUniformQuadBroadcast ||
+                (controlled_ && opcode == spv::OpGroupNonUniformQuadSwap);
+            at += extent;
+        }
+        if (!guarded_) return;
+        validate_control(words, count);
+        if (!fault_address_ || fault_address_ % sizeof(uint32_t))
+            throw std::runtime_error("a quad shader needs an aligned atomic fault word");
+        for (;;) {
+            bool collision = get_entry_point().name == helper_namespace_;
+            for (uint32_t id = 1; id < get_current_id_bound(); ++id)
+                collision |= get_name(id) == helper_namespace_;
+            if (!collision) break;
+            helper_namespace_ += '_';
+        }
+        add_header_line(metal_fragment_quad_source(helper_namespace_));
+        if (controlled_) add_header_line(metal_fragment_wqm_source(helper_namespace_));
+        }
+
     static bool scalar_boolean(const spirv_cross::SPIRType &type)
     {
         return !type.pointer && type.basetype == spirv_cross::SPIRType::Boolean &&
@@ -150,9 +192,9 @@ private:
             (type.basetype == spirv_cross::SPIRType::UInt || type.basetype == spirv_cross::SPIRType::Int);
     }
 
-    /* Until the separate wave/control proof exists, admit the frontend's single straight-line
-       guest block, with quad reads outside internal per-lane selections. In particular, helpers
-       cannot fault alone while covered lanes temporarily leave and later reconverge. */
+    /* Raw modules retain the single-block profile. Prepared modules have their dispatcher
+       removed by the empty-EXEC proof. In both forms, quad reads must run outside per-lane
+       selections so helpers cannot fault alone before covered lanes later reconverge. */
     void validate_control(const uint32_t *words, size_t count)
     {
         std::map<uint32_t, std::vector<uint32_t>> edges;
@@ -176,7 +218,8 @@ private:
                 opcode == spv::OpDemoteToHelperInvocation || opcode == spv::OpTerminateInvocation)
                 throw std::runtime_error("fragment quad reads require a single inlined entry without demotion");
             if (opcode >= spv::OpGroupNonUniformElect && opcode <= spv::OpGroupNonUniformQuadSwap &&
-                opcode != spv::OpGroupNonUniformQuadBroadcast) {
+                opcode != spv::OpGroupNonUniformQuadBroadcast &&
+                !(controlled_ && opcode == spv::OpGroupNonUniformQuadSwap)) {
                 if (opcode == spv::OpGroupNonUniformQuadSwap)
                     throw std::runtime_error("whole-quad shader operations are outside the Metal draw profile");
                 /* Constant Any is independent of wave width and carries no helper-derived data. */
@@ -214,6 +257,10 @@ private:
             case spv::OpGroupNonUniformQuadBroadcast:
                 if (extent != 6) throw std::runtime_error("invalid fragment quad broadcast operand count");
                 require_quad_type(get<spirv_cross::SPIRType>(words[at + 1]));
+                reads.insert(block); break;
+            case spv::OpGroupNonUniformQuadSwap:
+                if (!controlled_ || extent != 6 || !scalar_boolean(get<spirv_cross::SPIRType>(words[at + 1])))
+                    throw std::runtime_error("Boolean fragment quad swaps require prepared control");
                 reads.insert(block); break;
             case spv::OpKill: case spv::OpReturn: case spv::OpReturnValue:
                 terminal_blocks.insert(block); break;
@@ -322,6 +369,7 @@ private:
 
     uint64_t fault_address_;
     bool guarded_ = false;
+    bool controlled_ = false;
     std::string lane_name_;
     std::string helper_namespace_ = "pb_fragment_quad";
 };

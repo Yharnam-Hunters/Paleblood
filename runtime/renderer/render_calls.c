@@ -221,11 +221,13 @@ typedef struct {
     rt_render_call *calls;
     size_t count, capacity;
     int submitted;                   /* submitted since its last call: the next call starts it over */
-    /* With a reader (runtime/render_placed.h): the first two words of memory at each call's offset when
-       a submission first took it (calls[0..marked)), for a submission of the buffer again with no new
-       calls (taken_count) */
+    /* With a reader (runtime/render_placed.h): the packet in memory at each call's offset when a
+       submission first took it (calls[0..marked), mark_at), for a submission of the buffer again with
+       no new calls (taken_count) */
     uint64_t *marks;
     size_t marked, marks_capacity;
+    rt_render_call *live;            /* rt_render_submitted's calls when some were inside a packet (live_calls) */
+    size_t live_capacity;
     uint64_t used;                   /* the submission clock when it was last recorded into or taken */
 } call_list;
 
@@ -360,7 +362,7 @@ static void sweep_lists(void)
     size_t kept = 0;
     for (size_t i = 0; i < list_count; i++) {
         if (lists[i].used + LIST_IDLE < submissions) {
-            free(lists[i].calls), free(lists[i].marks);
+            free(lists[i].calls), free(lists[i].marks), free(lists[i].live);
             continue;
         }
         lists[kept++] = lists[i];
@@ -788,18 +790,46 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
     return record(buffer, &call, error, error_size);
 }
 
-/* The two words at a call's offset in its buffer (the second only inside the size). Called with lists_lock held. */
+/* A call's mark: the packet at its offset as the memory holds it, folded into 64 bits (FNV-1a). For a
+   PM4 type-3 header that is the header and the body it counts, up to MARK_BODY_MAX words; otherwise
+   the first two words. Only words inside the size are read, the first always. The header and the
+   register alone are not enough: a new use of the buffer in the same layout writes the same headers
+   with other values, and the clinic's compute buffers do (each dispatch's table address is user data
+   behind the same SET_SH_REG header), so an old call would run with an address from an earlier frame
+   whose memory now holds other data.
+   A NOP is followed into the packet after it: the game's descriptor writers (and its four-word,
+   eight-word and counted user-data writers) put a one-word NOP before their SET_SH_REG, and the call
+   stands at the NOP, so the NOP alone would leave the descriptor's words unmarked. Called with
+   lists_lock held. */
+enum { MARK_BODY_MAX = 64 };
 static uint64_t mark_at(uint64_t buffer, uint32_t offset, uint32_t size)
 {
-    const uint64_t second = offset + 8ull <= size ? read_word(buffer + offset + 4) : 0;
-    return read_word(buffer + offset) | second << 32;
+    enum { PM4_TYPE3 = 3, PM4_TYPE_SHIFT = 30, PM4_OPCODE_SHIFT = 8, PM4_OPCODE_MASK = 0xff, PM4_NOP = 0x10 };
+    const uint64_t fnv_offset = 0xcbf29ce484222325ull, fnv_prime = 0x100000001b3ull;
+    uint64_t mark = fnv_offset;
+    for (int packet = 0; packet < 2; packet++) {
+        const uint32_t header = read_word(buffer + offset);
+        uint32_t words = 2;
+        const int type3 = header >> PM4_TYPE_SHIFT == PM4_TYPE3;
+        if (type3) {
+            const uint32_t body = PM4_COUNT(header) + 1;
+            words = 1 + (body < MARK_BODY_MAX ? body : MARK_BODY_MAX);
+        }
+        mark = (mark ^ header) * fnv_prime;
+        uint32_t i = 1;
+        for (; i < words && offset + 4ull * (i + 1) <= size; i++) mark = (mark ^ read_word(buffer + offset + 4ull * i)) * fnv_prime;
+        const int nop = type3 && ((header >> PM4_OPCODE_SHIFT) & PM4_OPCODE_MASK) == PM4_NOP;
+        if (!nop || i < words || offset + 4ull * (words + 1) > size) break;
+        offset += 4 * words;
+    }
+    return mark;
 }
 
 /* How many of a list's calls a submission of `size` bytes takes: those before the size. A list taken
    before and given no call since is either the same commands submitted again, or a new use of the
    memory in a layout nothing recorded (the game writes some buffers from packets alone, DMA and
-   memory writes): with a reader, it is taken again only where the memory still holds what it held at
-   each call's offset when first taken, and otherwise its calls belong to the earlier use and are
+   memory writes): with a reader, it is taken again only where the memory still holds the packet it
+   held at each call's offset when first taken, and otherwise its calls belong to the earlier use and are
    forgotten (their user data would land on a later dispatch). Called with lists_lock held. */
 static size_t taken_count(call_list *list, uint32_t size)
 {
@@ -824,6 +854,38 @@ static size_t taken_count(call_list *list, uint32_t size)
     return n;
 }
 
+/* Copies to `out` the first n of a list's calls that the GPU reaches in a submission of `size` bytes, and
+   returns their count. The GPU reads a buffer packet by packet from its start, each PM4 type-3 header
+   counting the body it skips; with a reader, a call whose offset falls inside an earlier packet's body
+   is not reached. The game turns finished work off by widening a NOP over it: the clinic resubmits a
+   256-byte compute buffer whose first NOP now covers its whole wait, user data and LUT dispatch (compute
+   shader 0x20d1b00800), and that dispatch, run from its earlier calls with a table address whose ring
+   slot now holds floats, reached outside the guest memory. The calls' own packets are unchanged there,
+   so their marks (mark_at) still match. A buffer that does not walk as type-3 packets to the call (the
+   submission's own walk, runtime/syslib/gnm.c, stops on one) keeps its calls from there on, as before.
+   Called with lists_lock held. */
+static size_t live_calls(const call_list *list, size_t n, uint32_t size, rt_render_call *out)
+{
+    enum { PM4_TYPE3 = 3, PM4_TYPE_SHIFT = 30, PM4_HEADER_AND_COUNT_BIAS = 2 };
+    size_t live = 0, i = 0;
+    int walking = read_word != NULL;
+    for (uint64_t at = 0; walking && i < n; i++) {
+        while (walking && at < list->calls[i].offset) {
+            const uint32_t header = read_word(list->buffer + at);
+            const uint64_t bytes = 4ull * (PM4_COUNT(header) + PM4_HEADER_AND_COUNT_BIAS);
+            walking = header >> PM4_TYPE_SHIFT == PM4_TYPE3 && bytes <= size - at;
+            if (walking) at += bytes;
+        }
+        if (!walking) break;
+        if (at == list->calls[i].offset) out[live++] = list->calls[i];
+    }
+    for (; i < n; i++) out[live++] = list->calls[i];
+    return live;
+}
+
+/* With a reader, the calls live_calls leaves out are not in the array: it is then the list's `live`
+   copy (NULL with count 0 when none is left, count SIZE_MAX when there is no memory for the copy),
+   valid until the buffer is recorded into or submitted again. */
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count)
 {
     pthread_mutex_lock(&lists_lock);
@@ -834,6 +896,15 @@ const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t
     if (list) {
         calls = list->calls;
         *count = taken_count(list, size);
+        if (read_word && *count > list->live_capacity) {
+            rt_render_call *grown = realloc(list->live, list->capacity * sizeof *grown);
+            if (grown) list->live = grown, list->live_capacity = list->capacity;
+            else calls = NULL, *count = SIZE_MAX; /* no memory */
+        }
+        if (read_word && calls && *count) {
+            const size_t live = live_calls(list, *count, size, list->live);
+            if (live < *count) calls = live ? list->live : NULL, *count = live;
+        }
         list->submitted = 1;
         list->used = submissions;
     }
@@ -854,8 +925,8 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
         list->submitted = 1;
         list->used = submissions;
         if (n && (copy = malloc(n * sizeof *copy))) {
-            memcpy(copy, list->calls, n * sizeof *copy);
-            *count = n;
+            *count = live_calls(list, n, size, copy);
+            if (!*count) free(copy), copy = NULL; /* every call inside a packet */
         } else if (n) {
             *count = SIZE_MAX; /* no memory */
         }
@@ -868,7 +939,7 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
 void rt_render_forget(void)
 {
     pthread_mutex_lock(&lists_lock);
-    for (size_t i = 0; i < list_count; i++) free(lists[i].calls), free(lists[i].marks);
+    for (size_t i = 0; i < list_count; i++) free(lists[i].calls), free(lists[i].marks), free(lists[i].live);
     free(lists), free(list_index);
     lists = NULL, list_count = list_capacity = 0;
     list_index = NULL, index_size = 0;

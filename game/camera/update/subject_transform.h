@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera subject transform stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Capture the late subject transform, call the original quaternion/matrix helpers, normalize
 // the generated rows and publish the fresh subject frame. Reset/chase work is not included.
@@ -38,8 +39,8 @@ static_assert(offsetof(LateTransformLink, transform) == 0x68);
 static_assert(offsetof(LateSubjectPrefix, transform_link) == 0x3b0);
 
 RT_GLOBAL(0x0597be80, subject_yaw_axis, const Vec4);
-RT_GLOBAL(0x04cf24d0, position_xyz_bits, const Vec4);
-RT_GLOBAL(0x04cf24c0, position_unit_w, const Vec4);
+inline constexpr auto position_xyz_bits = constants::xyz_bits;
+inline constexpr auto position_unit_w = constants::unit_w;
 RT_GLOBAL(0x02fd5280, transform_scale, const Vec4);
 RT_GLOBAL(0x04cf2510, output_w_normalization, const Vec4);
 

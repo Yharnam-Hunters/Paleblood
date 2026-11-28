@@ -159,7 +159,7 @@ extern "C" void bb_loading_load_queue_dispatch_02a6a7f0(LoadEventQueue *queue)
     auto *events = reinterpret_cast<LoadEventArray *>((storage + event_storage_alignment - 1) &
                                                       ~(event_storage_alignment - 1));
     for (LoadEvent *event = events->begin, *end = events->end; event != end; ++event) {
-        const auto kind = static_cast<uint32_t>(event->word_0x00);
+        const auto kind = static_cast<uint32_t>(event->kind);
         if (kind > last_load_event_kind)
             engine::fatal_error(load_queue_source_file.address(), dispatch_line, invalid_event_kind_message.address());
         else if (kind == static_cast<uint32_t>(load_event_kind_0))
