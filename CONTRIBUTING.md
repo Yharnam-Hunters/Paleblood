@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 18137 of 157757 functions are verified (11.50%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 18713 of 179038 functions are verified (10.45%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -199,6 +199,21 @@ that every other one rewrites too:
   differently stops for you, except dated test records, where the newer one wins), rebuilds and
   validates before it commits. Anything else that conflicts is left for you to resolve.
 
+### Refactoring while pull requests are open
+
+Cleanups (recovering a shared helper, merging duplicate structs, naming raw offsets, splitting a
+big file) keep behaviour unchanged, but a cleanup that rewrites files other pull requests are
+changing makes them conflict. Before one, run `tools/refactor_map.py`: it lists, for every source
+file under `game/` and `runtime/`, the open pull requests touching it and the functions and
+verification rows it holds, and ranks the **quiet** subsystems (no open pull request touches them)
+by what a simple scan finds there: structs with identical members in different files or one name
+defined in several files, raw offset access, `unknown_` padding, and repeated runs of code lines.
+`--files` lists every file, `--json` prints the whole map, `--prs FILE` reads the pull requests
+from a saved `gh pr list --json number,title,author,files` instead of asking GitHub. The scan is a
+lead, not a finding: read the code first. Work in a quiet subsystem, keep each pull request to one
+theme, re-record the verification rows that go stale, and leave busy subsystems until their pull
+requests merge.
+
 ### Definition of done
 
 A function goes to `main` only when it is **verified and readable**:
@@ -206,7 +221,8 @@ A function goes to `main` only when it is **verified and readable**:
 - **Readable** means it follows [STYLE.md](STYLE.md): named calls and globals instead of
   addresses, structs with named fields instead of offsets, named constants, vector code only in
   `game/engine/`, no recording code. `tools/check_readable.py` checks the mechanical part in the
-  pre-commit hook and in CI. A literal transcription of the disassembly is a fine way to start,
+  pre-commit hook and in CI, including byte-pointer arithmetic that hides an offset and a game
+  address declared by more than one `RT_GLOBAL` / `RT_ORIGINAL`. A literal transcription of the disassembly is a fine way to start,
   on your work branch; it never goes to `main`. Files written before this rule are listed in
   `tools/readable_allowlist.txt`; that list may only shrink, and CI fails if it grows.
 - **Reviewed:** before a function becomes `verified`, an independent reviewer (not the author:
@@ -240,6 +256,43 @@ functions. Function family members, which cannot be recorded, use the same rule 
 Investigation notes and logs go in the pull request, not in the repository. Game screenshots and
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see
 Rules for what is allowed).
+
+## Speed and optimization work
+
+Paleblood now boots into the game and draws it, and the frame rate is the next thing to improve.
+Over Iosefka's Clinic route the merged work of the last weeks took the average from about 10.7 to
+about 15.5 fps, and the run is GPU-bound (about 60 ms of GPU time per frame), so there is room.
+Speed is more than the average: CPU work on the renderer thread (command recording, collecting the
+write-watch) sets the stutter, a boot uses about 7.5 of 8 GB of video memory and running out has
+stopped long sessions, and load and launch time (the translation cache, compiling shaders at
+launch) is the first thing a player waits for. A change that raises the 1% low or lowers the
+worst-frame time counts as much as one that raises the average.
+
+Optimization targets the runtime and the renderer, our own code. A decompiled game function must
+keep behaving exactly like the original ([docs/VERIFY.md](docs/VERIFY.md)); making one "faster"
+means a faster runtime around it, never changing what it does.
+
+**Measure honestly** ([docs/RENDERER.md](docs/RENDERER.md#measuring-frame-rate)):
+
+- Compare two builds with `tools/ab_bench.py run`, which measures both over the same frames of
+  the same save and input script. Keep the machine quiet; the tool leaves out runs that met other
+  work.
+- Run at least two rounds and report each build's noise floor; a difference counts only when it
+  is larger than both. Run three rounds before you claim a win.
+- Compare images with main: the same frames must look the same.
+- A change to memory use needs a 10-minute session, not a short run, because pressure builds
+  with the area and the time.
+
+**A speed PR contains** before and after average fps, 1% low, worst frame, the noise floor, the
+rounds and frame range, and your hardware (GPU, driver, CPU), plus the image comparison. For load
+or memory changes give the launch time or peak VRAM the same way. Say what you tried that did not
+help; a measured "no gain" is useful and goes in [docs/RENDERER.md](docs/RENDERER.md).
+
+**Game copy.** Boots and measurements need your own legally obtained copy of the game. Offline
+work does not: `tools/spirv_stats.py` ranks what the shader translator emits, and unit tests
+cover the executor and the caches.
+
+**Coordinate** in [issue #1332](https://github.com/Yharnam-Hunters/Paleblood/issues/1332): comment on the item you take so two people do not do the same one.
 
 ## Your own copy (decompilation work)
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera angle frame stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Build the pitch/yaw direction, preserve literal normalization masks, reposition fulcrum.
 #include "math_calls.h"
@@ -11,15 +12,15 @@ namespace packed = camera::update::math;
 namespace root = camera::update::root;
 namespace calls = camera::math_calls;
 
-RT_GLOBAL(0x04cf2630, negate_pitch_sine, const Vec4);
-RT_GLOBAL(0x04cf24e0, negate_yaw_sine, const Vec4);
-RT_GLOBAL(0x04cf24a0, unit_y, const Vec4);
-RT_GLOBAL(0x04cf24c0, unit_w, const Vec4);
-RT_GLOBAL(0x04cf24d0, xyz_bits, const Vec4);
-RT_GLOBAL(0x04cf2640, infinity_vector, const Vec4);
-RT_GLOBAL(0x04cf2650, canonical_nan_vector, const Vec4);
-RT_GLOBAL(0x04d25e88, short_distance_threshold, const float);
-RT_GLOBAL(0x04d25e8c, short_distance_replacement, const float);
+using constants::negate_pitch_sine;
+using constants::negate_yaw_sine;
+using constants::unit_y;
+using constants::unit_w;
+using constants::xyz_bits;
+inline constexpr auto infinity_vector = constants::exponent_bits;
+using constants::canonical_nan_vector;
+inline constexpr auto short_distance_threshold = constants::distance_threshold;
+using constants::short_distance_replacement;
 
 struct AngleFramePreparation
 {

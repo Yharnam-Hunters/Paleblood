@@ -60,6 +60,43 @@ class Shapes(unittest.TestCase):
             with self.assertRaises(fam.ShapeError):
                 fam.parse_shape(text)
 
+    def test_relative_fields_must_reach_their_targets(self):
+        shape = fam.parse_shape('e8 {rel:0x00402000} 80 3d {rel:0x00403000+1} 00 c3')
+        self.assertEqual(shape.size, 13)
+
+        def code(address, call_target=0x402000, global_target=0x403000, last=b'\xc3'):
+            call = struct.pack('<i', call_target - (address + 5))
+            cmp = struct.pack('<i', global_target - (address + 5 + 2 + 4 + 1))
+            return b'\xe8' + call + b'\x80\x3d' + cmp + b'\x00' + last
+
+        for address in (0x401000, 0x401100, 0x5f0000):
+            self.assertTrue(shape.matches(code(address), address))
+            self.assertIsNone(shape.value(code(address), address))
+        self.assertFalse(shape.matches(code(0x401000), 0x401100))           # same bytes, another address
+        self.assertFalse(shape.matches(code(0x401000, call_target=0x402010), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, global_target=0x403001), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, last=b'\x90'), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000)[:-1], 0x401000))
+        with self.assertRaises(fam.ShapeError):
+            shape.value(code(0x401000))                                     # no address
+        for text in ('e8 {rel:0x402000+0} c3', 'e8 {rel:402000} c3', 'b8 {u32} {u8} {rel:0x402000}'):
+            with self.assertRaises(fam.ShapeError):
+                fam.parse_shape(text)
+
+    def test_a_relative_shape_may_have_one_parameter(self):
+        shape = fam.parse_shape('48 03 05 {rel:0x00403000} ba {u32} c3')
+        self.assertEqual(shape.size, 13)
+
+        def code(address, value, target=0x403000):
+            return (b'\x48\x03\x05' + struct.pack('<i', target - (address + 7)) + b'\xba'
+                    + struct.pack('<I', value) + b'\xc3')
+
+        for address, value in ((0x401000, 0x10), (0x5f0000, 0x640)):
+            self.assertEqual(shape.value(code(address, value), address), value)
+        self.assertFalse(shape.matches(code(0x401000, 0x10), 0x401100))
+        self.assertFalse(shape.matches(code(0x401000, 0x10, target=0x403008), 0x401000))
+        self.assertFalse(shape.matches(code(0x401000, 0x10)[:-1] + b'\x90', 0x401000))
+
     def test_names(self):
         family = {'family': 'returns_constant', 'system': 'leaf'}
         self.assertEqual(fam.member_name(family, '0x00401230'), 'leaf_returns_constant_00401230')
@@ -77,12 +114,13 @@ class FakeImage:
         return off if 0 <= off < len(self.data) else None
 
 
-def scanner(code: bytes, functions, named=(), relocated=(), in_source=(), patched=()):
+def scanner(code: bytes, functions, named=(), relocated=(), in_source=(), patched=(), pointed=()):
     s = object.__new__(family_scan.Scanner)
     s.image = FakeImage(code)
     s.functions = list(functions)
     s.named = set(named)
     s.relocated = sorted(relocated)
+    s.pointed = sorted(pointed)
     s.in_source = set(in_source)
     s.patched = list(patched)
     s.libraries = []
@@ -122,6 +160,23 @@ class ScannerGates(unittest.TestCase):
         code = b'\xc3' + b'\x90' * 7 + b'\xc3' + PADDING_15
         reason, _ = scanner(code, [(0x401000, 1), (0x401008, 1), (0x401018, 1)]).classify(0, self.SHAPE)
         self.assertEqual(reason, 'extent under 14 bytes')
+
+    def test_pointed_address_ends_the_extent(self):
+        # code after the padding that Ghidra did not split off: a member only when a relocation
+        # points at it (a function reached through a pointer), and then the extent stops there
+        code, functions = self.layout(bytes.fromhex('9090909090909090909090909090') + b'\xc3')
+        self.assertEqual(scanner(code, functions).classify(0, self.SHAPE)[0],
+                         'code after it before the next function')
+        reason, row = scanner(code, functions, pointed={0x40100f}).classify(0, self.SHAPE)
+        self.assertEqual((reason, row['extent']), ('member', '15'))
+        # an address inside the member or past the next function changes nothing
+        code, functions = self.layout(b'\x90' * 15)
+        for pointed in ({0x401000}, {0x401010}, {0x401018}):
+            reason, row = scanner(code, functions, pointed=pointed).classify(0, self.SHAPE)
+            self.assertEqual((reason, row['extent']), ('member', '16'))
+        # pointed at inside the padding: the extent stops there (here under the hook's 14 bytes)
+        self.assertEqual(scanner(code, functions, pointed={0x401008}).classify(0, self.SHAPE)[0],
+                         'extent under 14 bytes')
 
     def test_relocation_slot_reaching_into_the_extent(self):
         code, functions = self.layout()
@@ -163,9 +218,14 @@ class Tables(unittest.TestCase):
         self.family(['returns_zero', 'leaf', '31 c0 c3', 'i64', '3', '9', 'xor eax, eax; ret'])
         self.assertTrue(any('registers 3' in e for e in self.errors()))
 
-    def test_extent_must_reach_the_next_function(self):
+    def test_extent_must_not_pass_the_next_function(self):
+        self.members([['0x00401000', '3', '18', '', 'replaced'], ['0x00401010', '3', '16', '', 'replaced']])
+        self.assertTrue(any('passes the next function' in e for e in self.errors()))
+
+    def test_extent_may_end_before_the_next_function(self):
+        # at a function the export misses (tools/family_scan.py check reads where from the executable)
         self.members([['0x00401000', '3', '14', '', 'replaced'], ['0x00401010', '3', '16', '', 'replaced']])
-        self.assertTrue(any('does not reach the next function' in e for e in self.errors()))
+        self.assertFalse(any('next function' in e for e in self.errors()))
 
     def test_member_cannot_also_be_named_or_hooked(self):
         self.assertTrue(any('functions.csv' in e for e in self.errors(named={'0x00401000'})))
@@ -470,9 +530,11 @@ class MatchingValues(unittest.TestCase):
 class MatchingSources(unittest.TestCase):
     def test_every_registered_family_has_a_matching_template_and_its_symbols(self):
         # A focused tooling prerequisite can add support before its family is registered.
-        # Every registered family still needs a template; staged support cannot waive that.
-        registered = {f['family'] for f in fam.families(ROOT)}
-        self.assertLessEqual(registered, set(family_emit.MATCHING_TEMPLATES))
+        # Every registered exact family still needs a template; staged support cannot waive that.
+        # A relative family's members are large enough to record (docs/FAMILIES.md, "Relative
+        # shapes"), so they take the recorded path to verified and need no matching template.
+        exact = {f['family'] for f in fam.families(ROOT) if not fam.parse_shape(f['shape']).rels}
+        self.assertLessEqual(exact, set(family_emit.MATCHING_TEMPLATES))
         text = family_emit.render_matching(ROOT, 'reads_qword_field')
         self.assertIn('uint64_t leaf_reads_qword_field_0x8(const struct object_with_qword_at_0x8 *object)', text)
         self.assertNotIn('bb_leaf_', text)      # the replacements' source hash must not see it

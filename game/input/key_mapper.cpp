@@ -1,34 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Input: the lookups the key assign (game/input/key_assign.cpp) asks of the key mapper and of the
-// input's set of held inputs. Each is a std::map find on a map keyed by a signed 32-bit number
-// (input/int_map.h): the mapper's map from logical key to button index, its map from button index
-// to the alternate input (another device's), and the held set's map from input to a held flag.
+// Input: the lookups the key assign (key_assign.cpp) asks of the key mapper and of the input's set
+// of held inputs (key_mapper.h): the mapper's map from logical key to button index, its map from
+// button index to the alternate input (another device's), and the held set's map from input to a
+// held flag.
 #include <cstddef>
 #include <cstdint>
 
 #include "int_map.h"
-#include "runtime/original.h"
+#include "key_mapper.h"
 
 namespace {
 
-using input::IntMap;
+using input::HeldInputSet;
 using input::IntMapNode;
+using input::KeyMapper;
+using input::no_index;
 
-constexpr int32_t no_index = -1;
-
-struct KeyMapper {
-    uint8_t unknown_0x00[0x40];
-    IntMap<int32_t> *button_indexes;   // logical key -> the input's button index
-    IntMap<int32_t> alternate_inputs;  // button index -> the alternate input
-};
-static_assert(offsetof(KeyMapper, button_indexes) == 0x40);
-static_assert(offsetof(KeyMapper, alternate_inputs.head) == 0x50);
-
-struct HeldInputSet {
-    uint8_t unknown_0x00[0x10];
-    IntMap<uint8_t> inputs;   // input -> held (any nonzero byte counts)
-};
-static_assert(offsetof(HeldInputSet, inputs.head) == 0x18);
 static_assert(offsetof(IntMapNode<int32_t>, key) == 0x1c && offsetof(IntMapNode<int32_t>, value) == 0x20);
 
 // The value stored under `key`, or no_index when the map has none.

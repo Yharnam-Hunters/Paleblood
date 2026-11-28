@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera locked geometry stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Locked geometry hands the resulting orientation back to rotation release.
 #include "angular_mode.h"
@@ -43,7 +44,7 @@ RT_GLOBAL(0x04cf2580, ratio_coefficients_constant, const Vec4);
 RT_GLOBAL(0x04cf2590, pair_sign_mask, const Vec4);
 RT_GLOBAL(0x04cf25a0, pair_pi_bits, const Vec4);
 RT_GLOBAL(0x04cf25b0, pair_two_pi, const Vec4);
-RT_GLOBAL(0x04d25e74, two_pi, const float);
+using constants::two_pi;
 RT_GLOBAL(0x04d25e78, half_pi, const float);
 RT_GLOBAL(0x04d25e7c, ratio_root_bias, const float); // Just above 1; bits 0x3f800001.
 

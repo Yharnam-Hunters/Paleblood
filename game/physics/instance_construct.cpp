@@ -15,8 +15,8 @@
 // - a listener object of its own, a small object pair and a tracker; last, it collects the
 //   distinct motion types above 4 of its bodies into the id vector.
 //
-// "60 FPS++" (and "90 FPS++", "60FPS (no deltatime)") make the controller's step 1/60 s;
-// BB_TARGET_FPS=60 does too.
+// "60 FPS++" and "Uncap FPS++" (and "90 FPS++", "60FPS (no deltatime)") make the controller's
+// step 1/60 s (0x01c0ca9a); BB_TARGET_FPS=60 and uncapped do too.
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -553,7 +553,9 @@ void build_controller(PhysicsInstance *self, PhysicsWorld *world)
     Vec4 transform[transform_rows];
     transform_from_frame(transform, &frame);
     for (int i = 0; i < transform_rows; i++) controller->transform[i] = transform[i];
-    controller->step_bits = frame_timing::fixed_step_bits();
+    const frame_timing::Target target = frame_timing::target_fps();
+    const bool steps_at_60 = target == frame_timing::Target::fps60 || target == frame_timing::Target::uncapped;
+    controller->step_bits = steps_at_60 ? frame_timing::k_interval_60 : frame_timing::k_interval_30;
 }
 
 void build_flag_arrays(PhysicsInstance *self, BodySet *set)

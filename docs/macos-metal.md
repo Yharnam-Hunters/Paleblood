@@ -165,8 +165,16 @@ Live system-call shader bindings are placed by their command-buffer write addres
 recorder joins them to the submitted buffer at their byte offsets. After a submission, the next
 ordinary record or placed binding starts a new use of that buffer, even if its offset increases.
 It supports viewport 0, vertex/pixel shaders and their separate user-data ranges, auto-index and
-16/32-bit indexed triangle lists, and one COLOR_8_8_8_8 render target (UNORM or sRGB, either
+16/32-bit indexed triangle and rectangle lists, and one COLOR_8_8_8_8 render target (UNORM or sRGB, either
 component order).
+Index data above a 4GiB pool-relative offset uses a page-aligned, shared Metal buffer
+window with a small native offset. The window aliases the pool's bytes without a CPU
+copy, so GPU-produced indices remain current. The draw retains the pool mapping until
+completion; allocation failure stops by name. Direct and offset indexed triangle lists
+and strips use the same window. `metal_index_windows` checks low, boundary-crossing,
+high and exact-pool-end spans with both index widths in a sparse 5GiB pool, including
+repeated GPU-produced indices, exact pixels and bounded input/canary comparisons.
+
 Targets are limited to 4096 pixels per axis; viewport X/Y scales and translations must be
 finite and within ±4096, with a positive X scale and a nonzero Y scale.
 Vertex input profiles 0 through 3 reuse the common translator. VGPR0 holds the vertex ID;
@@ -194,8 +202,8 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
-and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
+depth export. Pixel-position X/Y inputs are rejected explicitly. Whole-quad mask expansion has
+the restricted fragment-control profile described below. Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
 against slots explicitly written for that stage since reset; writing zero establishes a value,
@@ -207,14 +215,42 @@ it does not provide path-sensitive initialization analysis.
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.
 
-Readback is tightly packed BGRA, matching the display API. Sampled textures are separate
+Color targets also support the standard channel order for packed 10_11_11 FLOAT
+(Metal RG11B10Float) and 16_16_16_16 FLOAT (Metal RGBA16Float).
+Linear and tiled guest memory retain each format's native encoded bytes.
+Display readback is tightly packed BGRA and requires an 8_8_8_8 target. Sampled textures are separate
 resources loaded from their descriptors; colour and depth/stencil attachments use canonical
 guest memory.
-The generic register events validate this backend's supported opaque-triangle profile: blending,
-non-copy colour operations and partial colour masks stop with a reason.
+Target0 supports ADD blending with ZERO, ONE, SRC_ALPHA or ONE_MINUS_SRC_ALPHA factors,
+using the color factors for alpha as well. Other factors or operations, separate alpha,
+ROP3 overrides, reserved fields, non-copy color operations and partial color masks stop with a reason.
+An enabled blend flag has no effect when target 0 is unbound, its channel mask is zero or the
+colour mode is disabled. These draws still execute their shaders and depth/stencil operations.
+
+`CB_COLOR0..7_CLEAR_WORD0/1` writes retain each independent raw 32-bit word across
+submissions, in the persistent graphics state. Reset returns these words to zero.
+They specify formatted fast-clear texel bits; writing them does not clear a target.
+The admitted uncompressed draw path does not consume them. Active fast-clear or
+compression flags and unsupported colour modes still stop before shader work.
+Only the two documented words in each of the eight banks are admitted. The
+[AMD GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
+specify their addresses and bank stride.
+
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
+
+`DB_DEPTH_BOUNDS_MIN` and `_MAX` retain independent raw 32-bit words, including NaNs,
+infinities and signed zero, while depth-bounds testing is disabled. This register layout and
+`DB_DEPTH_CONTROL.DEPTH_BOUNDS_ENABLE` bit 3 follow AMD's
+[GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
+and [field masks](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_sh_mask.h).
+An enabled depth-bounds test is refused by name before drawing, including zero-count and
+zero-colour-mask draws; active bounds testing is not implemented. Register writes and state
+carry across call fragments and submissions; reset clears the values and control. Queue
+selection changes compute state only. Exact inactive values have no public readback, so the
+owned `metal_depth_bounds` test qualifies admission, refusal and fresh pixel/vertex writes,
+while source review establishes the independent raw stores. No private state getter is introduced.
 
 Depth/stencil draws support single-sample D16, D32 and S8, all eight comparisons, front/back
 stencil references and masks, keep/zero/replace/invert, and clamped or wrapping steps of one.
@@ -233,7 +269,13 @@ aspect-specific staging blits, then publishes completed writable texels back aft
 Selected slices retain their bank rotation; padding and other slices remain untouched. This first
 path allocates attachment resources per draw rather than keeping a dirty depth-image cache.
 
-HTILE and expanded clears stop when an active aspect depends on them. A stencil-only draw
+Metal resolves tiled eight-pipe HTILE for single-slice D32 without stencil metadata.
+A surface whose active tiles all carry clear tags loads the finite 0..1 value from
+`DB_DEPTH_CLEAR` across the full depth plane. After successful execution the depth bytes
+are published and those tiles become expanded. Expanded tiles use the existing guest
+depth bytes. The clear preserves metadata padding, each word's upper bits and stencil data.
+Mixed clear and expanded tiles, compressed tiles and expanded-clear register operations
+stop explicitly. A stencil-only draw
 with `DB_STENCIL_INFO.TILE_STENCIL_DISABLE` set uses the uncompressed S8 plane even when the
 inactive Z format retains HTILE or expanded-clear flags; it requires no Z base and does not
 read or modify Z metadata. Stencil expanded-clear flags still stop explicitly. Clear/copy/
@@ -290,10 +332,33 @@ index events. `INDEX_SIZE` is stored for logical offset calls; it does not add a
 bound to a raw packet's independent `MAX_SIZE`.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
-target reallocations return a named error. Blending, depth and unrecorded state remain outside
-this profile. Pixel image loads and fixed-LOD sampling use the bindings described below.
-Depth-target registers remain outside this profile. Rectangle lists need a geometry expansion
-path and are rejected.
+target reallocations return a named error. Blending and unrecorded state remain
+outside this profile. Pixel image loads and fixed-LOD sampling use the bindings described below.
+
+### Rectangle lists
+
+Rectangle draws capture the original vertex shader outputs in a rasterization-disabled pass,
+then a small vertex shader expands each triple into two triangles. The original program is
+not rerun for the generated vertices. Native indexed invocation/cache behavior is retained;
+source IDs are snapshotted before capture, and sparse IDs allocate through their maximum value.
+Incomplete triples, expanded-count overflow and buffers exceeding the device limit stop explicitly.
+Rectangle-list instance counts above one are refused before capture; ordinary triangles and strips
+retain their native instanced paths.
+
+The expansion follows the existing `rect_list.c` project contract: ordered clip-space XY
+comparisons select corner 1, then 2, otherwise 0. It emits the strip's two triangles with
+fourth output `(next + after) - corner` for the complete position float4, every parameter float4
+and every enabled clip scalar. Viewport Y conversion occurs once after expansion. Capture
+struct members are reflected, and MSL checks the allocation stride with `static_assert`.
+This establishes agreement with the project's canonical expansion; it does not independently
+establish PS4 hardware rules for varying W, competing predicates or non-rectangular inputs.
+
+A completed capture is checked for shader runtime stops before rasterization. Earlier vertex
+buffer writes survive such a stop; the target and depth/stencil planes are not published by
+that raster pass. Allocation or encoder failure after capture also does not roll back those
+vertex writes. Each pass waits for completion, so this first implementation adds a submission
+and synchronization per rectangle draw. Device loss and hardware timeouts are not induced by
+owned tests.
 
 ## Vertex fetch calls
 
@@ -320,11 +385,50 @@ Declared SGPR bounds and written-slot masks are checked before reading either fo
 on shader-cache hits. Texels and descriptor words are read again at each draw, so CPU, compute
 and completed render-target writes remain visible through cached native views.
 
-Fragment sampling accepts the common translator's quad broadcasts for coordinate gradients;
-SPIRV-Cross lowers them to native 2x2 fragment-quad operations. Whole-quad mask expansion remains
-rejected because its wave-wide SCC is not established by a native 32-lane SIMD group. Vertex quad
-operations remain rejected. Native sampler selection is still limited to relative mip zero below;
-accepting the gradient instructions does not broaden that LOD profile.
+Fragment coordinate gradients use the common translator's numeric quad broadcasts. The Metal
+adapter accepts constant subgroup sources 0 through 3 and scalar 32-bit integer or float values.
+It gathers the requested producer's raw bits and presence in one native `quad_or` reduction;
+it never permutes data from an inactive lane. The call is materialized before later selections
+can short-circuit it. A missing producer discards that fragment and atomically records a fault
+in a separate word from the common translator's runtime stop. After GPU completion, the executor
+checks that word before publishing color or depth back to the guest pool. A fault poisons the
+executor: reset cannot resume it. This does not roll back shader writes performed earlier in
+the draw. See the [Metal language specification, sections 6.10.3 and 6.11.1](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
+for active-lane reductions, helper invocations and discard behavior.
+
+Ordinary numeric-only quad reads require one inlined, straight-line guest block. A separate
+fragment-control pass admits a finite forward chain of guest blocks when every live wave-wide
+vote can be removed by proof. It removes unread, nonvolatile, alias-free function state and
+only elides an EXECZ skip when always visiting its body with empty EXEC preserves all live state
+and external effects. It then removes the artificial dispatcher, exposing the actual physical
+control flow to the quad-read checks. Observable wave results, real loops, escaping locals,
+atomics, volatile or coherent memory decorations, extension instructions and unproved control
+remain explicit refusals. This does not
+emulate a GCN wave with the native SIMD-group width.
+
+Removing an unused physical descriptor read additionally requires an exact typed address proof:
+an unchanged entry user-SGPR pair, the backend address offset and a bounded constant byte offset.
+Every removed read must fit a descriptor span already validated by the host. Descriptor origins
+are part of the shader cache key; their live pointers and complete spans are checked again before
+every draw, including cache hits. Uncovered or volatile reads are not silently discarded.
+
+Boolean quad swaps acquire all four participation bits and Boolean values in one `uint2 quad_or`
+reduction, then select the XOR peer from the acquired bits. The call is materialized before later
+selections. Incomplete quad participation records the same atomic fault and discards the fragment;
+successful execution requires all four physical invocations. The final control-flow checks still
+reject per-lane quad-read arms and prior termination. Vertex quad operations remain rejected.
+This does not broaden the sampler's relative-mip-zero profile below.
+
+`metal_quad_values_cpu` checks owned numeric SPIR-V metadata, control-flow refusals, naming
+collisions and fresh-compiler reproducibility. `metal_quad_values` also executes full and one-pixel
+raster coverage, raw-bit patterns and deliberately divergent native callers that observe the
+missing-source fault. `metal_fragment_control` checks independently owned preparation cases and
+refusals. `metal_boolean_quads` checks all Boolean truth tables, swap directions and incomplete
+participation. `metal_fragment_runtime` exercises an independently assembled GFX7 shader through
+the public executor, comparing masked EXEC and whole-quad expansion with a mathematical pixel
+oracle across user-data changes, retained state, resets and cached shaders. Device qualification
+establishes only these admitted profiles on the tested hardware; it is not an original-PS4 GPU
+comparison.
 
 The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling
 modes through `rt_tiling_mip_chain`. SPIRV-Cross lowers 1D textures as 2D with height one. Native
@@ -332,6 +436,12 @@ views preserve the descriptor's base mip, base layer and component selectors; se
 unknown or absent components fail explicitly. Complete padded allocations must fit the pool.
 Image dimensions are limited to 16384 and arrays to 2048 layers; actual native allocation and
 BC/32-bit filtering capabilities are also checked.
+
+Pixel shaders can sample or load a single square RGBA8 UNORM cube in thin 1D tiling (mode 13)
+at mip zero. The backend binds the six allocated faces through the common translator's 2D
+array representation. The descriptor must cover all six faces from zero. If it advertises
+additional faces, the view still ends at the sixth allocated face. Cube arrays and other
+cube layouts remain outside this profile.
 
 Formats follow the common renderer's established table: R8/RG8/RGBA8 UNORM, R32 FLOAT/UINT/SINT,
 RG32/RGBA32 FLOAT, RGBA8 UINT/sRGB, BC1/2/3/7 UNORM/sRGB, and BC4/5 UNORM/SNORM. BC6 and other
@@ -345,7 +455,7 @@ used only by texel loads do not impose that restriction. The common translator s
 gradients for `image_sample`; the native unmipmapped sampler selects the view's first level. Nondefault minimum LOD, bias or reserved
 mip controls with a multi-level sampled view fail explicitly until their semantics are modeled;
 single-level views retain the common profile's irrelevant-field behavior. Pixel image stores
-and compute storage-image bindings remain separate unsupported paths.
+remain unsupported.
 
 `test_metal_images` uses one covered fragment to store raw results, independent of framebuffer
 quantization. Owned LLVM-assembled programs exercise every mapped format, dimensions, tiling,
@@ -375,41 +485,110 @@ This implementation copies through reusable CPU rows at each draw. It establishe
 memory behavior without a GPU tiling-copy or batching optimization; no full-game performance
 result is claimed.
 
-## Buffer compute
+## Compute
 
 The executor also accepts compute bindings, compute user data and ordered dispatches.
 It uses the common GFX7 compute translator and the same SPIRV-Cross/MSL compiler,
 shared memory pool and runtime-stop channel as draws. Compute user data and its
 written-slot mask are independent of vertex and pixel state. A reset forgets those
 values while retaining compiled pipelines. The cache includes the complete program
-bytes, local dimensions, user count and X workgroup-ID layout; changing code at an
-existing address does not reuse its previous pipeline.
+bytes, local dimensions, user count, thread-ID input profile and X workgroup-ID layout;
+changing code or the ID input allocation does not reuse the previous pipeline.
 
-This is a lane-local buffer profile. All three thread-ID inputs must be explicitly
-enabled, and local XYZ dimensions must be positive, fit the device/pipeline limits
-and contain at most one logical 64-lane GCN wave. The profile does not assume that
+This is a lane-local buffer profile. GFX7 `TIDIG_COMP_CNT` encodings 0, 1 and 2
+initialize X in v0, XY in v0-v1, or XYZ in v0-v2. Encoding 3 and a declared VGPR
+allocation smaller than the enabled input count stop before GPU work. Disabled slots
+retain the translator's existing deterministic register default; hardware leaves their
+initial values unspecified. The compute layout's `thread_id_vgprs` takes counts 1..3,
+with 0 preserving the earlier XYZ default for existing callers. Local XYZ dimensions
+must be positive, fit the device/pipeline limits and contain at most one logical
+64-lane GCN wave. The profile does not assume that
 Metal has a native 64-lane SIMD group. Actual subgroup operations, including
 wave-wide votes and quad swaps, are rejected before MSL compilation. The common
 translator declares vote capabilities even for programs that never use them;
 capability declarations alone do not cause rejection. Lane-local VCC half writes
 retain the logical lane index from the common translator.
 
+The encodings follow the [AMD CIK register manual, COMPUTE_PGM_RSRC2, page 198](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
+and [LLVM's initial kernel execution state](https://releases.llvm.org/18.1.8/docs/AMDGPUUsage.html#initial-kernel-execution-state).
+Owned cache tests end the lower-profile dispatch before consuming disabled Y/Z inputs,
+then run the same program with the higher profile and written mode data. They avoid
+assuming a hardware value for a disabled register.
+
 The optional X workgroup-ID SGPR follows the declared user SGPRs. Y/Z ID SGPRs,
-packed workgroup-size input, compute images and compute samplers remain unsupported. Dispatches
+packed workgroup-size input and compute samplers remain unsupported. Dispatches
 accept 1..65535 X workgroups and one Y/Z workgroup. Compute copied-call user-data
 records must contain 1..8 words within the modeled slots. Required user data must
 have been explicitly written; zero is a valid written value.
 
+Compute images use the common descriptor origins, typed translation and canonical tiling. The
+backend binds up to sixteen single-level 1D/2D storage images or arrays. R8/RG8/RGBA8 UNORM,
+R32 FLOAT/UINT/SINT, RG32/RGBA32 FLOAT and RGBA8 UINT support separate loads/stores; native
+read/write access uses the device's supported [read/write texture tier](https://developer.apple.com/documentation/metal/mtldevice/readwritetexturesupport).
+RG8 UNORM and RG32 FLOAT require separate accesses. Four-component storage images accept
+bijective permutations of their four channel selectors. The common translator maps loads
+forward and stores by the inverse mapping; native views retain physical channel order. The
+compiled image-binding cache includes that mapping. One- and two-component stored channels
+retain their identity-only profile; unused selectors do not affect storage. Nonzero mips, BC storage, sRGB reads, unsupported dimensions,
+sampling, partial component stores and unsupported formats fail explicitly. Overlapping writable
+bindings must share the same native view; general overlapping-view coherence remains open.
+
+Descriptors and texels are resolved before every dispatch, including pipeline-cache hits. Cached
+translations also match image dimensions, array/type/component layout and origin. Completed stores
+publish exposed slices back to canonical guest bytes before reporting a later shader stop. Current
+bytes in unexposed slices and layout padding survive publication. Read-only images do not publish
+stale texels over buffer writes. Pixel and storage-image views have separate usage-aware cache
+entries and exchange data through the pool. This provides ordered dispatch/draw/CPU visibility;
+it does not establish arbitrary image/buffer alias coherence inside one dispatch.
+
+Write-only RGBA8 sRGB descriptors in the 1D/2D and array profiles follow the Vulkan
+backend's [explicit compatibility policy](https://github.com/Yharnam-Hunters/Paleblood/blob/a7729d573ae6c0f790447c041c50f2b0c8328ada/runtime/renderer/render_executor.c#L3257-L3265): the local storage format becomes RGBA8 UNORM before
+native allocation and binding. Values are packed as UNORM without gamma encoding, including
+alpha. The raw descriptor remains the texture-cache key; ordinary current-guest upload and
+completed-store publication preserve untouched texels and padding. Reads, read/write access,
+compressed sRGB storage and 3D descriptors remain refused by this compatibility profile.
+
+This is a project compatibility choice, not GFX7 hardware equivalence. The [Sea Islands ISA's
+format table](https://docs.amd.com/api/khub/documents/YO8RUh~LIQ5Cx3M_Kq9qkg/content#page=80) does not list sRGB image writes, and [AMD PAL deliberately converts a write view to
+UNORM](https://github.com/GPUOpen-Drivers/pal/blob/7ce51b199c72021b8d027c50b55da515fd9b2e0b/src/core/hw/gfxip/rpm/rsrcProcMgr.cpp#L1125-L1131) after performing any needed gamma conversion in its shader. The native UNORM compatibility
+write does not establish GFX7 behavior for an sRGB descriptor. `test_metal_srgb_storage` uses
+interior RGB and independent alpha to distinguish this raw-UNORM policy from automatic gamma encoding.
+
 Each compute submission completes before a later dispatch or draw consumes its
-shared buffer writes. Completed draw pixels are already published into that pool,
+shared buffer and image writes. Completed draw pixels are already published into that pool,
 and the next draw reloads it. These checks do not establish a working game boot
 or character-creation rendering on macOS.
+
+The full-four-component mapping follows the common translator's storage contract. AMD's
+[Kaveri image channel table](https://github.com/ROCm/ROCR-Runtime/blob/d614ea8bbd73a7832c265725117274d13041ff06/src/image/image_lut_kv.cpp)
+programs BGRA and the non-involutive ARGB mapping in the image descriptor. AMD's device-library
+and [LLVM store lowering](https://github.com/llvm/llvm-project/blob/llvmorg-19.1.7/llvm/lib/Target/AMDGPU/SIISelLowering.cpp#L8173)
+pass the original four-component value and descriptor through without a software channel reorder. This supports inverse stores as a driver/compiler inference;
+it is not a captured console truth table. Constant, reserved and repeated selectors remain
+refused in this four-component profile. Per-slice CPU transfers use zero `bytesPerImage` for
+these non-3D textures, following [Metal's transfer contract](https://developer.apple.com/documentation/metal/mtltexture/replace(region:mipmaplevel:slice:withbytes:bytesperrow:bytesperimage:)). Partial stores and arbitrary overlapping-view coherence
+remain outside the existing storage profile.
+
+`test_metal_permutations` checks all 24 full-four-component permutations in RGBA8 UNORM,
+RGBA8 UINT and RGBA32 FLOAT, across the existing 1D/2D and array shapes. Independent literal
+forward and inverse tables check logical loads, raw canonical stores and untouched padding.
+Dedicated same-program/address transitions include a non-involutive four-cycle and its inverse;
+CPU changes and later raw GPU buffer observations test cached reloads and publication. Every
+owned image-store instruction explicitly sets the ISA's required `unorm` flag.
+
+`test_metal_storage` exercises owned LLVM-assembled programs across all nine uncompressed
+formats, four dimension/array types and six tiling modes. It checks typed results, preserved raw
+backing bytes and padding, view slices, read/write limits, live descriptor/cache changes, loaded
+48-bit pointers, complete descriptor/pool ends, all sixteen image slots, rejection of a seventeenth, and runtime-stop publication.
+Image tests also consume completed image stores as pixel input and completed draws as compute
+image input. These device tests use synthetic data and do not establish original-game equivalence.
 
 `test_metal_compute` runs owned buffer programs on the actual device. It checks
 partial and 64-invocation groups, multidimensional local IDs, X workgroups, VCC
 halves, stage isolation, partial user writes, cached resets, live code changes,
-metadata/admission guards, runtime-stop recovery, two ordered dispatches and a draw
-reading computed colors. It also dispatches after a completed draw and after reset. No original game shader or capture is used.
+metadata/admission guards, X/XY/XYZ input profiles, cache transitions with unchanged
+code/local sizes, null-buffer zero reads, runtime-stop recovery, two ordered dispatches
+and a draw reading computed colors. It also dispatches after a completed draw and after reset. No original game shader or capture is used.
 
 Descriptor-format accesses use the common translator's runtime stop channel: the executor owns
 a shared GPU-addressable stop word, declares its residency for both stages, and checks it after
@@ -445,7 +624,17 @@ recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bi
 formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logical index-size
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, missing image/sampler descriptor guards, descriptors loaded from memory, fetch rendering through live target and
-program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip guards, depth/stencil admission, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
+program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip guards, depth/stencil admission, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and incomplete-rectangle refusals, readback bounds and mapping lifetime.
+
+`test_metal_color_clear_words` checks all eight banks and both words, arbitrary raw
+bits, single-bit walks, submission routes, masked draws and later submissions.
+Fresh vertex stores, literal pixels and whole-pool canaries distinguish completed
+draws from empty success. It also checks adjacent unknown registers and active
+fast-clear/compression/mode refusals before any writes, followed by recovery.
+Exact inactive raw storage, independence and zero-on-reset are source invariants;
+the public API cannot distinguish their values while fast clears are unsupported.
+No private state getter or original hardware equivalence is claimed.
+
 `test_metal_depth` additionally checks depth/stencil comparisons, operations and masks, both face
 orientations and viewport signs, native read-only behavior through overlapping triangles,
 scissored writes, padded selected slices, mixed attachment extents, null-pixel draws, retained
@@ -453,7 +642,25 @@ state, required-register presence and canonical-memory updates. Stencil-only met
 use literal S8/BGRA results and complete pool comparisons to preserve the inactive Z plane,
 metadata bytes, padding and other slices; active metadata-dependent aspects retain prework
 refusals.
-It fails if no suitable GPU exists.
+`test_metal_alpha_blend` checks literal factor-pair results, RGB and alpha bytes, pipeline-cache
+transitions and fresh destination memory in both channel orders. Its sRGB results use the
+[IEC transfer curve](https://registry.color.org/rgb-registry/srgb); RGB is encoded while
+[alpha remains linear](https://developer.apple.com/documentation/metal/mtlpixelformat).
+Owned vertex stores and full-pool guards also cover inactive blend state and unsupported-state recovery.
+`test_metal_vertex_only` checks null-pixel draws with no attachments through vertex stores and
+complete pool comparisons. The same vertex code alternates with color and depth/stencil draws;
+sparse indices, instance-input tuples, zero counts and single-execution rectangle sources have
+independent byte goldens. Nonzero or unprogrammed pixel stages and existing rectangle guards
+remain refusals. Vertex-only execution disables native rasterization and keeps shader memory
+writes; it does not skip the vertex stage or admit attachmentless fragment execution.
+`test_metal_rectangles` compares explicit ordinary-triangle references with rectangle draws,
+including permutations, both viewport signs, varying W, clip outputs, two parameters, sparse
+indices, offset draws, multiple rectangles, vertex counters and capture-stop publication.
+`test_metal_rectangle_values` separately checks the compiled expansion helper with labelled
+corner/tie/fallback cases, ordered NaNs, signed zero, arithmetic order, sparse parameter location
+31 and all eight negative fourth-clip cases. These helper checks do not execute a source vertex
+shader or establish rasterization behavior.
+The tests fail if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
 offscreen test establishes neither window presentation nor execution of a game on macOS.
 Setting the Metal debug environment did not activate a debug device wrapper on the tested host;

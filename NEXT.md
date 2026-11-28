@@ -1,58 +1,78 @@
 # Next targets
 
-Two tracks. Sessions alternate between them (decompilation, then runtime, then decompilation,
-...) unless the maintainer says otherwise; `Last session` below records which one ran last.
-One line per target, in order; move a target to "Done" with its commit when it is finished.
-Decisions and blockers go to STATUS.md instead of being worked around.
+The work queue, one line per target, in order within each track. Move a target to "Done" with
+its pull request or commit when it is finished. Decisions and blockers go to STATUS.md instead of
+being worked around. The tracks run in parallel; claim a target in its issue before starting
+(CONTRIBUTING.md).
 
-Last session: decompilation
+## Where things stand (17 November 2026, main at `54f245e4`)
+
+- **Runtime.** Every system import the executable uses is implemented (686 of 686, 219 of them by
+  the game's own bundled modules). The recorded boot (`tools/boot.py`, `symbols/boot.json`, 30 s,
+  no display) reaches the first flip and no call stops it. A new game goes through character
+  creation with the renderer on: the Contract screen with the hunter in its preview, the name
+  typed in, and the finalise dialog (`game/routes/new_game.route`, which saves the new hunter;
+  frames from 10 and 11 November). Longer local boots from a save at the
+  clinic's start, driven by a scripted controller (`tools/boot.py --input-script`), play the
+  clinic's first encounter: the beast attacks, the hunter dies, the loading screen, and the hunter
+  wakes in the Hunter's Dream (STATUS.md, "Recent results").
+- **Renderer.** Engine draw hooks plus a clean-room GCN shader translator: Vulkan (SPIR-V) on
+  Linux, Metal (MSL) on macOS ([docs/RENDERER.md](docs/RENDERER.md),
+  [docs/macos-metal.md](docs/macos-metal.md)).
+- **Decompilation.** Counts are in the generated block of STATUS.md. Most replaced functions come
+  in function families ([docs/FAMILIES.md](docs/FAMILIES.md)); a function is `edge-verified` when
+  its edge cases pass and `verified` when cases recorded in the game pass too and an independent
+  review approved it ([docs/VERIFY.md](docs/VERIFY.md)). Byte-exact matches against the original
+  compiler are recorded in `symbols/matching.csv` ([docs/MATCHING.md](docs/MATCHING.md)).
 
 ## Runtime track
 
-How far the executable boots on our own runtime (`runtime/boot.c`, `tools/boot.py`): the boot
-stops at the first system import we don't implement yet and names it. Each target implements
-what the boot stops at, clean room (CONTRIBUTING.md), then re-runs `tools/boot.py`.
+1. **Speed in the clinic.** Frame rate and frame pacing with the renderer on: CPU time per draw,
+   waits on GPU submission, the shader pipeline cache. Measure before and after with
+   `tools/frame_stats.py` and `tools/ab_bench.py`; work in `runtime/renderer/`.
+2. **The intermittent stops** listed in STATUS.md, "Known issues": find each one's cause from a
+   repeatable run and fix it, or record why it cannot be fixed yet.
+3. **Renderer coverage, pass by pass.** Each new scene (menus, character creation, each area) is
+   compared pass by pass against reference captures of the same scene before features are added
+   for it (docs/RENDERER.md).
+4. **Keep the boot record current.** After runtime changes merge, re-run `tools/boot.py` and commit
+   `symbols/boot.json` (the milestone only changes when someone records it).
+5. **Open runtime questions** (STATUS.md): the main thread's CPU affinity mask on a PS4, and the
+   module-loading error values.
 
-1. `scePthreadAttrGetaffinity` (libkernel), called by the game's own libc while it starts: needs
-   the main thread's CPU affinity mask on a PS4 (STATUS.md, "Open questions") and a way to replace
-   a function inside a bundled module (claimed by BluePinetree on #34). Merged `main` stops here.
-   Past it (local discovery boots), the boot reaches milestone `audio` and stops at:
-2. `sceGnmValidateCommandBuffers`: the engine reads exactly `0x80d13fff` as "validation
-   unavailable" (`0x02abb950`); that code has no public name yet. The next GNM call after it,
-   `sceGnmDispatchInitDefaultHardwareState`, writes the GPU's own packets into the engine's
-   command buffer, so GNM is not answerable call by call: the engine builds its command buffers
-   itself and only submits them (map of all 50 imports on #39).
-3. The engine's renderer (its `GX` graphics framework), above where its command buffers are
-   built: the per-frame routine `0x025d5f80` (it submits at `0x025d861b`), the submit-and-flip
-   helpers `0x02ab0ce0` and `0x02ab0e30`, and the other submit clusters listed on #39. This is
-   where the graphics get rebuilt.
-
-Roadmap after the boot gets going: kernel, threads and memory; files; input; audio; video
-out; GNM and shaders (the largest). Claimable work per system call group is in the issues
-labelled `runtime`.
+System calls that are still stand-ins or answer only the observed cases are tracked in issue #34
+and in the issues labelled `runtime` ([docs/runtime-syscalls.md](docs/runtime-syscalls.md)).
 
 ## Decompilation track
 
-Readability burn-down first (STYLE.md; CONTRIBUTING.md, "Definition of done"): refactor each
-file in `tools/readable_allowlist.txt`, re-verify every recorded and edge case, get the
-independent review, remove its line. Order: `game/ai/hk_ai_frame_update.cpp`, then the others
-from the smallest up. New functions go to `main` only verified and readable.
-
-1. The live functions the 60 FPS patches edit besides frame timing (47 live, 12 dead:
-   `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
-   the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
-   cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons), and
-   five methods of SprjDungeonGateIns, which owns that state (two steps of its step machine and
-   three event handlers; edge-verified the same way). The owner's own small methods that 60 FPS++
-   edits (`0x01ea3fc0`, `0x01ea4040`, `0x01ea40e0`, `0x01ea54d0`, `0x01ea62e0`) are copies nothing
-   calls or points to (dead). The larger live ones near them are done too (see Done).
-   Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
-   `0x0183ac60` (20 KB; every frame-rate patch changes a jump and a flag) and `0x02713870`
-   (11.6 KB; its only edit, Uncap FPS++'s, is broken in v1.09: QUIRKS.md). Each option part is
-   checked against the patch that edits it (both sides patched, VERIFY.md).
+1. **Promote edge-verified functions to verified.** Run the capture recorder through every scene
+   the runtime reaches (`tools/capture_loop.py`, `tools/capture_status.py`), then
+   `tools/promote.py`; each promoted function gets an independent review row in
+   `symbols/reviews.csv`, and the promotions ship as `verify ...` batch pull requests. A recorded
+   case that fails is a bug to fix (or, when it cannot be fixed, a reasoned row in
+   `symbols/quarantine.csv`).
+2. **Function families.** Many tiny identical functions share one replacement each
+   ([docs/FAMILIES.md](docs/FAMILIES.md), `tools/family_scan.py`); claim a family before starting.
+3. **Recordings for the large edge-verified functions** that a short clinic run does not reach:
+   the nine fixed-step state methods and the SprjDungeonGateIns methods (they need a save that
+   reaches the Chalice Dungeons); `0x0183ac60` and `0x02713870` (see Done) pass their edge cases
+   stock and with each frame-rate option, and still need cases recorded in the game (the follow
+   camera has none yet).
+4. **Matching.** Small leaf functions rebuilt byte for byte with the original compiler
+   ([docs/MATCHING.md](docs/MATCHING.md)); a byte-exact row must stay byte-exact when its source
+   changes.
+5. **Code review and refactoring.** As related functions accumulate, recover the helpers and
+   accessors several functions open-code, merge duplicated struct definitions into the system's
+   header, and name raw offsets; behaviour stays the same (every touched function's recorded and
+   edge sets re-run with `--record`, a fresh review for verified ones).
 
 ## Done
 
+- `0x0183ac60` camera_update_follow (20 KB, the follow camera's per-frame update; from #112 by
+  @evill33t) and `0x02713870` render_update_model_wind (11.6 KB, the model wind update): replaced and
+  edge-verified (2026-11-10), the last two frame-rate patched functions that run in the clinic.
+- The readability burn-down: `tools/readable_allowlist.txt` is empty, every file under `game/`
+  passes `tools/check_readable.py`.
 - The Chalice Dungeon gate state's online methods (#186, #188, #192, #194, #196, #198, #199), all
   edge-verified stock and against "60 FPS++" with an independent review each: the owner check
   `0x01ea5280`, entry check `0x01ea4a10`, ritual handle and slot resets `0x01ea5670`/`0x01ea5850`,

@@ -5,27 +5,38 @@
 Two runs of one build differ: the same build measured 4.81 to 7.15 fps in Iosefka's Clinic. A
 difference between two builds means something only when it is larger than that. `run` starts the
 two builds' runs alternately (A1 B1 A2 B2 ...; two rounds each by default), so a slow spell of the
-machine falls on both, and measures each run over the same window: a fixed settle, then a fixed
-measure window, counted from the moment the run presents its anchor frame (a frame number reached
-at the same point of the same save, for the clinic the first frames after the load). Each build's
-spread over its rounds is its noise floor: a difference counts only when it is larger than both
-builds' spreads (the rule of bbhost's area check, docs/area-check.md "Reading an A/B").
+machine falls on both, and measures every run over the same FRAMES: --from-frame to --to-frame of
+the same save and input script (by default 1250 to 3000, the clinic walk after the load, up to just
+before its first scripted stall). Each build's spread over its rounds is its noise floor: a
+difference counts only when it is larger than both builds' spreads (the rule of bbhost's area check,
+docs/area-check.md "Reading an A/B").
 
-Work of other programs during the window disturbs it. While a run plays, the machine's load is
+A fixed range of frames, not a fixed stretch of time: the game stalls for seconds at scripted points
+(in the clinic walk a 5-7 s stall somewhere in frames 3050-3350, another in 4220-4530; the frame
+moves with the build), and a time window ends at an earlier frame for a slower build, so its window
+can end before a stall that a faster build's window holds, and the slower build's 1% low looks
+better. Over the same frames both builds meet the same stalls. A range that holds a scripted stall
+can leave its frames out with --skip-frames (FIRST-LAST, wide enough for where both builds stall):
+their intervals are reported on their own, the count, time and longest. A build that stalls
+anywhere else still shows it in its figures.
+
+Work of other programs while a run is measured disturbs it. While a run plays, the machine's load is
 sampled every second: the load average (/proc/loadavg), and the CPUs busy with work other than the
 run's own (all CPU time in /proc/stat less the time of the run's processes, the session the run
-starts). A run whose other work in its window rises above --max-other-cpus is left out of the
-figures, with the reason. Builds and other GPU work belong outside the window: the run command
-builds before it starts the game, and holds the machine's GPU lock while it plays (as
-tools/run_game.sh does).
+starts). A run whose other work between its first and last measured frame rises above
+--max-other-cpus is left out of the figures, with the reason. Builds and other GPU work belong
+outside the measured frames: the run command builds before it starts the game, and holds the
+machine's GPU lock while it plays (as tools/run_game.sh does).
 
 The run command is a shell command per build; {log} in it becomes the frame log the run must write
 (pbboot/boot.py --frame-log, runtime/display.h) and {tag} the run's name (a1, b1, a2, ...).
 
 Usage:
-  tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR [--rounds 2] [--anchor-frame N]
-                        [--settle S] [--measure S] [--max-other-cpus N]
-  tools/ab_bench.py compare --out DIR [same window options]   (the report again from DIR's logs)
+  tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR [--rounds 2] [--from-frame N] [--to-frame N]
+                        [--skip-frames A-B,C-D] [--max-other-cpus N]
+  tools/ab_bench.py compare --out DIR [same frame options]   (the report again from DIR's logs)
+
+A run must reach --to-frame (give its command a long enough timeout); one that does not is left out.
 
 DIR gets each run's frame log (<tag>.frames.log) and load samples (<tag>.load.json), then ab.json
 and ab.txt.
@@ -46,17 +57,41 @@ SAMPLE_SECONDS = 1.0
 BUILDS = ('a', 'b')
 
 
-def window_frames(frames, anchor_frame, settle, measure):
-    """The (frame, nanoseconds) pairs presented from settle to settle + measure seconds after the
-    anchor frame, with the window's bounds in nanoseconds. ValueError when the run never presented
-    the anchor frame or ended before the window did."""
-    anchor = next((t for n, t in frames if n >= anchor_frame), None)
-    if anchor is None:
-        raise ValueError(f'no frame {anchor_frame}: the run did not reach the anchor')
-    start, end = anchor + settle * NANOSECONDS, anchor + (settle + measure) * NANOSECONDS
-    if not frames or frames[-1][1] < end:
-        raise ValueError('the run ended before its measure window did')
-    return [(n, t) for n, t in frames if start <= t <= end], start, end
+DEFAULT_FROM_FRAME = 1250
+DEFAULT_TO_FRAME = 3000
+DEFAULT_SKIP_FRAMES = ''
+
+
+def parse_frame_ranges(text):
+    """'A-B,C-D' as [(A, B), (C, D)], each inclusive; '' gives no range. ValueError for a range that
+    is not two frame numbers, the first not above the second."""
+    ranges = []
+    for part in filter(None, (p.strip() for p in text.split(','))):
+        first, sep, last = part.partition('-')
+        if not sep or not first.strip().isdigit() or not last.strip().isdigit():
+            raise ValueError(f'{part!r}: want FIRST-LAST, two frame numbers')
+        first, last = int(first), int(last)
+        if first > last:
+            raise ValueError(f'{part!r}: the first frame is above the last')
+        ranges.append((first, last))
+    return ranges
+
+
+def range_intervals(frames, first, last, skip=()):
+    """The intervals between consecutive frames numbered first to last, split by the frame each ends
+    on: (measured, skipped, start, end), the first two lists of nanoseconds, skipped those ending on
+    a frame inside a skip range, and the times of the first and last frame. ValueError when the run
+    never presented frame `first` or ended before frame `last`."""
+    kept = [(n, t) for n, t in frames if first <= n <= last]
+    if not kept or kept[0][0] != first:
+        raise ValueError(f'no frame {first}: the run did not reach the first measured frame')
+    if kept[-1][0] != last:
+        raise ValueError(f'the run ended before frame {last}, the last measured frame')
+    measured, skipped = [], []
+    for (_, earlier), (frame, later) in zip(kept, kept[1:]):
+        inside = any(lo <= frame <= hi for lo, hi in skip)
+        (skipped if inside else measured).append(later - earlier)
+    return measured, skipped, kept[0][1], kept[-1][1]
 
 
 def busy_ticks(stat_text):
@@ -148,26 +183,28 @@ def run_one(command, tag, out):
 
 
 def measure_run(out, tag, a):
-    """One run's figures over its window and its load there, or the reason it is left out."""
+    """One run's figures over the measured frames and its load there, or the reason it is left out."""
     result = {'tag': tag}
     try:
         frames = frame_stats.read_log(os.path.join(out, f'{tag}.frames.log'), a.port)
-        kept, start, end = window_frames(frames, a.anchor_frame, a.settle, a.measure)
-        stats = frame_stats.frame_stats(kept)
+        measured, skipped, start, end = range_intervals(frames, a.from_frame, a.to_frame, a.skip)
+        result.update(frame_stats.interval_figures(measured))
     except (OSError, ValueError) as e:
         return {**result, 'left_out': str(e)}
-    result.update(stats)
+    result['skipped_intervals'] = len(skipped)
+    result['skipped_seconds'] = sum(skipped) / NANOSECONDS
+    result['skipped_worst_ms'] = max(skipped) / 1e6 if skipped else 0.0
     try:
         with open(os.path.join(out, f'{tag}.load.json')) as f:
             samples = [s for s in json.load(f)['samples'] if start <= s['ns'] <= end]
     except (OSError, ValueError, KeyError):
         samples = []
     if not samples:
-        return {**result, 'left_out': 'no load samples in its window'}
+        return {**result, 'left_out': 'no load samples between its first and last measured frame'}
     result['max_loadavg'] = max(s['loadavg'] for s in samples)
     result['max_other_cpus'] = max(s['other_cpus'] for s in samples)
     if result['max_other_cpus'] > a.max_other_cpus:
-        result['left_out'] = f"other work used {result['max_other_cpus']:.1f} CPUs in its window (limit {a.max_other_cpus:g})"
+        result['left_out'] = f"other work used {result['max_other_cpus']:.1f} CPUs while it was measured (limit {a.max_other_cpus:g})"
     return result
 
 
@@ -185,22 +222,33 @@ def verdict(a_values, b_values):
             'why': 'larger than both spreads' if counts else 'within the noise floor'}
 
 
+FIGURES = ('average_fps', 'one_percent_low_fps', 'worst_frame_ms', 'skipped_seconds')
+
+
+def frames_line(a):
+    skip = ', '.join(f'{lo}-{hi}' for lo, hi in a.skip)
+    return f'frames {a.from_frame}-{a.to_frame}' + (f', skipped frames {skip} reported apart' if skip else '')
+
+
 def report(out, a, tags):
     """Measures every run in DIR, writes ab.json and ab.txt and returns the text."""
     runs = [measure_run(out, tag, a) for tag in tags]
     measured = {b: [r for r in runs if r['tag'].startswith(b) and 'left_out' not in r] for b in BUILDS}
-    figures = {key: verdict([r[key] for r in measured['a']], [r[key] for r in measured['b']])
-               for key in ('average_fps', 'one_percent_low_fps')}
+    keys = FIGURES if a.skip else FIGURES[:-1]
+    figures = {key: verdict([r[key] for r in measured['a']], [r[key] for r in measured['b']]) for key in keys}
     with open(os.path.join(out, 'ab.json'), 'w') as f:
-        json.dump({'window': {'anchor_frame': a.anchor_frame, 'settle': a.settle, 'measure': a.measure},
+        json.dump({'frames': {'from': a.from_frame, 'to': a.to_frame, 'skip': a.skip},
                    'runs': runs, 'figures': figures}, f, indent=1, sort_keys=True)
-    lines = [f'window: {a.settle:g} s settle, then {a.measure:g} s measured, from frame {a.anchor_frame}']
+    lines = [frames_line(a)]
     for r in runs:
         if 'left_out' in r:
             lines.append(f"{r['tag']}: left out: {r['left_out']}")
         else:
+            skipped = (f"; skipped {r['skipped_intervals']} frames, {r['skipped_seconds']:.2f} s, worst "
+                       f"{r['skipped_worst_ms']:.1f} ms" if a.skip else '')
             lines.append(f"{r['tag']}: {r['average_fps']:.2f} fps, 1% low {r['one_percent_low_fps']:.2f}, worst "
-                         f"{r['worst_frame_ms']:.1f} ms; load avg <= {r['max_loadavg']:.1f}, other work <= {r['max_other_cpus']:.1f} CPUs")
+                         f"{r['worst_frame_ms']:.1f} ms{skipped}; load avg <= {r['max_loadavg']:.1f}, "
+                         f"other work <= {r['max_other_cpus']:.1f} CPUs")
     for key, v in figures.items():
         if 'difference' not in v:
             lines.append(f'{key}: {v["why"]}')
@@ -225,17 +273,27 @@ def main(argv=None):
     for name in ('run', 'compare'):
         p = sub.add_parser(name)
         p.add_argument('--out', required=True, help='the folder of the runs\' logs and the report')
-        p.add_argument('--anchor-frame', type=int, default=800, help='the frame the window is counted from (default 800)')
-        p.add_argument('--settle', type=float, default=60, help='seconds after the anchor before measuring (default 60)')
-        p.add_argument('--measure', type=float, default=120, help='seconds measured (default 120)')
+        p.add_argument('--from-frame', type=int, default=DEFAULT_FROM_FRAME,
+                       help=f'the first measured frame (default {DEFAULT_FROM_FRAME})')
+        p.add_argument('--to-frame', type=int, default=DEFAULT_TO_FRAME,
+                       help=f'the last measured frame (default {DEFAULT_TO_FRAME}); a run must reach it')
+        p.add_argument('--skip-frames', default=DEFAULT_SKIP_FRAMES,
+                       help='FIRST-LAST[,...]: frames left out of the figures and reported apart, the game\'s '
+                            'scripted stalls (default none)')
         p.add_argument('--max-other-cpus', type=float, default=2.0,
-                       help='CPUs of other work allowed in a window before the run is left out (default 2)')
+                       help='CPUs of other work allowed while a run is measured before it is left out (default 2)')
         p.add_argument('--port', type=int, default=1, help='the video out port (default 1, the game\'s)')
         if name == 'run':
             p.add_argument('--a', required=True, help='build A\'s run command ({log}: its frame log, {tag}: the run)')
             p.add_argument('--b', required=True, help='build B\'s run command')
             p.add_argument('--rounds', type=int, default=2, help='runs of each build, alternating (default 2)')
     a = ap.parse_args(argv)
+    try:
+        a.skip = parse_frame_ranges(a.skip_frames)
+    except ValueError as e:
+        ap.error(f'--skip-frames: {e}')
+    if a.from_frame >= a.to_frame:
+        ap.error('--from-frame must be below --to-frame')
     if a.action == 'run':
         if a.rounds < 2:
             ap.error('--rounds below 2 gives no noise floor')
