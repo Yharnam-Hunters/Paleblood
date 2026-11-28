@@ -136,6 +136,7 @@ audio_fmod_begin_timing_state,edge,,176,176,0,0,d75d0dd69fe8067d,2026-11-18
 audio_fmod_contribute_thread_handles,edge,,90,90,0,0,484811458ba47605,2026-11-18
 audio_fmod_copy_output_label,edge,,291,291,0,0,2aed1d75f4a03466,2026-11-14
 audio_fmod_create_native_thread,edge,,264,264,0,0,ba5ade3ce59c8354,2026-11-18
+audio_fmod_initialize_output_callback,edge,,156,156,0,0,7953c558b7a70271,2026-11-28
 audio_fmod_initialize_thread,recorded,,14,14,0,0,a40873c8233118df,2026-11-17
 audio_fmod_initialize_thread,edge,,84,84,0,0,a40873c8233118df,2026-11-16
 audio_fmod_initialize_timing_state,edge,,103,103,0,0,05e730c3a91adea3,2026-11-18

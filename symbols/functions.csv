@@ -67,6 +67,7 @@ address,size,name,system,status,notes
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b070,58,audio_fmod_copy_output_label,audio,edge-verified,Copy the fixed output label for a positive signed DWORD count; set the final NUL after the counted copy; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
+0x0111b0e0,50,audio_fmod_initialize_output_callback,audio,edge-verified,Forward initialization with a null-preserving context adjustment; preserve pointer and DWORD arguments; return the callee status
 0x0111b120,22,audio_fmod_close_output_ports,audio,original,FMOD output callback installed by 0x0111aed0; null-preserving -0x38 adjust; tail to 0x0111b7c0: drain the first port and close both; free the mix buffer; returns 0 or 0x21
 0x0111b1f0,64,audio_fmod_stop_output_threads,audio,edge-verified,FMOD output descriptor callback; stop AudioOut first and mixer only after success; return the Thread helper DWORD status
 0x0111b230,30,audio_fmod_update_output_port_state,audio,original,FMOD output callback installed by 0x0111aed0; null-preserving -0x38 adjust; 0x0111bb10 polls the second port's state and notifies on a connection change; returns zero
