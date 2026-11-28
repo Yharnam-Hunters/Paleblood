@@ -1318,8 +1318,8 @@ range is not a stretch of the route" in the A/B section below explains why. Peak
 ### Index ranges in device-local memory (November 2026)
 
 Before, an indexed draw read its indices straight from guest memory, which the GPU reaches over
-PCIe, at every draw, and the game draws the same index ranges frame after frame. `index_copy_for` and
-`index_copy_record` (`runtime/renderer/render_executor.c`) now copy each range once into a
+PCIe, at every draw, and the game draws the same index ranges frame after frame. `copy_for` and
+`copy_record` (`runtime/renderer/render_executor.c`) now copy each range once into a
 device-local buffer and bind it from there while the range's memory has not changed since the copy.
 A change is any of:
 
@@ -1379,6 +1379,100 @@ Peak VRAM over a 10-minute session was 7619 MiB, against 7555 and 7281 MiB in tw
 (the buffer is 32 MB). Frames taken at the same points of the route differ from one main session's by a
 mean of 0.10 to 1.13 of 255 and from the other's by 1.60 to 5.14, within what the two sessions of
 main differ by (1.58 to 5.16).
+
+### Vertex buffers in device-local memory (November 2026)
+
+A vertex shader's fetch shader reads its vertex buffers through buffer descriptors, from guest memory
+over PCIe, and the game draws the same static meshes frame after frame. `vertex_copies_plan`
+(`runtime/renderer/render_executor.c`) now copies each vertex buffer of 64 KB or more once into a
+device-local buffer of its own (the vertex set, beside the index ranges' set; both use `copy_for` and
+`copy_record` and count the same changes as above) and reads it from there while its memory has not
+changed. The draw's copy of the descriptor in its table snapshot (`draw_snapshot`) gets a base in the
+copies' guest addresses (`gcn_guest_copies`), and the
+vertex shader's translation (`guest_access` in `runtime/renderer/gcn_spirv.c`) sends a load there to
+the copy. Stores and atomics never reach the copies: one there goes to the sink with a run-time stop,
+as one outside the guest memory does. The game's descriptor in guest memory is not changed.
+
+The copies' guest addresses are a span no guest map ever has. The runtime reserves it
+(`rt_gpu_copies_window` in `runtime/syslib/kernel_memory.c`: 4 GB of inaccessible host memory right
+after the window the runtime places maps in, below 2^40) and hands it to the executor
+(`rt_executor_memory`'s `copies_base`). The runtime places no map there, and a map the title asks
+for at an address hint inside it stops by name, as any hint in use does. Where the host cannot
+reserve the span, there are no copies.
+
+A descriptor is read from the copy only when all of these hold; otherwise it is read in place:
+
+- the draw is not tessellated, has no geometry shader, is not indirect, and none of its shaders may
+  store (draw snapshots on);
+- the program loads the descriptor from a table its snapshot holds, without `SWIZZLE_ENABLE` or
+  `ADD_TID_ENABLE`, and no other `s_load` through the same table pointer reads the descriptor's base
+  and stride words except as this whole descriptor (another descriptor overlapping them, or the base
+  loaded on its own); the rewritten base goes into every snapshot entry holding the descriptor;
+- the vertex or fetch shader has no `s_load` at an address that is not known before it runs: one
+  with an SGPR offset, or through a pointer loaded from memory (which could be a rewritten base);
+- every buffer descriptor the vertex or fetch shader loads through has a known origin (one it made
+  itself, say by adding to a base, could point past the copy);
+- no buffer load of the vertex or fetch shader is indexed (`IDXEN`) with an `SOFFSET` other than the
+  inline 0, which range checking does not count, so every load stays within the buffer's range plus 16
+  bytes, all of which the copy holds (the range is copied from a 4 KB page below the base to one past
+  its end), and those 16 bytes end inside the guest memory;
+- the descriptor's words in the snapshot are still the ones the plan read (the game may write the
+  table between the two); the copy is current, or this draw copies it. A draw copies at most one
+  range.
+
+Most large buffers the game draws are drawn once, or from a new place each frame, so a range is
+copied only when it is seen again 32 submissions or more after it was first seen. The game reads more
+such ranges than the set holds: once the set is full, a new range is read in place while at least half
+of the bytes placed in it were read in the last 256 submissions; after that every copy is dropped and placing
+starts again. `PB_VERTEX_COPY_BYTES` sets the set's size in bytes (256 MB by default, at most 1 GB;
+0 turns the copies off). The buffer is made when the executor opens, since the translations hold its
+address; without the write watch or draw snapshots, when the device has no memory for it, or when the
+executor is given no guest addresses for the copies (or ones that meet the guest memory, pass 2^40,
+or are fewer than the set's bytes), there is no vertex set.
+
+A load that reaches the copies' guest addresses some other way, through a stale or garbage
+descriptor or pointer, in any vertex shader, now reads whatever the set holds there; before, it went
+to the sink with a run-time stop (`GCN_RUNTIME_STOP_GUEST_RANGE`). No valid load is among them, since
+no guest memory is ever mapped in the span. Stores and atomics there still stop.
+
+Measured on the clinic walk (frames 1350-2900, warm caches, quiet machine, one boot per side unless
+said otherwise):
+
+- An experiment build that copied every vertex buffer once and never again (not correct in general)
+  gave 20.60 fps against 17.85 without it, on the index-copy branch that merged as #1350, two runs per
+  side, noise 0.44: the bound of what
+  copies can give here. The draw group that read the most vertex data went from 6.17 to 0.50 ms of GPU
+  time per frame.
+- A first version without the seen-again rule and the keep-while-read rule gave 17.82 and 17.87 fps,
+  no gain: recurring ranges of 64 KB or more total about 640 MB, so the set filled, was dropped,
+  filled again, and drops in quick succession paused copying.
+- With both rules, with counters added locally (never committed): 21.09 fps with a 256 MB set and
+  20.42 with 128 MB.
+
+Measured with `tools/ab_bench.py` on the clinic walk (main 9bc1b68f, warm caches, quiet machine, A B
+alternated, three runs per side), on the code before its last three rounds of review fixes, which make
+more draws read their buffers in place, write a rewritten base into every snapshot entry holding the
+descriptor (where two hold it, the draw then reads the copy), change the drop rule's measure (bytes placed instead of the
+set's size: the same once the set is full by size, as here), and move the copies' guest addresses
+(then the first multiple of 4 GB past the guest memory) to the reserved span. Average fps / 1% low / worst frame, mean
+of three runs:
+
+| window | main | branch |
+|---|---|---|
+| frames 1350-2900 | 17.96 / 5.91 / 783 ms | 21.01 / 6.58 / 644 ms |
+| input event 16 to walk 53 | 17.95 / 5.67 / 783 ms | 20.91 / 6.02 / 833 ms |
+
+The average is 3.04 fps (17%) higher, above the noise floor of 0.45 (the largest spread between two
+runs of one side); the 1% low and worst frame are within their noise floors (1.09 and 500 ms). The
+walk from input event 16 to walk 53 took 89.2 s on average instead of 92.3 s (one branch run took
+101.7 s, the other two 83.5 and 82.4 s).
+
+Peak VRAM over a 10-minute session was 7669 MiB, against 7371 and 7372 MiB in two sessions of main
+9bc1b68f (the set is 256 MB, made when the executor opens), measured on the code before its last
+three rounds of review fixes (above). Frames taken at the same
+points of the route differ from those of the two main sessions by a mean of 3.47 to 14.49 of 255,
+against 2.11 to 11.17 between the two main sessions; looked at side by side, the differences are
+camera and pose (the branch is further along the walk at the same frame), not geometry.
 
 ### Tests for each step
 

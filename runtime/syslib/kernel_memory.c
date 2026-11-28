@@ -181,6 +181,30 @@ uint8_t *rt_gpu_memory_gds(void)
     return gds;
 }
 
+/* The renderer's copies' guest addresses (runtime/gpu_memory.h): the 4 GB right after the map window.
+   window_place gives out nothing at or past MAP_WINDOW_END, and the first call here reserves the span
+   as inaccessible host memory without replacing anything, so a map at an address hint cannot land
+   there either: it finds the span in use and stops by name. Where the host already holds memory in
+   the span there is no reservation, and so no span to give. */
+#define COPIES_WINDOW_START MAP_WINDOW_END
+#define COPIES_WINDOW_BYTES 0x100000000ull
+_Static_assert(COPIES_WINDOW_START >= MAP_WINDOW_END && COPIES_WINDOW_START + COPIES_WINDOW_BYTES <= 1ull << 40,
+               "the copies' span lies past the map window and below 2^40");
+
+uint64_t rt_gpu_copies_window(uint64_t *bytes)
+{
+    static int reserved; /* 0: not asked yet, 1: reserved, -1: the host declined */
+    pthread_mutex_lock(&window_lock);
+    if (!reserved) {
+        void *const want = (void *)(uintptr_t)COPIES_WINDOW_START;
+        reserved = rt_map_at(want, COPIES_WINDOW_BYTES, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) == want ? 1 : -1;
+    }
+    const int held = reserved > 0;
+    pthread_mutex_unlock(&window_lock);
+    *bytes = held ? COPIES_WINDOW_BYTES : 0;
+    return held ? COPIES_WINDOW_START : 0;
+}
+
 /* Non-replacing placement in the address window. A declined POSIX hint is stepped over
    without assuming the reason was occupancy; other host failures still stop by name. */
 static void *window_place(const char *caller, uint64_t length, uint64_t alignment, int host_protection, int map_flags,
