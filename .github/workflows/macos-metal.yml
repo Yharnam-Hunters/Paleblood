@@ -46,6 +46,9 @@ on:
       - 'test/test_metal_permutations.c'
       - 'test/test_metal_srgb_storage.c'
       - 'test/metal_permutation_programs.h'
+      - 'test/test_metal_volumes.c'
+      - 'test/metal_volume_programs.h'
+      - 'test/volume_fixture.h'
       - 'test/metal_storage_programs.h'
       - 'test/test_metal_blend_banks.c'
       - 'test/test_metal_alpha_blend.c'
@@ -54,6 +57,7 @@ on:
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
+      - 'runtime/include/runtime/volume_tiling.h'
       - 'test/metal_executor_programs.h'
       - 'runtime/include/runtime/render*.h'
       - 'runtime/renderer/**'
@@ -103,6 +107,9 @@ on:
       - 'test/test_metal_permutations.c'
       - 'test/test_metal_srgb_storage.c'
       - 'test/metal_permutation_programs.h'
+      - 'test/test_metal_volumes.c'
+      - 'test/metal_volume_programs.h'
+      - 'test/volume_fixture.h'
       - 'test/metal_storage_programs.h'
       - 'test/test_metal_blend_banks.c'
       - 'test/test_metal_alpha_blend.c'
@@ -111,6 +118,7 @@ on:
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
+      - 'runtime/include/runtime/volume_tiling.h'
       - 'test/metal_executor_programs.h'
       - 'runtime/include/runtime/render*.h'
       - 'runtime/renderer/**'
@@ -150,7 +158,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and owned test executables
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_quad_values test_metal_blend_banks test_metal_alpha_blend test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth_bounds test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_vertex_only test_metal_storage test_metal_permutations test_metal_srgb_storage test_metal_index_windows test_metal_fragment_control test_metal_boolean_quads test_metal_fragment_runtime test_metal_color_clear_words test_compute_thread_ids test_metal_fragment_diamonds test_metal_fragment_ranges test_compute_wave_votes test_metal_window_position --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_quad_values test_metal_blend_banks test_metal_alpha_blend test_metal_triangle_strips test_metal_vertex_instancing test_metal_depth_bounds test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_vertex_only test_metal_storage test_metal_permutations test_metal_srgb_storage test_metal_index_windows test_metal_fragment_control test_metal_boolean_quads test_metal_fragment_runtime test_metal_color_clear_words test_compute_thread_ids test_metal_fragment_diamonds test_metal_fragment_ranges test_compute_wave_votes test_metal_window_position test_metal_volumes --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
