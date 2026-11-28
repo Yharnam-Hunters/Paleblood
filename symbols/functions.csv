@@ -44,7 +44,7 @@ address,size,name,system,status,notes
 0x01118740,46,audio_fmod_initialize_timing_state,audio,edge-verified,Initialize FMOD timing clock/bookkeeping words and byte gates; preserve accumulated/output fields and all other bytes; no defined result
 0x01118770,27,audio_fmod_begin_timing_state,audio,edge-verified,Sample the microsecond clock into the start word; set the running byte even after clock failure; return DWORD zero
 0x01118890,90,audio_fmod_update_timing_exclusion,audio,edge-verified,Update nested timing exclusions while running; sample clock at outer boundaries; accumulate only unsigned increasing intervals; publish raw mode byte after clock calls; return DWORD zero
-0x01118e90,380,audio_fmod_cleanup_owner,audio,replaced,Retire the matching AJM batch and destroy the ATRAC9 instance before freeing the two owned buffers; AJM failure returns 0x21
+0x01118e90,380,audio_fmod_cleanup_owner,audio,edge-verified,Retire the matching AJM batch and destroy the ATRAC9 instance before freeing the two owned buffers; AJM failure returns 0x21
 0x0111a620,130,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
 0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads
