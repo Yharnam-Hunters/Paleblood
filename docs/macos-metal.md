@@ -410,8 +410,13 @@ vote can be removed by proof. It also admits one three-case forward diamond: the
 chooses whether to visit a single block of scalar local math before a shared terminal case.
 All quad operations must execute in the common prefix. The optional block has no external
 reads, writes or termination; its extended math is limited to scalar GLSL Log2/Exp2. The
-terminal case has no quad, derivative, image or extended operations. The original Boolean
-SSA decision and its branch orientation are preserved without assuming that its value is
+terminal case has no quad, derivative or image operations. Its only admitted extended
+operation is `GLSL.std.450 UnpackHalf2x16`, with a UInt32 scalar input and a pair of Float32
+results. The lower half becomes the first component and the upper half the second; no
+neighboring invocation participates. Signed inputs and other extended operations remain
+outside this profile. See the [Khronos extended-instruction specification](https://registry.khronos.org/SPIR-V/specs/unified1/GLSL.std.450.html)
+for the conversion and permitted consistent preservation or flushing of subnormals.
+The original Boolean SSA decision and its branch orientation are preserved without assuming that its value is
 uniform. It removes unread, nonvolatile, alias-free function state and assignments with no
 reachable read before overwrite or function exit. Paths that cycle without an overwrite remain
 unproved. It

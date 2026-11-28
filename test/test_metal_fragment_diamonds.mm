@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Owned SPIR-V grammar and native Metal witnesses for one optional local-math case.
+/* Owned SPIR-V grammar and native Metal witnesses for an optional local-math case
+   and an exact typed UnpackHalf2x16 in its common tail.
    No instruction stream, address or expected value comes from a game artifact.
    This primitive fixture does not exercise the executor's shader-cache preflight. */
 #import <Foundation/Foundation.h>
@@ -45,10 +46,13 @@ enum class Shape {
     SccOverwrite, SccReadArm, SccReadModifyWrite, SccOptionalRead, SccLoop
 };
 enum class Layout { Dense, LiteralCollisions, Reversed };
+enum class Tail { None, HalfPair, UnormPair, PointerOutput, DoubleMath, SignedHalf };
 
 struct Results {
     unsigned checks = 0, failures = 0, cpu_modules = 0, native_draws = 0;
     unsigned raster_covered = 0, expected_written = 0, observed_written = 0;
+    unsigned tail_draws = 0, tail_covered = 0, tail_written = 0;
+    int tail_subnormal_policy = -1;
     std::vector<std::pair<std::string, Words>> artifacts;
     void check(bool good, const std::string &message)
     {
@@ -105,7 +109,7 @@ struct Module {
 };
 
 Module make_module(bool reversed = false, unsigned source = 3, Shape shape = Shape::Ordinary,
-                   Layout layout = Layout::Dense)
+                   Layout layout = Layout::Dense, Tail tail = Tail::None)
 {
     Symbols i(layout);
     const auto k = [&](unsigned value) {return i("constant_" + std::to_string(value));};
@@ -120,6 +124,7 @@ Module make_module(bool reversed = false, unsigned source = 3, Shape shape = Sha
     emit(pre, spv::OpCapability, {spv::CapabilityGroupNonUniform});
     emit(pre, spv::OpCapability, {spv::CapabilityGroupNonUniformQuad});
     if (scc) emit(pre, spv::OpCapability, {spv::CapabilityGroupNonUniformVote});
+    if (tail == Tail::DoubleMath) emit(pre, spv::OpCapability, {spv::CapabilityFloat64});
     if (physical) {
         emit(pre, spv::OpCapability, {spv::CapabilityInt64});
         emit(pre, spv::OpCapability, {spv::CapabilityPhysicalStorageBufferAddresses});
@@ -142,8 +147,11 @@ Module make_module(bool reversed = false, unsigned source = 3, Shape shape = Sha
     emit(types, spv::OpTypeFunction, {i("function"), i("void")});
     emit(types, spv::OpTypeBool, {i("bool")});
     emit(types, spv::OpTypeInt, {i("uint"), 32, 0});
+    if (tail == Tail::SignedHalf) emit(types, spv::OpTypeInt, {i("int"), 32, 1});
     if (physical) emit(types, spv::OpTypeInt, {i("ulong"), 64, 0});
     emit(types, spv::OpTypeFloat, {i("float"), 32});
+    if (tail != Tail::None) emit(types, spv::OpTypeVector, {i("float2"), i("float"), 2});
+    if (tail == Tail::DoubleMath) emit(types, spv::OpTypeFloat, {i("double"), 64});
     emit(types, spv::OpTypeVector, {i("float4"), i("float"), 4});
     emit(types, spv::OpTypeVector, {i("uint4"), i("uint"), 4});
     for (unsigned value = 0; value <= 16; ++value) emit(types, spv::OpConstant, {i("uint"), k(value), value});
@@ -398,7 +406,44 @@ Module make_module(bool reversed = false, unsigned source = 3, Shape shape = Sha
         emit(case2, spv::OpBitwiseXor, {i("uint"), i("observed_tag"), tag, i("later_pointer_observer")});
         tag = i("observed_tag");
     }
-    emit(case2, spv::OpCompositeConstruct, {i("uint4"), i("color"), red, i("green"), i("blue"), tag});
+    uint32_t green = i("green"), blue = i("blue");
+    if (tail != Tail::None) {
+        // This per-lane input is dynamic and was captured before the optional case.
+        // Both unpacked components stay live through independent integer channels.
+        emit(case2, spv::OpLoad, {i("uint"), i("tail_word"), i("pattern_local")});
+        if (tail == Tail::PointerOutput) {
+            emit(case2, spv::OpExtInst, {i("float"), i("tail_scalar"), i("glsl"), GLSLstd450Modf, i("half"), i("math_local")});
+            emit(case2, spv::OpLoad, {i("float"), i("tail_other"), i("math_local")});
+            emit(case2, spv::OpBitcast, {i("uint"), i("tail_low_bits"), i("tail_scalar")});
+            emit(case2, spv::OpBitcast, {i("uint"), i("tail_high_bits"), i("tail_other")});
+        } else if (tail == Tail::DoubleMath) {
+            emit(case2, spv::OpConvertUToF, {i("double"), i("tail_double"), i("tail_word")});
+            emit(case2, spv::OpExtInst, {i("double"), i("tail_root"), i("glsl"), GLSLstd450Sqrt, i("tail_double")});
+            emit(case2, spv::OpFConvert, {i("float"), i("tail_scalar"), i("tail_root")});
+            emit(case2, spv::OpBitcast, {i("uint"), i("tail_low_bits"), i("tail_scalar")});
+            emit(case2, spv::OpCopyObject, {i("uint"), i("tail_high_bits"), k(0)});
+        } else {
+            uint32_t operand = i("tail_word");
+            if (tail == Tail::SignedHalf) {
+                emit(case2, spv::OpBitcast, {i("int"), i("tail_signed"), operand});
+                operand = i("tail_signed");
+            }
+            emit(case2, spv::OpExtInst, {i("float2"), i("tail_pair"), i("glsl"),
+                tail == Tail::UnormPair ? GLSLstd450UnpackUnorm2x16 : GLSLstd450UnpackHalf2x16, operand});
+            for (unsigned component = 0; component < 2; ++component) {
+                const std::string name = component ? "tail_high" : "tail_low";
+                emit(case2, spv::OpCompositeExtract, {i("float"), i(name), i("tail_pair"), component});
+                emit(case2, spv::OpBitcast, {i("uint"), i(name + "_bits"), i(name)});
+            }
+        }
+        // Keep the original quad results and optional-case outputs live as well.
+        // The marker occupies bit0; packed quad data uses the remaining bits.
+        emit(case2, spv::OpShiftLeftLogical, {i("uint"), i("tail_blue_shifted"), i("blue"), k(1)});
+        emit(case2, spv::OpBitwiseOr, {i("uint"), i("tail_quad_observer"), i("tail_blue_shifted"), i("green")});
+        emit(case2, spv::OpBitwiseXor, {i("uint"), i("tail_tag_observer"), tag, red});
+        red = i("tail_low_bits"); green = i("tail_high_bits"); blue = i("tail_quad_observer"); tag = i("tail_tag_observer");
+    }
+    emit(case2, spv::OpCompositeConstruct, {i("uint4"), i("color"), red, green, blue, tag});
     emit(case2, spv::OpStore, {i("output"), i("color")}); emit(case2, spv::OpReturn, {});
     emit(footer, spv::OpLabel, {i("shared")}); emit(footer, spv::OpBranch, {i("continue")});
     emit(footer, spv::OpLabel, {i("continue")}); emit(footer, spv::OpBranch, {i("header")});
@@ -691,6 +736,112 @@ void cpu_tests(Results &r)
     switch64_tests(r);
 }
 
+/* Distinct low/high half fields make lane selection, half order and result width
+   observable. All values are independently chosen IEEE binary16 encodings. */
+constexpr std::array<Pixel, 4> half_patterns = {{
+    {0x80000000u, 0x00008000u, 0x40003c00u, 0xbc004400u},
+    {0x04000001u, 0x80010002u, 0x03ff8400u, 0x83ff0401u},
+    {0xfc007c00u, 0x3c007e00u, 0xfe004000u, 0x7c00bc00u},
+    {0xfbff7bffu, 0x3800b400u, 0x4800c000u, 0x3555b555u}
+}};
+uint32_t half_float_bits(uint16_t half)
+{
+    const uint32_t sign = uint32_t(half & 0x8000u) << 16;
+    const unsigned exponent = (half >> 10) & 31u;
+    uint32_t fraction = half & 0x3ffu;
+    if (exponent == 31) return sign | 0x7f800000u | (fraction << 13);
+    if (exponent) return sign | ((exponent + 112u) << 23) | (fraction << 13);
+    if (!fraction) return sign;
+    unsigned shifts = 0;
+    while (!(fraction & 0x400u)) {fraction <<= 1; ++shifts;}
+    return sign | ((113u - shifts) << 23) | ((fraction & 0x3ffu) << 13);
+}
+bool half_component_matches(uint16_t half, uint32_t actual, int *subnormal_policy = nullptr)
+{
+    // GLSL.std.450 permits half subnormal preservation or consistent flushing.
+    // Track one policy across both components and every draw; flushed zero keeps
+    // the input sign. Normal values, infinity and signed zero are exact. NaN
+    // sign, quieting and payload are not part of this classification oracle.
+    if ((half & 0x7c00u) == 0x7c00u && (half & 0x03ffu))
+        return (actual & 0x7f800000u) == 0x7f800000u && (actual & 0x007fffffu);
+    if (!(half & 0x7c00u) && (half & 0x03ffu)) {
+        const int policy = actual == half_float_bits(half) ? 1 :
+            actual == (uint32_t(half & 0x8000u) << 16) ? 0 : -1;
+        if (policy < 0 || (subnormal_policy && *subnormal_policy >= 0 && *subnormal_policy != policy)) return false;
+        if (subnormal_policy) *subnormal_policy = policy;
+        return true;
+    }
+    return actual == half_float_bits(half);
+}
+
+void tail_cpu_tests(Results &r)
+{
+    const unsigned original_modules = r.cpu_modules;
+    for (bool reversed : {false, true}) for (Layout layout : {Layout::Dense, Layout::LiteralCollisions, Layout::Reversed}) {
+        const std::string label = "tail-half-" + std::to_string(reversed) + "-" + std::to_string(unsigned(layout));
+        const auto module = make_module(reversed, 3, Shape::Ordinary, layout, Tail::HalfPair);
+        const auto prepared = positive(r, label, module);
+        pb::MetalFragmentIR ir(prepared.words.data(), prepared.words.size());
+        unsigned unpacks = 0;
+        for (const auto &op : ir.ops) if (op.opcode == spv::OpExtInst) {
+            ++unpacks;
+            r.check(pb::fragment_control_detail::unpack_half_pair(ir, op), label + ": exact tail signature was not recognized");
+        }
+        r.check(unpacks == 1, label + ": live typed tail unpack was lost");
+        r.check(count(prepared.words,spv::OpGroupNonUniformQuadBroadcast) == 1 &&
+            count(prepared.words,spv::OpGroupNonUniformQuadSwap) == 3,
+            label + ": quad results became dead before the tail observer");
+    }
+    refusal(r, "tail-signed-input", make_module(false, 3, Shape::Ordinary, Layout::Dense, Tail::SignedHalf),
+        "diamond tail has an unproved participation-dependent operation");
+    refusal(r, "tail-other-opcode", make_module(false, 3, Shape::Ordinary, Layout::Dense, Tail::UnormPair),
+        "diamond tail has an unproved participation-dependent operation");
+    refusal(r, "tail-pointer-output", make_module(false, 3, Shape::Ordinary, Layout::Dense, Tail::PointerOutput),
+        "alias-free nonvolatile function variables");
+    refusal(r, "tail-double-math", make_module(false, 3, Shape::Ordinary, Layout::Dense, Tail::DoubleMath),
+        "diamond tail has an unproved participation-dependent operation");
+
+    // These are intentionally malformed signatures, not SPIR-V-valid modules.
+    // Test the admission helper directly; do not export them beside valid modules
+    // or count an incidental downstream parser rejection as a guard witness.
+    const auto module = make_module(false, 3, Shape::Ordinary, Layout::Dense, Tail::HalfPair);
+    pb::MetalFragmentIR original(module.words.data(), module.words.size());
+    for (unsigned mutation = 1; mutation < 6; ++mutation) {
+        auto ir = original;
+        size_t ext = 0;
+        for (size_t at = 0; at < ir.ops.size(); ++at) if (ir.ops[at].opcode == spv::OpExtInst) ext = at;
+        const auto tail = ir.ops.at(ext);
+        auto *pair = ir.find(tail.result_type());
+        auto *input = ir.find(tail.operands[4]);
+        if (!pair || !input) throw std::runtime_error("owned tail type setup failed");
+        const uint32_t component_type = pair->operands[1], input_type = input->result_type();
+        if (mutation == 1) ir.find(component_type)->operands[1] = 64; // Float64 result component
+        if (mutation == 2) pair->operands[2] = 3; // wrong result vector width
+        if (mutation == 3) ir.find(tail.operands[2])->operands[1] ^= 1u; // noncanonical import
+        if (mutation == 4) ir.ops[ext].operands.push_back(input_type); // extra operand
+        if (mutation == 5) ir.find(input_type)->operands[1] = 64; // wrong input integer width
+        r.check(!pb::fragment_control_detail::unpack_half_pair(ir, ir.ops[ext]),
+            "tail malformed unit-only signature admitted: " + std::to_string(mutation));
+    }
+    constexpr std::pair<uint16_t, uint32_t> known[] = {
+        {0x0000,0x00000000u},{0x8000,0x80000000u},{0x3c00,0x3f800000u},{0x4000,0x40000000u},
+        {0xc000,0xc0000000u},{0x0400,0x38800000u},{0x03ff,0x387fc000u},{0x0001,0x33800000u},
+        {0x8001,0xb3800000u},{0x7bff,0x477fe000u},{0x7c00,0x7f800000u},{0xfc00,0xff800000u}
+    };
+    for (const auto &[half,bits] : known) r.check(half_float_bits(half) == bits, "owned half-to-float reference anchor");
+    r.check(half_component_matches(0x7e01,0xffc00100u) && !half_component_matches(0x7e01,0x7f800000u) &&
+        !half_component_matches(0x7e01,0), "owned half NaN classification oracle");
+    int preserve = -1, flush = -1;
+    r.check(half_component_matches(0x0001,0x33800000u,&preserve) &&
+        half_component_matches(0x8001,0xb3800000u,&preserve) &&
+        !half_component_matches(0x0002,0,&preserve), "owned consistent subnormal preservation oracle");
+    r.check(half_component_matches(0x0001,0,&flush) && half_component_matches(0x8001,0x80000000u,&flush) &&
+        !half_component_matches(0x0002,0x34000000u,&flush) && !half_component_matches(0x8001,0,&flush),
+        "owned consistent signed subnormal flushing oracle");
+    r.check(r.cpu_modules - original_modules == 10, "tail CPU module matrix changed (expected10 valid modules)");
+    std::printf("tail_unpack_cpu_modules=%u malformed_unit_only=5\n", r.cpu_modules - original_modules);
+}
+
 std::runtime_error metal_error(const char *operation, NSError *error)
 {
     return std::runtime_error(std::string(operation) + ": " + (error ? error.localizedDescription.UTF8String : "no Metal object"));
@@ -840,6 +991,63 @@ void native_tests(Results &r)
     r.check(r.observed_written == r.expected_written, "native observed-written count differs from expected");
 }
 
+void inspect_tail(Results &r, Gpu &gpu, const Module &module, const std::array<uint32_t, 16> &input,
+                  unsigned pattern, bool tiny, const std::array<Pixel, side * side> &pixels)
+{
+    ++r.tail_draws;
+    const std::string label = "tail-unpack draw=" + std::to_string(r.tail_draws) + " reverse=" +
+        std::to_string(module.reversed) + " pattern=" + std::to_string(pattern) + " seed=" +
+        std::to_string(input[4]) + " varying=" + std::to_string(input[5]) + " tiny=" + std::to_string(tiny);
+    const auto *fault = static_cast<const uint32_t *>(gpu.fault.contents);
+    for (unsigned word = 0; word < fault_initial.size(); ++word)
+        r.check(fault[word] == fault_initial[word], label + ": fault/canary word " + std::to_string(word));
+    for (unsigned y = 0; y < side; ++y) for (unsigned x = 0; x < side; ++x) {
+        const bool covered = !tiny || (!x && !y);
+        const unsigned lane = (x & 1) | ((y & 1) << 1), quad = (x >> 1) | ((y >> 1) << 2);
+        const uint32_t mask = input[5] ? input[4] ^ quad : input[4];
+        const bool predicate = (mask >> lane) & 1u, body = predicate != module.reversed;
+        const auto &actual = pixels[y * side + x];
+        bool same = actual == clear_pixel;
+        if (covered) {
+            ++r.tail_covered;
+            const uint32_t packed = input[lane];
+            same = half_component_matches(uint16_t(packed),actual[0],&r.tail_subnormal_policy) &&
+                half_component_matches(uint16_t(packed >> 16),actual[1],&r.tail_subnormal_policy) &&
+                actual[2] == (((body ? packed_truth(mask,lane) : baseline_blue) << 1) | uint32_t(body)) &&
+                actual[3] == ((predicate ? false_tag : true_tag) ^ (body ? input[module.source] : baseline_red));
+        }
+        r.tail_written += actual != clear_pixel;
+        r.check(same, label + ": pixel(" + std::to_string(x) + "," + std::to_string(y) + ") input=" +
+            std::to_string(input[lane]) + " got=" + std::to_string(actual[0]) + "," + std::to_string(actual[1]) + "," +
+            std::to_string(actual[2]) + "," + std::to_string(actual[3]));
+    }
+}
+void tail_native_tests(Results &r)
+{
+    Gpu gpu;
+    for (bool reversed : {false, true}) {
+        const auto module = make_module(reversed, 3, Shape::Ordinary, Layout::Dense, Tail::HalfPair);
+        const auto pipeline = gpu.pipeline(module);
+        for (unsigned pattern = 0; pattern < half_patterns.size(); ++pattern) {
+            std::array<uint32_t,16> input{};
+            std::copy(half_patterns[pattern].begin(),half_patterns[pattern].end(),input.begin());
+            for (unsigned mask = 0; mask < 16; ++mask) {
+                input[4] = mask;
+                inspect_tail(r,gpu,module,input,pattern,false,gpu.draw(pipeline,input,false));
+                if (pattern == 0) inspect_tail(r,gpu,module,input,pattern,true,gpu.draw(pipeline,input,true));
+            }
+            input[4] = pattern; input[5] = 1;
+            inspect_tail(r,gpu,module,input,pattern,false,gpu.draw(pipeline,input,false));
+        }
+    }
+    r.check(r.tail_draws == 168 && r.tail_covered == 8736,
+        "tail-unpack matrix count changed (expected168 draws,8736 covered pixels)");
+    r.check(r.tail_written == r.tail_covered, "tail-unpack observed-written count differs from expected");
+    r.check(r.tail_subnormal_policy >= 0, "tail-unpack subnormal policy was never observed");
+    std::printf("tail_unpack_draws=%u tail_covered=%u tail_written=%u subnormals=%s\n",
+        r.tail_draws,r.tail_covered,r.tail_written,r.tail_subnormal_policy == 1 ? "preserved" : r.tail_subnormal_policy == 0 ? "flushed" : "unobserved");
+}
+
 void export_artifacts(const Results &r, const std::string &directory)
 {
     for (const auto &[name, words] : r.artifacts) {
@@ -871,13 +1079,13 @@ int main(int argc, char **argv)
     }
     @autoreleasepool {
         Results results;
-        try {cpu_tests(results);}
+        try {cpu_tests(results); tail_cpu_tests(results);}
         catch (const std::exception &error) {results.check(false, std::string("CPU fixture exception: ") + error.what());}
         // Export any already assembled original even if its preparation failed. External
         // validation can then distinguish fixture setup from an admission regression.
         try {if (!export_directory.empty()) export_artifacts(results, export_directory);}
         catch (const std::exception &error) {results.check(false, std::string("export exception: ") + error.what());}
-        try {if (!cpu_only && !results.failures) native_tests(results);}
+        try {if (!cpu_only && !results.failures) {native_tests(results); tail_native_tests(results);}}
         catch (const std::exception &error) {results.check(false, std::string("native fixture exception: ") + error.what());}
         std::printf("cpu_modules=%u native_draws=%u raster_covered=%u expected_written=%u observed_written=%u checks=%u failures=%u\n",
             results.cpu_modules,results.native_draws,results.raster_covered,results.expected_written,results.observed_written,

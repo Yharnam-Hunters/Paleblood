@@ -43,6 +43,24 @@ inline bool number32(const MetalFragmentIR &ir, uint32_t type)
     return integer_width(ir, type) == 32 ||
         (op && op->opcode == spv::OpTypeFloat && op->operands.size() == 2 && op->operands[1] == 32);
 }
+/* This conversion reads no neighboring invocation and has no memory effects. Keep
+   the exact imported grammar and UInt32 -> Float32x2 signature in the tail proof. */
+inline bool unpack_half_pair(const MetalFragmentIR &ir, const MetalFragmentOp &op)
+{
+    const auto &a = op.operands;
+    if (op.opcode != spv::OpExtInst || a.size() != 5 || a[3] != GLSLstd450UnpackHalf2x16) return false;
+    const auto *import = ir.find(a[2]);
+    if (!import || import->opcode != spv::OpExtInstImport || import->operands.size() != 5 ||
+        std::vector<uint32_t>(import->operands.begin() + 1, import->operands.end()) !=
+            std::vector<uint32_t>{0x4c534c47u, 0x6474732eu, 0x3035342eu, 0}) return false;
+    const auto *pair = ir.find(op.result_type());
+    if (!pair || pair->opcode != spv::OpTypeVector || pair->operands.size() != 3 || pair->operands[2] != 2) return false;
+    const auto *component = ir.find(pair->operands[1]);
+    if (!component || component->opcode != spv::OpTypeFloat ||
+        component->operands != std::vector<uint32_t>{pair->operands[1], 32}) return false;
+    const auto *input = ir.find(a[4]);
+    return input && integer_width(ir, input->result_type(), true) == 32;
+}
 inline uint64_t constant(const MetalFragmentIR &ir, uint32_t id, uint32_t width = 32, bool unsigned_only = true)
 {
     const auto &op = definition(ir, id);
@@ -730,7 +748,11 @@ class Control {
         }
         for (const uint32_t label : regions.at(2)) for (const size_t at : block(label).instructions) {
             switch (ir.ops[at].opcode) {
-            case spv::OpExtInst: case spv::OpSampledImage: case spv::OpImageRead: case spv::OpImageFetch:
+            case spv::OpExtInst:
+                if (!unpack_half_pair(ir, ir.ops[at]))
+                    refuse("fragment diamond tail has an unproved participation-dependent operation");
+                break;
+            case spv::OpSampledImage: case spv::OpImageRead: case spv::OpImageFetch:
             case spv::OpImageSampleImplicitLod: case spv::OpImageSampleExplicitLod:
             case spv::OpDPdx: case spv::OpDPdy: case spv::OpFwidth:
             case spv::OpDPdxFine: case spv::OpDPdyFine: case spv::OpFwidthFine:
