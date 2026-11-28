@@ -1,0 +1,11 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+engine_copies_wide_string_at_0x28_on_thread_heap_02da6b90,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da6d10,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da6e90,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da7010,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da7190,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da7310,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da7490,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da7610,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da7790,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16
+engine_copies_wide_string_at_0x28_on_thread_heap_02da7910,edge,,15,15,0,0,e215b2d6ee3e163d,2026-11-16

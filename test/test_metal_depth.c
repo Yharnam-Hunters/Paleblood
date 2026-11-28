@@ -151,6 +151,58 @@ static void depth_cases(rt_executor *x,uint8_t *pool)
     /* A previous depth-rejecting state must not leak into a disabled draw. */
     s=scene();s.control=2;setup(x,pool,&s);submit(x,NULL);count=0;reg(0xa200,0);if(!submit(x,NULL))check_color(pool,1);finish(pool,&s);
 }
+static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
+{
+    enum { METADATA = 0x440000, WIDTH = 256, HEIGHT = 24, BYTES = 16384 + 64 };
+    const char *const reasons[] = {NULL,NULL,NULL,"partly fast-cleared HTILE","compressed HTILE depth tiles",
+        "HTILE base is unaligned or outside","HTILE depth clear requires DB_DEPTH_CLEAR",
+        "HTILE overlaps a depth or stencil plane","HTILE requires tiled","HTILE depth clear value"};
+    for (unsigned trial = 0; trial < sizeof reasons / sizeof *reasons; ++trial) {
+        Scene s = scene();
+        s.geometry = 0x001d0c40; s.width = WIDTH; s.height = HEIGHT; s.pixels = 65536; s.slice = 0;
+        s.stencil = (1u << 29) | 1; s.control = 2 | 1 << 4 | 1 | 7 << 8;
+        if (trial == 1) s.control |= 4;
+        if (trial == 0) s.view_flags = 1u << 24;
+        setup(x,pool,&s);
+        reg(0xa010, s.format | 1u << 29);
+        reg(0xa2af, trial == 8 ? 1u : 8u);
+        const unsigned address = trial == 5 ? POOL - 2048 : trial == 7 ? Z_BASE : METADATA;
+        reg(0xa005,(uint32_t)((base + address) >> 8));
+        const uint32_t clear = trial == 1 ? bits(0.5f) : trial == 9 ? 0x7fc00000u : bits(0.125f);
+        if (trial != 6) reg(0xa00b,clear);
+        uint8_t want[BYTES];
+        memset(pool + METADATA,0x6d,BYTES);
+        memcpy(want,pool + METADATA,BYTES);
+        for (unsigned y = 0; y < HEIGHT; y += 8) for (unsigned col = 0; col < WIDTH; col += 8) {
+            const size_t offset = (size_t)rt_tiling_htile_offset(WIDTH,col,y);
+            uint32_t tag = trial == 2 ? 15u : 0u;
+            if (!col && !y && trial == 3) tag = 15;
+            if (!col && !y && trial == 4) tag = 7;
+            const uint32_t word = 0x4cb71000u | col << 4 | y << 16 | tag;
+            memcpy(pool + METADATA + offset,&word,sizeof word);
+            const uint32_t after = trial < 2 ? word | 15u : word;
+            memcpy(want + offset,&after,sizeof after);
+        }
+        const int result = submit(x,reasons[trial]);
+        if (!result) {
+            if (trial < 2) expected(&s,0,clear,WIDTH,HEIGHT);
+            if (trial == 1) expected(&s,0,bits(0.25f),W,H);
+            check_color(pool,trial != 0);
+        }
+        const int metadata_match = memcmp(pool + METADATA,want,BYTES) == 0;
+        CHECK(metadata_match);
+        if (!result && trial == 0) {
+            /* The clear was consumed. A changed clear value without new tags
+               leaves depth and color unchanged on the following draw. */
+            count = 0; reg(0xa00b,bits(0.875f));
+            if (!submit(x,NULL)) check_color(pool,0);
+            CHECK(memcmp(pool + METADATA,want,BYTES) == 0);
+        }
+        finish(pool,&s);
+        printf("HTILE depth trial %u result %d metadata_match=%d\n",trial,result,metadata_match);
+    }
+}
+
 static void stencil_cases(rt_executor *x,uint8_t *pool)
 {
     const unsigned formats[]={0,1,3};
@@ -569,7 +621,7 @@ int main(int argc,char **argv)
     const float colors[3][4]={{1,1,1,1},{1,1,1,1},{1,1,1,1}};memcpy(pool+COLORS,colors,sizeof colors);
     rt_executor *x=NULL;const rt_executor_memory memory={.fd=fd,.size=POOL,.guest_base=base};
     int rc=rt_executor_open(&memory,&x,error,sizeof error);if(rc)fprintf(stderr,"open: %s\n",error);CHECK(rc==0);if(rc)return 1;
-    if(!aspect_only&&!colorless_only&&!inactive_blend_only){depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);}
+    if(!aspect_only&&!colorless_only&&!inactive_blend_only){depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);tiled_htile_cases(x,pool);}
     if(!colorless_only&&!inactive_blend_only)aspect_metadata_cases(x,pool);
     if(!aspect_only&&!inactive_blend_only)colorless_cases(x,pool);
     if(!aspect_only&&!colorless_only)inactive_blend_cases(x,pool);

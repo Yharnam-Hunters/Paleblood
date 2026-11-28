@@ -24,57 +24,19 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../engine/allocator.h"
 #include "../engine/engine.h"
 #include "../engine/ref_object.h"
 #include "../event/flag_store.h"
+#include "dungeon_gate.h"
 #include "frame_time.h"
 #include "runtime/original.h"
+
+using namespace frame_timing::dungeon_gate;
 
 namespace {
 
 using frame_timing::FrameTime;
-
-struct StateOwner;
-struct StateOwnerVtable {
-    void *unknown_slots[26];
-    void (*advance)(StateOwner *, FrameTime *);
-};
-static_assert(offsetof(StateOwnerVtable, advance) == 0xd0);
-
-// The gate's modes, as STEP_ModeSwitch reads them from the owner's state.
-enum GateMode : uint32_t {
-    mode_channel_load = 0,
-    mode_no_holygrail = 1,
-    mode_local_ritual = 2,
-    mode_server_ritual = 3,
-    mode_local_dungeon = 4,
-    mode_server_dungeon = 5,
-    mode_display_error = 6,
-};
-
-constexpr uint32_t slot_count = 16;  // the owner's slots, which the ritual slot reset lists
-
-struct StateOwner {
-    const StateOwnerVtable *vtable;
-    uint8_t unknown_0x008[0xc8];
-    engine::RefObject *handle;  // what the owner check looked up for its id (0x01ea5280)
-    uint8_t unknown_0x0d8[0xb0];
-    struct Slot {
-        uint32_t key;
-        uint32_t active;  // a slot counts when nonzero
-        uint8_t unknown_0x008[0x4];
-    } slots[slot_count];  // what the ritual slot reset (0x01ea5850) collects
-    uint8_t unknown_0x248[0x14];
-    uint32_t state;  // a GateMode
-    uint32_t request;
-    int32_t busy;
-    uint8_t unknown_0x268[0x4];
-    float value_26c;  // set to 10 with request 2; its meaning is not known
-};
-static_assert(offsetof(StateOwner, handle) == 0xd0 && offsetof(StateOwner, slots) == 0x188 &&
-              sizeof(StateOwner::Slot) == 12);
-static_assert(offsetof(StateOwner, state) == 0x25c && offsetof(StateOwner, request) == 0x260 &&
-              offsetof(StateOwner, busy) == 0x264 && offsetof(StateOwner, value_26c) == 0x26c);
 
 // The methods' own objects: the owner at +0x8, or at +0x10 for one of them.
 struct StateAt8 {
@@ -95,27 +57,6 @@ struct GateEvent {
 static_assert(offsetof(GateEvent, flags) == 0x18);
 constexpr uint64_t gate_event_required_flags = 0x1400;
 constexpr int32_t gate_event_0 = 0, gate_event_1000 = 1000, gate_event_3000 = 3000;
-
-struct DungeonGate;
-struct DungeonGateVtable {
-    void *unknown_slots[5];
-    void (*set_step)(DungeonGate *, int32_t step);  // an index into the step table
-    void *unknown_slot_30;
-    void (*method_38)(DungeonGate *);  // called after STEP_Init_forChannelLoad and a mode switch
-};
-static_assert(offsetof(DungeonGateVtable, set_step) == 0x28 && offsetof(DungeonGateVtable, method_38) == 0x38);
-
-// SprjDungeonGateIns: a step machine (its base counts steps at +0x50) with the state at +0x108.
-struct DungeonGate {
-    const DungeonGateVtable *vtable;
-    uint8_t unknown_0x008[0x100];
-    StateOwner owner;
-    bool request_taken;  // what the last event handler's request did
-    uint8_t unknown_0x379[0x327];
-    int32_t value_6a0;  // reset by the handler of event 3000
-};
-static_assert(offsetof(DungeonGate, owner) == 0x108 && offsetof(DungeonGate, request_taken) == 0x378 &&
-              offsetof(DungeonGate, value_6a0) == 0x6a0);
 
 // 0x01ec3ef0's object: at +0x8, the slot that points to the gate.
 struct GateSlotAt8 {
@@ -147,25 +88,7 @@ constexpr uint32_t gate_flag_first = 9020, gate_flag_count = 7;
 
 // A check on the owner with an id (0x01ea5280, replaced below; 0x01ec3ef0 calls it through its
 // original address).
-struct SessionId;
 RT_ORIGINAL(0x01ea5280, gate_owner_check, bool(StateOwner *, SessionId *id));
-
-// FrpgNetMan, the online manager: four of its bytes gate the owner check, each tested for zero
-// (their meaning is not known).
-struct FrpgNetMan {
-    uint8_t unknown_0x000[0x8];
-    uint8_t flag_008;  // must be nonzero
-    uint8_t unknown_0x009[0x9ed];
-    uint8_t flag_9f6;  // must be zero
-    uint8_t unknown_0x9f7[0x1];
-    uint8_t flag_9f8;  // must be zero
-    uint8_t unknown_0x9f9[0x57];
-    uint8_t flag_a50;  // must be zero
-};
-static_assert(offsetof(FrpgNetMan, flag_008) == 0x8 && offsetof(FrpgNetMan, flag_9f6) == 0x9f6 &&
-              offsetof(FrpgNetMan, flag_9f8) == 0x9f8 && offsetof(FrpgNetMan, flag_a50) == 0xa50);
-RT_GLOBAL(0x0593b120, frpg_net_man_instance, FrpgNetMan *);
-RT_GLOBAL(0x04d3ad45, frpg_net_man_name, const char);
 
 // The list the entry check (0x01ea4a10) searches: entries of 0x150 bytes, each a key and an object.
 struct GateEntry {
@@ -182,100 +105,36 @@ struct GateEntryList {
 };
 static_assert(offsetof(GateEntryList, begin) == 0x10 && offsetof(GateEntryList, end) == 0x18);
 
-// What the owner's handle points to, as the gate methods read it (0x01ea5670, 0x01ea5850,
-// 0x01ea5c90, 0x01ea5e20, 0x01ea6080): a reference-counted object with a flag bit and words whose
-// meanings are not known.
-struct HandleObject {
-    engine::RefObject base;
-    uint8_t unknown_0x010[0x40];
-    uint32_t word_050;  // must be zero for the readiness check (server modes) and to pass the handle on
-    uint8_t unknown_0x054[0xb8];
-    uint8_t flags_10c;  // bit 0 stops the reset in the server ritual mode
-    uint8_t unknown_0x10d[0xf];
-    uint32_t value_11c;  // cleared before the handle is passed on (0x01ea5e20, 0x01ea6080)
-    uint32_t value_120;  // likewise
-    uint32_t value_124;  // cleared by the ritual resets
-};
-static_assert(offsetof(HandleObject, word_050) == 0x50 && offsetof(HandleObject, flags_10c) == 0x10c &&
-              offsetof(HandleObject, value_11c) == 0x11c && offsetof(HandleObject, value_120) == 0x120 &&
-              offsetof(HandleObject, value_124) == 0x124);
-HandleObject *as_handle_object(engine::RefObject *handle) { return reinterpret_cast<HandleObject *>(handle); }
-
 // Called with the handle's address and a kind (1 or 2) when the handle is passed on, in the local
-// modes (0x02265170) or the server modes (0x02265960); not replaced, and what they do is not
-// analyzed (their results are ignored).
+// modes (0x02265170) or the server modes (0x02265960); their results are ignored. Both are replaced
+// (pass_on_in_local_mode.cpp, pass_on_in_server_mode.cpp) and called here through their original
+// addresses.
 RT_ORIGINAL(0x02265170, pass_on_in_local_mode, void(engine::RefObject **handle, int32_t kind));
 RT_ORIGINAL(0x02265960, pass_on_in_server_mode, void(engine::RefObject **handle, int32_t kind));
-// One of the owner's active slots as the ritual slot reset collects it: the slot's key, its index,
-// and the caller's value for that index.
-struct SlotItem {
-    uint32_t key;
-    uint32_t index;
-    uint32_t value;
-};
-static_assert(sizeof(SlotItem) == 12);
-
-// An engine heap, as a container keeps it: slot 0x20 reports its traits (bit 5 of the first byte:
-// containers may use it), slot 0x70 frees a block.
-struct Heap;
-struct HeapTraits {
-    uint8_t bits;
-    uint8_t unknown_0x001[0xf];  // the original leaves 16 bytes for the report (its stack canary follows)
-};
-constexpr uint8_t heap_allows_containers = 0x20;
-struct HeapVtable {
-    uint8_t unknown_0x000[0x20];
-    void (*report_traits)(HeapTraits *out, Heap *heap, int32_t zero);
-    uint8_t unknown_0x028[0x48];
-    void (*free)(Heap *heap, void *block);
-};
-static_assert(offsetof(HeapVtable, report_traits) == 0x20 && offsetof(HeapVtable, free) == 0x70);
-struct Heap {
-    const HeapVtable *vtable;
-};
-
-// The heap the slot reset's list is built on: made on first use (0x02fa2b10).
-RT_GLOBAL(0x05940670, container_heap, Heap *);
-RT_ORIGINAL(0x02fa2b10, make_container_heap, Heap *());
+// The heap the slot reset's list is built on: the default container heap, made on first use
+// (0x02fa2b10).
+RT_GLOBAL(0x05940670, container_heap, engine::Allocator *);
+RT_ORIGINAL(0x02fa2b10, make_container_heap, engine::Allocator *());
 RT_GLOBAL(0x04b37dc0, message_incompatible_heap, const char);  // "Tried to create container with incompatible heap."
 constexpr int32_t line_incompatible_heap = 0x3e;
 
-// The engine's growable list of slot items. The original leaves its first 8 bytes as they were on
-// the stack; the replacement zeroes them, which nothing observes (0x01e9d960 does not read them).
-struct SlotItemList {
-    uint64_t unknown_0x000;
-    SlotItem *begin;
-    SlotItem *end;
-    SlotItem *capacity;
-    Heap *heap;
-};
-static_assert(offsetof(SlotItemList, begin) == 0x8 && offsetof(SlotItemList, heap) == 0x20);
-// Appends a copy of an item (0x01e9d960, not replaced).
-RT_ORIGINAL(0x01e9d960, append_slot_item, void(SlotItemList *list, const SlotItem *item));
-// Called with the handle's address and the list (0x01e9cd20, not replaced; not analyzed).
+// Called with the handle's address and the list (0x01e9cd20; replaced in handle_pass_on.cpp,
+// called here through its original address).
 RT_ORIGINAL(0x01e9cd20, pass_handle_on_with_items, void(engine::RefObject **handle, SlotItemList *list));
 
-// Called with the handle's address by the reset, which ignores its result; not replaced, and what
-// it does is not analyzed (the name only says how the reset uses it).
+// Called with the handle's address by the reset, which ignores its result (0x01e9cb80; replaced in
+// handle_pass_on.cpp, called here through its original address).
 RT_ORIGINAL(0x01e9cb80, pass_handle_on, void(engine::RefObject **handle));
 
-// What the handle creation (0x01ea47a0) is given: an object with a word at +0x10 that it passes on
-// (its meaning, like the object's, is not known).
-struct CreationSource {
-    uint8_t unknown_0x000[0x10];
-    uint32_t value_010;
-};
-// The two blocks the creation fills on its stack before creating the handle object: the first is
-// one 32-bit word (0x0231fbc0 writes a single dword; the original's slot is 8 bytes, up to the
-// created object's), the second 72 bytes (0x01eaf9d0 writes qwords at +0 to +0x40).
-constexpr size_t creation_part1_bytes = 0x8, creation_part2_bytes = 0x48;
-struct CreationPart1 {
-    uint8_t bytes[creation_part1_bytes];
-};
+// The second block the creation fills on its stack before creating the handle object: 72 bytes
+// (0x01eaf9d0 writes qwords at +0 to +0x40). The first is CreationPart1 (dungeon_gate.h).
+constexpr size_t creation_part2_bytes = 0x48;
 struct CreationPart2 {
     uint8_t bytes[creation_part2_bytes];
 };
-RT_ORIGINAL(0x0231fbc0, fill_creation_part1, void(CreationPart1 *out, CreationSource *source, uint32_t value));
+// Fills CreationPart1 from the source (replaced in creation_helpers.cpp, called here through its
+// original address; what it returns is not used).
+RT_ORIGINAL(0x0231fbc0, fill_creation_part1, void(CreationPart1 *out, CreationSource *source, uint32_t limit));
 RT_ORIGINAL(0x01eaf9d0, fill_creation_part2, void(CreationPart2 *out, CreationSource *source));
 // Creates the handle object, holding a reference the caller drops (or null); not replaced.
 RT_ORIGINAL(0x01e9a8f0, create_handle_object,
@@ -324,31 +183,21 @@ struct NameRoot {
 static_assert(offsetof(NameHolder, current) == 0x5d0 && offsetof(NameRoot, holder) == 0x8);
 RT_GLOBAL(0x0593b130, name_root_instance, NameRoot *);
 RT_GLOBAL(0x04dd85f0, default_name, const uint8_t);  // used when there is no entry
-// FrpgNetMan's block at +0xa68, which the creation passes on.
-constexpr size_t frpg_net_man_creation_block = 0xa68;
-
 // The four levels the level creation (0x01ea4cb0) reads from event flags: for each of four base
 // flags, the highest level from 9 down to 1 whose flag (base + 7 * level) is set, else 0. What
 // the levels and flags stand for is not known.
-constexpr uint32_t level_columns = 4, highest_level = 9, level_flag_stride = 7;
+constexpr uint32_t highest_level = 9, level_flag_stride = 7;
 constexpr uint32_t level_flag_bases[level_columns] = {0x184d, 0x184e, 0x184f, 0x1850};
-struct FlagLevels {
-    int32_t level[level_columns];
-};
-// Creates a handle object from the levels, holding a reference the caller drops (or null); not
-// replaced.
+// Creates a gate handle from the levels, holding a reference the caller drops (or null); replaced
+// in creation_helpers.cpp, called here through its original address.
 RT_ORIGINAL(0x02265580, create_handle_from_levels, void(engine::RefObject **out, const FlagLevels *levels));
 
-// The id the owner check is given: its first 64 bits hold INT64_MIN when there is none. That it
-// names an online session is a guess from FrpgNetMan's part in the check.
-struct SessionId {
-    int64_t value;
-};
-constexpr int64_t no_session_id = INT64_MIN;
-// Fills *found with the object for an id, holding a reference the caller drops (or with null).
+// Fills *found with the gate handle for an id, holding a reference the caller drops (or with null);
+// replaced in pass_on_in_local_mode.cpp, called here through its original address.
 RT_ORIGINAL(0x02265290, lookup_session_object, void(engine::RefObject **found, SessionId *id));
 
-// The step machine's step counter; past 27 steps it also builds a debug message.
+// The step machine's step counter; past 27 steps it also builds a debug message (replaced in
+// fixed_step_helpers.cpp, called here through its original address).
 RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 
 // What the methods return (the state machine's codes; their names are not known).
@@ -492,15 +341,6 @@ void leave_ritual_or_dungeon_mode(StateOwner *owner)
     leave_error_mode(owner);
 }
 
-// FrpgNetMan's four bytes, as the online methods test them ("online" is a guess from FrpgNetMan's
-// part). A missing FrpgNetMan is reported and the singleton read again, as the original does
-// (engine::require).
-bool net_allows()
-{
-    const FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
-    return net->flag_008 != 0 && net->flag_9f8 == 0 && net->flag_9f6 == 0 && net->flag_a50 == 0;
-}
-
 // The gates both online checks open with: the owner idle in mode 1 (no Holygrail), then
 // FrpgNetMan's four bytes.
 bool online_gates_open(const StateOwner *owner)
@@ -613,19 +453,6 @@ extern "C" bool bb_frame_timing_gate_entry_check(StateOwner *owner, GateEntryLis
 
 namespace {
 
-// When either ritual reset may run: the owner idle in the local ritual mode, or in the server
-// ritual mode with FrpgNetMan's bytes allowing it and the handle's flag bit 0 clear. The original
-// checks FrpgNetMan again with the pointer the bytes were just read through, so that check cannot
-// fail and is left out.
-bool ritual_reset_allowed(const StateOwner *owner)
-{
-    if (owner->busy != 0) return false;
-    if (owner->state == mode_local_ritual) return true;
-    if (owner->state != mode_server_ritual || !net_allows()) return false;
-    const auto *object = reinterpret_cast<const HandleObject *>(owner->handle);
-    return !object || (object->flags_10c & 1) == 0;
-}
-
 // Before each use of the handle the original checks FrpgNetMan: a missing one is reported, then
 // the handle read again from the owner (code after the fatal error call that Ghidra drops;
 // QUIRKS.md). Returns the handle to go on with, which may now be null.
@@ -641,7 +468,7 @@ void clear_handle_word(StateOwner *owner)
 {
     if (!owner->handle) return;
     if (engine::RefObject *handle = handle_after_net_check(owner, owner->handle))
-        as_handle_object(handle)->value_124 = 0;
+        as_gate_handle(handle)->value_124 = 0;
 }
 
 // The readiness check (0x01ea5c90, replaced below as its own method too): the owner idle in a
@@ -659,8 +486,8 @@ bool ritual_or_dungeon_ready(const StateOwner *owner)
     case mode_server_ritual:
     case mode_server_dungeon: {
         if (!net_allows()) return false;
-        const auto *object = reinterpret_cast<const HandleObject *>(owner->handle);
-        return object && object->word_050 == 0;
+        const GateHandle *handle = as_gate_handle(owner->handle);
+        return handle && handle->word_050 == 0;
     }
     default:
         return false;
@@ -678,10 +505,10 @@ bool pass_handle_on_with_kind(StateOwner *owner, int32_t kind)
     if (engine::RefObject *handle = owner->handle) {
         handle = handle_after_net_check(owner, handle);
         if (handle) {
-            as_handle_object(handle)->value_11c = 0;
+            as_gate_handle(handle)->value_11c = 0;
             handle = handle_after_net_check(owner, handle);
             if (handle) {
-                as_handle_object(handle)->value_120 = 0;
+                as_gate_handle(handle)->value_120 = 0;
                 held = handle;
             }
         }
@@ -700,7 +527,7 @@ bool pass_handle_on_with_kind(StateOwner *owner, int32_t kind)
         return false;
     }
     if (held) held = handle_after_net_check(owner, held);
-    if (held && as_handle_object(held)->word_050 == 0) {
+    if (held && as_gate_handle(held)->word_050 == 0) {
         if (local_mode)
             pass_on_in_local_mode(&owner->handle, kind);
         else
@@ -728,8 +555,7 @@ extern "C" bool bb_frame_timing_gate_create_handle(StateOwner *owner, CreationSo
     fill_creation_part1(&part1, source, source->value_010);
     CreationPart2 part2;
     fill_creation_part2(&part2, source);
-    FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
-    void *const net_block = reinterpret_cast<uint8_t *>(net) + frpg_net_man_creation_block;
+    void *const net_block = &require_frpg_net_man()->creation_block;
     const NameEntry *entry = *holder->current;
     const void *name = default_name.address();
     if (entry) name = text_of(entry->kind == 1 ? &entry->name_0c8 : &entry->name_018);
@@ -796,12 +622,12 @@ extern "C" bool bb_frame_timing_gate_ritual_handle_reset(StateOwner *owner)
 extern "C" bool bb_frame_timing_gate_ritual_slot_reset(StateOwner *owner, const uint32_t *values)
 {
     if (!ritual_reset_allowed(owner)) return false;
-    Heap *&heap = container_heap.get();
+    engine::Allocator *&heap = container_heap.get();
     if (!heap) heap = make_container_heap();
-    Heap *const list_heap = heap;
-    HeapTraits traits;
-    list_heap->vtable->report_traits(&traits, list_heap, 0);
-    if ((traits.bits & heap_allows_containers) == 0)
+    engine::Allocator *const list_heap = heap;
+    engine::AllocatorInfo info;
+    list_heap->vtable->info(&info, list_heap, 0);
+    if ((info.flags & engine::allocator_info_valid) == 0)
         engine::fatal_error(nullptr, line_incompatible_heap, message_incompatible_heap.address());
 
     SlotItemList list{};
@@ -819,7 +645,7 @@ extern "C" bool bb_frame_timing_gate_ritual_slot_reset(StateOwner *owner, const 
         pass_handle_on_with_items(&owner->handle, &list);
         if (owner->busy == 0) requested = take_request(owner, request_8);
     }
-    if (block) list.heap->vtable->free(list.heap, block);
+    if (block) list.heap->free(block);
     return requested;
 }
 

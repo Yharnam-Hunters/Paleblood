@@ -54,6 +54,19 @@ typedef struct {
     /* Whether collect_cpu_writes may report anything now; NULL: always. The executor asks it first, so
        that it builds and sorts the ranges only for a collect that happens. */
     int (*cpu_writes_due)(void);
+    /* Whether worker threads make the pipelines draws meet for the first time, the draw skipped while its
+       pipeline is being made (for at most a second), instead of the recording thread waiting for the
+       driver's compiler. Off: every pipeline is made at its first draw. */
+    int async_pipelines;
+    /* Called as the shaders compiled at launch get done (rt_executor_launch_compiles): done of count,
+       first with none done, last with done == count. It runs on the compiling threads. NULL: not told. */
+    void (*launch_progress)(size_t done, size_t count);
+    /* copies_bytes of guest addresses from copies_base on that no guest memory ever has (the caller
+       keeps them so: rt_gpu_copies_window, runtime/gpu_memory.h), outside [guest_base, guest_base + size)
+       and below 2^40. The executor gives them to its copies of vertex buffers (runtime/gcn_spirv.h's
+       gcn_guest_copies), whose vertex shaders' loads at those addresses then read the copies. 0: none,
+       and vertex buffers are read in place. */
+    uint64_t copies_base, copies_bytes;
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no
@@ -125,6 +138,16 @@ uint64_t rt_executor_done_ticket(rt_executor *executor);
    there; 0 when the write must wait for the GPU. The first ask for memory starts noting the batches'
    reads of it, and answers 0 (nothing earlier noted them). Not for another thread. */
 int rt_executor_cpu_write_ready(rt_executor *executor, uint64_t address, uint64_t bytes);
+/* Notes that the CPU is about to write `bytes` of guest memory at `address` (UINT64_MAX bytes: memory of
+   no known range; 0: none) once the GPU's work has run (a step the renderer performs after
+   rt_executor_finish): what the executor keeps of that memory on the GPU (index ranges' copies) is
+   copied again before its next use. Not for another thread. */
+void rt_executor_cpu_writes(rt_executor *executor, uint64_t address, uint64_t bytes);
+/* Notes that a step the renderer defers (performed on another thread once the work before it has run)
+   writes `bytes` of guest memory at `address` (UINT64_MAX bytes: memory of no known range; 0: none):
+   the executor keeps no copy of that memory on the GPU (index ranges there are read where they are)
+   from now on. Not for another thread. */
+void rt_executor_deferred_writes(rt_executor *executor, uint64_t address, uint64_t bytes);
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
 int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
@@ -163,6 +186,15 @@ int rt_executor_snapshot_target(rt_executor *executor, uint64_t address, rt_exec
 int rt_executor_read_snapshot(rt_executor *executor, const rt_executor_snapshot *snapshot, uint32_t *bgra, uint32_t width, uint32_t height,
                               char *error, size_t error_size);
 void rt_executor_release_snapshot(rt_executor *executor, const rt_executor_snapshot *snapshot);
+
+/* How many shaders the executor took from its translation cache (runtime/translation_cache.h) and how
+   many it translated, since it opened (Vulkan executor). */
+void rt_executor_translations(const rt_executor *executor, size_t *found, size_t *made);
+/* What the executor did with the shader catalog since it opened (compile_catalog), once its workers
+   are done (it waits for them): the shaders made again, those of them translated (the translation
+   cache lacked them) and those whose pipelines the driver compiled (the pipeline cache lacked them)
+   (Vulkan executor). */
+void rt_executor_launch_compiles(rt_executor *executor, size_t *shaders, size_t *translated, size_t *compiled);
 
 void rt_executor_close(rt_executor *executor);
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera front chase stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 #include "locked_geometry.h"
 
@@ -27,7 +28,7 @@ static_assert(offsetof(FollowCamera, front_lock_remaining) == 0x264);
 static_assert(offsetof(FollowCamera, front_lock_angles) == 0x26c);
 static_assert(offsetof(FollowCamera, update_target_pitch_at_front_lock) == 0x275);
 
-RT_GLOBAL(0x04d25e58, completion_tolerance, const float); // Exact bits: 0x3c8efa35.
+inline constexpr auto completion_tolerance = constants::degrees_to_radians;  // Exact bits: 0x3c8efa35.
 
 AngularPreparation chase_front_lock(FollowCamera &state, const AngularPreparation &dispatch,
                                     const ControlPreparation &control,
