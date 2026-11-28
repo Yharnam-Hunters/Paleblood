@@ -240,7 +240,7 @@ typedef struct {
     int set_aside;                   /* a target of another size or format took its address (target_for): it holds
                                         nothing the memory lacks, and is taken back when the address has its shape again */
     uint64_t used_ticket;            /* the batch that last used it (its ticket once submitted) */
-    uint64_t used_call;              /* the draw that last used it (call_serial) */
+    uint64_t used_call;              /* the call during or after which it was last used (call_serial) */
 } target_entry;
 
 /* What a draw does with the depth target: its test and writes, as Vulkan state. No padding: it is
