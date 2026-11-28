@@ -115,26 +115,6 @@
 0x04bfebab  # game/render/yebis_interface_delete.cpp:destroy_function_name, game/render/yebis_interface_destruct.cpp:destroy_function_name
 0x04bfebba  # game/render/yebis_interface_delete.cpp:destroy_instance_message, game/render/yebis_interface_destruct.cpp:destroy_instance_message
 0x04c7d061  # game/audio/create_native_thread.cpp:mixer_name, game/audio/fmod_thread_lookup.cpp:mixer_name
-0x04cf24a0  # game/camera/update/angle_frame.h:unit_y, game/camera/update/chase.h:y_axis, game/camera/update/subject.h:unit_y, game/camera/update/wing_escape.h:unit_y
-0x04cf24b0  # game/camera/update/orientation.h:unit_z, game/camera/update/subject.h:unit_z
-0x04cf24c0  # game/camera/update/angle_frame.h:unit_w, game/camera/update/subject.h:unit_w, game/camera/update/subject_transform.h:position_unit_w, game/camera/update/wing_escape.h:unit_w
-0x04cf24d0  # game/camera/update/angle_frame.h:xyz_bits, game/camera/update/chase.h:xyz_bits, game/camera/update/final_collision.h:xyz_bits, game/camera/update/orientation.h:xyz_bits, game/camera/update/subject.h:xyz_bits, game/camera/update/subject_transform.h:position_xyz_bits, game/camera/update/territory.h:xyz_bits, game/camera/update/wing_escape.h:xyz_bits
-0x04cf24e0  # game/camera/update/angle_frame.h:negate_yaw_sine, game/camera/update/subject.h:negate_x_scale, game/camera/update/wing_escape.h:negate_yaw_sine
-0x04cf2520  # game/camera/update/angular_mode.h:pitch_sign_bits, game/camera/update/wing_escape.h:sign_mask
-0x04cf25c0  # game/camera/update/free_input.h:even_coefficients_0_to_6, game/camera/update/wing_escape.h:even_coefficients_0_to_6
-0x04cf25d0  # game/camera/update/free_input.h:even_coefficients_8_to_14, game/camera/update/wing_escape.h:even_coefficients_8_to_14
-0x04cf25e0  # game/camera/update/free_input.h:even_coefficients_16_to_22, game/camera/update/wing_escape.h:even_coefficients_16_to_22
-0x04cf2630  # game/camera/update/angle_frame.h:negate_pitch_sine, game/camera/update/wing_escape.h:negate_pitch_sine
-0x04cf2640  # game/camera/update/angle_frame.h:infinity_vector, game/camera/update/orientation.h:exponent_bits, game/camera/update/validation_margin.h:exponent_bits, game/camera/update/wing_escape.h:infinity_vector
-0x04cf2650  # game/camera/update/angle_frame.h:canonical_nan_vector, game/camera/update/wing_escape.h:canonical_nan_vector
-0x04cf2660  # game/camera/update/candidate_collision.h:unit_vector, game/camera/update/final_collision.h:unit_vector, game/camera/update/territory.h:unit_vector, game/camera/update/validation_margin.h:unit_vector
-0x04cf2680  # game/camera/update/final_collision.h:short_collision_displacement, game/camera/update/territory.h:short_collision_displacement
-0x04d25e58  # game/camera/update/front_chase.h:completion_tolerance, game/camera/update/parameter.h:degrees_to_radians, game/camera/update/wing_escape.h:minimum_escape_yaw
-0x04d25e6c  # game/camera/update/candidate_collision.h:scalar_one, game/camera/update/chase.h:one, game/camera/update/orientation.h:one, game/camera/update/subject.h:scalar_one, game/camera/update/target.h:scalar_one, game/camera/update/translation_compensation.h:scalar_one, game/camera/update/wing_escape.h:one
-0x04d25e70  # game/camera/update/control.h:minimum_fulcrum_distance, game/camera/update/target.h:half_fov, game/camera/update/translation_compensation.h:distance_floor
-0x04d25e74  # game/camera/update/locked_geometry.h:two_pi, game/camera/update/wing_escape.h:period
-0x04d25e88  # game/camera/update/angle_frame.h:short_distance_threshold, game/camera/update/candidate_collision.h:distance_division_threshold, game/camera/update/chase.h:distance_threshold, game/camera/update/final_collision.h:distance_threshold, game/camera/update/orientation.h:near_vertical_threshold, game/camera/update/territory.h:distance_threshold, game/camera/update/translation_compensation.h:distance_division_threshold, game/camera/update/validation_margin.h:distance_threshold, game/camera/update/wing_escape.h:short_distance_threshold, game/camera/update/wing_escape.h:distance_division_threshold
-0x04d25e8c  # game/camera/update/angle_frame.h:short_distance_replacement, game/camera/update/wing_escape.h:short_distance_replacement
 0x04d35616  # game/character/gaitem_handle.cpp:gaitem_manager_name, game/character/gaitem_handle.h:gaitem_manager_name
 0x04d35687  # game/ai/debug_display.cpp:world_ai_manager_name, game/ai/goals.h:world_ai_manager_name
 0x04d35bbd  # game/ai/area_block_step.h:world_nvm_manager_name, game/ai/debug_display.cpp:world_nvm_manager_name

@@ -61,6 +61,12 @@ typedef struct {
     /* Called as the shaders compiled at launch get done (rt_executor_launch_compiles): done of count,
        first with none done, last with done == count. It runs on the compiling threads. NULL: not told. */
     void (*launch_progress)(size_t done, size_t count);
+    /* copies_bytes of guest addresses from copies_base on that no guest memory ever has (the caller
+       keeps them so: rt_gpu_copies_window, runtime/gpu_memory.h), outside [guest_base, guest_base + size)
+       and below 2^40. The executor gives them to its copies of vertex buffers (runtime/gcn_spirv.h's
+       gcn_guest_copies), whose vertex shaders' loads at those addresses then read the copies. 0: none,
+       and vertex buffers are read in place. */
+    uint64_t copies_base, copies_bytes;
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no
