@@ -8,11 +8,13 @@
    fixture's (render_fixture.h), and rt_fatal ends the process with a code the test checks. Without a
    suitable Vulkan device the test reports itself skipped (exit 77). */
 #define _GNU_SOURCE /* memfd_create, MAP_FIXED_NOREPLACE (render_fixture.h) */
+#include "runtime/display.h"
 #include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
 #include "runtime/render_executor.h"
 #include "runtime/renderer.h"
+#include "runtime/write_watch.h"
 
 #include "gcn_programs.h"
 #include "render_fixture.h"
@@ -26,6 +28,7 @@ enum { FATAL_EXIT = 3 };
 static int guest_fd = -1;
 
 uint64_t rt_gpu_memory_base(void) { return GUEST_BASE; }
+uint64_t rt_gpu_copies_window(uint64_t *bytes) { return *bytes = 0; }
 
 int rt_gpu_memory_pool(int *fd, uint64_t *size)
 {
@@ -39,6 +42,9 @@ uint8_t *rt_gpu_memory_gds(void)
     static _Alignas(RT_GPU_GDS_BYTES) uint8_t gds[RT_GPU_GDS_BYTES];
     return gds;
 }
+
+/* the window's status (the renderer's launch_progress): no window here */
+void rt_display_set_status(const char *status) { (void)status; }
 
 _Noreturn void rt_fatal(const char *function, const char *message)
 {
@@ -213,25 +219,107 @@ static int stops(uint64_t buffer, uint32_t size)
     return WIFEXITED(status) && WEXITSTATUS(status) == FATAL_EXIT;
 }
 
+/* Whether an executor opens on the fixture's memory; says why not. */
+static int executor_opens(void)
+{
+    rt_executor *probe = NULL;
+    char error[256];
+    const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL, 0, 0};
+    if (rt_executor_open(&memory, &probe, error, sizeof error)) {
+        fprintf(stderr, "skipped: %s\n", error);
+        return 0;
+    }
+    rt_executor_close(probe);
+    return 1;
+}
+
+/* A wait step that holds only once performed; performing it writes the triangle's 16-bit indices
+   (0, 1, 2) at words[1], as the game writes what the work after a wait reads before what the wait is
+   for. */
+static int not_yet(const rt_gpu_step *step, const rt_gpu_step *pending)
+{
+    (void)step, (void)pending;
+    return 0;
+}
+
+static void write_triangle_indices(const rt_gpu_step *step)
+{
+    static const uint16_t triangle[3] = {0, 1, 2};
+    memcpy((void *)(uintptr_t)step->words[1], triangle, sizeof triangle);
+    note_step(step);
+}
+
+/* Records the triangle's state and an indexed draw of the three 16-bit indices at `indices`; returns
+   the buffer's size. */
+static uint32_t record_indexed_draw(uint64_t buffer, uint64_t target, uint64_t indices)
+{
+    char error[160];
+    const uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_index_base(buffer, offset, indices, error, sizeof error) == 0);
+    CHECK(rt_render_record_index_type(buffer, offset + 0x10, 0, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset(buffer, offset + 0x20, 0, 3, error, sizeof error) == 0);
+    return offset + 0x30;
+}
+
+/* With the CPU's writes watched (runtime/write_watch.h) the renderer collects them once for all the
+   buffers submitted before a collect, and again after a wait step it performed. Three buffers are
+   submitted while a gate holds the renderer's thread, so the second's collect covers the third: the
+   second draws indices (0, 0, 0), nothing, and keeps them in device-local memory; the third starts
+   with a wait whose performing writes the triangle's indices there, then draws the same range. It
+   draws the triangle only if the renderer collected again after the wait (otherwise the stale copy
+   draws nothing). Runs in a child process (the watch is the process's) before anything opens the GPU;
+   skipped (SKIPPED) without the watch or a device. */
+static int watched_wait_collects(void)
+{
+    enum { FIRST_TARGET = 0x2800000, SECOND_TARGET = 0x2900000, INDICES = 0x2a00000, BUFFERS = 0x2b00000 };
+    if (rt_write_watch_add((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE, 0, PROT_READ | PROT_WRITE)) {
+        fprintf(stderr, "watched renderer: skipped, the write watch is off\n");
+        return SKIPPED;
+    }
+    if (!executor_opens()) return SKIPPED;
+    memset((void *)(uintptr_t)at(INDICES), 0, 3 * sizeof(uint16_t));
+    rt_render_forget();
+    const uint64_t gated = at(BUFFERS), copied = at(BUFFERS + 0x1000), after_wait = at(BUFFERS + 0x2000);
+    const uint32_t copied_size = record_indexed_draw(copied, at(FIRST_TARGET), at(INDICES));
+    const uint32_t after_wait_size = record_indexed_draw(after_wait, at(SECOND_TARGET), at(INDICES));
+    rt_renderer_configure(1);
+    step_count = 0, gate_open = 0;
+    const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {60}, 0, NULL, {0, 0}};
+    const rt_gpu_step wait = {write_triangle_indices, "sceGnmSubmitCommandBuffers", 0, {61, at(INDICES)}, 0, not_yet, {0, 0}};
+    rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)gated, 0x100, &gate, 1);
+    rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)copied, copied_size, NULL, 0);
+    rt_renderer_submit("sceGnmSubmitCommandBuffers", RT_RENDERER_GRAPHICS_QUEUE, (const void *)(uintptr_t)after_wait, after_wait_size, &wait, 1);
+    pthread_mutex_lock(&step_lock);
+    gate_open = 1;
+    pthread_cond_broadcast(&step_changed);
+    pthread_mutex_unlock(&step_lock);
+    rt_renderer_wait_idle();
+    CHECK(steps_seen() == 2 && step_order[0] == 60 && step_order[1] == 61);
+    CHECK(rt_write_watch_active());
+    uint32_t frame[SIZE * SIZE];
+    CHECK(rt_renderer_frame(at(SECOND_TARGET), frame, SIZE, SIZE) == 1);
+    check_triangle_pixels(frame);
+    return failures != 0;
+}
+
 int main(void)
 {
     setenv("BB_PIPELINE_CACHE", "", 0); /* no pipeline cache file in the user's cache, unless asked for */
+    setenv("BB_TRANSLATION_CACHE", "", 0); /* nor a translation cache file */
     setenv("PB_ASYNC_PIPELINES", "0", 0); /* each draw drawn when its buffer runs (the executor's test checks async pipelines) */
     guest_fd = map_guest_memory();
     if (guest_fd < 0) {
         fprintf(stderr, "cannot map the guest memory at %#llx\n", GUEST_BASE);
         return 1;
     }
-    { /* skipped without a device that can run the executor */
-        rt_executor *probe = NULL;
-        char error[256];
-        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 0};
-        if (rt_executor_open(&memory, &probe, error, sizeof error)) {
-            fprintf(stderr, "skipped: %s\n", error);
-            return 77;
-        }
-        rt_executor_close(probe);
+    { /* the watched renderer first, in a child of its own: nothing in this process has opened the GPU yet */
+        const pid_t child = fork();
+        if (child == 0) _exit(watched_wait_collects());
+        int status = 0;
+        CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+              (WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == SKIPPED));
     }
+    if (!executor_opens()) return SKIPPED; /* skipped without a device that can run the executor */
     const uint64_t BUFFER = at(0x3f00000), EMPTY = at(0x3f10000), BAD = at(0x3f20000);
     uint32_t frame[SIZE * SIZE];
     rt_render_forget();

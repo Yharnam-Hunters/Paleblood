@@ -7,7 +7,8 @@
 #   3. no game data (tools/check_no_game_data.py --staged)
 #   4. functions.csv and hooks.csv agree with the staged tree; generated progress text the commit
 #      changes is current (main regenerates it: tools/progress_pr.py)
-#   5. game/ is readable (tools/check_readable.py, STYLE.md); its allowlist only shrinks
+#   5. game/ is readable (tools/check_readable.py, STYLE.md): no transcription, no disguised offset
+#      arithmetic, one declaration per game address; its allowlists only shrink
 # Installed as commit-msg too: lines matching `git config --get-all bb.refuseMessage` (extended
 # regular expressions, case-insensitive) are refused.
 set -euo pipefail
@@ -80,6 +81,14 @@ if [ -f "$tmp/tools/check_readable.py" ]; then
     if git show HEAD:tools/readable_allowlist.txt >"$tmp/.readable_base" 2>/dev/null; then
         base=(--base-list "$tmp/.readable_base")
     fi
+    # the other lists (offset arithmetic, duplicate declarations) too, from HEAD, at their own paths
+    mkdir -p "$tmp/.base/tools" "$tmp/.base/game"
+    for list in tools/offset_arithmetic_allowlist.txt game/duplicate_declarations_allowlist.txt; do
+        if git cat-file -e "HEAD:$list" 2>/dev/null; then
+            git show "HEAD:$list" >"$tmp/.base/$list"
+        fi
+    done
+    base+=(--base-dir "$tmp/.base")
     python3 "$tmp/tools/check_readable.py" --root "$tmp" "${base[@]}" \
         || fail "game/ is not readable (STYLE.md): see the lines above"
 fi

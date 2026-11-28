@@ -34,7 +34,8 @@ static void descriptor(uint32_t out[8],unsigned offset,unsigned data,unsigned nu
     out[2]=(width-1)|(height-1)<<14;out[3]=swizzle|base<<12|last<<16|tile<<20|type<<28;
     out[4]=(layers-1)|(pitch-1)<<13;out[5]=first|final<<13;
 }
-static int probe(rt_executor *x,unsigned char *pool,const uint32_t *program,size_t program_bytes,const uint32_t user[16],uint32_t written,const char *reason)
+static int probe_parameters(rt_executor *x, unsigned char *pool, const uint32_t *program, size_t program_bytes,
+                            const uint32_t user[16], uint32_t written, unsigned parameters, const char *reason)
 {
     memcpy(pool+PROGRAM,program,program_bytes);uint32_t *output=(uint32_t *)(pool+PROBE);
     for(unsigned i=0;i<128;++i)output[i]=SENTINEL;
@@ -45,7 +46,7 @@ static int probe(rt_executor *x,unsigned char *pool,const uint32_t *program,size
     c[n].u.viewport.scale[0]=c[n].u.viewport.scale[1]=c[n].u.viewport.translate[0]=c[n].u.viewport.translate[1]=4;
     c[n++].u.viewport.scale[2]=1;
     c[n].kind=RT_CALL_VERTEX_SHADER;c[n++].u.vertex_shader=(rt_vertex_shader){.code=at(VS),.vgprs=12,.sgprs=16,.user_sgprs=8,.parameter_count=1,.position_format=4};
-    c[n].kind=RT_CALL_PIXEL_SHADER;c[n++].u.pixel_shader=(rt_pixel_shader){.code=at(PROGRAM),.vgprs=16,.sgprs=40,.user_sgprs=16,.color_formats=9,.input_enable=2,.input_address=2,.color_mask=15};
+    c[n].kind=RT_CALL_PIXEL_SHADER;c[n++].u.pixel_shader=(rt_pixel_shader){.code=at(PROGRAM),.vgprs=16,.sgprs=40,.user_sgprs=16,.color_formats=9,.input_enable=2,.input_address=2,.interpolated=parameters,.color_mask=15};
     uint32_t vertex[8];buffer_descriptor(vertex,POSITIONS);buffer_descriptor(vertex+4,COLORS);
     vertex[1]|=16u<<16;vertex[2]=3;vertex[5]|=16u<<16;vertex[6]=3;
     c[n].kind=RT_CALL_USER_DATA;c[n].u.user_data.stage=RT_STAGE_VERTEX;c[n].u.user_data.count=8;memcpy(c[n++].u.user_data.words,vertex,sizeof vertex);
@@ -60,6 +61,10 @@ static int probe(rt_executor *x,unsigned char *pool,const uint32_t *program,size
     if(reason){if(result!=-1||!strstr(error,reason))fprintf(stderr,"expected %s, got%d: %s\n",reason,result,error);CHECK(result==-1&&strstr(error,reason));}
     else{if(result)fprintf(stderr,"image probe: %s\n",error);CHECK(result==0);}
     ++scenarios;return result;
+}
+static int probe(rt_executor *x,unsigned char *pool,const uint32_t *program,size_t program_bytes,const uint32_t user[16],uint32_t written,const char *reason)
+{
+    return probe_parameters(x,pool,program,program_bytes,user,written,0,reason);
 }
 static void float_results(unsigned char *pool,const float value[4],float tolerance)
 {
@@ -120,6 +125,75 @@ static void fill_levels(unsigned char *pool,const uint32_t words[8])
         rt_tiling_tile(&levels[level].layout,rows,pool+d.address-guest_base+levels[level].offset,levels[level].columns,levels[level].rows,d.layers);free(rows);
     }
 }
+static void pixel_cube(rt_executor *x, unsigned char *pool)
+{
+    enum { FACES = 6, MAX_SIDE = 8, SWIZZLE = 6 | 5 << 3 | 4 << 6 | 1 << 9 };
+    const unsigned sides[] = {1, MAX_SIDE};
+    for (unsigned shape = 0; shape < sizeof sides / sizeof sides[0]; ++shape) {
+        const unsigned side = sides[shape], tx = shape ? 1 : 0, ty = shape ? 2 : 0;
+        uint32_t user[16] = {0};
+        descriptor(user,IMAGE,10,0,side,side,8,13,RT_IMAGE_CUBE,1,0,0,0,shape ? 5 : 35,SWIZZLE);
+        rt_tiling_level layout;
+        char error[128] = "";
+        const int status = rt_tiling_mip_chain(13,4,1,0,8,side,side,side,1,FACES,&layout,error,sizeof error);
+        CHECK(status == 0);
+        if (status) return;
+        unsigned char texels[FACES * MAX_SIDE * MAX_SIDE * 4];
+        for (unsigned face = 0; face < FACES; ++face)
+            for (unsigned row = 0; row < side; ++row)
+                for (unsigned col = 0; col < side; ++col) {
+                    unsigned char *rgba = texels + ((face * side + row) * side + col) * 4;
+                    rgba[0] = 17 + face * 23;
+                    rgba[1] = 29 + row * 7;
+                    rgba[2] = 41 + col * 13;
+                    rgba[3] = 250;
+                }
+        rt_tiling_tile(&layout.layout,texels,pool + IMAGE,side,side,FACES);
+        uint32_t *input = (uint32_t *)(pool + OUTPUT_DESCRIPTOR);
+        buffer_descriptor(input,PROBE);
+        rt_executor_reset(x);
+        for (unsigned face = 0; face < FACES; ++face) {
+            const float expected[4] = {(41 + tx * 13) / 255.0f, (29 + ty * 7) / 255.0f,
+                                       (17 + face * 23) / 255.0f, 1};
+            pointer(user + 12,OUTPUT_DESCRIPTOR);
+            user[8] = 2 | 2 << 3; /* Clamp distinguishes guest face coordinates from native UVs. */
+            user[9] = user[10] = user[11] = 0;
+            user[14] = bits(1 + (tx + 0.5f) / side);
+            user[15] = bits(1 + (ty + 0.5f) / side);
+            input[4] = bits((float)face);
+            if (!probe(x,pool,image_probe_sample_cube,sizeof image_probe_sample_cube,user,0xffff,NULL))
+                float_results(pool,expected,0.00001f);
+            buffer_descriptor(user + 12,PROBE);
+            user[8] = tx; user[9] = ty; user[10] = face;
+            if (!probe(x,pool,image_probe_load,sizeof image_probe_load,user,0xffff,NULL))
+                float_results(pool,expected,0.00001f);
+        }
+        user[10] = FACES;
+        const float outside[4] = {0,0,0,1};
+        if (!probe(x,pool,image_probe_load,sizeof image_probe_load,user,0xffff,NULL))
+            float_results(pool,outside,0.00001f);
+    }
+
+    uint32_t user[16] = {0};
+    descriptor(user,IMAGE,10,0,8,8,8,13,RT_IMAGE_CUBE,1,0,0,0,5,IDENTITY);
+    buffer_descriptor(user + 12,PROBE);
+    const struct { unsigned word; uint32_t bits_to_toggle; } rejected[] = {
+        {2, 1u << 14}, /* Nonsquare face. */
+        {3, 1u << 16}, /* Additional mip. */
+        {3, 1u << 25}, /* Padded faces. */
+        {4, 1},        /* Two cubes. */
+        {5, 1},        /* Nonzero first face. */
+        {5, 1u << 13}, /* Incomplete face interval. */
+    };
+    for (unsigned i = 0; i < sizeof rejected / sizeof rejected[0]; ++i) {
+        const unsigned word = rejected[i].word;
+        user[word] ^= rejected[i].bits_to_toggle;
+        probe(x,pool,image_probe_load,sizeof image_probe_load,user,0xffff,"pixel cube requires");
+        CHECK(((uint32_t *)(pool + PROBE))[0] == SENTINEL);
+        user[word] ^= rejected[i].bits_to_toggle;
+    }
+}
+
 static void gpu_update(rt_executor *x,unsigned char *pool,unsigned destination)
 {
     memset(pool+COMPUTE_INPUT,0,64*sizeof(float));rt_render_call c[3]={{0}};
@@ -183,6 +257,50 @@ static void storage_interop(rt_executor *x,unsigned char *pool)
     char error[512]="";int result=rt_executor_run_calls(x,calls,4,error,sizeof error);if(result)fprintf(stderr,"draw/storage interop: %s\n",error);CHECK(result==0);++scenarios;
     float actual[4];memcpy(actual,pool+PROBE,sizeof actual);
     for(unsigned c=0;c<4;++c)CHECK(fabsf(actual[c]-(float)pool[0x680000+4*17+c]/255)<=0.00001f);
+}
+
+/* One red texel for every four in X, with a footprint of 4x1 texels.
+   Linear sampling at the center reads red. Native anisotropy widens the X support. */
+static void anisotropic_sample(rt_executor *x, unsigned char *pool)
+{
+    enum { STRIPES = IMAGE + 0x1000, TEX_WIDTH = 64, TEX_HEIGHT = 16 };
+    static const uint32_t program[] = {
+        0xc0880d00, 0xbf8c007f, /* fetch the output descriptor */
+        0xbefc0300, /* s_mov_b32 m0, s0 */
+        0xc8080000, 0xc8090001, /* interpolate attr0.x into v2 */
+        0xc80c0100, 0xc80d0101, /* interpolate attr0.y into v3 */
+        0xf0800f00, 0x00400802, /* image_sample v[8:11], v[2:3], s[0:7], s[8:11] */
+        0xbf8c0f70, 0x7e180280, 0xe0781000, 0x8004080c, /* store the sampled float4 */
+        0x7e000280, 0xf800180f, 0x00000000, 0xbf810000,
+    };
+    float prior[3][4];
+    memcpy(prior,pool+COLORS,sizeof prior);
+    const float uv[3][4] = {{-1.5f/64,0,0,1},{62.5f/64,0,0,1},{-1.5f/64,1,0,1}};
+    memcpy(pool+COLORS,uv,sizeof uv);
+    for (unsigned y = 0; y < TEX_HEIGHT; ++y)
+        for (unsigned col = 0; col < TEX_WIDTH; ++col) {
+            const uint32_t texel = col % 4 ? 0xff00ff00u : 0xff0000ffu;
+            memcpy(pool+STRIPES+4*(y*TEX_WIDTH+col),&texel,sizeof texel);
+        }
+    uint32_t user[16] = {0};
+    descriptor(user,STRIPES,10,0,TEX_WIDTH,TEX_HEIGHT,TEX_WIDTH,31,RT_IMAGE_2D,1,0,0,0,0,IDENTITY);
+    pointer(user+12,OUTPUT_DESCRIPTOR);
+    const unsigned filters[] = {1,3};
+    for (unsigned trial = 0; trial < 2; ++trial) {
+        user[8] = 2u << 9;
+        user[10] = filters[trial] << 20 | filters[trial] << 22;
+        rt_executor_reset(x);
+        const int ran = probe_parameters(x,pool,program,sizeof program,user,0x3fff,1,NULL);
+        if (!ran) {
+            float pixel[4]; memcpy(pixel,pool+PROBE,sizeof pixel);
+            printf("anisotropic sample filter=%u red=%g green=%g blue=%g alpha=%g\n",filters[trial],
+                (double)pixel[0],(double)pixel[1],(double)pixel[2],(double)pixel[3]);
+            CHECK(trial ? pixel[0] >= 0 && pixel[0] < 0.9f && pixel[1] > 0.1f :
+                pixel[0] > 0.99f && pixel[1] < 0.01f);
+            CHECK(fabsf(pixel[0]+pixel[1]-1)<0.01f && pixel[2]==0 && pixel[3]==1);
+        }
+    }
+    memcpy(pool+COLORS,prior,sizeof prior);
 }
 
 int main(void)
@@ -274,14 +392,22 @@ int main(void)
     probe(x, pool, wqm_sample, sizeof wqm_sample, user, 0xffff, NULL); float_results(pool, blend, 0.00001f);
     const uint32_t *wqm_result = (const uint32_t *)(pool + PROBE);
     printf("WQM gradient sample: %08x %08x %08x %08x\n", wqm_result[0], wqm_result[1], wqm_result[2], wqm_result[3]);
+    anisotropic_sample(x,pool);
     /* Invalid descriptors stop before native resource reads or allocation, and do not poison a later draw. */
     rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xf0ff,"reads unset user data");
     const uint32_t base_sampler=user[8],base_filter=user[10];
     const uint32_t bad_sampler[]={1u<<12,1u<<15,1u<<29,3,3u<<3,3u<<6};
     for(unsigned i=0;i<sizeof bad_sampler/sizeof *bad_sampler;++i){user[8]=bad_sampler[i];rt_executor_reset(x);
         probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,i<3?"sampler options":"sampler address mode");}
-    user[8]=base_sampler;const uint32_t bad_filter[]={1u<<20,2u<<20|2u<<22,3u<<20|3u<<22};
-    for(unsigned i=0;i<3;++i){user[10]=bad_filter[i];rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,"sampler options");}
+    user[8]=base_sampler;const uint32_t bad_filter[]={1u<<20,2u<<20|2u<<22};
+    for(unsigned i=0;i<2;++i){user[10]=bad_filter[i];rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,"sampler options");}
+    user[10]=3u<<20|3u<<22;
+    const uint32_t bad_anisotropy[]={5u<<9,1u<<16,1u<<21};
+    for(unsigned i=0;i<sizeof bad_anisotropy/sizeof *bad_anisotropy;++i){
+        user[8]=bad_anisotropy[i];rt_executor_reset(x);
+        probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,"sampler anisotropy");
+    }
+    user[8]=base_sampler;
     user[10]=base_filter;rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,NULL);float_results(pool,blend,0.00001f);
     const uint32_t good[8]={user[0],user[1],user[2],user[3],user[4],user[5],user[6],user[7]};
     for(unsigned invalid=0;invalid<7;++invalid){memcpy(user,good,sizeof good);user[8]=0;user[10]=0;
@@ -407,6 +533,7 @@ int main(void)
     rt_tiling_tile(&fp.layout,(const unsigned char *)values,pool+0x500000,2,2,1);pointer(user+12,OUTPUT_DESCRIPTOR);user[10]=1u<<20|1u<<22;user[14]=user[15]=bits(0.5f);
     rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,NULL);const float fp_result[4]={0.625f,0,1,1};float_results(pool,fp_result,0.00001f);
     rt_executor_close(x);x=NULL;CHECK(rt_executor_open(&memory,&x,error,sizeof error)==0);if(!x)return 1;
+    pixel_cube(x,pool);
     storage_interop(x,pool);
     rt_executor_close(x);CHECK(close(fd)==0);CHECK(munmap(pool,POOL)==0);
     printf("metal images: %u scenarios, %u checks, %u failures\n",scenarios,checks,failures);return failures?1:0;

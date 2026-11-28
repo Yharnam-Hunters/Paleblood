@@ -590,6 +590,70 @@ static void check_constant_wqm(const rt_executor_memory *memory, unsigned char *
     rt_executor_close(executor);
 }
 
+/* One program distinguishes all four face encodings, so a stale shader cache
+   entry also fails when only SPI_BARYC_CNTL changes. LLVM bonaire encodings. */
+static void front_face_inputs(const rt_executor_memory *memory, unsigned char *pool)
+{
+    enum { CODE = 0x2c000, TARGET = 0x6b0000, FACE = 0x1000, FACE_INTEGER = 1u << 24 };
+    static const uint32_t program[] = {
+        0x7d840481,             /* v_cmp_eq_u32_e32 vcc, 1, v2 */
+        0xd2000003, 0x01a9e480, /* v_cndmask_b32_e64 v3, 0, 1.0, vcc */
+        0x7d8404f3,             /* v_cmp_eq_u32_e32 vcc, -1.0, v2 */
+        0xd2000004, 0x01a9e480, /* v_cndmask_b32_e64 v4, 0, 1.0, vcc */
+        0x7e0a02f2,             /* v_mov_b32_e32 v5, 1.0 */
+        0xf800180f, 0x05040302, /* exp mrt0, v2, v3, v4, v5 done vm */
+        0xbf810000,             /* s_endpgm */
+    };
+    memcpy(pool + CODE, program, sizeof program);
+    rt_executor *x = NULL;
+    char error[512] = "";
+    const int opened = rt_executor_open(memory, &x, error, sizeof error);
+    CHECK(opened == 0);
+    if (opened) return;
+
+    const float translate[3] = {8, 8, 0};
+    /* Positive viewport Y leaves this triangle back-facing. Negative Y
+       reverses its winding under the same front-face rule as stencil tests. */
+    static const uint32_t wanted[2][2] = {
+        {0xff0000ff, 0xffff0000}, /* Back: -1.0 in V2. Front: +1.0 in V2. */
+        {0xff000000, 0xff00ff00}, /* Back: integer 0. Front: integer 1. */
+    };
+    for (unsigned warm = 0; warm < 2; ++warm)
+        for (unsigned integer = 0; integer < 2; ++integer)
+            for (unsigned front = 0; front < 2; ++front) {
+                const unsigned buffer = 460;
+                const float scale[3] = {8, front ? -8 : 8, 1};
+                rt_render_forget();
+                rt_executor_reset(x);
+                memset(pool + TARGET, 0x6d, 16 * 16 * sizeof(uint32_t));
+                uint32_t size = record_setup(buffer, at(TARGET), 16, 16, 0, scale, translate, COLORS);
+                uint32_t words[RT_PIXEL_SHADER_WORDS];
+                pixel_registers(words, CODE);
+                words[5] = 9; words[6] |= FACE; words[7] |= FACE;
+                words[9] = integer ? FACE_INTEGER : 0;
+                CHECK(rt_render_record_pixel_shader(buffer, size, words, error, sizeof error) == 0); size += 0x10;
+                CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
+                const int ran = rt_executor_run(x, buffer, size, error, sizeof error);
+                if (ran) fprintf(stderr, "front face: integer=%u front=%u warm=%u: %s\n", integer, front, warm, error);
+                CHECK(ran == 0);
+                if (!ran) {
+                    uint32_t pixels[16 * 16] = {0};
+                    const int read = rt_executor_read_target(x, at(TARGET), pixels, 16, 16, error, sizeof error);
+                    CHECK(read == 0);
+                    if (!read) {
+                        unsigned bad = 0;
+                        for (unsigned i = 0; i < 16 * 16; ++i) bad += pixels[i] != wanted[integer][front];
+                        printf("Metal front face: integer=%u front=%u warm=%u expected=%08x actual=%08x bad=%u\n",
+                            integer, front, warm, wanted[integer][front], pixels[0], bad);
+                        CHECK(bad == 0);
+                    }
+                }
+                ++scenarios;
+            }
+    rt_executor_close(x);
+    rt_render_forget();
+}
+
 int main(void)
 {
     char name[] = "/tmp/paleblood-metal-pool-XXXXXX";
@@ -642,11 +706,12 @@ int main(void)
     memcpy(pool + INDICES32, indices32, sizeof indices32);
     rt_executor *x = NULL;
     char error[1024] = "";
-    const rt_executor_memory memory = {fd, POOL_SIZE, guest_base, NULL, NULL, NULL, NULL, 0, NULL, 0};
+    const rt_executor_memory memory = {fd, POOL_SIZE, guest_base, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL, 0, 0};
     int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "open: %s\n", error);
     CHECK(opened == 0);
     if (opened) { munmap(pool, POOL_SIZE); close(fd); return 1; }
+    front_face_inputs(&memory, pool);
     rt_render_forget();
 
     const float scale[3] = {8, 8, 1}, translate[3] = {8, 8, 0};
@@ -1033,10 +1098,10 @@ int main(void)
         {0, 6, 1 << 21, "misc or cull"}, {0, 6, 1 << 8, "misc or cull"}, {0, 6, 1, "without their export vector"},
         {0, 6, 1 << 4, "without their export vector"},
         {1, 4, 1, "pixel depth exports"},
-        {1, 5, 0, "SPI_SHADER_COL_FORMAT"}, {1, 5, 3, "SPI_SHADER_COL_FORMAT"}, {1, 5, 0x44, "SPI_SHADER_COL_FORMAT"},
-        {1, 6, 6, "pixel-shader inputs"}, {1, 7, 0, "pixel-shader inputs"},
+        {1, 5, 0, "CB_SHADER_MASK"}, {1, 5, 3, "SPI_SHADER_COL_FORMAT"}, {1, 5, 0x44, "CB_SHADER_MASK"},
+        {1, 6, 6, "pixel-shader inputs"}, {1, 7, 0, "pixel-shader inputs"}, {1, 7, 0x1002, "pixel-shader inputs"},
         {1, 8, 0, "pixel interpolant allocation"}, {1, 8, 33, "parameter range"},
-        {1, 9, 1, "SPI_BARYC_CNTL"}, {1, 9, 0x80000000, "SPI_BARYC_CNTL"},
+        {1, 9, 1, "SPI_BARYC_CNTL"}, {1, 9, 1u << 24, "SPI_BARYC_CNTL"}, {1, 9, 0x80000000, "SPI_BARYC_CNTL"},
         {1, 10, 1, "DB_SHADER_CONTROL"}, {1, 10, 0x80000000, "DB_SHADER_CONTROL"},
         {1, 11, 0, "CB_SHADER_MASK"}, {1, 11, 7, "CB_SHADER_MASK"}, {1, 11, 0x1f, "CB_SHADER_MASK"},
     };
@@ -1335,8 +1400,10 @@ int main(void)
     extra[0] = (uint32_t)(at(0x380000) >> 8); extra[1] = 1; extra[2] = 3; extra[4] = 0xa << 2; extra[5] = 31;
     CHECK(rt_render_record_color_target(12, 0x70, 1, extra, error, sizeof error) == 0);
     CHECK(rt_render_record_draw_auto(12, 0x80, 3, error, sizeof error) == 0);
-    expect_error(x, 12, 0x90, "beyond slot 0");
-    /* Repair the retained extra slot before the next draw, without resetting other state. */
+    if (!run(x, 12, 0x90)) check_gradient(x, at(0x370000), 16, 16, 0);
+    CHECK(rt_executor_read_target(x, at(0x380000), guard, 1, 1, error, sizeof error) == -1);
+    CHECK(guard[0] == 0xdeadbeef);
+    /* Explicit disable of the retained extra slot preserves the normal draw. */
     size = record_setup(12, at(0x370000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_color_target(12, 0x70, 1, extra, error, sizeof error) == 0);
     CHECK(rt_render_record_color_target(12, 0x80, 1, NULL, error, sizeof error) == 0);
@@ -1583,7 +1650,7 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
-    /* Position x/y inputs are decoded upstream, but are outside this explicitly barycentric-only profile. */
+    /* Position x/y inputs are decoded upstream, but are outside this profile. */
     const uint32_t positions[] = {0x102, 0x202, 0x302};
     for (unsigned i = 0; i < sizeof positions / sizeof positions[0]; ++i) {
         uint64_t buffer = 350 + i; uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, POSITION_PIXEL_CODE);
@@ -1591,7 +1658,7 @@ int main(void)
         size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
         CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        expect_error(x, buffer, size, "inputs beyond perspective-center barycentrics");
+        expect_error(x, buffer, size, "pixel-shader inputs");
         scenarios++;
         rt_executor_reset(x);
     }

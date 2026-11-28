@@ -525,6 +525,35 @@ Instead:
        (`taken_count` in `render_calls.c`, with the reader of `runtime/render_placed.h`). A buffer
        built and never submitted is not checked this way: its calls stay until a new call starts
        it over.
+     - **The same layout with other values** (found in Iosefka's Clinic, 22 November 2026): two words
+       are only a packet's header and register, and the game rewrites some compute buffers in the
+       same layout, so every SET_SH_REG of a dispatch's table address matched while the address in
+       it had changed. The earlier use's address (one from frames before, its memory since holding
+       float data) reached the shader at 0x20d1b00800, whose first instructions read a
+       buffer descriptor from that table with scalar loads (`s_load_dwordx4`, then
+       `s_buffer_load_dword` through it). Scalar loads do not depend on EXEC, so the console would
+       read through that descriptor too: the fault was in the record, not in the shader's range
+       checks. The mark is now the whole packet (the header and the body it counts, up to 64 words,
+       folded into 64 bits), so a rewrite with other values forgets the earlier calls.
+       The game's descriptor writers, and its four-word, eight-word and counted user-data writers, put
+       a one-word NOP (its control word) before their SET_SH_REG, and the call stands at the NOP, so the
+       mark follows a NOP into the packet after it; otherwise a descriptor rewritten in the same layout
+       would pass on the NOP alone.
+     - **Calls a NOP now covers** (found in Iosefka's Clinic, 25 November 2026): with both marks in,
+       main still stopped on the shader at 0x20d1b00800 in about two clinic boots in five. Caught at
+       submission: the dispatch came from a 256-byte compute buffer submitted again with no new call,
+       whose first packet, a NOP with the game's control word 0x68750777, had been widened to cover the
+       whole buffer: its wait, user data and dispatch were now the NOP's body, which the GPU skips. The
+       calls' own packets were unchanged, so every mark matched, and the old dispatch ran with a table
+       address whose ring slot by then held floats. Each submission now walks the buffer's PM4 headers
+       from its start and takes only the calls that stand at a packet the GPU reaches (`live_calls` in
+       `render_calls.c`); a call inside an earlier packet's body is left out of that submission but
+       kept in the list, so the calls run again if the game narrows the NOP back. A buffer that does
+       not walk as type-3 packets up to a call keeps its calls from there on (the submission's own
+       walk in `runtime/syslib/gnm.c` stops on such a buffer). Counted over two clinic boots of about
+       150,000 submissions each, calls were left out of one buffer in all (three user-data calls and
+       the dispatch, inside that NOP); every buffer walked, and no call fell inside any other kind of
+       packet.
      - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
        command buffers from rings, so the record sees new buffer addresses all the time, and the
        runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
@@ -830,8 +859,10 @@ Instead:
           stores to, and the CPU waits only before reading that memory itself. Each target and image
           keeps its copy plan (the table and linear rows as large as the surface, one per mip level)
           while it is kept; when the device's memory has no room for a new plan, the plans of images
-          no unfinished batch uses are freed and made again at their next load (`free_idle_image_plans`;
-          before, a long walk stopped with "no GPU memory for copying a 1920x1080 image"). A target is loaded
+          no unfinished batch uses are freed and made again at their next load (`reclaim_image_memory`;
+          before, a long walk stopped with "no GPU memory for copying a 1920x1080 image"). If allocating a descriptor
+          image runs out of device memory, idle textures that can be reloaded are also released and the allocation
+          is retried once. Shader-written texels stay in their image. A target is loaded
           again, and such an image too, whenever the memory may have changed (the memory epoch: a new
           buffer, a dispatch, a write-back over it), without comparing bytes: reading it on the GPU
           costs less than comparing it on the CPU. Images of 8- and 16-bit elements need the device's 8-
@@ -870,7 +901,8 @@ Instead:
         - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
           `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
           recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus
-          the first index, 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
+          the first index (or, with the write watch, a device-local copy of that range: "Index ranges
+          in device-local memory" below), 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
           `MAX_SIZE`, which the library sets to the count, is taken as counting from `INDEX_OFFSET`, as
           shadPS4 reads it and the game's draws need (they start past it): inferred, not documented.
           The game's logo pass draws this way, blended, into the image its fullscreen pass then reads.
@@ -1159,7 +1191,8 @@ target again at every submitted buffer.
    buffer the renderer reads the written pages with `PAGEMAP_SCAN`, which protects them again in
    the same step (`PM_SCAN_WP_MATCHING`), so a write between the read and the protection cannot
    be lost. The executor first asks whether a collect is due (`cpu_writes_due`: the renderer
-   collects once for all the buffers submitted before the last collect), and only then gathers and
+   collects once for all the buffers submitted before the last collect, and again after it performed a
+   wait step since then, as the CPU's writes the wait released must reach the index copies), and only then gathers and
    sorts the ranges it asks about. The facts behind this are shadPS4's page manager (write watchers on cached memory)
    and the kernel's userfaultfd and pagemap documentation; they are used as facts only. A
    userfaultfd limited to user-mode faults (`UFFD_USER_MODE_ONLY`) needs no privilege, so
@@ -1238,6 +1271,209 @@ renderer-performed steps. Second, the collect must cost a small fraction of a fr
 limited to the pages the GPU can read, or the watch's dirty bits read without scanning the whole
 span.
 
+### Target copies on the GPU (November 2026)
+
+The game copies a whole render target's memory with a compute shader that moves one 32-bit
+element a thread (`0x20d1b00000`, about seven a frame in Iosefka's Clinic, 2 to 17 MB each). Before,
+each copy wrote the target back into host memory, the shader read it there and stored it into host
+memory again, and the copy's destination loaded it back over PCIe.
+
+`gcn_linear_copy_shape` (`runtime/linear_copy.h`) recognises such a program strictly: only the
+known shape, straight-line with no branches, and with the store after an `s_waitcnt` with vmcnt 0
+that follows the load. Apart from the shape's own writes (VCC by the index add's carry and the
+guard's compare, EXEC by the guard's `s_and_saveexec_b64` into an even pair of ordinary SGPRs),
+an `s_mov_b32` may write only an ordinary SGPR (s0 to s103) or, before the guard's compare, either
+half of VCC; any other write to VCC, EXEC, M0, the trap or the flat scratch registers rejects the
+program. The game's program sets VCC's high half before the add, which the guard's compare
+rewrites before the exec save reads it. Both descriptors must lie in ordinary SGPRs, and the
+MUBUF bits Sea Islands leaves reserved must be clear. When the
+source is a render target drawn into since its write-back, from its first byte through at least its
+memory, `target_copy` copies on the GPU instead:
+
+- into a render target of the same shape, by an image copy (the destination counts as drawn);
+- into any other memory, by tiling the source's linear rows straight there (the source is not
+  written back).
+
+Bytes past the source target's memory are copied in guest memory. A dword copy (`buffer_load_dword`
+and `buffer_store_dword`) whose source or destination descriptor has the invalid data format 0 is
+not taken over: it runs as usual rather than rely on how untyped accesses treat that format.
+
+Measured with `tools/ab_bench.py` on the clinic walk (warm caches, quiet machine, runs alternated A
+B A B), in two A/Bs on different main revisions. Average fps / 1% low / worst frame, mean of two
+runs per side:
+
+| A/B | window | main | branch |
+|---|---|---|---|
+| 1 (main 128fa433) | frames 1350-2900 | 15.96 / 6.60 / 358 ms | 17.98 / 6.34 / 742 ms |
+| 1 | input event 16 to walk 53 | 15.83 / 5.15 / 817 ms | 17.96 / 5.95 / 742 ms |
+| 2 (main 680fbfff) | frames 1350-2900 | 15.65 / 6.58 / 350 ms | 17.33 / 5.97 / 767 ms |
+| 2 | input event 16 to walk 53 | 15.50 / 5.51 / 800 ms | 17.30 / 6.02 / 767 ms |
+
+In A/B 1 both sides also carried the replay-mark fix that later merged as #1335, applied the same
+way to each. The average is 11 to 13% higher. Between the same two points of the route the branch is
+better on all three figures. Over the frame range its 1% low and worst frame look worse; "A frame
+range is not a stretch of the route" in the A/B section below explains why. Peak VRAM over a
+10-minute session went from 7613 to 7089 MiB.
+
+### Index ranges in device-local memory (November 2026)
+
+Before, an indexed draw read its indices straight from guest memory, which the GPU reaches over
+PCIe, at every draw, and the game draws the same index ranges frame after frame. `copy_for` and
+`copy_record` (`runtime/renderer/render_executor.c`) now copy each range once into a
+device-local buffer and bind it from there while the range's memory has not changed since the copy.
+A change is any of:
+
+- a CPU write the write watch reports (the copied ranges are added to what `note_cpu_writes` asks
+  about);
+- a GPU write as it is recorded (dispatch stores, write-backs, fills, copies; counted per 64 KB
+  chunk);
+- a vertex or pixel draw whose shaders may store (their stores have no known range: every copy
+  counts as changed);
+- a store by a tessellated or geometry draw's local, hull, export or geometry stage: through a
+  buffer descriptor whose range is known when the draw is recorded, that range and the 3 bytes past
+  it a dword starting at its last byte reaches (a store into a table the same stage loads a
+  descriptor from counts as a store anywhere); image, flat, GDS and
+  indexed (`IDXEN`) stores, and descriptors that are not known or cannot be read without waiting for
+  earlier work, count as stores anywhere. The geometry passes' ring stores (`buffer_store_dword*`
+  with GLC and SLC, which the translator sends to the renderer's own rings) do not count;
+- a step the renderer performs: a CPU-ordered step (`rt_executor_cpu_write_ready`), or another step
+  once the GPU's work before it has run (`rt_executor_cpu_writes`). A `DMA_DATA` step from packet
+  data into the GDS now carries no guest memory instead of "not known", so it no longer counts as a
+  write anywhere;
+- a step the renderer defers (performed on another thread): copies over its memory are read from
+  guest memory from then on, and no new copy is made there.
+
+Not seen: a CPU rewrite of the descriptor table a tessellated or geometry stage loads its store
+descriptors from, made after the draw is recorded and before it runs (vertex, pixel and compute
+stages have their tables snapshotted; these stages do not).
+
+Copies are placed one after the other; once the buffer or its 2048-entry table is full, all of them
+are dropped and placed again from the start, and two drops within 64 submissions pause copying for
+4096. A range whose memory changed three times in a row, the second and third change each within 64
+submissions of the copy before it, is read from guest memory again until the next drop. Without the write watch nothing is copied.
+`PB_INDEX_COPY_BYTES` sets the buffer's size in bytes (32 MB by default, at most 1 GB; 0 turns copies off).
+
+On the clinic walk (one boot each, counters added locally, never committed): with tessellated and
+geometry draws counted as storing anywhere and `DMA_DATA` steps as writing anywhere, only 40% of 3.2
+million indexed draws read a current copy and 44.7 GB were copied per boot, more than reading guest
+memory costs. As shipped (5925 frames; counters
+read at 3.4 million indexed draws): 93.6% read a current copy, 6.2% read guest memory because their
+range kept changing, 1584 copied a changed range again, 2730 ranges were placed, the buffer was
+dropped twice, and 132.7 MB were copied in all.
+
+Measured with `tools/ab_bench.py` on the clinic walk (main e0f825c6, warm caches, quiet machine, A B
+alternated, three runs per side), as are the VRAM peaks and frames below, on the code before its last
+review round, whose two fixes count more of tessellated and geometry draws' stores (up to 3 bytes past
+a range; a store over the stage's own descriptor table) and change no other path. Average fps / 1% low / worst frame, mean of three runs:
+
+| window | main | branch |
+|---|---|---|
+| frames 1350-2900 | 17.74 / 5.84 / 817 ms | 18.05 / 5.87 / 789 ms |
+| input event 16 to walk 53 | 17.72 / 5.67 / 817 ms | 18.07 / 5.91 / 789 ms |
+
+The average is 0.32 fps (1.8%) higher, above the noise floor of 0.24 (the largest spread between two
+runs of one side); the 1% low and worst frame are within their noise floors. The walk from input
+event 16 to walk 53 took 91.2 s on average instead of 93.2 s.
+
+Peak VRAM over a 10-minute session was 7619 MiB, against 7555 and 7281 MiB in two sessions of main
+(the buffer is 32 MB). Frames taken at the same points of the route differ from one main session's by a
+mean of 0.10 to 1.13 of 255 and from the other's by 1.60 to 5.14, within what the two sessions of
+main differ by (1.58 to 5.16).
+
+### Vertex buffers in device-local memory (November 2026)
+
+A vertex shader's fetch shader reads its vertex buffers through buffer descriptors, from guest memory
+over PCIe, and the game draws the same static meshes frame after frame. `vertex_copies_plan`
+(`runtime/renderer/render_executor.c`) now copies each vertex buffer of 64 KB or more once into a
+device-local buffer of its own (the vertex set, beside the index ranges' set; both use `copy_for` and
+`copy_record` and count the same changes as above) and reads it from there while its memory has not
+changed. The draw's copy of the descriptor in its table snapshot (`draw_snapshot`) gets a base in the
+copies' guest addresses (`gcn_guest_copies`), and the
+vertex shader's translation (`guest_access` in `runtime/renderer/gcn_spirv.c`) sends a load there to
+the copy. Stores and atomics never reach the copies: one there goes to the sink with a run-time stop,
+as one outside the guest memory does. The game's descriptor in guest memory is not changed.
+
+The copies' guest addresses are a span no guest map ever has. The runtime reserves it
+(`rt_gpu_copies_window` in `runtime/syslib/kernel_memory.c`: 4 GB of inaccessible host memory right
+after the window the runtime places maps in, below 2^40) and hands it to the executor
+(`rt_executor_memory`'s `copies_base`). The runtime places no map there, and a map the title asks
+for at an address hint inside it stops by name, as any hint in use does. Where the host cannot
+reserve the span, there are no copies.
+
+A descriptor is read from the copy only when all of these hold; otherwise it is read in place:
+
+- the draw is not tessellated, has no geometry shader, is not indirect, and none of its shaders may
+  store (draw snapshots on);
+- the program loads the descriptor from a table its snapshot holds, without `SWIZZLE_ENABLE` or
+  `ADD_TID_ENABLE`, and no other `s_load` through the same table pointer reads the descriptor's base
+  and stride words except as this whole descriptor (another descriptor overlapping them, or the base
+  loaded on its own); the rewritten base goes into every snapshot entry holding the descriptor;
+- the vertex or fetch shader has no `s_load` at an address that is not known before it runs: one
+  with an SGPR offset, or through a pointer loaded from memory (which could be a rewritten base);
+- every buffer descriptor the vertex or fetch shader loads through has a known origin (one it made
+  itself, say by adding to a base, could point past the copy);
+- no buffer load of the vertex or fetch shader is indexed (`IDXEN`) with an `SOFFSET` other than the
+  inline 0, which range checking does not count, so every load stays within the buffer's range plus 16
+  bytes, all of which the copy holds (the range is copied from a 4 KB page below the base to one past
+  its end), and those 16 bytes end inside the guest memory;
+- the descriptor's words in the snapshot are still the ones the plan read (the game may write the
+  table between the two); the copy is current, or this draw copies it. A draw copies at most one
+  range.
+
+Most large buffers the game draws are drawn once, or from a new place each frame, so a range is
+copied only when it is seen again 32 submissions or more after it was first seen. The game reads more
+such ranges than the set holds: once the set is full, a new range is read in place while at least half
+of the bytes placed in it were read in the last 256 submissions; after that every copy is dropped and placing
+starts again. `PB_VERTEX_COPY_BYTES` sets the set's size in bytes (256 MB by default, at most 1 GB;
+0 turns the copies off). The buffer is made when the executor opens, since the translations hold its
+address; without the write watch or draw snapshots, when the device has no memory for it, or when the
+executor is given no guest addresses for the copies (or ones that meet the guest memory, pass 2^40,
+or are fewer than the set's bytes), there is no vertex set.
+
+A load that reaches the copies' guest addresses some other way, through a stale or garbage
+descriptor or pointer, in any vertex shader, now reads whatever the set holds there; before, it went
+to the sink with a run-time stop (`GCN_RUNTIME_STOP_GUEST_RANGE`). No valid load is among them, since
+no guest memory is ever mapped in the span. Stores and atomics there still stop.
+
+Measured on the clinic walk (frames 1350-2900, warm caches, quiet machine, one boot per side unless
+said otherwise):
+
+- An experiment build that copied every vertex buffer once and never again (not correct in general)
+  gave 20.60 fps against 17.85 without it, on the index-copy branch that merged as #1350, two runs per
+  side, noise 0.44: the bound of what
+  copies can give here. The draw group that read the most vertex data went from 6.17 to 0.50 ms of GPU
+  time per frame.
+- A first version without the seen-again rule and the keep-while-read rule gave 17.82 and 17.87 fps,
+  no gain: recurring ranges of 64 KB or more total about 640 MB, so the set filled, was dropped,
+  filled again, and drops in quick succession paused copying.
+- With both rules, with counters added locally (never committed): 21.09 fps with a 256 MB set and
+  20.42 with 128 MB.
+
+Measured with `tools/ab_bench.py` on the clinic walk (main 9bc1b68f, warm caches, quiet machine, A B
+alternated, three runs per side), on the code before its last three rounds of review fixes, which make
+more draws read their buffers in place, write a rewritten base into every snapshot entry holding the
+descriptor (where two hold it, the draw then reads the copy), change the drop rule's measure (bytes placed instead of the
+set's size: the same once the set is full by size, as here), and move the copies' guest addresses
+(then the first multiple of 4 GB past the guest memory) to the reserved span. Average fps / 1% low / worst frame, mean
+of three runs:
+
+| window | main | branch |
+|---|---|---|
+| frames 1350-2900 | 17.96 / 5.91 / 783 ms | 21.01 / 6.58 / 644 ms |
+| input event 16 to walk 53 | 17.95 / 5.67 / 783 ms | 20.91 / 6.02 / 833 ms |
+
+The average is 3.04 fps (17%) higher, above the noise floor of 0.45 (the largest spread between two
+runs of one side); the 1% low and worst frame are within their noise floors (1.09 and 500 ms). The
+walk from input event 16 to walk 53 took 89.2 s on average instead of 92.3 s (one branch run took
+101.7 s, the other two 83.5 and 82.4 s).
+
+Peak VRAM over a 10-minute session was 7669 MiB, against 7371 and 7372 MiB in two sessions of main
+9bc1b68f (the set is 256 MB, made when the executor opens), measured on the code before its last
+three rounds of review fixes (above). Frames taken at the same
+points of the route differ from those of the two main sessions by a mean of 3.47 to 14.49 of 255,
+against 2.11 to 11.17 between the two main sessions; looked at side by side, the differences are
+camera and pose (the branch is further along the walk at the same frame), not geometry.
+
 ### Tests for each step
 
 - A CPU write after a GPU write: the next draw sees the CPU's bytes.
@@ -1307,6 +1543,27 @@ things keep that to the first run:
   `$XDG_CACHE_HOME/paleblood/vulkan-pipelines.bin`, else `~/.cache/paleblood/vulkan-pipelines.bin`.
   A file written for another device or driver, or larger than 512 MB, is not used and is replaced.
   The unit tests set it empty unless a test asks for one.
+- **Translations kept on disk.** Translating the shaders a boot meets took 1.35 to 1.57 s of the
+  renderer's thread in the clinic walk, in single frames of up to 33 ms, the same shaders in every
+  run. The executor keeps each translation (its SPIR-V, the user data and SGPRs it reads, its table
+  snapshot plan) in a file, under a key holding everything the translation depends on: the stage,
+  the program's code through its end (`gcn_program_dwords`, which is all the translator reads) and
+  a vertex shader's fetch shader the same way, their addresses, every layout value (user SGPRs,
+  settings, images, samplers, input controls, instancing, tessellation settings, the guest memory's
+  place on the GPU, the run-time stop word), and the translator's version: a hash the build makes of
+  the translator's and the executor's sources (`PB_TRANSLATOR_VERSION`, CMakeLists.txt), so any change
+  to them starts the file again. Keys are compared byte for byte. A record is appended as soon as it
+  is made, with a checksum: a torn last record (a run killed while writing) is dropped when the file
+  is read. The file is `BB_TRANSLATION_CACHE` (empty: none), else
+  `$XDG_CACHE_HOME/paleblood/translations.bin`, else `~/.cache/paleblood/translations.bin`; one larger
+  than 256 MB is started again, and appends stop at that size (`runtime/translation_cache.h`). The
+  executor prints how many shaders it found there and translated, and the time both took, every 20 s
+  while shaders are made and when it closes. Measured in the clinic walk (2026-11-18): a run with an
+  empty file translated 1298 shaders in 2.23 s and left a 123 MB file (the SPIR-V is most of it:
+  94 KB a shader on average, up to 1.16 MB); the next runs took 1189 to 1250 from the file and
+  translated 4 to 27, in 0.05 to 0.09 s. Frames 1350-2900 with warm caches (three rounds each) were
+  unchanged within the noise: average 15.52 to 15.58 fps, 1% low 10.36 to 10.59, worst frame 150 to
+  144 ms. The load to frame 1350 took 57.75 to 57.83 s with the file and 58.25 to 62.67 s without it.
 - **Pipelines made off the recording thread.** The file only helps from the second run on. On a
   first launch, or after a translator change gives the shaders new SPIR-V, the compiles are still
   there: in the clinic walk with no cache (frames 1350-2900) they took 5.2 s on the renderer's
@@ -1319,6 +1576,35 @@ things keep that to the first run:
   target has been drawn before (a later test reading depth no draw wrote would stop). Dispatches
   and every other draw still wait for their pipelines. `PB_ASYNC_PIPELINES=0` turns this off (one
   binary for an A/B run); the renderer's own test runs with it off, the executor's test checks it.
+- **Compute shaders compiled while the game loads.** A dispatch cannot be left out, so a compute
+  shader neither cache holds is translated and compiled on the renderer's thread when its dispatch
+  comes. Every compute shader made is also kept, by its translation key, in a shader catalog that
+  outlives translator versions (`BB_SHADER_CATALOG` (empty: none), else `catalog.bin` beside the
+  translations; its version changes only with the key's layout). When the executor opens it makes
+  each catalog key again with its own values (the guest memory's place, the stop words, given in the
+  catalog's order) and starts up to eight worker threads (one fewer than the processors) that
+  translate the shaders the translation cache lacks and make the pipelines the pipeline cache lacks,
+  while the game loads. A dispatch that meets a shader a worker is making waits for it; one no
+  worker has taken yet is made by the dispatch and left by the workers, so nothing is made twice.
+  While they work, a line on stderr tells how far they are ("compiling at launch: D of N compute
+  shaders", at most every 2 s) and the window's title reads "Paleblood - compiling shaders D of N"
+  (`rt_executor_memory.launch_progress`, `rt_display_set_status`; the title changes at the next
+  presented frame and goes back to the name once all are done). SDL3 changes a title only on its
+  main thread, the one that opened the window, so the window now opens at the first presented frame
+  (on video out's flip thread for queued flips) rather than when the buffers are registered, and
+  the title is changed only there. The workers count with an atomic
+  increment but tell the counts on their own threads, so each count goes through one lock and is
+  told only when it is past every count told before (`runtime/launch_progress.h`): a worker that
+  counted 1 of 2 and paused cannot put the title back after another told 2 of 2. The last worker prints what it did
+  ("compiled at launch"). `BB_LAUNCH_COMPILE=0` turns it off.
+  Measured in the clinic walk with a warm catalog of 30 compute shaders and empty translation and
+  pipeline caches, the driver's disk cache off (a first run after an update; two rounds, the same
+  binary with it off and on, 2026-11-22): the workers took 7.65 to 7.73 s; the time from start to
+  frame 1350 went from 79.28 and 81.29 s to 70.85 and 71.78 s; frames 1350-2900 were unchanged within
+  the noise (average 16.27 and 16.21 fps, 1% low 9.90 and 9.72, worst frame 233 and 225 ms). A
+  first version that waited for the workers before the first frame delayed it by 7.0 s and saved
+  only 2.0 s later, so the workers now run beside the game. With a warm pipeline cache (the 30
+  translations made again) the workers took 0.10 s.
 
 ## Measuring frame rate
 
@@ -1344,6 +1630,16 @@ build's 1% low looked better. Over the same frames both builds meet the same sta
 range that holds one, `--skip-frames FIRST-LAST` leaves the intervals ending on those frames out of
 the figures and reports them apart (count, time, longest); make it wide enough for where both
 builds stall.
+A frame range is not a stretch of the route either. The game moves by the clock, not by the frame,
+so a faster build reaches each place of the walk at an earlier frame. A stall tied to a place (not
+to a scripted point) can then fall inside the faster build's range and outside the slower one's. The
+target copies' A/Bs (frames 1350 to 2900) showed this: a stall of about 770 ms when the walk reaches
+one spot (walk 51) fell at frames 2790 to 2886 for the branch and at frames 3164 to 3219 for main,
+so only the branch's 1% low and worst frame held it. Measured between the same two points of the
+route instead (input script event 16 to walk 53), both builds hold it and the branch was better on
+all three figures. When a faster build's 1% low or worst frame looks worse, check where the slow
+frames fall on the route (the input script's `walk N: arrived ... frame F` lines in the boot log)
+before reading it as a cost.
 `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
 
 ### Re-measured over frames 1250-3000 (November 2026)
@@ -1360,3 +1656,23 @@ came from the time window above.
   A fresh three-round run (the commit before #1232 against main 0391d1fb) measured only one run of
   #1232 (10.92 fps, 1% low 8.12): every other run was left out, for other work on the machine
   (5.5-11.4 CPUs) or for ending before frame 3000. That is no result.
+
+### New targets cleared without a wait (November 2026)
+
+A render target or depth image is cleared to zero when the executor makes it. That clear was
+submitted and then waited for (`vkQueueWaitIdle`), about 2.25 s of the renderer's thread per clinic
+boot in single waits. It now goes to the queue with a fence and no wait (`queue_commands`): every
+batch that uses the target is submitted after it on the same queue, so the clear's last barrier
+orders it before them (the Vulkan specification's submission order). Its command buffer is freed
+once its fence has signalled; a target evicted before any batch used it waits for the queued clears
+first, and so does closing. Three rounds over frames 1350-2900 against main 1234ccc7: average 15.49
+to 15.64 fps (+0.16, noise floor 0.21), 1% low 10.05 to 10.40 (+0.35, noise floor 0.93), worst
+frame 183.3 to 144.5 ms (noise floor 100): better in each figure, all within the noise.
+
+Comparing frames by number between two runs needs runs that walked the same route. The route
+script's player sometimes gets stuck at walk 50 and sidesteps for longer (43 against 18 "stuck"
+lines), on either build, which moves the rest of the walk by about 300 frames. Four route-aligned
+captures (main 89ee1d80 twice, this change twice, the same caches) put three runs on the same frames
+(walks 51 to 54 at frames 2762, 2864, 2912 and 2996); between them the mean pixel difference at
+those frames was 0.19 to 1.59 of 255, main against main 0.22 to 1.38. The fourth run took the
+detour and differed from both builds by 4.7 to 12.6: the same corridor seen from another spot.

@@ -12,6 +12,7 @@
 #import <Metal/Metal.h>
 #include <dispatch/dispatch.h>
 #include "metal_fragment_quads.hpp"
+#include "metal_fragment_read_range.hpp"
 #include <cstddef>
 #include <set>
 
@@ -23,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <new>
 #include <string>
@@ -38,7 +40,8 @@ enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION =
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc,
        NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0, SWAP_ALT = 1,
-       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
+       PERSP_CENTER_ENA = 2, FRONT_FACE_ENA = 0x1000, FRONT_FACE_ALL_BITS = 1u << 24,
+       PIXEL_BARYCENTRIC_VGPRS = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
        DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
@@ -80,24 +83,34 @@ struct MetalVertexInstancing {
             step_rates[1] == other.step_rates[1] && step_rates_set == other.step_rates_set;
     }
 };
+struct MetalColorOutputs {
+    unsigned declared = 0, enabled = 0;
+    bool operator==(const MetalColorOutputs &other) const
+    {
+        return declared == other.declared && enabled == other.enabled;
+    }
+};
 struct MetalShader {
     uint64_t code, callee;
-    unsigned user, output;
+    unsigned user, interface_control;
     unsigned required_parameters;
     uint32_t user_read;
-    bool vertex, flip_y, color_output, capture, vertex_only;
+    bool vertex, flip_y;
+    MetalColorOutputs color_outputs;
+    bool capture, vertex_only;
     MetalRectangleShader rectangle;
     MetalVertexInstancing instancing;
     std::vector<uint32_t> program, fetch;
     std::vector<gcn_image_binding> images;
     std::vector<gcn_resource_origin> samplers;
     MetalPixelInputs input_controls;
+    std::vector<pb::MetalFragmentRead> removed_fragment_reads;
     id<MTLFunction> function;
 };
 struct MetalComputePipeline {
     uint64_t code;
     uint32_t local_size[3];
-    unsigned user;
+    unsigned user, thread_id_components;
     bool workgroup_x;
     uint32_t user_read;
     std::vector<uint32_t> program;
@@ -112,25 +125,37 @@ struct MetalTarget {
     id<MTLTexture> texture;
     bool initialized = false;
 };
-/* Only effective target-0 blend state belongs to a render pipeline. */
+/* Only effective blend state belongs to a render pipeline. */
 struct MetalBlend {
     bool enabled = false;
     MTLBlendFactor source = MTLBlendFactorOne, destination = MTLBlendFactorZero;
+    MTLBlendFactor alpha_source = MTLBlendFactorOne, alpha_destination = MTLBlendFactorZero;
     bool operator==(const MetalBlend &other) const
     {
-        return enabled == other.enabled && source == other.source && destination == other.destination;
+        return enabled == other.enabled && source == other.source && destination == other.destination &&
+            alpha_source == other.alpha_source && alpha_destination == other.alpha_destination;
     }
 };
+struct MetalColorAttachment {
+    MTLPixelFormat format = MTLPixelFormatInvalid;
+    bool write = false;
+    MetalBlend blend;
+    bool operator==(const MetalColorAttachment &other) const
+    {
+        return format == other.format && write == other.write && blend == other.blend;
+    }
+};
+using MetalColorAttachments = std::array<MetalColorAttachment,RT_COLOR_TARGETS>;
 struct MetalPipeline {
     id<MTLFunction> vertex, pixel;
-    MTLPixelFormat format, depth_format, stencil_format;
-    bool write_color, rasterize;
-    MetalBlend blend;
+    MTLPixelFormat depth_format, stencil_format;
+    bool rasterize;
+    MetalColorAttachments colors;
     id<MTLRenderPipelineState> pipeline;
 };
 struct MetalState {
-    rt_color_target color{};
-    bool color_enabled = false, other[RT_COLOR_TARGETS] = {};
+    rt_color_target colors[RT_COLOR_TARGETS] = {};
+    unsigned bound_colors = 0;
     bool viewport_set = false, vertex_set = false, pixel_set = false;
     float scale[3] = {}, translate[3] = {};
     float zmin = 0, zmax = 1;
@@ -150,7 +175,7 @@ struct MetalState {
     uint32_t depth_bounds[2] = {}; /* Independent raw DB_DEPTH_BOUNDS_MIN/MAX words. */
     uint32_t step_rates[2] = {}, step_rates_set = 0;
     uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
-    uint32_t clear_words[RT_COLOR_TARGETS][2] = {}; /* Raw CB_COLORn_CLEAR_WORD0/1, inert without fast clears. */
+    uint32_t clear_words[RT_COLOR_TARGETS][2] = {}; /* Raw CB_COLORn_CLEAR_WORD0/1. */
     uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
     bool depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t depth_words[9] = {}, depth_written = 0, depth_view = 0, render_control = 0;
@@ -195,7 +220,7 @@ struct rt_executor {
     unsigned call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
     std::vector<MetalShader> shaders;
     std::vector<MetalComputePipeline> compute_pipelines;
-    std::vector<MetalTarget> targets;
+    std::deque<MetalTarget> targets; /* Adding another slot keeps draw-local pointers valid. */
     std::vector<uint8_t> target_rows, image_rows;
     std::vector<MetalImage> images;
     std::vector<MetalSampler> samplers;
@@ -233,7 +258,7 @@ enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009,
 enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4, DEPTH_BOUNDS_ENABLE = 8,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
-       ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17 };
+       ROP3_SHIFT = 16, ROP3_COPY = 0xcc, RGBA_MASK = 15, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17 };
 static int set_register(MetalState &state, uint32_t address, uint32_t value)
 {
     switch (address) {
@@ -273,8 +298,7 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
             const unsigned slot = address - CB_BLEND0_CONTROL;
             state.blend_control[slot] = value; state.blend_set |= 1u << slot; return 0;
         }
-        /* GFX7 has two formatted clear words per target, fifteen registers apart.
-           Retain them independently; target_for still refuses active fast clears. */
+        /* GFX7 has two formatted clear words per target, fifteen registers apart. */
         if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + static_cast<unsigned>(RT_COLOR_TARGETS) * CB_COLOR_REGISTER_STRIDE &&
             (address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE < 2) {
             const unsigned relative = address - CB_COLOR0_CLEAR_WORD0;
@@ -292,14 +316,13 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     }
 }
 
-static bool color_writes(const MetalState &state)
+static unsigned color_nibble(uint32_t value, unsigned slot)
 {
-    return state.color_enabled && (!state.target_mask_set || (state.target_mask & TARGET0_MASK)) &&
-        (!state.color_control_set || (state.color_control & COLOR_MODE_MASK) != 0);
+    return value >> (4 * slot) & RGBA_MASK;
 }
 
 /* GFX7 CB_BLENDn_CONTROL factors are not Metal enum ordinals. This bounded
-   profile uses ADD and the colour factors for both RGB and alpha. */
+   profile uses ADD with shared or independent RGB and alpha factors. */
 static int blend_factor(unsigned factor, MTLBlendFactor &out, char *error, size_t size)
 {
     enum { BLEND_ZERO = 0, BLEND_ONE = 1, BLEND_SRC_ALPHA = 4, BLEND_ONE_MINUS_SRC_ALPHA = 5 };
@@ -311,23 +334,29 @@ static int blend_factor(unsigned factor, MTLBlendFactor &out, char *error, size_
     default: return failed(error,size,"blending factor %u is outside the Metal ADD profile",factor);
     }
 }
-static int blend_state(const MetalState &state, MetalBlend &out, char *error, size_t size)
+static int blend_state(const MetalState &state, unsigned slot, MetalBlend &out, char *error, size_t size)
 {
-    out = {};
-    if (!color_writes(state) || !(state.blend_set & 1u) || !(state.blend_control[0] & BLEND_ENABLE)) return 0;
+    if (!(state.blend_set & (1u << slot)) || !(state.blend_control[slot] & BLEND_ENABLE)) return 0;
     enum { FACTOR_MASK = 0x1f, COLOR_COMB_SHIFT = 5, COLOR_DEST_SHIFT = 8,
            COMB_MASK = 7, COMB_DST_PLUS_SRC = 0, RESERVED_MASK = 7u << 13,
+           ALPHA_SOURCE_SHIFT = 16, ALPHA_COMB_SHIFT = 21, ALPHA_DEST_SHIFT = 24,
            SEPARATE_ALPHA_BLEND = 1u << 29, DISABLE_ROP3 = 1u << 31 };
-    const uint32_t control = state.blend_control[0];
-    if (control & SEPARATE_ALPHA_BLEND) return failed(error,size,"separate alpha blending is outside the Metal ADD profile");
+    const uint32_t control = state.blend_control[slot];
     if (control & DISABLE_ROP3) return failed(error,size,"blending DISABLE_ROP3 is outside the Metal ADD profile");
-    if (control & RESERVED_MASK) return failed(error,size,"blending has unmodeled reserved CB_BLEND0_CONTROL bits");
+    if (control & RESERVED_MASK) return failed(error,size,"blending has unmodeled reserved CB_BLEND%u_CONTROL bits",slot);
     if ((control >> COLOR_COMB_SHIFT & COMB_MASK) != COMB_DST_PLUS_SRC)
         return failed(error,size,"blending operation is outside the Metal ADD profile");
     if (blend_factor(control & FACTOR_MASK,out.source,error,size) ||
         blend_factor(control >> COLOR_DEST_SHIFT & FACTOR_MASK,out.destination,error,size)) return -1;
-    /* SEPARATE_ALPHA_BLEND is clear: inactive alpha fields do not change the
-       shared factors, including their pipeline-cache identity. */
+    out.alpha_source = out.source;
+    out.alpha_destination = out.destination;
+    if (control & SEPARATE_ALPHA_BLEND) {
+        if ((control >> ALPHA_COMB_SHIFT & COMB_MASK) != COMB_DST_PLUS_SRC)
+            return failed(error,size,"separate alpha blending operation is outside the Metal ADD profile");
+        if (blend_factor(control >> ALPHA_SOURCE_SHIFT & FACTOR_MASK,out.alpha_source,error,size) ||
+            blend_factor(control >> ALPHA_DEST_SHIFT & FACTOR_MASK,out.alpha_destination,error,size)) return -1;
+    }
+    /* Inactive alpha fields retain the shared effective factors and cache identity. */
     out.enabled = true;
     return 0;
 }
@@ -339,9 +368,6 @@ static int check_state(const MetalState &state, char *error, size_t size)
         return failed(error, size, "a draw with rasterization killed (PA_CL_CLIP_CNTL %#x): not drawn yet", state.clip_control);
     if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_TRISTRIP && state.primitive != DI_PT_RECTLIST)
         return failed(error, size, "primitive type %u: only triangle lists, strips and rectangle lists are drawn yet", state.primitive);
-    /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
-    MetalBlend blend;
-    if (blend_state(state,blend,error,size)) return -1;
     if (state.depth_set && (state.depth & DEPTH_BOUNDS_ENABLE))
         return failed(error, size, "depth bounds testing (DB_DEPTH_CONTROL.DEPTH_BOUNDS_ENABLE) is not drawn yet");
     if (state.primitive_set && state.primitive == DI_PT_RECTLIST && state.instances > 1)
@@ -352,13 +378,10 @@ static int check_state(const MetalState &state, char *error, size_t size)
         if (mode != 0 && (mode != CB_NORMAL || rop != ROP3_COPY))
             return failed(error, size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
-    if (state.target_mask_set && (state.target_mask & TARGET0_MASK) != 0 &&
-        (state.target_mask & TARGET0_MASK) != TARGET0_MASK)
-        return failed(error, size, "colour write mask %#x: only all four channels are drawn yet", state.target_mask & TARGET0_MASK);
     return 0;
 }
 
-static int shader_profile(const MetalState &state, char *error, size_t size)
+static int shader_profile(const MetalState &state, unsigned &exports, char *error, size_t size)
 {
     if (state.vertex.vgpr_inputs > 3)
         return failed(error, size, "vertex input VGPR profile %u exceeds VGPR_COMP_CNT", state.vertex.vgpr_inputs);
@@ -380,16 +403,27 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (state.vertex.position_format != position_format)
         return failed(error, size, "SPI_SHADER_POS_FORMAT must declare float4 position and enabled clip vectors");
     if (!state.pixel.code) return 0;
-    if (state.pixel.input_enable != PERSP_CENTER_ENA || state.pixel.input_address != PERSP_CENTER_ENA)
-        return failed(error, size, "pixel-shader inputs beyond perspective-center barycentrics are not modeled");
+    const uint32_t inputs = state.pixel.input_address;
+    if (state.pixel.input_enable != inputs || !(inputs & PERSP_CENTER_ENA) ||
+        (inputs & ~(PERSP_CENTER_ENA | FRONT_FACE_ENA)))
+        return failed(error,size,"pixel-shader inputs must match perspective-center with optional front face");
+    if ((inputs & FRONT_FACE_ENA) && state.pixel.vgprs < PIXEL_BARYCENTRIC_VGPRS + 1)
+        return failed(error,size,"pixel shader front face requires a VGPR after the barycentric pair");
     if (state.pixel.depth_format) return failed(error, size, "pixel depth exports are not modeled");
-    if (state.pixel.color_formats != SPI_SHADER_FP16_ABGR && state.pixel.color_formats != SPI_SHADER_32_ABGR)
-        return failed(error, size, "SPI_SHADER_COL_FORMAT must select FP16_ABGR or 32_ABGR for target 0 only");
-    if (state.pixel.color_mask != TARGET0_MASK)
-        return failed(error, size, "CB_SHADER_MASK must select RGBA on target 0 only");
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; ++slot) {
+        const unsigned format = color_nibble(state.pixel.color_formats,slot);
+        const unsigned channels = color_nibble(state.pixel.color_mask,slot);
+        if (format && format != SPI_SHADER_FP16_ABGR && format != SPI_SHADER_32_ABGR)
+            return failed(error,size,"SPI_SHADER_COL_FORMAT slot %u must select FP16_ABGR or 32_ABGR",slot);
+        if (channels != (format ? RGBA_MASK : 0u))
+            return failed(error,size,"CB_SHADER_MASK slot %u must match the RGBA export format",slot);
+        if (format) exports |= 1u << slot;
+    }
     if (state.pixel.interpolated > PARAMETER_LIMIT)
         return failed(error, size, "SPI_PS_IN_CONTROL exceeds the modeled parameter range");
-    if (state.pixel.barycentric_control) return failed(error, size, "nonzero SPI_BARYC_CNTL is not modeled");
+    if ((state.pixel.barycentric_control & ~FRONT_FACE_ALL_BITS) ||
+        (state.pixel.barycentric_control && !(inputs & FRONT_FACE_ENA)))
+        return failed(error,size,"SPI_BARYC_CNTL requires a modeled front-face encoding");
     if (state.pixel.depth_control) return failed(error, size, "nonzero DB_SHADER_CONTROL is not modeled");
     return 0;
 }
@@ -508,7 +542,7 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
     if (format == MTLPixelFormatInvalid)
         return failed(error, size, "render target format %#x, number type %u, swap %u is not drawn yet",
                       color.format, color.number_type, color.component_swap), nullptr;
-    if (color.samples != 1 || color.first_slice || color.last_slice || color.fast_clear || color.compression)
+    if (color.samples != 1 || color.first_slice || color.last_slice || color.compression)
         return failed(error, size, "multisample, layered or compressed render targets are not drawn yet"), nullptr;
     if (!color.pitch || !color.height || color.pitch > MAX_DIMENSION || color.height > MAX_DIMENSION)
         return failed(error, size, "render target dimensions exceed the executor's 1..4096 profile"), nullptr;
@@ -541,12 +575,17 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
    that same memory. This synchronous path makes CPU, buffer, compute and overlapping-target
    accesses observe one backing store without a second dirty-image lifetime. Encoded bytes
    keep their native channel order and element width, including float attachments. */
-static void load_target(rt_executor *x, const MetalTarget &target)
+static void load_target(rt_executor *x, const MetalTarget &target, const uint32_t *clear = nullptr)
 {
     const size_t row = static_cast<size_t>(target.width) * target.layout.element_bytes;
     x->target_rows.resize(row * target.height);
-    const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
-    rt_tiling_detile(&target.layout, tiled, x->target_rows.data(), target.width, target.height, 1);
+    if (clear) {
+        for (size_t offset = 0; offset < x->target_rows.size(); offset += sizeof(uint32_t))
+            std::memcpy(x->target_rows.data() + offset,clear,sizeof(uint32_t));
+    } else {
+        const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
+        rt_tiling_detile(&target.layout, tiled, x->target_rows.data(), target.width, target.height, 1);
+    }
     [target.texture replaceRegion:MTLRegionMake2D(0, 0, target.width, target.height) mipmapLevel:0
         withBytes:x->target_rows.data() bytesPerRow:row];
 }
@@ -736,8 +775,16 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
 {
     const char *stage = storage ? "compute" : "pixel";
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
-    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
-    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY)
+    const bool cube = !storage && d.type == RT_IMAGE_CUBE;
+    constexpr uint32_t cube_faces = 6;
+    /* As in the common sampled-cube path, the allocation describes the faces.
+       The advertised array range may extend beyond the six stored faces. */
+    if (cube && (d.depth != 1 || d.layers != cube_faces || d.width != d.height || d.pow2_pad ||
+                 d.base_array || d.last_array < cube_faces - 1 || d.base_level || d.last_level ||
+                 d.tiling_index != 13 || format.metal != MTLPixelFormatRGBA8Unorm))
+        return failed(error,size,"pixel cube requires one square tiled RGBA8 UNORM cube with a full base-level view"), nil;
+    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube;
+    if (!one_d && d.type != RT_IMAGE_2D && !arrayed)
         return failed(error, size, "only 1D/2D %s images and their arrays are modeled",stage), nil;
     constexpr uint32_t image_dimension_limit = 16384, image_layer_limit = 2048; /* Metal feature-table limits. */
     const uint32_t height = one_d ? 1 : d.height;
@@ -747,7 +794,7 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
     unsigned max_levels = 1;
     for (uint32_t extent = std::max(d.width, height); extent > 1; extent >>= 1) ++max_levels;
     if (d.base_level > d.last_level || d.last_level >= max_levels ||
-        (arrayed && (d.base_array > d.last_array || d.last_array >= d.layers)))
+        (arrayed && !cube && (d.base_array > d.last_array || d.last_array >= d.layers)))
         return failed(error, size, "%s image mip or array view exceeds its allocation",stage), nil;
     if (format.block > 1 && !x->device.supportsBCTextureCompression)
         return failed(error, size, "Metal device does not support BC textures"), nil;
@@ -794,7 +841,8 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         descriptor.storageMode = MTLStorageModeShared;
         id<MTLTexture> texture = [x->device newTextureWithDescriptor:descriptor];
         if (!texture) return failed(error,size,"Metal image allocation failed"), nil;
-        const uint32_t first = arrayed ? d.base_array : 0, slices = arrayed ? d.last_array - d.base_array + 1 : 1;
+        const uint32_t first = arrayed && !cube ? d.base_array : 0;
+        const uint32_t slices = cube ? cube_faces : arrayed ? d.last_array - d.base_array + 1 : 1;
         id<MTLTexture> view = [texture newTextureViewWithPixelFormat:format.metal textureType:descriptor.textureType
             levels:NSMakeRange(d.base_level,d.last_level - d.base_level + 1) slices:NSMakeRange(first,slices) swizzle:swizzle];
         if (!view) return failed(error,size,"Metal image view allocation failed"), nil;
@@ -806,11 +854,12 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         const auto &layout = levels[level];
         const uint32_t width = std::max(1u,d.width >> level), rows = std::max(1u,height >> level);
         const size_t row_bytes = static_cast<size_t>(layout.columns) * format.bytes, slice_bytes = row_bytes * layout.rows;
+        const size_t transfer_row_bytes = cube && rows == 1 ? 0 : row_bytes;
         x->image_rows.resize(slice_bytes * d.layers);
         rt_tiling_detile(&layout.layout,base + layout.offset,x->image_rows.data(),layout.columns,layout.rows,d.layers);
         for (uint32_t slice = 0; slice < d.layers; ++slice)
             [entry->texture replaceRegion:MTLRegionMake2D(0,0,width,rows) mipmapLevel:level slice:slice
-                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:0];
+                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:transfer_row_bytes bytesPerImage:0];
     }
     return entry->view;
 }
@@ -818,10 +867,15 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
 static id<MTLSamplerState> sampler_for(rt_executor *x, const uint32_t words[4], bool &linear, char *error, size_t size)
 {
     const unsigned magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3;
-    /* These anisotropy fields do not affect the admitted point/bilinear filters. */
-    enum { clamp_fields = 0x1ff, anisotropy_fields = (7u << 9) | (7u << 16) | (0x3fu << 21) };
-    if ((words[0] & ~(clamp_fields | anisotropy_fields)) || magnify != minify || magnify > 1)
-        return failed(error,size,"sampler options exceed equal point/bilinear, normalized color sampling"), nil;
+    enum { clamp_fields = 0x1ff, ratio_shift = 9, ratio_mask = 7u << ratio_shift,
+           anisotropy_tuning = (7u << 16) | (0x3fu << 21), anisotropic_bilinear = 3, max_ratio = 4 };
+    const bool anisotropic = magnify == anisotropic_bilinear;
+    if ((words[0] & ~(clamp_fields | ratio_mask | anisotropy_tuning)) || magnify != minify ||
+        (magnify > 1 && !anisotropic))
+        return failed(error,size,"sampler options exceed matched point, bilinear or anisotropic bilinear sampling"), nil;
+    const unsigned ratio = (words[0] & ratio_mask) >> ratio_shift;
+    if (anisotropic && (ratio > max_ratio || (words[0] & anisotropy_tuning)))
+        return failed(error,size,"sampler anisotropy ratio or tuning is outside the Metal profile"), nil;
     const MTLSamplerAddressMode modes[] = {MTLSamplerAddressModeRepeat,MTLSamplerAddressModeMirrorRepeat,MTLSamplerAddressModeClampToEdge};
     MTLSamplerDescriptor *descriptor = [MTLSamplerDescriptor new];
     unsigned address[3];
@@ -835,6 +889,7 @@ static id<MTLSamplerState> sampler_for(rt_executor *x, const uint32_t words[4], 
     if (x->samplers.size() == MAX_SAMPLERS) return failed(error,size,"sampler cache is full"), nil;
     descriptor.sAddressMode = modes[address[0]]; descriptor.tAddressMode = modes[address[1]]; descriptor.rAddressMode = modes[address[2]];
     descriptor.minFilter = descriptor.magFilter = magnify ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+    descriptor.maxAnisotropy = anisotropic ? 1u << ratio : 1u;
     descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped; descriptor.normalizedCoordinates = YES;
     descriptor.lodMinClamp = descriptor.lodMaxClamp = 0;
     id<MTLSamplerState> state = [x->device newSamplerStateWithDescriptor:descriptor];
@@ -871,9 +926,10 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
         if (linear && (images[i].access & GCN_IMAGE_SAMPLE) &&
             (format->type != GCN_IMAGE_FLOAT || (float32 && !x->device.supports32BitFloatFiltering)))
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
+        const bool cube = descriptor.type == RT_IMAGE_CUBE;
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY || cube,format->type,format->components,1,cube,
             descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0, 0}; /* DST_SEL: for the texel a load outside the image reads */
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,error,size))) return -1;
     }
@@ -922,24 +978,39 @@ static bool fragment_control_needed(const uint32_t *words, size_t count)
     return broadcast && multiple_cases;
 }
 
-static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
+/* Check current draw state before every cached function return as well as compilation.
+   Only symbolic requirements are cached; no callback or borrowed user-data pointer escapes. */
+static int check_fragment_reads(rt_executor *x, const std::vector<pb::MetalFragmentRead> &reads,
+    const uint32_t *data, unsigned declared, uint32_t written, char *error, size_t size)
+{
+    for (const auto &read : reads)
+        if (!pb::metal_fragment_read_in_pool(read, data, declared, written, x->guest_base,
+            x->memory.gpuAddress, std::min<uint64_t>(x->size, x->memory.length)))
+            return failed(error, size, "pixel removed physical read lacks current declared, written and aligned pool coverage");
+    return 0;
+}
+
+/* Stage-specific interface controls are disjoint within each stage: VS output
+   control, or PS input address with SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS. */
+static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned interface_control,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
                                  const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
                                  MetalRectangleShader *rectangle = nullptr, const MetalVertexInstancing &instancing = {},
-                                 bool color_output = true, bool vertex_only = false)
+                                 const MetalColorOutputs &color_outputs = {}, bool vertex_only = false)
 {
     MetalProgram program, callee; uint32_t target_read = 0;
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
-        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
-            shader.color_output == color_output && shader.capture == (rectangle != nullptr) && shader.vertex_only == vertex_only &&
+        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.interface_control == interface_control && shader.flip_y == flip_y &&
+            shader.color_outputs == color_outputs && shader.capture == (rectangle != nullptr) && shader.vertex_only == vertex_only &&
             shader.instancing == instancing &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
             std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
             (!callee.dwords || std::equal(shader.fetch.begin(), shader.fetch.end(), callee.words)) && same_pixel_resources(shader,pixel)) {
             if (shader.required_parameters > parameter_capacity)
                 return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
+            if (check_fragment_reads(x, shader.removed_fragment_reads, data, user, written, error, error_size)) return nil;
             user_read = shader.user_read;
             if (rectangle) *rectangle = shader.rectangle;
             return shader.function;
@@ -950,7 +1021,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     int result;
     if (vertex) {
         gcn_vertex_layout layout{};
-        layout.user_sgprs = user; layout.output_control = output;
+        layout.user_sgprs = user; layout.output_control = interface_control;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.callee = callee.words; layout.callee_dwords = callee.dwords; layout.code_address = code;
@@ -959,9 +1030,12 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.step_rates_set = instancing.step_rates_set;
         result = gcn_translate_vertex(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     } else {
-        /* Only perspective-center barycentrics occupy VGPR0/1. Resources use the common origins. */
         gcn_pixel_layout layout{};
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
+        /* The enabled face input immediately follows the perspective-center pair. */
+        layout.front_face = (interface_control & FRONT_FACE_ENA) != 0;
+        layout.front_face_all_bits = (interface_control & FRONT_FACE_ALL_BITS) != 0;
+        layout.front_face_vgpr = PIXEL_BARYCENTRIC_VGPRS;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.images = pixel->images; layout.image_count = pixel->image_count;
@@ -977,6 +1051,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         const bool controlled = !vertex && fragment_control_needed(spirv,count);
         const uint64_t fault_address = x->stop.gpuAddress + offsetof(MetalShaderStops, fragment_quad);
         std::unique_ptr<MetalCompiler> compiler_owner;
+        std::vector<pb::MetalFragmentRead> removed_fragment_reads;
         if (controlled) {
             std::vector<pb::MetalDescriptorSpan> spans;
             const auto append = [&](const gcn_resource_origin &origin, unsigned words) {
@@ -989,7 +1064,15 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
             for (unsigned i = 0; i < pixel->sampler_count; ++i) append(pixel->samplers[i],4);
             /* pixel_resources already checked every span on this draw. Cache equality keeps
                these origins fixed, while subsequent draws revalidate their actual pointers. */
-            const auto prepared = pb::prepare_metal_fragment(spirv,count,spans,x->address_offset,USER_BYTES);
+            const auto coverage = [&](const pb::MetalFragmentRead &read) {
+                if (!pb::metal_fragment_read_in_pool(read, data, user, written, x->guest_base,
+                    x->memory.gpuAddress, std::min<uint64_t>(x->size, x->memory.length)))
+                    throw std::runtime_error("pixel removed physical read lacks current declared, written and aligned pool coverage");
+                return true;
+            };
+            const auto prepared = pb::prepare_metal_fragment(spirv,count,spans,x->address_offset,USER_BYTES,coverage);
+            removed_fragment_reads = prepared.dce.removed_reads;
+            if (check_fragment_reads(x, removed_fragment_reads, data, user, written, error, error_size)) return nil;
             compiler_owner = std::make_unique<MetalCompiler>(prepared,fault_address);
         } else compiler_owner = std::make_unique<MetalCompiler>(spirv,count,fault_address);
         auto &compiler = *compiler_owner;
@@ -997,7 +1080,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         /* A nonrasterizing Metal vertex entry returns void. Keep guest buffer stores
            without the rectangle capture ABI or an unused stage-output buffer. */
         options.disable_rasterization = vertex_only;
-        if (!vertex) options.enable_frag_output_mask = color_output ? 1u : 0u;
+        if (!vertex) options.enable_frag_output_mask = color_outputs.enabled;
         compiler.set_msl_options(options);
         /* Vertex quad operations remain outside their profile. Prepared pixel control has
            no native wave vote or dispatcher; its Boolean quad reads are checked separately. */
@@ -1024,51 +1107,64 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         }
         if (required_parameters > parameter_capacity)
             return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
-        if (!vertex) for (const auto &color : resources.stage_outputs)
-            if (!compiler.has_decoration(color.id, spv::DecorationBuiltIn) &&
-                (!compiler.has_decoration(color.id, spv::DecorationLocation) || compiler.get_decoration(color.id, spv::DecorationLocation) != 0))
-                return failed(error, error_size, "pixel outputs beyond target 0 are not modeled"), nil;
+        if (!vertex) {
+            unsigned translated_outputs = 0;
+            for (const auto &color : resources.stage_outputs) {
+                if (compiler.has_decoration(color.id, spv::DecorationBuiltIn)) continue;
+                if (!compiler.has_decoration(color.id, spv::DecorationLocation))
+                    return failed(error,error_size,"pixel color output has no location"), nil;
+                const unsigned slot = compiler.get_decoration(color.id, spv::DecorationLocation);
+                if (slot >= RT_COLOR_TARGETS || !(color_outputs.declared & (1u << slot)))
+                    return failed(error,error_size,"pixel output slot %u has no declared color export",slot), nil;
+                translated_outputs |= 1u << slot;
+            }
+            if (color_outputs.enabled & ~translated_outputs)
+                return failed(error,error_size,"an enabled color attachment has no shader output"), nil;
+        }
         id<MTLFunction> function = compile_msl(x, compiler,
             vertex ? spv::ExecutionModelVertex : spv::ExecutionModelFragment, flip_y, error, error_size, pixel, rectangle);
         if (!function) return nil;
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
-        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, color_output,
+        x->shaders.push_back({code, callee.address, user, interface_control, required_parameters, user_read, vertex, flip_y, color_outputs,
             rectangle != nullptr, vertex_only, rectangle ? *rectangle : MetalRectangleShader{}, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
             pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},
-            pixel ? pixel->input_controls : MetalPixelInputs{},function});
+            pixel ? pixel->input_controls : MetalPixelInputs{}, std::move(removed_fragment_reads),function});
         return function;
     } catch (const std::exception &exception) { return failed(error, error_size, "SPIR-V to MSL: %s", exception.what()), nil; }
 }
 
 static id<MTLRenderPipelineState> pipeline_for(rt_executor *x, id<MTLFunction> vertex, id<MTLFunction> pixel,
-                                             MTLPixelFormat format, MTLPixelFormat depth_format, MTLPixelFormat stencil_format,
-                                             bool write_color, char *error, size_t size, bool rasterize = true,
-                                             const MetalBlend &blend = {})
+                                             const MetalColorAttachments &colors, MTLPixelFormat depth_format,
+                                             MTLPixelFormat stencil_format, char *error, size_t size, bool rasterize = true)
 {
     for (const auto &entry : x->pipelines)
-        if (entry.vertex == vertex && entry.pixel == pixel && entry.format == format && entry.depth_format == depth_format &&
-            entry.stencil_format == stencil_format && entry.write_color == write_color && entry.rasterize == rasterize && entry.blend == blend)
+        if (entry.vertex == vertex && entry.pixel == pixel && entry.depth_format == depth_format &&
+            entry.stencil_format == stencil_format && entry.rasterize == rasterize && entry.colors == colors)
             return entry.pipeline;
     if (x->pipelines.size() == MAX_PIPELINES) return failed(error, size, "draw pipeline cache is full"), nil;
     NSError *failure = nil;
     MTLRenderPipelineDescriptor *description = [MTLRenderPipelineDescriptor new];
     description.vertexFunction = vertex; description.fragmentFunction = pixel; description.rasterizationEnabled = rasterize;
-    description.colorAttachments[0].pixelFormat = format;
     description.depthAttachmentPixelFormat = depth_format; description.stencilAttachmentPixelFormat = stencil_format;
-    description.colorAttachments[0].writeMask = write_color ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
-    auto *attachment = description.colorAttachments[0];
-    attachment.blendingEnabled = blend.enabled;
-    if (blend.enabled) {
-        attachment.rgbBlendOperation = MTLBlendOperationAdd; attachment.alphaBlendOperation = MTLBlendOperationAdd;
-        attachment.sourceRGBBlendFactor = blend.source; attachment.destinationRGBBlendFactor = blend.destination;
-        attachment.sourceAlphaBlendFactor = blend.source; attachment.destinationAlphaBlendFactor = blend.destination;
+    for (unsigned slot = 0; slot < colors.size(); ++slot) {
+        const auto &color = colors[slot];
+        if (color.format == MTLPixelFormatInvalid) continue;
+        auto *attachment = description.colorAttachments[slot];
+        attachment.pixelFormat = color.format;
+        attachment.writeMask = color.write ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
+        if (color.blend.enabled) {
+            attachment.blendingEnabled = YES;
+            attachment.rgbBlendOperation = MTLBlendOperationAdd; attachment.alphaBlendOperation = MTLBlendOperationAdd;
+            attachment.sourceRGBBlendFactor = color.blend.source; attachment.destinationRGBBlendFactor = color.blend.destination;
+            attachment.sourceAlphaBlendFactor = color.blend.alpha_source; attachment.destinationAlphaBlendFactor = color.blend.alpha_destination;
+        }
     }
     id<MTLRenderPipelineState> pipeline = [x->device newRenderPipelineStateWithDescriptor:description error:&failure];
     if (!pipeline) return failed(error, size, "Metal draw pipeline: %s", failure.localizedDescription.UTF8String), nil;
-    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, rasterize, blend, pipeline});
+    x->pipelines.push_back({vertex, pixel, depth_format, stencil_format, rasterize, colors, pipeline});
     return pipeline;
 }
 
@@ -1459,7 +1555,8 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     const bool workgroup_x = (shader.workgroup_id_enables & 1u) != 0;
     if (compute_resources(x,shader,code,dwords,user,written,resources,error,size)) return nil;
     for (const auto &entry : x->compute_pipelines)
-        if (entry.code == shader.code && entry.user == shader.user_sgprs && entry.workgroup_x == workgroup_x &&
+        if (entry.code == shader.code && entry.user == shader.user_sgprs && entry.thread_id_components == shader.thread_id_components &&
+            entry.workgroup_x == workgroup_x &&
             std::equal(entry.local_size, entry.local_size + 3, shader.threads) &&
             entry.program.size() == dwords && std::equal(entry.program.begin(), entry.program.end(), code) &&
             same_images(entry.images,resources.images,resources.image_count)) {
@@ -1471,6 +1568,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     gcn_compute_layout layout{};
     std::copy(shader.threads, shader.threads + 3, layout.local_size);
     layout.user_sgprs = shader.user_sgprs;
+    layout.thread_id_vgprs = shader.thread_id_components + 1;
     layout.workgroup_id_enables = workgroup_x ? 1u : 0u;
     layout.address_offset = x->address_offset;
     layout.error_address = x->stop.gpuAddress;
@@ -1488,7 +1586,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     id<MTLComputePipelineState> pipeline = [x->device newComputePipelineStateWithFunction:function error:&failure];
     if (!pipeline) return failed(error, size, "Metal compute pipeline: %s", failure.localizedDescription.UTF8String), nil;
     MetalComputePipeline entry{shader.code, {shader.threads[0], shader.threads[1], shader.threads[2]},
-        shader.user_sgprs, workgroup_x, user_read, std::vector<uint32_t>(code,code + dwords),
+        shader.user_sgprs, shader.thread_id_components, workgroup_x, user_read, std::vector<uint32_t>(code,code + dwords),
         std::vector<gcn_image_binding>(resources.images,resources.images + resources.image_count),pipeline};
     x->compute_pipelines.push_back(std::move(entry));
     return pipeline;
@@ -1501,8 +1599,11 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
     const auto &shader = state.compute;
     if (shader.user_sgprs > GCN_USER_SGPR_MAX || shader.sgprs < shader.user_sgprs + (shader.workgroup_id_enables & 1u))
         return failed(error, size, "compute user SGPR count exceeds its modeled or declared allocation");
-    if (shader.thread_id_components != THREAD_ID_XYZ || shader.vgprs < 3)
-        return failed(error, size, "compute requires enabled X, Y and Z thread-id VGPRs");
+    if (shader.thread_id_components > THREAD_ID_XYZ)
+        return failed(error, size, "undefined compute thread-id encoding %u", shader.thread_id_components);
+    if (shader.vgprs < shader.thread_id_components + 1)
+        return failed(error, size, "compute thread-id profile %u exceeds declared VGPR allocation %u",
+                      shader.thread_id_components, shader.vgprs);
     if (shader.workgroup_id_enables & ~1u)
         return failed(error, size, "compute Y or Z workgroup-id SGPRs are not modeled");
     if (shader.workgroup_size_enabled) return failed(error, size, "packed compute workgroup size is not modeled");
@@ -1567,8 +1668,8 @@ static int capture_rectangle(rt_executor *x, const MetalState &state, uint32_t c
         return failed(error,size,"rectangle captured vertex span exceeds the Metal buffer limit");
     out.outputs = [x->device newBufferWithLength:static_cast<NSUInteger>(span * stride) options:MTLResourceStorageModeShared];
     if (!out.outputs) return failed(error,size,"rectangle vertex capture allocation failed");
-    id<MTLRenderPipelineState> pipeline = pipeline_for(x,vertex,nil,MTLPixelFormatInvalid,MTLPixelFormatInvalid,
-        MTLPixelFormatInvalid,false,error,size,false);
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,vertex,nil,{},MTLPixelFormatInvalid,
+        MTLPixelFormatInvalid,error,size,false);
     if (!pipeline) return -1;
     auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.renderTargetWidth = pass.renderTargetHeight = 1; pass.defaultRasterSampleCount = 1;
@@ -1592,20 +1693,62 @@ static int capture_rectangle(rt_executor *x, const MetalState &state, uint32_t c
     return shader_runtime_stop(x,error,size);
 }
 
+struct MetalColorClear {
+    uint64_t address = 0, bytes = 0;
+    bool pending = false;
+};
+
+/* Uniform CMASK states are independent of the order of the per-tile nibbles.
+   0 is a full clear; 0xff in every byte is expanded color already in memory. */
+static int color_clear(rt_executor *x, const rt_color_target &descriptor, const MetalTarget &target,
+                       const MetalDepthAttachments &depth, MetalColorClear &clear, char *error, size_t size)
+{
+    if (!descriptor.fast_clear) return 0;
+    enum { CMASK_BLOCK = 128, MAX_CMASK_BYTES = (1u << 14) * CMASK_BLOCK };
+    clear.address = descriptor.cmask_address; clear.bytes = descriptor.cmask_bytes;
+    const uint32_t tiles = ((target.width + 7) / 8) * ((target.height + 7) / 8);
+    if (clear.address % 256 || clear.bytes % CMASK_BLOCK || clear.bytes < (tiles + 1) / 2 ||
+        clear.bytes > MAX_CMASK_BYTES || !pool_range(x,clear.address,clear.bytes))
+        return failed(error,size,"CMASK range or alignment is outside the modeled profile");
+    if (depth.htile_span && overlap(clear.address,clear.bytes,depth.htile_address,depth.htile_span))
+        return failed(error,size,"CMASK overlaps HTILE");
+    if (overlap(clear.address,clear.bytes,target.address,rt_tiling_size(&target.layout,1)))
+        return failed(error,size,"CMASK overlaps the color target");
+    for (const auto *plane : {&depth.z,&depth.stencil})
+        if (plane->texture && overlap(clear.address,clear.bytes,plane->address,rt_tiling_size(&plane->layout.tiles,plane->slice + 1)))
+            return failed(error,size,"CMASK overlaps a depth or stencil plane");
+    const auto *bits = static_cast<const uint8_t *>(x->view) + clear.address - x->guest_base;
+    if (bits[0] != 0 && bits[0] != 0xff)
+        return failed(error,size,"unmodeled CMASK clear or compression code");
+    if (!std::all_of(bits,bits + clear.bytes,[first = bits[0]](uint8_t byte) { return byte == first; }))
+        return failed(error,size,"partly cleared or compressed CMASK is not modeled");
+    clear.pending = bits[0] == 0;
+    return 0;
+}
+
 static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *error, size_t size,
                  const MetalIndices *indices = nullptr)
 {
     const bool rectangle = state.primitive_set && state.primitive == DI_PT_RECTLIST;
     if (rectangle && (count % 3 || count > UINT32_MAX / 2))
         return failed(error,size,"rectangle lists require complete triples and a bounded expanded count");
-    if (!state.color_enabled && !(state.depth_set && (state.depth & (Z_ENABLE | STENCIL_ENABLE | 8u))) &&
+    if (!state.bound_colors && !(state.depth_set && (state.depth & (Z_ENABLE | STENCIL_ENABLE | DEPTH_BOUNDS_ENABLE))) &&
         (!state.pixel_set || state.pixel.code))
         return failed(error,size,"a draw has no color target or depth/stencil attachment");
-    for (unsigned slot = 1; slot < RT_COLOR_TARGETS; ++slot)
-        if (state.other[slot]) return failed(error, size, "render targets beyond slot 0 are not drawn yet");
     if (!state.viewport_set || !state.vertex_set || !state.pixel_set)
         return failed(error, size, "a draw requires viewport, vertex and pixel shader state");
-    if (shader_profile(state, error, size)) return -1;
+    MetalColorOutputs outputs;
+    if (shader_profile(state, outputs.declared, error, size)) return -1;
+    if (!state.color_control_set || (state.color_control & COLOR_MODE_MASK)) {
+        const unsigned candidates = state.pixel.code ? state.bound_colors & outputs.declared : state.bound_colors;
+        for (unsigned slot = 0; slot < RT_COLOR_TARGETS; ++slot) {
+            if (!(candidates & (1u << slot))) continue;
+            const unsigned mask = state.target_mask_set ? color_nibble(state.target_mask,slot) : RGBA_MASK;
+            if (mask && mask != RGBA_MASK)
+                return failed(error,size,"colour write mask %#x on slot %u: only all four channels are drawn yet",mask,slot);
+            if (mask) outputs.enabled |= 1u << slot;
+        }
+    }
     uint32_t zmin_bits, zmax_bits;
     std::memcpy(&zmin_bits, &state.zmin, sizeof zmin_bits); std::memcpy(&zmax_bits, &state.zmax, sizeof zmax_bits);
     if ((zmin_bits & 0x7fffffffu) || zmax_bits != 0x3f800000u)
@@ -1617,33 +1760,57 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         if (std::fabs(state.scale[axis]) > static_cast<float>(MAX_DIMENSION) ||
             std::fabs(state.translate[axis]) > static_cast<float>(MAX_DIMENSION))
             return failed(error, size, "viewport exceeds the executor's coordinate range");
-    if (state.scale[0] <= 0 || state.scale[1] == 0 || state.translate[2] < 0 ||
-        state.translate[2] + state.scale[2] > 1 || state.scale[2] < 0)
-        return failed(error, size, "viewport scale or depth range is not supported");
+    if (state.scale[0] <= 0 || state.scale[1] == 0)
+        return failed(error, size, "viewport scale is not supported");
+    /* Preserve the affine Z transform. The depth buffer clamps the transformed value,
+       so clipping the endpoints here would change even in-range depth values. */
+    const float far_depth = state.translate[2] + state.scale[2];
+    if (!std::isfinite(far_depth))
+        return failed(error, size, "viewport depth endpoint is not finite");
     MetalDepthAttachments depth;
     if (depth_attachments(x,state,depth,error,size)) return -1;
     const bool has_depth = depth.z.texture || depth.stencil.texture;
-    const bool vertex_only = !state.color_enabled && !has_depth && !state.pixel.code;
-    if (!state.color_enabled && !has_depth && !vertex_only)
+    const bool vertex_only = !state.bound_colors && !has_depth && !state.pixel.code;
+    if (!state.bound_colors && !has_depth && !vertex_only)
         return failed(error,size,"a draw has no color target or depth/stencil attachment");
     const bool raster_rectangle = rectangle && !vertex_only;
-    const bool write_color = color_writes(state);
-    MetalBlend blend;
-    if (blend_state(state,blend,error,size)) return -1;
-    if (!state.pixel.code && !vertex_only && (write_color || !has_depth))
+    if (!state.pixel.code && !vertex_only && (outputs.enabled || !has_depth))
         return failed(error,size,"a draw with no pixel shader requires depth/stencil and no color writes");
-    MetalTarget *target = state.color_enabled ? target_for(x,state.color,error,size) : nullptr;
-    if (state.color_enabled && !target) return -1;
-    const uint32_t width = vertex_only ? 1 : target ? target->width : depth.width;
-    const uint32_t height = vertex_only ? 1 : target ? target->height : depth.height;
+    MetalColorClear clear;
+    /* Keep one bound target as the raster extent when all color writes are masked. */
+    const unsigned attachments = outputs.enabled ? outputs.enabled : state.bound_colors & (0u - state.bound_colors);
+    std::array<MetalTarget *,RT_COLOR_TARGETS> targets{};
+    MetalColorAttachments colors;
+    uint32_t width = vertex_only ? 1 : depth.width, height = vertex_only ? 1 : depth.height;
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; ++slot) {
+        const unsigned bit = 1u << slot;
+        if (!(attachments & bit)) continue;
+        auto &color = colors[slot];
+        color.write = (outputs.enabled & bit) != 0;
+        if (color.write && blend_state(state,slot,color.blend,error,size)) return -1;
+        const auto &descriptor = state.colors[slot];
+        if (!(attachments & (bit - 1))) { width = descriptor.pitch; height = descriptor.height; }
+        if (width != descriptor.pitch || height != descriptor.height)
+            return failed(error,size,"color attachment extents differ");
+        if (descriptor.fast_clear && (state.bound_colors != 1 || descriptor.format != COLOR_8_8_8_8))
+            return failed(error,size,"CMASK clear requires one 8_8_8_8 attachment at slot zero");
+        MetalTarget *target = target_for(x,descriptor,error,size);
+        if (!target) return -1;
+        if (descriptor.fast_clear && color_clear(x,descriptor,*target,depth,clear,error,size)) return -1;
+        color.format = target->format;
+        const uint64_t span = rt_tiling_size(&target->layout,1);
+        if (depth.htile_span && overlap(target->address,span,depth.htile_address,depth.htile_span))
+            return failed(error,size,"color target overlaps HTILE");
+        for (const auto *other : targets)
+            if (other && overlap(target->address,span,other->address,rt_tiling_size(&other->layout,1)))
+                return failed(error,size,"overlapping color attachments are not modeled");
+        for (const auto *p : {&depth.z,&depth.stencil})
+            if (p->texture && overlap(target->address,span,p->address,rt_tiling_size(&p->layout.tiles,p->slice + 1)))
+                return failed(error,size,"overlapping color and depth/stencil attachments are not modeled");
+        targets[slot] = target;
+    }
     if (has_depth && (depth.width < width || depth.height < height))
         return failed(error,size,"depth/stencil extent is smaller than the color target");
-    if (target && depth.htile_span && overlap(target->address,rt_tiling_size(&target->layout,1),
-        depth.htile_address,depth.htile_span)) return failed(error,size,"color target overlaps HTILE");
-    if (target) for (const auto *p : {&depth.z,&depth.stencil})
-        if (p->texture && overlap(target->address,rt_tiling_size(&target->layout,1),
-            p->address,rt_tiling_size(&p->layout.tiles,p->slice + 1)))
-            return failed(error,size,"overlapping color and depth/stencil attachments are not modeled");
     MTLScissorRect scissor;
     if (screen_scissor(state,width,height,scissor,error,size) || viewport_scissor(state,scissor,error,size)) return -1;
     MetalPixelResources resources;
@@ -1654,28 +1821,30 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
         {state.step_rates[0], state.step_rates[1]}, state.step_rates_set};
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
-                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, raster_rectangle ? &rectangle_shader : nullptr, instancing, true, vertex_only);
+                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, raster_rectangle ? &rectangle_shader : nullptr, instancing, {}, vertex_only);
     if (!vertex) return -1;
-    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
-                                             state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size, nullptr, {}, state.color_enabled) : nil;
+    const uint32_t pixel_control = state.pixel.input_address | state.pixel.barycentric_control;
+    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, pixel_control,
+                                             state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size, nullptr, {}, outputs) : nil;
     if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;
-    id<MTLRenderPipelineState> pipeline = pipeline_for(x,raster_rectangle ? rectangle_shader.raster : vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,raster_rectangle ? rectangle_shader.raster : vertex,pixel,colors,
         depth.z.texture ? depth.z.texture.pixelFormat : MTLPixelFormatInvalid,
-        depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size,!vertex_only,blend);
+        depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,error,size,!vertex_only);
     if (!pipeline) return -1;
     MetalRectangleDraw captured;
     if (raster_rectangle && capture_rectangle(x,state,count,indices,vertex,rectangle_shader.stride,captured,error,size)) return -1;
-    if (target) load_target(x,*target);
     load_depth_plane(x,depth.z,depth.clear ? &depth.clear_depth : nullptr);
     load_depth_plane(x,depth.stencil);
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.renderTargetWidth = width; pass.renderTargetHeight = height;
     if (vertex_only) pass.defaultRasterSampleCount = 1;
-    if (target) {
-        pass.colorAttachments[0].texture = target->texture;
-        pass.colorAttachments[0].loadAction = MTLLoadActionLoad; pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    for (unsigned slot = 0; slot < targets.size(); ++slot) if (auto *target = targets[slot]) {
+        load_target(x,*target,clear.pending ? state.clear_words[slot] : nullptr);
+        auto *attachment = pass.colorAttachments[slot];
+        attachment.texture = target->texture;
+        attachment.loadAction = MTLLoadActionLoad; attachment.storeAction = MTLStoreActionStore;
     }
     if (depth.z.texture) {
         pass.depthAttachment.texture = depth.z.texture;
@@ -1717,7 +1886,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (state.clip_control & (CLIP_DISABLE | ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE)) [encoder setDepthClipMode:MTLDepthClipModeClamp];
     const double sy = std::fabs(state.scale[1]);
     const MTLViewport viewport = {state.translate[0] - state.scale[0], state.translate[1] - sy,
-        2 * state.scale[0], 2 * sy, state.translate[2], state.translate[2] + state.scale[2]};
+        2 * state.scale[0], 2 * sy, state.translate[2], far_depth};
     [encoder setViewport:viewport];
     [encoder setScissorRect:scissor];
     [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
@@ -1745,7 +1914,11 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     }
     if (complete_commands(x,command,error,size)) return -1;
     if (fragment_quad_runtime_stop(x,error,size)) return -1;
-    if (target) { if (write_color) store_target(x,*target); target->initialized = true; }
+    for (unsigned slot = 0; slot < targets.size(); ++slot) if (auto *target = targets[slot]) {
+        if (colors[slot].write || clear.pending) store_target(x,*target);
+        if (clear.pending) std::memset(static_cast<uint8_t *>(x->view) + clear.address - x->guest_base,0xff,clear.bytes);
+        target->initialized = true;
+    }
     store_depth_plane(x,depth.z); store_depth_plane(x,depth.stencil);
     expand_depth_htile(x,depth);
     return shader_runtime_stop(x, error, size);
@@ -1842,6 +2015,7 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
     if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, bytes, &count);
+    if (count == SIZE_MAX) return failed(error, error_size, "no memory for a buffer's calls");
     return rt_executor_run_calls(x, calls, count, error, error_size);
 }
 
@@ -1880,6 +2054,8 @@ extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) 
 extern "C" uint64_t rt_executor_done_ticket(rt_executor *) { return UINT64_MAX; } /* each buffer has run when its call returns */
 extern "C" void rt_executor_set_wait_limit(rt_executor *, uint64_t) {}
 extern "C" int rt_executor_cpu_write_ready(rt_executor *, uint64_t, uint64_t) { return 1; } /* no work is left running */
+extern "C" void rt_executor_cpu_writes(rt_executor *, uint64_t, uint64_t) {} /* Metal keeps no copies of guest memory on the GPU */
+extern "C" void rt_executor_deferred_writes(rt_executor *, uint64_t, uint64_t) {}
 
 /* Metal runs each buffer to completion with its targets in memory and never guards them: nothing to resolve. */
 extern "C" int rt_executor_resolve(rt_executor *, uint64_t, uint64_t, char *, size_t) { return 0; }
@@ -1906,11 +2082,16 @@ extern "C" int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls
                 for (size_t i = 0; i < count; ++i) {
                     const rt_render_call &call = calls[i];
                     switch (call.kind) {
-                    case RT_CALL_COLOR_TARGET:
-                        if (call.u.color_target.slot == 0) {
-                            state.color = call.u.color_target.target; state.color_enabled = call.u.color_target.enabled;
-                        } else state.other[call.u.color_target.slot] = call.u.color_target.enabled;
+                    case RT_CALL_COLOR_TARGET: {
+                        const auto &color = call.u.color_target;
+                        if (color.slot >= RT_COLOR_TARGETS)
+                            return failed(error,error_size,"render target slot %u is outside the modeled range",color.slot);
+                        const unsigned bit = 1u << color.slot;
+                        state.colors[color.slot] = color.target;
+                        if (color.enabled) state.bound_colors |= bit;
+                        else state.bound_colors &= ~bit;
                         break;
+                    }
                     case RT_CALL_VIEWPORT:
                         if (call.u.viewport.index) return failed(error, error_size, "only viewport 0 is drawn yet");
                         std::memcpy(state.scale, call.u.viewport.scale, sizeof state.scale);
