@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 
 namespace {
 struct RecordingContext {
@@ -36,31 +37,22 @@ extern "C" uint32_t bb_audio_fmod_record_position(const RecordingContext *contex
     if (divisor == 0)
         return 0;
 
-    uint32_t scaled;
-    switch (record->format) {
-    case 0: scaled = 0; break;
-    case 1: scaled = position; break;
-    case 2: scaled = position / 2; break;
-    case 3: scaled = position / 3; break;
-    case 4:
-    case 5: scaled = position / 4; break;
-    // These formats truncate the product to 32 bits before the first division.
-    case 6: scaled = (position * 14) / 8; break;
-    case 7: scaled = (position * 64) / 36; break;
-    case 8:
-    case 9: scaled = (position * 28) / 16; break;
-    case 10:
-    case 11:
-    case 12:
-    case 13:
-    case 15:
-        std::memcpy(output, &position, sizeof(position));
+    // Formats below the direct-copy range convert byte positions to units. The
+    // packed formats multiply in 32 bits, including wraparound at large positions.
+    constexpr uint32_t units_per_block[] = {0, 1, 1, 1, 1, 1, 14, 64, 28, 28};
+    constexpr uint32_t bytes_per_block[] = {1, 1, 2, 3, 4, 4, 8, 36, 16, 16};
+    static_assert(std::size(units_per_block) == std::size(bytes_per_block));
+    constexpr uint32_t skipped_format = 14;
+    constexpr uint32_t last_format = 15;
+    const uint32_t format = record->format;
+    if (format == skipped_format || format > last_format)
         return 0;
-    default:
-        return 0;
-    }
 
-    const uint32_t result = scaled / divisor;
+    uint32_t result = position;
+    if (format < std::size(units_per_block)) {
+        const uint32_t units = position * units_per_block[format];
+        result = units / bytes_per_block[format] / divisor;
+    }
     std::memcpy(output, &result, sizeof(result));
     return 0;
 }
