@@ -32,6 +32,8 @@ controller the hunter walks into the clinic's first beast, dies, and wakes in th
 
 [<img alt="Progress map of the game's code: green where a function is rewritten and verified, amber where rewritten, grey where not yet started" src="https://yharnam-hunters.github.io/Paleblood/progress.svg" width="100%">](https://yharnam-hunters.github.io/Paleblood/progress.html)
 
+<img alt="Speed history: the average frame rate of the Iosefka's Clinic route (frames 1350-2900) after each merged speed pull request, with the 1% low frame rate beside it" src="https://yharnam-hunters.github.io/Paleblood/speed.svg" width="100%">
+
 **Details:** [full numbers](STATUS.md) · [how it works and what works](docs/OVERVIEW.md) ·
 [the story so far](https://yharnam-hunters.github.io/byrgenwerth-site/runtime/) ·
 [contributors](https://yharnam-hunters.github.io/byrgenwerth-site/hunters/)
