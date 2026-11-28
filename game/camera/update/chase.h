@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera chase stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Chase the candidate by projected angle and distance; retain the result for the next stage.
 // Later orientation and collision stages consume the retained candidate.
@@ -12,11 +13,11 @@ namespace math = camera::update::math;
 namespace root = camera::update::root;
 namespace direction = camera::update::wing_escape;
 
-RT_GLOBAL(0x04cf24a0, y_axis, const Vec4);
-RT_GLOBAL(0x04cf24d0, xyz_bits, const Vec4);
+inline constexpr auto y_axis = constants::unit_y;
+using constants::xyz_bits;
 RT_GLOBAL(0x04cf2670, fully_chased_axes, const Vec4);
-RT_GLOBAL(0x04d25e6c, one, const float);
-RT_GLOBAL(0x04d25e88, distance_threshold, const float);
+inline constexpr auto one = constants::scalar_one;
+using constants::distance_threshold;
 
 struct ChaseRates
 {

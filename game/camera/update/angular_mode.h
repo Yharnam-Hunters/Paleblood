@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera angular mode stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Select target-locked geometry, chase a front lock, or release rotation control.
 #include "target.h"
@@ -24,7 +25,7 @@ static_assert(offsetof(FollowCamera, front_lock_remaining) == 0x264 &&
 static_assert(offsetof(FollowCamera, front_lock_angles) == 0x26c);
 static_assert(offsetof(FollowCamera, update_target_pitch_at_front_lock) == 0x275);
 
-RT_GLOBAL(0x04cf2520, pitch_sign_bits, const Vec4);
+inline constexpr auto pitch_sign_bits = constants::sign_mask;
 
 enum class AngularContinuation : uint8_t
 {
