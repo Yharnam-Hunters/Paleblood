@@ -108,6 +108,7 @@ enum {
     /* a read through an image whose descriptor has base address 0 but is not null (gcn_image_binding.unmapped):
        what the PS4 returns from unmapped memory is not established */
     GCN_RUNTIME_STOP_UNMAPPED_IMAGE = 7,
+    GCN_RUNTIME_STOP_WAVE_PC = 8, /* cooperative compute invocations disagree on the next block */
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -349,6 +350,9 @@ typedef struct {
     unsigned thread_id_vgprs; /* 1=X, 2=XY, 3=XYZ; 0 preserves the existing XYZ default.
                                  Other registers retain the translator's deterministic initial value,
                                  not a hardware guarantee for disabled thread-ID inputs. */
+    unsigned workgroup_wave_votes; /* 1: full 64-thread logical-wave votes with a uniform dispatcher guard.
+                                       Requires exactly 64 local invocations and a runtime-stop word.
+                                       0 preserves native subgroup translation for other backends. */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
