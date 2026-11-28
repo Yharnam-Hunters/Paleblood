@@ -8,6 +8,7 @@
 #include "../engine/engine.h"
 #include "../engine/static_wide_string.h"
 #include "../loading/file_copy_resource.h"
+#include "localize_job.h"
 #include "scaleform_glue.h"
 
 using engine::Allocator;
@@ -63,12 +64,8 @@ struct ContainerJob {
 static_assert(offsetof(ContainerJob, unknown_0x38) == 0x38 && offsetof(ContainerJob, container) == 0x48);
 static_assert(sizeof(ContainerJob) == 0x68);
 
-// The job of the load at +0x48, built by its own constructor (pointer-sized slots, so it is
-// allocated with alignment 8).
-struct ConstructedJob {
-    void *unknown_0x00[0x3a];
-};
-static_assert(sizeof(ConstructedJob) == 0x1d0 && alignof(ConstructedJob) == 8);
+// The job of the load at +0x48 is a LocalizeJob (localize_job.h), built by its own constructor.
+using menu::localize::LocalizeJob;
 
 RT_GLOBAL(0x05730380, plain_job_vtable, const engine::LoadJobVtable);
 RT_GLOBAL(0x057bdff0, plain_job_second_vtable, const uint8_t);
@@ -78,7 +75,6 @@ RT_GLOBAL(0x057be3c0, container_job_second_vtable, const uint8_t);
 RT_GLOBAL(0x0593e89d, plain_job_flag, uint8_t);
 // The allocator the container job's container is built with.
 RT_GLOBAL(0x05940418, container_heap_instance, Allocator *);
-RT_ORIGINAL(0x01d59fb0, constructed_job_construct, void(ConstructedJob *));
 
 // The kinds the loads are constructed with, and the constructor's last argument (meanings not
 // established).
@@ -148,9 +144,9 @@ void build_container_job(ContainerJob *job)
     job->container.allocator = heap;
 }
 
-void build_constructed_job(ConstructedJob *job)
+void build_constructed_job(LocalizeJob *job)
 {
-    constructed_job_construct(job);
+    menu::localize::job_construct(job);
 }
 
 }  // namespace
@@ -182,7 +178,7 @@ extern "C" void bb_menu_localize_step_next_load_01d53050(LocalizeLanguage *langu
     if (held->state != menu::localize::load_state_awaited)
         return;
     menu::localize::release(held);
-    LocalizeLoad *load = create_load<ConstructedJob>(constructed_job_load_kind, build_constructed_job);
+    LocalizeLoad *load = create_load<LocalizeJob>(constructed_job_load_kind, build_constructed_job);
     language->load_0x48 = load;
     ++load->references;
     if (!menu::scaleform::sprj_scaleform_instance.get())

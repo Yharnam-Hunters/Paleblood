@@ -450,6 +450,7 @@ address,replacement,system,returns
 0x01d55cb0,bb_engine_load_construct_01d55cb0,engine,void
 0x01d55d40,bb_engine_load_delete_01d55d40,engine,void
 0x01d55de0,bb_engine_load_destroy_01d55de0,engine,void
+0x01d59fb0,bb_menu_localize_job_construct_01d59fb0,menu,void
 0x01db3a20,bb_engine_tree_free_subtree_01db3a20,engine,void
 0x01db3de0,bb_engine_tree_free_subtree_01db3de0,engine,void
 0x01dcfbf0,bb_engine_tree_free_subtree_01dcfbf0,engine,void
@@ -502,6 +503,7 @@ address,replacement,system,returns
 0x01edf560,bb_menu_gaitem_select_entry_copy_into_pool,menu,void
 0x01ee6080,bb_menu_gaitem_select_direction_keys_20_01ee6080,menu,i64
 0x01ee61f0,bb_menu_gaitem_select_direction_keys_24_01ee61f0,menu,i64
+0x01ee9b40,bb_engine_loads_idle_01ee9b40,engine,i8
 0x01efddb0,bb_engine_array32_push_back_01efddb0,engine,void
 0x01f03210,bb_frame_timing_holygrail_wait_for_dungeon_mode,frame_timing,i32
 0x01f03680,bb_frame_timing_holygrail_wait_for_ritual_mode,frame_timing,i32
