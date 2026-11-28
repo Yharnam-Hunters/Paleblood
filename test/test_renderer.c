@@ -28,6 +28,7 @@ enum { FATAL_EXIT = 3 };
 static int guest_fd = -1;
 
 uint64_t rt_gpu_memory_base(void) { return GUEST_BASE; }
+uint64_t rt_gpu_copies_window(uint64_t *bytes) { return *bytes = 0; }
 
 int rt_gpu_memory_pool(int *fd, uint64_t *size)
 {
@@ -223,7 +224,7 @@ static int executor_opens(void)
 {
     rt_executor *probe = NULL;
     char error[256];
-    const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL, 0, 0};
     if (rt_executor_open(&memory, &probe, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return 0;

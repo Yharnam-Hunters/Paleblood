@@ -168,10 +168,10 @@ camera_rows3_multiply_0084b9d0,recorded,,200,200,0,0,1bbcc2f491ba3af5,2026-11-17
 camera_rows3_multiply_0084b9d0,edge,,58,58,0,0,1bbcc2f491ba3af5,2026-11-14
 camera_transform_matrix_0083d4d0,recorded,,400,400,0,0,1bbcc2f491ba3af5,2026-11-17
 camera_transform_matrix_0083d4d0,edge,,168,168,0,0,1bbcc2f491ba3af5,2026-11-14
-camera_update_follow,edge,,72,72,0,0,3197f1903529bfe6,2026-11-13
-camera_update_follow,edge,30,72,72,0,0,3197f1903529bfe6,2026-11-13
-camera_update_follow,edge,60,72,72,0,0,3197f1903529bfe6,2026-11-13
-camera_update_follow,edge,uncapped,72,72,0,0,3197f1903529bfe6,2026-11-13
+camera_update_follow,edge,,72,72,0,0,53dd766180c1c302,2026-11-27
+camera_update_follow,edge,30,72,72,0,0,53dd766180c1c302,2026-11-27
+camera_update_follow,edge,60,72,72,0,0,53dd766180c1c302,2026-11-27
+camera_update_follow,edge,uncapped,72,72,0,0,53dd766180c1c302,2026-11-27
 character_ai_display_update_01cd92b0,recorded,,48,48,0,0,84ffbaaca95d946f,2026-11-17
 character_ai_display_update_01cd92b0,edge,,8,8,0,0,84ffbaaca95d946f,2026-11-13
 character_counters_refill_01e5c440,recorded,,117,117,0,0,84ffbaaca95d946f,2026-11-17

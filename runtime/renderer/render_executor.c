@@ -51,7 +51,7 @@
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16 };
-/* Indexed draws' index ranges kept in device-local memory (index_copy_for): at most MAX_INDEX_COPIES
+/* Indexed draws' index ranges kept in device-local memory (copy_for): at most MAX_INDEX_COPIES
    ranges in a table of twice as many slots, each placed at a multiple of INDEX_COPY_ALIGN in a buffer of
    INDEX_COPY_BYTES unless PB_INDEX_COPY_BYTES says otherwise (0: none; at most INDEX_COPY_BYTES_MAX, the
    smallest maxBufferSize Vulkan allows a device, VkPhysicalDeviceMaintenance4Properties). A range whose memory changed
@@ -62,6 +62,21 @@ enum { MAX_INDEX_COPIES = 2048, INDEX_COPY_SLOTS = 2 * MAX_INDEX_COPIES, INDEX_C
        INDEX_COPY_WINDOW = 64, INDEX_COPY_PAUSE = 4096 };
 #define INDEX_COPY_BYTES (32ull << 20)
 #define INDEX_COPY_BYTES_MAX (1ull << 30)
+/* Vertex shaders' vertex buffers kept in device-local memory (vertex_copies_plan): ranges of
+   VERTEX_COPY_MIN_BYTES or more (smaller ones cost little to read in place, and the game rewrites most
+   of them every frame) in a set of its own, of VERTEX_COPY_BYTES unless PB_VERTEX_COPY_BYTES says
+   otherwise (0: none; at most INDEX_COPY_BYTES_MAX); a range is taken from a multiple of
+   VERTEX_COPY_PAGE below the buffer to one above its end plus VERTEX_COPY_OVERREACH bytes (the loads
+   that range checking lets reach past it). A draw rewrites at most MAX_VERTEX_REWRITES descriptors. A
+   range is copied only once it has been seen again VERTEX_COPY_SEEN_AFTER submissions or more after it
+   was first seen (copy_set's `seen`): the game draws most large buffers once (or from a new place each
+   frame), and copying those would fill the set with copies no later draw reads. The game reads more
+   such ranges than the set holds, so a full set keeps its copies (a new range is read in place) until
+   fewer than half the bytes placed in it were read in the last VERTEX_COPY_RECENT submissions, and only
+   then drops them all (copies_unused). */
+#define VERTEX_COPY_BYTES (256ull << 20)
+enum { VERTEX_COPY_MIN_BYTES = 64 << 10, VERTEX_COPY_PAGE = 4096, VERTEX_COPY_OVERREACH = 16, MAX_VERTEX_REWRITES = 16, VERTEX_COPY_SEEN_AFTER = 32,
+       VERTEX_COPY_RECENT = 256 };
 /* the run-time stop words (stop_slot): a power of two, well above the distinct shaders a walk meets, so that
    each shader has a word of its own */
 enum { STOP_SLOT_BITS = 13, STOP_SLOTS = 1 << STOP_SLOT_BITS };
@@ -183,6 +198,37 @@ typedef struct {
     VkDeviceSize size;
     VkDeviceAddress address;
 } gpu_buffer;
+
+/* Ranges of guest memory copied into a device-local buffer (copy_for): the buffer (the index set's made
+   on first use, the vertex set's when the executor opens: its GPU address is in the vertex shaders'
+   translations), its size (0: no copies) and the bytes placed so far, the ranges and the table finding
+   them (an entry's place in copies plus one; 0: empty). */
+typedef struct {
+    gpu_buffer buffer;
+    VkDeviceSize bytes, used;
+    int failed;                      /* no device memory for it: the ranges are read from the guest memory */
+    struct guest_copy {
+        uint64_t offset, bytes;      /* the range's guest-memory offset and length */
+        VkDeviceSize at;             /* the copy's place in the buffer */
+        uint64_t loaded_change;      /* change_count when it was last copied */
+        unsigned changes;            /* the times its memory changed after a copy, each soon after the one before */
+        uint64_t changed_at;         /* `submitted` when it was last copied, first or again */
+        int direct;                  /* it kept changing: read from the guest memory, and no longer watched */
+        uint64_t used_at;            /* `submitted` when a draw last planned to read it */
+    } copies[MAX_INDEX_COPIES];
+    uint32_t count;
+    uint16_t slots[INDEX_COPY_SLOTS];
+    uint64_t dropped_after;          /* `submitted` plus one at the last drop; 0: no drop yet */
+    uint64_t paused_until;           /* no copies while `submitted` is below it (drops came too fast) */
+    int selective;                   /* the vertex set: a new range is copied only once seen again, and a full set is dropped
+                                        only once most of it is no longer read (copy_for) */
+    uint64_t full_checked;           /* `submitted` plus one when a selective set last found itself full and in use */
+    struct seen_range {
+        uint64_t offset, bytes;      /* a range not copied yet, by its table slot (bytes 0: none) */
+        uint64_t at;                 /* `submitted` when it was first seen there */
+    } seen[INDEX_COPY_SLOTS];
+} copy_set;
+
 
 /* How the GPU copies an image's elements between its tiled guest memory and linear rows: the table of
    offsets (runtime/tile_copy.h) and the linear rows' buffer, made for one layout and size. */
@@ -381,7 +427,8 @@ typedef struct {
     int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan, 3 the read scan,
                                         4 the memory-write scan (count: 1 when the program writes memory), 5 the called read
                                         scan (gcn_called_memory_reads, a fetch shader's reads included), 6 and 7 the stage-store
-                                        scans (stage_store_kinds; count: its STAGE_STORES_* bits; 7 in a geometry layout) */
+                                        scans (stage_store_kinds; count: its STAGE_STORES_* bits; 7 in a geometry layout), 8 the bounded-load
+                                        scan (vertex_loads_bounded; count: 1 when some load is not bounded) */
     int unknown;                     /* the buffer-store scan: some store's descriptor has no known origin; the read scans: some load's */
     uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
     size_t dwords, callee_dwords;
@@ -623,25 +670,11 @@ struct rt_executor {
     unsigned push_range_count;
     gpu_buffer tess_lds, tess_factors;
     gpu_buffer gs_esgs, gs_gsvs, gs_strips; /* the geometry shader's rings and its strips' indices (gcn_spirv.h) */
-    /* Index ranges copied into device-local memory (index_copy_for): the buffer (made on first use),
-       its size (0: no copies) and the bytes placed so far, the ranges and the table finding them (an
-       entry's place in index_copies plus one; 0: empty). */
-    gpu_buffer index_buffer;
-    VkDeviceSize index_buffer_bytes, index_buffer_used;
-    int index_buffer_failed;         /* no device memory for it: indices are read from the guest memory */
-    struct index_copy {
-        uint64_t offset, bytes;      /* the indices' guest-memory offset and length */
-        VkDeviceSize at;             /* the copy's place in index_buffer */
-        uint64_t loaded_change;      /* change_count when it was last copied */
-        unsigned changes;            /* the times its memory changed after a copy, each soon after the one before */
-        uint64_t changed_at;         /* `submitted` when it was last copied, first or again */
-        int direct;                  /* it kept changing: drawn from the guest memory, and no longer watched */
-    } index_copies[MAX_INDEX_COPIES];
-    uint32_t index_copy_count;
-    uint16_t index_copy_slots[INDEX_COPY_SLOTS];
-    uint64_t index_dropped_after;    /* `submitted` plus one at the last drop; 0: no drop yet */
-    uint64_t index_paused_until;     /* no copies while `submitted` is below it (drops came too fast) */
-    uint64_t index_copies_stale;     /* change_count when a write of no known range was last noted: a draw whose shaders may
+    /* Guest-memory ranges copied into device-local memory (copy_for): indexed draws' index ranges, and
+       vertex shaders' vertex buffers (vertex_copies_plan) */
+    copy_set index_set, vertex_set;
+    uint64_t vertex_window;          /* the vertex set's guest addresses (gcn_guest_copies), from rt_executor_memory's copies_base on; 0: no vertex set */
+    uint64_t copies_stale;     /* change_count when a write of no known range was last noted: a draw whose shaders may
                                         store (a tessellated or geometry draw's stages: when stage_stores_noted finds no
                                         range), or a step the renderer performs on the CPU (rt_executor_cpu_writes) */
     memory_span deferred_writes[DISPATCH_SPANS]; /* what deferred steps write (rt_executor_deferred_writes): no copies there */
@@ -709,8 +742,8 @@ struct rt_executor {
     int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
     void (*unguard)(uint64_t address, uint64_t length);
     /* what note_cpu_writes asks about: the loaded images' and targets' memory, their metadata, and the
-       index ranges copied into device-local memory (index_copy_for) */
-    uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS + MAX_INDEX_COPIES][2];
+       ranges both copy sets copied into device-local memory (copy_for) */
+    uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS + 2 * MAX_INDEX_COPIES][2];
     /* The batches: slots[current] is the open one (batch_open) or the next to open. A batch is
        submitted when a buffer's calls end (batch_submit), without waiting: the CPU waits only where it
        reads what submitted work produces (the run-time stop words, guest memory a dispatch or
@@ -1572,8 +1605,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     const char *rows_limit = getenv("BB_COPY_ROWS_LIMIT");
     x->copy_rows_limit = rows_limit ? strtoull(rows_limit, NULL, 0) : 0;
     const char *index_copy_bytes = getenv("PB_INDEX_COPY_BYTES");
-    x->index_buffer_bytes = index_copy_bytes ? strtoull(index_copy_bytes, NULL, 0) : INDEX_COPY_BYTES;
-    if (x->index_buffer_bytes > INDEX_COPY_BYTES_MAX) x->index_buffer_bytes = INDEX_COPY_BYTES_MAX;
+    x->index_set.bytes = index_copy_bytes ? strtoull(index_copy_bytes, NULL, 0) : INDEX_COPY_BYTES;
+    if (x->index_set.bytes > INDEX_COPY_BYTES_MAX) x->index_set.bytes = INDEX_COPY_BYTES_MAX;
     x->draw_push_stages = x->vertex_stages | VK_SHADER_STAGE_FRAGMENT_BIT;
     x->push_range_count = x->draw_snapshots ? 1 : STAGES;
     const VkPushConstantRange ranges[STAGES] = {
@@ -1665,6 +1698,7 @@ static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsage
     return 0;
 }
 
+static void vertex_copies_open(rt_executor *x, const rt_executor_memory *memory);
 /* Our own mapping of the guest memory, imported as one buffer with a GPU address, and the GDS's host
    memory (runtime/gcn_spirv.h, "The global data share") as another. */
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
@@ -1687,6 +1721,7 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                     &x->buffer, &x->memory, &address, "the guest memory", error, error_size))
         return -1;
     x->address_offset = address - x->guest_base; /* wraps as the shaders' adds do */
+    vertex_copies_open(x, memory);
     if (!memory->gds) return 0;
     if (memory->gds_bytes != GCN_GDS_BYTES) return failed(error, error_size, "a GDS of %u bytes, not 64 KB", memory->gds_bytes);
     return import_host(x, memory->gds, memory->gds_bytes,
@@ -2387,8 +2422,9 @@ static void note_cpu_writes(rt_executor *x)
         const metadata_state *m = &x->depths[i].htile;
         if (m->bytes) x->watch_ranges[n][0] = m->address - x->guest_base, x->watch_ranges[n++][1] = m->bytes;
     }
-    for (uint32_t i = 0; i < x->index_copy_count; i++)
-        if (!x->index_copies[i].direct) x->watch_ranges[n][0] = x->index_copies[i].offset, x->watch_ranges[n++][1] = x->index_copies[i].bytes;
+    for (const copy_set *set = &x->index_set; set; set = set == &x->index_set ? &x->vertex_set : NULL)
+        for (uint32_t i = 0; i < set->count; i++)
+            if (!set->copies[i].direct) x->watch_ranges[n][0] = set->copies[i].offset, x->watch_ranges[n++][1] = set->copies[i].bytes;
     qsort(x->watch_ranges, n, sizeof *x->watch_ranges, by_start);
     size_t runs = 0;
     for (size_t i = 0; i < n; i++) {
@@ -2460,7 +2496,7 @@ static void batch_writes(rt_executor *x, uint64_t address, uint64_t size, int di
 }
 
 static void span_add(memory_span *spans, unsigned *count, uint64_t address, uint64_t bytes);
-static void index_copies_written(rt_executor *x, uint64_t address, uint64_t bytes);
+static void copies_written(rt_executor *x, uint64_t address, uint64_t bytes);
 
 /* Notes that the open batch's work reads `bytes` of guest memory at `address` in place as it runs: the
    part of it the CPU-ordered writes may reach (x->watched), so a write there waits until the batch has
@@ -2498,7 +2534,7 @@ static int batch_may_touch(const rt_executor *x, unsigned k, uint64_t done, uint
 int rt_executor_cpu_write_ready(rt_executor *x, uint64_t address, uint64_t bytes)
 {
     if (!bytes) return 1;
-    index_copies_written(x, address, bytes); /* the write comes, now or after the GPU's work */
+    copies_written(x, address, bytes); /* the write comes, now or after the GPU's work */
     for (unsigned i = 0; i < x->watched_count; i++) {
         const memory_span *w = &x->watched[i];
         if (w->address <= address && address + bytes <= w->address + w->bytes) {
@@ -2551,6 +2587,28 @@ static int gpu_buffer_make(rt_executor *x, gpu_buffer *b, VkDeviceSize bytes, in
     const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = b->buffer};
     b->address = vkGetBufferDeviceAddress(x->device, &address), b->size = bytes;
     return 0;
+}
+
+/* The vertex set's buffer and guest addresses (gcn_guest_copies: the addresses the caller keeps free
+   of guest memory, rt_executor_memory's copies_base), made as the executor opens, since the vertex
+   shaders' translations hold them: only with the watch (copy_for) and draw snapshots (the rewrites go
+   into them), and none when the caller gives no such addresses or too few for the set, when they are
+   not whole dwords clear of the guest memory that fit a buffer descriptor's 40-bit base, or when the
+   device has no memory for the set. */
+static void vertex_copies_open(rt_executor *x, const rt_executor_memory *memory)
+{
+    const char *bytes = getenv("PB_VERTEX_COPY_BYTES");
+    x->vertex_set.bytes = bytes ? strtoull(bytes, NULL, 0) : VERTEX_COPY_BYTES;
+    x->vertex_set.selective = 1;
+    if (x->vertex_set.bytes > INDEX_COPY_BYTES_MAX) x->vertex_set.bytes = INDEX_COPY_BYTES_MAX;
+    const uint64_t end = x->guest_base + x->size, window = memory->copies_base, address_limit = 1ull << 40;
+    const int placed = window && !(window & 3) && x->vertex_set.bytes <= memory->copies_bytes && window < address_limit &&
+                       x->vertex_set.bytes <= address_limit - window && end > x->guest_base &&
+                       (window >= end || window + x->vertex_set.bytes <= x->guest_base);
+    if (x->collect_cpu_writes && x->draw_snapshots && x->vertex_set.bytes && placed && !gpu_buffer_make(x, &x->vertex_set.buffer, x->vertex_set.bytes, 0))
+        x->vertex_window = window;
+    else
+        x->vertex_set.bytes = 0;
 }
 
 static void tile_plan_free(rt_executor *x, tile_plan *p)
@@ -3831,12 +3889,15 @@ static int add_program(translation_key *key, const rt_executor *x, uint64_t code
 }
 
 /* Adds the executor's values every layout takes (the guest memory's place on the GPU, table
-   snapshots on or off) and the shader's run-time stop word. */
-enum { EXECUTOR_VALUES = 6 };
-static void add_executor_values(translation_key *key, const rt_executor *x, uint64_t error_address)
+   snapshots on or off), the shader's run-time stop word, and for a vertex shader (`vertex`) the guest
+   copies it reads (vertex_guest_copies; 0 for any other stage, whose translations do not hold them). */
+enum { EXECUTOR_VALUES = 9 };
+static void add_executor_values(translation_key *key, const rt_executor *x, uint64_t error_address, int vertex)
 {
     const gcn_guest_memory guest = guest_memory(x);
-    const uint64_t values[EXECUTOR_VALUES] = {x->address_offset, guest.base, guest.bytes, guest.sink, error_address, (uint64_t)x->draw_snapshots};
+    const uint64_t values[EXECUTOR_VALUES] = {x->address_offset, guest.base, guest.bytes, guest.sink, error_address, (uint64_t)x->draw_snapshots,
+                                              vertex ? x->vertex_window : 0, vertex ? x->vertex_set.bytes : 0,
+                                              vertex ? x->vertex_set.buffer.address : 0};
     translation_key_add(key, values, sizeof values);
 }
 
@@ -3960,6 +4021,17 @@ static long shader_slot(rt_executor *x, char *error, size_t error_size)
     return pick;
 }
 
+/* The guest copies a vertex shader may read (gcn_guest_copies): the vertex set's. Its loads reach them
+   through a descriptor vertex_copies_rewrite based there, and also through any other address there (a
+   stale or garbage descriptor, a pointer), in any draw: such a load reads whatever the set holds where
+   it used to stop (GCN_RUNTIME_STOP_GUEST_RANGE). Its stores and atomics never reach them (the
+   translator sends those to the sink with a stop). */
+static gcn_guest_copies vertex_guest_copies(const rt_executor *x)
+{
+    if (!x->vertex_window) return (gcn_guest_copies){0};
+    return (gcn_guest_copies){.base = x->vertex_window, .bytes = x->vertex_set.bytes, .gpu = x->vertex_set.buffer.address};
+}
+
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
                                  unsigned sampler_count, unsigned first_binding, uint64_t callee, const uint32_t *input_controls,
@@ -4011,7 +4083,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         const uint64_t values[] = {(uint64_t)stage, user_sgprs, settings, first_binding, tessellation, image_count, sampler_count,
                                    input_controls != NULL, stage == STAGE_COPY ? x->gs_gsvs.address : 0,
                                    stage == STAGE_DOMAIN ? x->tess_lds.address : 0, stage == STAGE_DOMAIN ? x->tess_factors.address : 0};
-        add_executor_values(&key, x, stop_slot(x, stage, code));
+        add_executor_values(&key, x, stop_slot(x, stage, code), stage == STAGE_VERTEX);
         translation_key_add(&key, values, sizeof values);
         translation_key_add(&key, &instancing, sizeof instancing);
         translation_key_add(&key, images, image_count * sizeof *images);
@@ -4047,7 +4119,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                               .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
                                               .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
                                               .step_rates_set = instancing.step_rates_set, .table_snapshot = plan,
-                                              .table_block_offset = VERTEX_TABLE_BLOCK};
+                                              .table_block_offset = VERTEX_TABLE_BLOCK, .copies = copy ? (gcn_guest_copies){0} : vertex_guest_copies(x)};
             result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
         } else if (stage == STAGE_DOMAIN) {
             gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, stage, code));
@@ -5124,11 +5196,11 @@ static uint64_t draw_snapshot(rt_executor *x, const gcn_table_snapshot *tables, 
 
 /* An indexed draw reads its indices from the guest memory, which the GPU reaches over the bus, at every
    draw; the game draws the same ranges frame after frame. So each range is copied once into
-   index_buffer (device-local) and drawn from there while its memory has not changed since the copy
+   the index set's buffer (device-local) and drawn from there while its memory has not changed since the copy
    (memory_changed_since: the CPU's writes, which the watch reports for these ranges too
    (note_cpu_writes), and the GPU's as they are recorded), no step the renderer performs on the CPU
    was about to write it (rt_executor_cpu_write_ready, rt_executor_cpu_writes), and no write of no
-   known range has been noted since (index_copies_stale: a draw any of whose shaders may store, a
+   known range has been noted since (copies_stale: a draw any of whose shaders may store, a
    step writing memory of no known range). Only with the watch: without it all memory counts as
    changed at each buffer. Copies are placed one after the other; once the buffer or the table is
    full all of them are dropped and placed again from the start, the copy's barrier ordering it after
@@ -5140,13 +5212,13 @@ static uint64_t draw_snapshot(rt_executor *x, const gcn_table_snapshot *tables, 
    work after it is ordered against) has no copy over it: ranges there are drawn from the guest memory,
    as before the copies (rt_executor_deferred_writes). */
 typedef struct {
-    VkDeviceSize at;                 /* the copy's place in index_buffer */
-    int copy;                        /* copy the indices there first (index_copy_record) */
+    VkDeviceSize at;                 /* the copy's place in the set's buffer */
+    int copy;                        /* copy the range there first (copy_record) */
     uint32_t entry, slot;            /* the range's entry, or for a new one its table slot */
     int found;                       /* the range has an entry */
     unsigned changes;                /* a found entry's changes once copied again */
     int drop;                        /* the buffer or the table is full: drop every copy, then place this one at the start */
-} index_copy_plan;
+} copy_plan;
 
 /* Whether `bytes` at the guest address `address` meet the guest memory. */
 static int guest_range_meets(const rt_executor *x, uint64_t address, uint64_t bytes)
@@ -5164,39 +5236,54 @@ static int deferred_write_over(const rt_executor *x, uint64_t address, uint64_t 
     return 0;
 }
 
-static void index_copies_drop(rt_executor *x)
+static void copies_drop(copy_set *c)
 {
-    memset(x->index_copy_slots, 0, sizeof x->index_copy_slots);
-    x->index_copy_count = 0, x->index_buffer_used = 0;
+    memset(c->slots, 0, sizeof c->slots);
+    c->count = 0, c->used = 0;
 }
 
 /* Notes a write of `bytes` of guest memory at `address` that the change counts do not see: by the CPU
    (a step the renderer performs, rt_executor_cpu_write_ready and rt_executor_cpu_writes) or by a
-   tessellated or geometry draw's stage stores (stage_stores_noted): the copies of index ranges there
+   tessellated or geometry draw's stage stores (stage_stores_noted): the copies (both sets) there
    are copied again before their next draw. */
-static void index_copies_written(rt_executor *x, uint64_t address, uint64_t bytes)
+static void copies_written(rt_executor *x, uint64_t address, uint64_t bytes)
 {
     const uint64_t end = bytes > UINT64_MAX - address ? UINT64_MAX : address + bytes;
-    for (uint32_t i = 0; i < x->index_copy_count; i++) {
-        struct index_copy *c = &x->index_copies[i];
-        const uint64_t start = x->guest_base + c->offset;
-        if (start < end && address < start + c->bytes) c->loaded_change = UINT64_MAX;
-    }
+    copy_set *const sets[] = {&x->index_set, &x->vertex_set};
+    for (unsigned k = 0; k < sizeof sets / sizeof *sets; k++)
+        for (uint32_t i = 0; i < sets[k]->count; i++) {
+            struct guest_copy *c = &sets[k]->copies[i];
+            const uint64_t start = x->guest_base + c->offset;
+            if (start < end && address < start + c->bytes) c->loaded_change = UINT64_MAX;
+        }
 }
 
-/* Whether the draw of `bytes` of indices at guest-memory offset `offset` reads them from index_buffer,
-   with the plan for it. It notes no copy yet (index_copy_record does, as it records the copy): a draw
+/* Whether a full selective set may be dropped (copy_for): fewer than half the bytes placed in it are in
+   copies a draw planned to read in the last VERTEX_COPY_RECENT submissions (the game has moved on to
+   other buffers). The bytes placed, not its size: a table full of small copies fills less of it.
+   A set found in use is not looked at again within the same submission. */
+static int copies_unused(rt_executor *x, copy_set *set)
+{
+    if (set->full_checked == x->submitted + 1) return 0;
+    uint64_t recent = 0;
+    for (uint32_t i = 0; i < set->count; i++)
+        if (x->submitted - set->copies[i].used_at < VERTEX_COPY_RECENT) recent += set->copies[i].bytes;
+    if (recent * 2 < set->used) return 1;
+    set->full_checked = x->submitted + 1;
+    return 0;
+}
+
+/* Whether a draw reads the `bytes` at guest-memory offset `offset` (indices, or a vertex buffer) from
+   the set's copy, with the plan for it. It notes no copy yet (copy_record does, as it records the copy): a draw
    that stops before then leaves the copies as they were. It may only mark a range that keeps changing
    as drawn from the guest memory (direct), which needs no copy. 0: the draw reads the guest memory. */
-static int index_copy_for(rt_executor *x, uint64_t offset, uint64_t bytes, index_copy_plan *plan)
+static int copy_for(rt_executor *x, copy_set *set, uint64_t offset, uint64_t bytes, copy_plan *plan)
 {
-    *plan = (index_copy_plan){0};
-    if (!x->collect_cpu_writes || !x->index_buffer_bytes || x->index_buffer_failed || !bytes || bytes > x->index_buffer_bytes / 4 ||
-        x->submitted < x->index_paused_until)
-        return 0;
-    if (!x->index_buffer.buffer && gpu_buffer_make(x, &x->index_buffer, x->index_buffer_bytes, 0) &&
-        (!reclaim_image_memory(x, 0) || gpu_buffer_make(x, &x->index_buffer, x->index_buffer_bytes, 0))) { /* the device's memory is full */
-        x->index_buffer_failed = 1;
+    *plan = (copy_plan){0};
+    if (!x->collect_cpu_writes || !set->bytes || set->failed || !bytes || bytes > set->bytes / 4 || x->submitted < set->paused_until) return 0;
+    if (!set->buffer.buffer && gpu_buffer_make(x, &set->buffer, set->bytes, 0) &&
+        (!reclaim_image_memory(x, 0) || gpu_buffer_make(x, &set->buffer, set->bytes, 0))) { /* the device's memory is full */
+        set->failed = 1;
         return 0;
     }
     /* the table is never more than half full: the probe meets an empty slot */
@@ -5205,17 +5292,18 @@ static int index_copy_for(rt_executor *x, uint64_t offset, uint64_t bytes, index
     const uint32_t start = (uint32_t)(((offset ^ bytes << 40) * 0x9e3779b97f4a7c15ull) >> 52);
     for (uint32_t probe = 0;; probe++) {
         const uint32_t slot = (start + probe) % INDEX_COPY_SLOTS;
-        const uint32_t held = x->index_copy_slots[slot];
+        const uint32_t held = set->slots[slot];
         if (!held) {
             plan->slot = slot;
             break;
         }
-        struct index_copy *c = &x->index_copies[held - 1];
+        struct guest_copy *c = &set->copies[held - 1];
         if (c->offset != offset || c->bytes != bytes) continue;
         if (c->direct) return 0; /* also over a deferred step's write (rt_executor_deferred_writes) */
         const int changed = memory_changed_since(x, x->guest_base + offset, bytes, c->loaded_change);
-        if (!changed && x->index_copies_stale <= c->loaded_change) {
+        if (!changed && x->copies_stale <= c->loaded_change) {
             plan->at = c->at, plan->entry = held - 1, plan->found = 1;
+            c->used_at = x->submitted;
             return 1;
         }
         /* only changes to its own memory count: a write of no known range says nothing about this range */
@@ -5227,40 +5315,225 @@ static int index_copy_for(rt_executor *x, uint64_t offset, uint64_t bytes, index
         plan->at = c->at, plan->entry = held - 1, plan->found = 1, plan->copy = 1, plan->changes = changes;
         return 1;
     }
+    if (set->selective) { /* only a range seen again, a while after it was first seen (VERTEX_COPY_SEEN_AFTER) */
+        struct seen_range *seen = &set->seen[start];
+        if (seen->offset != offset || seen->bytes != bytes) {
+            *seen = (struct seen_range){offset, bytes, x->submitted};
+            return 0;
+        }
+        if (x->submitted - seen->at < VERTEX_COPY_SEEN_AFTER) return 0;
+    }
     if (deferred_write_over(x, x->guest_base + offset, bytes)) return 0;
-    const VkDeviceSize place = (x->index_buffer_used + INDEX_COPY_ALIGN - 1) / INDEX_COPY_ALIGN * INDEX_COPY_ALIGN;
-    const int full = x->index_copy_count == MAX_INDEX_COPIES || place > x->index_buffer_bytes || bytes > x->index_buffer_bytes - place;
+    const VkDeviceSize place = (set->used + INDEX_COPY_ALIGN - 1) / INDEX_COPY_ALIGN * INDEX_COPY_ALIGN;
+    const int full = set->count == MAX_INDEX_COPIES || place > set->bytes || bytes > set->bytes - place;
+    if (full && set->selective && !copies_unused(x, set)) return 0; /* the copies there are still read: this range is read in place */
     plan->at = full ? 0 : place, plan->slot = full ? start : plan->slot, plan->drop = full, plan->copy = 1;
     return 1;
 }
 
 /* Records the plan's copy (outside a render pass) and notes it: a new range takes its entry, dropping
-   every copy first when the buffer or the table is full (index_copy_for planned it at the start). */
-static void index_copy_record(rt_executor *x, VkCommandBuffer commands, uint64_t offset, uint64_t bytes, const index_copy_plan *plan)
+   every copy first when the buffer or the table is full (copy_for planned it at the start). */
+static void copy_record(rt_executor *x, copy_set *set, VkCommandBuffer commands, uint64_t offset, uint64_t bytes, const copy_plan *plan,
+                        VkPipelineStageFlags read_stage, VkAccessFlags read_access)
 {
     if (plan->found) {
-        struct index_copy *c = &x->index_copies[plan->entry];
-        c->changes = plan->changes, c->changed_at = x->submitted, c->loaded_change = x->change_count;
+        struct guest_copy *c = &set->copies[plan->entry];
+        c->changes = plan->changes, c->changed_at = x->submitted, c->loaded_change = x->change_count, c->used_at = x->submitted;
     } else {
         if (plan->drop) {
-            if (x->index_dropped_after && x->submitted + 1 - x->index_dropped_after <= INDEX_COPY_WINDOW) /* more ranges than room, each frame */
-                x->index_paused_until = x->submitted + INDEX_COPY_PAUSE;
-            index_copies_drop(x);
-            x->index_dropped_after = x->submitted + 1;
+            if (set->dropped_after && x->submitted + 1 - set->dropped_after <= INDEX_COPY_WINDOW) /* more ranges than room, each frame */
+                set->paused_until = x->submitted + INDEX_COPY_PAUSE;
+            copies_drop(set);
+            set->dropped_after = x->submitted + 1;
         }
-        x->index_copies[x->index_copy_count] = (struct index_copy){offset, bytes, plan->at, x->change_count, 0, x->submitted, 0};
-        x->index_copy_slots[plan->slot] = (uint16_t)(++x->index_copy_count);
-        x->index_buffer_used = plan->at + bytes;
+        set->copies[set->count] = (struct guest_copy){offset, bytes, plan->at, x->change_count, 0, x->submitted, 0, x->submitted};
+        set->slots[plan->slot] = (uint16_t)(++set->count);
+        set->used = plan->at + bytes;
     }
-    /* after what earlier work wrote there and read from the place; before this draw's index reads */
+    /* after what earlier work wrote there and read from the place; before this draw's reads of the copy */
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
     const VkBufferCopy region = {.srcOffset = offset, .dstOffset = plan->at, .size = bytes};
-    vkCmdCopyBuffer(commands, x->buffer, x->index_buffer.buffer, 1, &region);
+    vkCmdCopyBuffer(commands, x->buffer, set->buffer.buffer, 1, &region);
     const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                   .dstAccessMask = VK_ACCESS_INDEX_READ_BIT};
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+                                   .dstAccessMask = read_access};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, read_stage, 0, 1, &after, 0, NULL, 0, NULL);
+}
+
+static int stage_memory_reads(rt_executor *x, uint64_t code, uint64_t callee, gcn_memory_read found[GCN_MAX_IMAGES], unsigned *n, int *anywhere);
+static int settled_descriptor_words(const rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs,
+                                    uint32_t user_set, uint32_t *words, unsigned count);
+static uint64_t vsharp_base(const uint32_t *w);
+static uint64_t vsharp_bytes(const uint32_t *w);
+
+/* ---- vertex buffers in device-local memory ---- */
+
+/* A draw's vertex shader reads its vertex buffers through the guest memory too, the same static
+   meshes frame after frame. So, as index ranges are (copy_for), each vertex buffer of
+   VERTEX_COPY_MIN_BYTES or more is copied into the vertex set's buffer and read from there while its
+   memory has not changed: the draw's copy of the descriptor in its table snapshot (gcn_spirv.h, Table
+   snapshots) gets the copy's guest address (gcn_guest_copies, x->vertex_window on) as its base, which
+   the vertex shader's translation reaches the copy through. Only for descriptors the program loads
+   from a table its snapshot holds (the copy is the draw's own, so the guest memory keeps the game's
+   descriptor), without SWIZZLE_ENABLE or ADD_TID_ENABLE (which address otherwise), in a draw that
+   stores nothing (draw_stores: its own stores could reach the buffers), not tessellated, with no
+   geometry shader and not indirect. A draw copies at most one range (a second waits for a later draw
+   and is read in place this time), so a drop (copy_record) only takes away copies the draw then does
+   not use. A copy holds the buffer's range and the VERTEX_COPY_OVERREACH bytes past it, so only for a
+   program whose buffer loads stay there (vertex_loads_bounded) and for a buffer whose range plus those
+   bytes ends inside the guest memory, not for a descriptor whose first two words another s_load of the
+   program reads otherwise than as that descriptor (descriptor_overlapped: rewriting them would change
+   what it reads), nor in a program with an s_load whose address is not known before it runs (pointer 2: an
+   SGPR offset, or a pointer loaded from memory, which could be a rewritten base) or a load whose descriptor has no known origin
+   (gcn_called_memory_reads' unknown: it may be one made from a rewritten descriptor, its base moved past
+   the copy). Beyond those, the program uses the descriptor's SGPRs only to address memory, as the
+   game's fetch shaders do. */
+typedef struct {
+    gcn_resource_origin origin;      /* where the program loads the descriptor from (a table its snapshot holds) */
+    uint32_t words[4];               /* its words as planned */
+    uint64_t base;                   /* the base in the copy's guest addresses */
+} vertex_rewrite;
+
+/* Whether a vertex shader's buffer loads (with its fetch shader, callee) all stay inside their
+   descriptor's range but for the bytes an element starting at its last byte reaches past it (a dword's
+   3, an 8- or 16-bit format's element up to 10: VERTEX_COPY_OVERREACH covers both): none is indexed (IDXEN) with an SOFFSET other than
+   the inline 0, which range checking does not count for an indexed access (gcn_spirv.c,
+   buffer_in_range). Code that does not decode counts as unbounded. Kept with the program's scans (kind 8). */
+static int vertex_loads_bounded(rt_executor *x, uint64_t code, uint64_t callee)
+{
+    enum { BUFFER_IDXEN = 1u << 13, SOFFSET_SHIFT = 24, SOFFSET_ZERO = 0x80 };
+    scan_entry *scan = scan_for(x, code, callee, 8);
+    if (scan && scan->used) return scan->count == 0;
+    unsigned unbounded = 0;
+    for (int part = 0; part < 2 && !unbounded; part++) {
+        const uint64_t start = part ? callee : code;
+        if (!start) continue;
+        const uint32_t *words = (const uint32_t *)(uintptr_t)start;
+        const long program = gcn_program_dwords(words, (size_t)((x->guest_base + x->size - start) / 4));
+        unbounded = program < 0;
+        for (long at = 0; at < program && !unbounded;) {
+            gcn_instruction ins;
+            if (gcn_decode(words + at, (size_t)(program - at), &ins) || !ins.name || !ins.dwords) {
+                unbounded = 1;
+                break;
+            }
+            unbounded = (ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF) && ins.dwords >= 2 && (words[at] & BUFFER_IDXEN) &&
+                        words[at + 1] >> SOFFSET_SHIFT != SOFFSET_ZERO;
+            at += ins.dwords;
+        }
+    }
+    if (scan) scan_keep(x, scan, unbounded, NULL, NULL);
+    return !unbounded;
+}
+
+/* Whether the first two words of the descriptor loaded from `origin` (vertex_copies_plan) are read
+   other than as that descriptor: by an s_load through the same pointer (pointer 1 in found[0..n))
+   meeting them that does not load them as a whole descriptor (at a multiple of 16 bytes before it,
+   through its end). That is another descriptor's load meeting them, or one taking the base as data or as
+   a pointer (an s_load_dwordx2 of it, say); either would see the rewritten base. Every descriptor
+   loaded from memory is loaded so (gcn_memory_reads lists each such s_load). */
+static int descriptor_overlapped(const gcn_memory_read *found, unsigned n, const gcn_resource_origin *origin)
+{
+    enum { DESCRIPTOR_BYTES = 16, REWRITTEN_BYTES = 8 };
+    const uint64_t at = origin->offset;
+    for (unsigned j = 0; j < n; j++) {
+        const gcn_resource_origin *o = &found[j].origin;
+        const uint64_t from = found[j].offset, to = from + found[j].bytes;
+        if (found[j].pointer == 1 && !o->from_memory && o->sgpr == origin->pointer_sgpr && from < at + REWRITTEN_BYTES && at < to &&
+            !(from <= at && (at - from) % DESCRIPTOR_BYTES == 0 && at + DESCRIPTOR_BYTES <= to))
+            return 1;
+    }
+    return 0;
+}
+
+/* The first table entry from `first` on of a draw stage's snapshot plan that holds the words of the
+   descriptor loaded from `origin`, or -1. Several may (an entry is one load's words: an s_load_dwordx8
+   and an s_load_dwordx4 of its second half are two); the program reads the descriptor from one of them. */
+static int table_entry_holding(const gcn_table_snapshot *tables, const gcn_resource_origin *origin, unsigned first)
+{
+    enum { DESCRIPTOR_BYTES = 16 };
+    for (unsigned k = first; tables && k < tables->entry_count; k++) {
+        const gcn_table_entry *e = &tables->entries[k];
+        if (origin->from_memory && e->pointer_sgpr == origin->pointer_sgpr && origin->offset >= e->offset && (origin->offset - e->offset) % 4 == 0 &&
+            (uint64_t)origin->offset + DESCRIPTOR_BYTES <= (uint64_t)e->offset + e->dwords * 4)
+            return (int)k;
+    }
+    return -1;
+}
+
+/* The descriptors a draw's vertex shader reads from the vertex set (above), rewrites[0..count) (the
+   count returned), and the one range it copies first, if any: *copy, at guest-memory offset
+   copy_range[0], copy_range[1] bytes (copy_record). */
+static unsigned vertex_copies_plan(rt_executor *x, const draw_state *s, uint64_t callee, const gcn_table_snapshot *tables,
+                                   vertex_rewrite rewrites[MAX_VERTEX_REWRITES], copy_plan *copy, uint64_t copy_range[2])
+{
+    *copy = (copy_plan){0};
+    gcn_memory_read found[GCN_MAX_IMAGES];
+    unsigned n = 0, count = 0;
+    int anywhere = 0;
+    if (!x->vertex_window || !tables || !tables->entry_count || stage_memory_reads(x, s->vertex.code, callee, found, &n, &anywhere) || anywhere ||
+        !vertex_loads_bounded(x, s->vertex.code, callee))
+        return 0;
+    for (unsigned i = 0; i < n; i++)
+        if (found[i].pointer == 2) return 0; /* an s_load at an address not known before it runs: it may be at a rewritten base */
+    uint64_t ranges[MAX_VERTEX_REWRITES][2];
+    VkDeviceSize places[MAX_VERTEX_REWRITES];
+    for (unsigned i = 0; i < n && count < MAX_VERTEX_REWRITES; i++) {
+        const gcn_memory_read *r = &found[i];
+        uint32_t w[4];
+        if (r->pointer || table_entry_holding(tables, &r->origin, 0) < 0 || descriptor_overlapped(found, n, &r->origin) ||
+            settled_descriptor_words(x, &r->origin, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], w, 4) ||
+            w[1] >> 31 || (w[3] >> 23 & 1)) /* SWIZZLE_ENABLE, ADD_TID_ENABLE */
+            continue;
+        const uint64_t base = vsharp_base(w), bytes = vsharp_bytes(w), end = x->guest_base + x->size;
+        if (bytes < VERTEX_COPY_MIN_BYTES || base < x->guest_base || base >= end || bytes + VERTEX_COPY_OVERREACH > end - base) continue;
+        const uint64_t page = base / VERTEX_COPY_PAGE * VERTEX_COPY_PAGE, reach = base + bytes + VERTEX_COPY_OVERREACH;
+        const uint64_t start = page < x->guest_base ? x->guest_base : page;
+        const uint64_t stop = reach >= end ? end : (reach + VERTEX_COPY_PAGE - 1) / VERTEX_COPY_PAGE * VERTEX_COPY_PAGE;
+        const uint64_t offset = start - x->guest_base, length = (stop < end ? stop : end) - start;
+        unsigned same = 0;
+        while (same < count && !(ranges[same][0] == offset && ranges[same][1] == length)) same++;
+        VkDeviceSize at;
+        if (same < count) {
+            at = places[same];
+        } else {
+            copy_plan plan;
+            if (!copy_for(x, &x->vertex_set, offset, length, &plan) || (plan.copy && copy->copy)) continue; /* one copy per draw */
+            if (plan.copy) *copy = plan, copy_range[0] = offset, copy_range[1] = length;
+            at = plan.at;
+        }
+        ranges[count][0] = offset, ranges[count][1] = length, places[count] = at;
+        rewrites[count++] = (vertex_rewrite){r->origin, {w[0], w[1], w[2], w[3]}, x->vertex_window + at + (base - start)};
+    }
+    if (copy->drop) { /* the drop takes every other copy away: only the copied range is read from the set */
+        unsigned kept = 0;
+        for (unsigned i = 0; i < count; i++)
+            if (ranges[i][0] == copy_range[0] && ranges[i][1] == copy_range[1]) rewrites[kept++] = rewrites[i];
+        count = kept;
+    }
+    return count;
+}
+
+/* Writes the rewritten bases into the draw's vertex snapshot block (draw_snapshot, at block_address with
+   mask `taken`): in every taken entry holding a rewritten descriptor's words (table_entry_holding: the
+   one the program reads it from among them) while they are still those planned (the game may have
+   written the table between the plan and the snapshot). */
+static void vertex_copies_rewrite(rt_executor *x, uint64_t block_address, const gcn_table_snapshot *tables, uint32_t taken,
+                                  const vertex_rewrite *rewrites, unsigned count)
+{
+    enum { VSHARP_BASE_HIGH_BITS = 0xff };
+    const batch_slot *b = &x->slots[x->current];
+    if (!taken || block_address == b->snapshots.address) return; /* the empty block */
+    uint32_t *block = (uint32_t *)((uint8_t *)b->snapshots.mapped + (block_address - b->snapshots.address));
+    for (unsigned i = 0; i < count; i++)
+        for (int k = table_entry_holding(tables, &rewrites[i].origin, 0); k >= 0; k = table_entry_holding(tables, &rewrites[i].origin, (unsigned)k + 1)) {
+            if (!(taken >> k & 1)) continue;
+            uint32_t *words = block + 1 + tables->entries[k].first_word + (rewrites[i].origin.offset - tables->entries[k].offset) / 4;
+            if (memcmp(words, rewrites[i].words, sizeof rewrites[i].words)) continue;
+            words[0] = (uint32_t)rewrites[i].base,
+            words[1] = (rewrites[i].words[1] & ~(uint32_t)VSHARP_BASE_HIGH_BITS) | (uint32_t)(rewrites[i].base >> 32);
+        }
 }
 
 /* A draw of index_count vertices (indices, when given, index them), or, with `indirect` not 0, of the
@@ -5437,9 +5710,15 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
        passes) leaves the pass and takes the barrier. */
     /* indices from device-local memory; copying them there leaves the render pass */
     const uint64_t index_bytes = indices ? (uint64_t)index_count * (indices->type == VK_INDEX_TYPE_UINT16 ? 2 : 4) : 0;
-    index_copy_plan index_copy = {0};
-    const int index_copied = indices && !tess && !gs && !indirect && index_copy_for(x, indices->offset, index_bytes, &index_copy);
-    const int synced = x->draws_synced && !indirect && !tess && !gs && !index_copy.copy;
+    vertex_rewrite rewrites[MAX_VERTEX_REWRITES];
+    copy_plan vertex_copy = {0};
+    uint64_t vertex_copy_range[2] = {0, 0};
+    const unsigned rewrite_count = !stores && !tess && !gs && !indirect && x->draw_snapshots
+                                       ? vertex_copies_plan(x, s, callee, vertex_tables, rewrites, &vertex_copy, vertex_copy_range)
+                                       : 0;
+    copy_plan index_copy = {0};
+    const int index_copied = indices && !tess && !gs && !indirect && copy_for(x, &x->index_set, indices->offset, index_bytes, &index_copy);
+    const int synced = x->draws_synced && !indirect && !tess && !gs && !index_copy.copy && !vertex_copy.copy;
     const int same_pass = synced && x->open_pass == render_pass && x->open_framebuffer == framebuffer;
     VkCommandBuffer commands = same_pass ? x->slots[x->current].commands : batch_commands(x, error, error_size);
     if (!commands) return -1;
@@ -5455,7 +5734,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                                                                                      VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT : 0) |
                                  (gs ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0),
                              0, 1, &earlier, 0, NULL, 0, NULL);
-    if (index_copy.copy) index_copy_record(x, commands, indices->offset, index_bytes, &index_copy);
+    if (index_copy.copy) copy_record(x, &x->index_set, commands, indices->offset, index_bytes, &index_copy, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                                        VK_ACCESS_INDEX_READ_BIT);
+    if (vertex_copy.copy)
+        copy_record(x, &x->vertex_set, commands, vertex_copy_range[0], vertex_copy_range[1], &vertex_copy, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                    VK_ACCESS_SHADER_READ_BIT);
     VkDeviceSize strip_draw = 0; /* the strips' draw in the batch's indirect buffer (geometry_passes) */
     if (tess || gs) { /* an indexed draw's indices are read by the local or export pass, at their GPU address */
         const uint64_t index_address = indices ? x->guest_base + indices->offset + x->address_offset : 0;
@@ -5502,6 +5785,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         const uint64_t pixel_block =
             draw_snapshot(x, depth_only ? NULL : pixel_tables, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], &pixel_taken);
         if (!vertex_block || !pixel_block) return failed(error, error_size, "no buffer for the draws' table snapshots");
+        vertex_copies_rewrite(x, vertex_block, vertex_tables, vertex_taken, rewrites, rewrite_count);
         /* each stage's GCN_TABLE_BLOCK_WORDS: its block's address, then its mask */
         const uint32_t blocks[2][TABLE_BLOCK_PUSH / 4] = {{(uint32_t)vertex_block, (uint32_t)(vertex_block >> 32), vertex_taken},
                                                           {(uint32_t)pixel_block, (uint32_t)(pixel_block >> 32), pixel_taken}};
@@ -5521,7 +5805,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         vkCmdBindIndexBuffer(commands, x->gs_strips.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexedIndirect(commands, x->slots[x->current].indirect.buffer, strip_draw, 1, 0);
     } else if (indices && !tess) {
-        if (index_copied) vkCmdBindIndexBuffer(commands, x->index_buffer.buffer, index_copy.at, indices->type);
+        if (index_copied) vkCmdBindIndexBuffer(commands, x->index_set.buffer.buffer, index_copy.at, indices->type);
         else vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
         vkCmdDrawIndexed(commands, index_count, instances, 0, 0, 0);
     } else if (indirect) {
@@ -5529,8 +5813,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     } else {
         vkCmdDraw(commands, index_count, instances, 0, 0);
     }
-    /* index copies made before it that it may store to are copied again (index_copy_for) */
-    if (stores) x->index_copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1;
+    /* copies (both sets) made before it that it may store to are copied again (copy_for) */
+    if (stores) x->copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1;
     else if (tess || gs) stage_stores_noted(x, s, tess, gs);
     if (x->watched_count) { /* what it reads in place as it runs (batch_reads) */
         if (tess || gs || indirect) {
@@ -5573,7 +5857,7 @@ static void compute_key(translation_key *key, const rt_executor *x, const comput
     const uint64_t kind = KEY_COMPUTE;
     translation_key_add(key, &kind, sizeof kind);
     add_code(key, r->code, r->words, r->key_dwords);
-    add_executor_values(key, x, r->error_address);
+    add_executor_values(key, x, r->error_address, 0);
     const uint64_t values[COMPUTE_VALUES] = {r->threads[0], r->threads[1], r->threads[2], r->user_sgprs, r->workgroup_id_enables,
                                              r->image_count, x->gds_address};
     translation_key_add(key, values, sizeof values);
@@ -7051,7 +7335,7 @@ static int stage_store_kinds(rt_executor *x, uint64_t code, int ring_stage, unsi
 }
 
 /* Notes what a tessellated draw's local and hull shaders, or a geometry draw's export and geometry
-   shaders, may store to guest memory, for the index copies (index_copies_written), as the draw is
+   shaders, may store to guest memory, for the copies (copies_written), as the draw is
    recorded: the range of each descriptor their buffer stores write through (as dispatch_store_ranges
    finds it). A descriptor in the user data is the one the draw keeps; one loaded from memory (the
    game's hull shaders load the tessellation-factor ring's) is read there now, as dispatch_store_ranges
@@ -7066,7 +7350,7 @@ static int stage_store_kinds(rt_executor *x, uint64_t code, int ring_stage, unsi
    (stage_store_kinds). A hull shader's stores through a descriptor based in the tessellation-factor
    ring reach the factor buffer instead (gcn_spirv.c, buffer_base): noting the descriptor's range anyway
    notes more, never less. Any other write, a store whose descriptor has no known origin, a scan that
-   fails or a descriptor not readable so counts as a write of no known range (index_copies_stale). A
+   fails or a descriptor not readable so counts as a write of no known range (copies_stale). A
    stage's store whose range meets a table the same stage loads a descriptor from (which could move that
    descriptor's later stores) counts so too. A noted range in guest memory, or a write of no known range,
    sets unlisted_stores_unfinished. It never fails the draw. */
@@ -7112,12 +7396,12 @@ static void stage_stores_noted(rt_executor *x, const draw_state *s, int tess, in
                     anywhere = ranges[t][1] && ranges[t][0] < table + 4 * sizeof(uint32_t) && table < end;
                 }
             for (unsigned d = 0; kinds && d < n && !anywhere; d++) {
-                index_copies_written(x, ranges[d][0], ranges[d][1]);
+                copies_written(x, ranges[d][0], ranges[d][1]);
                 if (guest_range_meets(x, ranges[d][0], ranges[d][1])) x->unlisted_stores_unfinished = 1;
             }
         }
     }
-    if (anywhere) x->index_copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1; /* may store anywhere */
+    if (anywhere) x->copies_stale = ++x->change_count, x->unlisted_stores_unfinished = 1; /* may store anywhere */
 }
 
 /* The table-driven copy's real memory (gcn_table_copy_shape): its table, read now by the CPU, gives
@@ -7491,6 +7775,32 @@ static int snapshot_holds(const gcn_table_snapshot *tables, uint32_t taken, cons
     return 0;
 }
 
+/* The memory a shader (with its fetch shader, callee) reads (gcn_called_memory_reads), kept with its
+   scan: found[0..*n), *anywhere when it may read memory those do not bound. 0, or -1 when its code
+   does not decode. */
+static int stage_memory_reads(rt_executor *x, uint64_t code, uint64_t callee, gcn_memory_read found[GCN_MAX_IMAGES], unsigned *n, int *anywhere)
+{
+    scan_entry *scan = scan_for(x, code, callee, 5);
+    if (scan && scan->used) {
+        *n = scan->count, *anywhere = scan->unknown;
+        memcpy(found, scan->reads, *n * sizeof *found);
+        return 0;
+    }
+    char reason[300];
+    const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
+    const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+    const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+    *n = 0, *anywhere = 0;
+    if (gcn_called_memory_reads((const uint32_t *)(uintptr_t)code, dwords, callee_words, callee_dwords, found, GCN_MAX_IMAGES, n, anywhere, reason,
+                                sizeof reason))
+        return -1;
+    if (scan) {
+        scan_keep(x, scan, *n, NULL, NULL);
+        if (scan->used) memcpy(scan->reads, found, *n * sizeof *found), scan->unknown = *anywhere;
+    }
+    return 0;
+}
+
 /* Notes the memory a draw's shader (with its fetch shader, callee) reads in place as the GPU runs it
    (batch_reads): each buffer descriptor's range, and each s_load whose SGPRs its translated code reads
    (sgprs_read), unless its table snapshot holds the words (snapshot_holds: `taken`, its entries copied). An s_load nothing reads is a descriptor the executor read itself before recording the
@@ -7503,24 +7813,9 @@ static void stage_reads(rt_executor *x, uint64_t code, uint64_t callee, const ui
     gcn_memory_read found[GCN_MAX_IMAGES];
     unsigned n = 0;
     int anywhere = 0;
-    scan_entry *scan = scan_for(x, code, callee, 5);
-    if (scan && scan->used) {
-        n = scan->count, anywhere = scan->unknown;
-        memcpy(found, scan->reads, n * sizeof *found);
-    } else {
-        char reason[300];
-        const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
-        const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
-        const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
-        if (gcn_called_memory_reads((const uint32_t *)(uintptr_t)code, dwords, callee_words, callee_dwords, found, GCN_MAX_IMAGES, &n, &anywhere,
-                                    reason, sizeof reason)) {
-            batch_reads_anywhere(x);
-            return;
-        }
-        if (scan) {
-            scan_keep(x, scan, n, NULL, NULL);
-            if (scan->used) memcpy(scan->reads, found, n * sizeof *found), scan->unknown = anywhere;
-        }
+    if (stage_memory_reads(x, code, callee, found, &n, &anywhere)) {
+        batch_reads_anywhere(x);
+        return;
     }
     for (unsigned i = 0; i < n && !anywhere; i++) {
         const gcn_memory_read *r = &found[i];
@@ -7877,18 +8172,19 @@ void rt_executor_deferred_writes(rt_executor *x, uint64_t address, uint64_t byte
     for (unsigned i = 0; i < x->deferred_write_count && !grown; i++)
         if (x->deferred_writes[i].address <= address && address + bytes <= x->deferred_writes[i].address + x->deferred_writes[i].bytes)
             grown = &x->deferred_writes[i];
-    for (uint32_t i = 0; i < x->index_copy_count; i++) {
-        struct index_copy *c = &x->index_copies[i];
-        const uint64_t start = x->guest_base + c->offset;
-        if (grown->address < start + c->bytes && start < grown->address + grown->bytes) c->direct = 1;
-    }
+    for (copy_set *set = &x->index_set; set; set = set == &x->index_set ? &x->vertex_set : NULL)
+        for (uint32_t i = 0; i < set->count; i++) {
+            struct guest_copy *c = &set->copies[i];
+            const uint64_t start = x->guest_base + c->offset;
+            if (grown->address < start + c->bytes && start < grown->address + grown->bytes) c->direct = 1;
+        }
 }
 
 void rt_executor_cpu_writes(rt_executor *x, uint64_t address, uint64_t bytes)
 {
     if (!bytes) return;
-    if (bytes == UINT64_MAX) x->index_copies_stale = ++x->change_count; /* anywhere */
-    else index_copies_written(x, address, bytes);
+    if (bytes == UINT64_MAX) x->copies_stale = ++x->change_count; /* anywhere */
+    else copies_written(x, address, bytes);
 }
 
 /* Records the buffer's calls into the batch, in order, keeping the state they set. */
@@ -8212,7 +8508,8 @@ void rt_executor_close(rt_executor *x)
         if (x->tess_vertex) vkDestroyShaderModule(x->device, x->tess_vertex, NULL);
         gpu_buffer_free(x, &x->tess_lds), gpu_buffer_free(x, &x->tess_factors);
         gpu_buffer_free(x, &x->gs_esgs), gpu_buffer_free(x, &x->gs_gsvs), gpu_buffer_free(x, &x->gs_strips);
-        gpu_buffer_free(x, &x->index_buffer);
+        gpu_buffer_free(x, &x->index_set.buffer);
+        gpu_buffer_free(x, &x->vertex_set.buffer);
         if (x->tess_layout) vkDestroyPipelineLayout(x->device, x->tess_layout, NULL);
         for (size_t i = 0; i < x->pass_count; i++) {
             vkDestroyFramebuffer(x->device, x->passes[i].framebuffer, NULL);

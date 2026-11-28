@@ -98,6 +98,7 @@ static rt_executor *executor_for(const char *function)
                                  .cpu_writes_due = watched ? cpu_writes_due : NULL, .async_pipelines = async_pipelines(),
                                  .launch_progress = launch_progress};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
+    memory.copies_base = rt_gpu_copies_window(&memory.copies_bytes);
     if (watched) rt_write_watch_set_resolver(resolve_guarded);
     char error[RENDER_ERROR_BYTES];
     if (rt_executor_open(&memory, &executor, error, sizeof error)) rt_fatal(function, error);

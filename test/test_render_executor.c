@@ -3227,7 +3227,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -3383,7 +3383,7 @@ static void test_unguard(uint64_t address, uint64_t length)
 static void write_back_before_target_eviction(int fd)
 {
     enum { BUFFER = 0xc1600000, FIRST = 0x3000000, TARGETS = 512, BYTES = SIZE * SIZE * 4 };
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     char error[256] = "";
     guarded.answer = 0;
@@ -3438,7 +3438,7 @@ static void guarded_targets(int fd, rt_executor *shared)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3529,7 +3529,7 @@ static void guarded_depth_read(int fd, unsigned bytes)
     enum { DEPTH_BUFFER = 0xc0f48000, GD_Z = 0x2700000, GD_HTILE = 0x2780000, GD_COLOUR = 0x2790000, GD_SAMPLED = 0x27a0000, GD_SIZE = 256,
            GD_WORDS = (GD_SIZE / 8) * (GD_SIZE / 8) };
     char error[256] = "";
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3603,7 +3603,7 @@ static void guarded_target_fill(int fd)
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     const uint64_t span = rt_tiling_size(&layout, 1);
     uint32_t *memory = (uint32_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3669,7 +3669,7 @@ static void target_copy_test(int fd, int into)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     const uint64_t span = rt_tiling_size(&layout, 1), destination = at(into_target ? COPY_SAME : COPY_DEST);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -3909,7 +3909,7 @@ static void collect_when_due(int fd)
 {
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, report_due, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "executor with a due check: %s\n", error);
@@ -3946,7 +3946,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -4031,27 +4031,37 @@ static int report_writes_in_ranges(const uint64_t (*ranges)[2], size_t count,
     return 0;
 }
 
-/* An executor over the guest memory, with the fake watch (report_writes_in_ranges) or none, and the index copy
-   buffer's size from PB_INDEX_COPY_BYTES when `bytes` is given; NULL when it does not open. */
-static rt_executor *index_copy_executor(int fd, int watched, const char *bytes)
+/* An executor over the guest memory, with the fake watch (report_writes_in_ranges) or none, and the copy
+   set's size from the environment variable `variable` (PB_INDEX_COPY_BYTES, PB_VERTEX_COPY_BYTES) when
+   `bytes` is given (unset otherwise: the default); NULL when it does not open. */
+/* The guest addresses copy_executor gives the executor for its copies (rt_executor_memory's
+   copies_base): the first multiple of 4 GB past the fixture's guest memory, unless a test moves them. */
+#define COPY_WINDOW ((GUEST_BASE + GUEST_SIZE + 0xffffffffull) & ~0xffffffffull)
+enum { COPY_WINDOW_BYTES = 1 << 30 };
+static struct { uint64_t base, bytes; } copy_window = {COPY_WINDOW, COPY_WINDOW_BYTES};
+
+static rt_executor *copy_executor(int fd, int watched, const char *variable, const char *bytes)
 {
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, watched ? report_writes_in_ranges : NULL, NULL, NULL, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, watched ? report_writes_in_ranges : NULL, NULL, NULL, NULL, 0, NULL, 0, NULL,
+                                       copy_window.base, copy_window.bytes};
     char error[256] = "", saved[64] = "";
     rt_executor *x = NULL;
-    const char *outside = getenv("PB_INDEX_COPY_BYTES"); /* kept for the tests after these */
+    const char *outside = getenv(variable); /* kept for the tests after these */
     if (outside) snprintf(saved, sizeof saved, "%s", outside);
-    if (bytes) setenv("PB_INDEX_COPY_BYTES", bytes, 1);
-    else unsetenv("PB_INDEX_COPY_BYTES");
+    if (bytes) setenv(variable, bytes, 1);
+    else unsetenv(variable);
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
-    if (outside) setenv("PB_INDEX_COPY_BYTES", saved, 1);
-    else unsetenv("PB_INDEX_COPY_BYTES");
-    if (opened) fprintf(stderr, "index copy executor: %s\n", error);
+    if (outside) setenv(variable, saved, 1);
+    else unsetenv(variable);
+    if (opened) fprintf(stderr, "copy executor: %s\n", error);
     CHECK(opened == 0);
     return opened ? NULL : x;
 }
 
+static rt_executor *index_copy_executor(int fd, int watched, const char *bytes) { return copy_executor(fd, watched, "PB_INDEX_COPY_BYTES", bytes); }
+
 /* With the CPU's writes watched, an indexed draw's indices are copied into device-local memory and drawn
-   from there while their memory has not changed (index_copy_for): a CPU write the watch has not reported
+   from there while their memory has not changed (copy_for): a CPU write the watch has not reported
    leaves the copy as it was (the triangle drawn again, though the guest memory now holds a degenerate
    one); once reported, once a dispatch stores there, or once a step the renderer performs is to write
    there (rt_executor_cpu_write_ready), the next draw copies the new indices; a range that changed three
@@ -4387,6 +4397,486 @@ static void index_copies(int fd)
     reported_write.length = 0;
 }
 
+/* vertex_copies' draws: the fetch_shader test's vertex shader calling its fetch shader, which loads the
+   two vertex buffers' descriptors from the table at guest-memory offset `table` (corners, then
+   colours), drawn as the triangle into the k-th of a row of fresh targets. With `storing`, the pixel
+   shader stores (pixel_late_store, into VC_SCRATCH) and exports white. The target's address, or 0
+   when the draw stops (a failed check). */
+enum { VC_VERTEX = 0x3200000, VC_FETCH = 0x3200100, VC_STORING_PIXEL = 0x3200200, VC_STORING_VERTEX = 0x3200400, VC_TABLES = 0x3201000,
+       VC_TABLE_STEP = 0x40, VC_BUFFERS = 0x3210000, VC_BUFFER_STEP = 0x20000, VC_TARGETS = 0x3340000, VC_TARGET_STEP = 0x2000,
+       VC_TARGET_COUNT = 48, VC_SCRATCH = 0x33f0000, VC_RECORDS = 0x1000 };
+static uint64_t vc_buffer(unsigned i) { return VC_BUFFERS + (uint64_t)VC_BUFFER_STEP * i; }
+static uint64_t vc_table(unsigned t) { return VC_TABLES + (uint64_t)VC_TABLE_STEP * t; }
+
+/* Writes the triangle's corners (`colours` 0) or colours (1) into vertex buffer i, or zeros (`zeros`:
+   no triangle once they are its corners). */
+static void vc_fill(unsigned i, int colours, int zeros)
+{
+    static const float corners[3][4] = {{-1, -1, 0, 1}, {3, -1, 0, 1}, {-1, 3, 0, 1}};
+    static const float colors[3][4] = {{0, 0, 0.25f, 1}, {2, 0, 0.25f, 1}, {0, 2, 0.25f, 1}};
+    void *to = (void *)(uintptr_t)at(vc_buffer(i));
+    if (zeros) memset(to, 0, sizeof corners);
+    else memcpy(to, colours ? (const void *)colors : (const void *)corners, sizeof corners);
+}
+
+/* Table t: the descriptors of vertex buffers `corners` and `colours` (32_32_32_32 float, DST_SEL x, y,
+   z, w), each of `records` records of RECORD_STRIDE bytes. */
+static void vc_set_table(unsigned t, unsigned corners, unsigned colours, uint32_t records)
+{
+    const uint32_t float_xyzw = 4 | 5 << 3 | 6 << 6 | 7 << 9 | 7u << 12 | 14u << 15;
+    uint32_t *table = (uint32_t *)(uintptr_t)at(vc_table(t));
+    descriptor(table, at(vc_buffer(corners)), RECORD_STRIDE), table[2] = records, table[3] = float_xyzw;
+    descriptor(table + 4, at(vc_buffer(colours)), RECORD_STRIDE), table[6] = VC_RECORDS, table[7] = float_xyzw;
+}
+
+static const uint32_t *vc_fetch = fetch_position_color; /* the fetch shader vc_draw's vertex shader calls */
+static size_t vc_fetch_bytes = sizeof fetch_position_color;
+
+static uint64_t vc_draw(rt_executor *x, unsigned table, int storing, unsigned k)
+{
+    enum { VC_BUFFER = 0xc0e90000 };
+    char error[256] = "";
+    CHECK(k < VC_TARGET_COUNT);
+    const uint64_t target = at(VC_TARGETS + (uint64_t)VC_TARGET_STEP * (k % VC_TARGET_COUNT));
+    memset((void *)(uintptr_t)target, 0, VC_TARGET_STEP);
+    memcpy((void *)(uintptr_t)at(VC_VERTEX), vertex_calling_fetch, sizeof vertex_calling_fetch);
+    memcpy((void *)(uintptr_t)at(VC_FETCH), vc_fetch, vc_fetch_bytes);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(VC_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(VC_VERTEX);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 4 << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(VC_BUFFER, offset, vertex, error, sizeof error) == 0);
+    const uint64_t fetch = at(VC_FETCH), tables = at(vc_table(table));
+    const uint32_t user[4] = {(uint32_t)fetch, (uint32_t)(fetch >> 32), (uint32_t)tables, (uint32_t)(tables >> 32)};
+    CHECK(rt_render_record_user_data(VC_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 4, error, sizeof error) == 0);
+    offset += 0x20;
+    if (storing) {
+        memcpy((void *)(uintptr_t)at(VC_STORING_PIXEL), pixel_late_store, sizeof pixel_late_store);
+        const uint64_t pixel_code = at(VC_STORING_PIXEL);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(pixel_code >> 8), (uint32_t)(pixel_code >> 40), 0x2, 8 << 1, 0, 0x4,
+                                                       PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(VC_BUFFER, offset, pixel, error, sizeof error) == 0);
+        uint32_t pixel_user[8] = {0};
+        descriptor(pixel_user + 4, at(VC_SCRATCH), 4);
+        CHECK(rt_render_record_user_data(VC_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, pixel_user, 8, error, sizeof error) == 0);
+        offset += 0x20;
+    }
+    const int ran = rt_executor_run(x, VC_BUFFER, record_triangle_draw(VC_BUFFER, offset), error, sizeof error);
+    if (ran) fprintf(stderr, "vertex copies draw: %s\n", error);
+    CHECK(ran == 0);
+    return ran ? 0 : target;
+}
+
+static int vc_misses(rt_executor *x, unsigned table, unsigned k);
+
+/* Draws table `table`'s triangle VC_SEEN_DRAWS times into the row's last target, each drawn whole: its
+   ranges are seen, then seen again enough submissions later (VERTEX_COPY_SEEN_AFTER, 32) to be copied,
+   one range a draw (both become due at the same draw). */
+enum { VC_SEEN_DRAWS = 36 };
+static void vc_seen(rt_executor *x, unsigned table)
+{
+    for (int i = 0; i < VC_SEEN_DRAWS; i++) CHECK(vc_misses(x, table, VC_TARGET_COUNT - 1) == 0);
+}
+
+/* The pixels of vc_draw's triangle that differ from the reference image (all of them when its corners
+   were zeros), or -1 when the draw stops. */
+static int vc_misses(rt_executor *x, unsigned table, unsigned k)
+{
+    const uint64_t target = vc_draw(x, table, 0, k);
+    return target ? differing_pixels(x, target) : -1;
+}
+
+/* The white pixels of vc_draw's storing triangle (all of them when its corners were the triangle's,
+   none when they were zeros), or -1 when the draw stops. */
+static int vc_white(rt_executor *x, unsigned table, unsigned k)
+{
+    const uint64_t target = vc_draw(x, table, 1, k);
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (!target || rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return -1;
+    int white = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) white += bgra[i] == 0xffffffffu;
+    return white;
+}
+
+/* With the CPU's writes watched, a vertex shader's vertex buffers of 64 KB or more (here NUM_RECORDS
+   0x1000 of 16 bytes) are copied into device-local memory once seen again a while after they were first
+   seen (vc_seen), and read from there while their memory has not changed (vertex_copies_plan): a CPU write the watch has not reported leaves the copy as it was
+   (the triangle drawn again, though its corners are now zeros); once reported, once a dispatch stores
+   there, once a step the renderer performs is to write there (rt_executor_cpu_write_ready), writes
+   memory of no known range (rt_executor_cpu_writes) or there as a deferred step
+   (rt_executor_deferred_writes), or once a draw that stores has run, the next draw reads the new data. A
+   draw copies one range at a time (the triangle's two buffers are two ranges: the first draw copies the
+   corners, reading the colours in place). A draw that stores reads its buffers in place. A buffer of
+   less than 64 KB, a copy set too small, none (PB_VERTEX_COPY_BYTES=0), no watch, or no guest addresses
+   for the copies that are clear of the guest memory, below 2^40 and enough for the set: read in place. A
+   full set keeps its copies while they are read and drops them once they are not, and a draw that
+   drops reads its other buffers in place. A descriptor
+   whose base and stride words another descriptor overlaps is read in place, and so are the buffers of a
+   fetch shader whose indexed loads add an SOFFSET, that loads through a descriptor it made, or that
+   loads a descriptor's base words alone or through its base as a pointer. A descriptor two snapshot
+   entries hold is read from the copy through either. A vertex shader that
+   stores into the copies' guest addresses stops, its store going to the sink. */
+static void vertex_copies(int fd)
+{
+    enum { ZEROS = 0x33e0000, COMPUTE = 0xc0ea0000, COMPUTE_CODE = 0x3200800, LANES = 64 };
+    const int all = SIZE * SIZE; /* every pixel differs: no triangle */
+    unsigned k = 0;
+    for (unsigned i = 0; i < 6; i++) vc_fill(i, i % 2, 0);
+    vc_set_table(0, 0, 1, VC_RECORDS);
+    rt_executor *x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+    if (x) {
+        reported_write.length = 0;
+        CHECK(vc_misses(x, 0, k++) == 0); /* seen once: not copied */
+        vc_fill(0, 0, 1); /* not reported */
+        CHECK(vc_misses(x, 0, k++) == all);
+        vc_fill(0, 0, 0);
+        vc_seen(x, 0); /* copies the corners, then the colours */
+        CHECK(vc_misses(x, 0, k++) == 0);
+        vc_fill(0, 0, 1), vc_fill(1, 1, 1); /* not reported: the copies stay */
+        CHECK(vc_misses(x, 0, k++) == 0);
+        reported_write.pool_offset = vc_buffer(0), reported_write.length = 48;
+        CHECK(vc_misses(x, 0, k++) == all);
+        vc_fill(0, 0, 0), vc_fill(1, 1, 0);
+        reported_write.pool_offset = vc_buffer(0), reported_write.length = 48;
+        CHECK(vc_misses(x, 0, k++) == 0);
+        rt_executor_close(x);
+    }
+    /* the first change after the copies is a dispatch's store (scale_add's 1.0 floats over the corners),
+       a step the renderer is to perform, one writing memory of no known range, or a deferred step's */
+    for (int change = 0; change < 4; change++) {
+        k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+        if (!x) continue;
+        vc_fill(0, 0, 0);
+        vc_seen(x, 0);
+        CHECK(vc_misses(x, 0, k++) == 0);
+        if (change == 0) {
+            memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+            memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+            rt_render_forget(), rt_executor_reset(x);
+            const uint64_t code = at(COMPUTE_CODE);
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+            uint32_t user[8];
+            descriptor(user, at(ZEROS), 4);
+            descriptor(user + 4, at(vc_buffer(0)), 4);
+            char error[256] = "";
+            CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            const uint32_t one[3] = {1, 1, 1};
+            CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+            CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == 0);
+            CHECK(vc_misses(x, 0, k++) == all);
+        } else {
+            vc_fill(0, 0, 1); /* as the step writes, unreported */
+            if (change == 1) (void)rt_executor_cpu_write_ready(x, at(vc_buffer(0)), 48);
+            if (change == 2) rt_executor_cpu_writes(x, 0, UINT64_MAX);
+            if (change == 3) rt_executor_deferred_writes(x, at(vc_buffer(0)), 48);
+            CHECK(vc_misses(x, 0, k++) == all);
+            if (change == 3) { /* read in place from then on */
+                vc_fill(0, 0, 0);
+                CHECK(vc_misses(x, 0, k++) == 0);
+                vc_fill(0, 0, 1);
+                CHECK(vc_misses(x, 0, k++) == all);
+            }
+        }
+        rt_executor_close(x);
+    }
+    /* a draw whose pixel shader stores reads the corners in place (zeros: nothing drawn), and the draw
+       after it copies them again */
+    k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+    if (x) {
+        vc_fill(0, 0, 0);
+        vc_seen(x, 0);
+        CHECK(vc_misses(x, 0, k++) == 0);
+        vc_fill(0, 0, 1); /* not reported */
+        CHECK(vc_white(x, 0, k++) == 0);
+        CHECK(vc_misses(x, 0, k++) == all);
+        rt_executor_close(x);
+    }
+    /* corners of 3 records (48 bytes, under 64 KB): read in place */
+    vc_fill(0, 0, 0);
+    vc_set_table(1, 0, 1, 3);
+    k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+    if (x) {
+        vc_seen(x, 1);
+        CHECK(vc_misses(x, 1, k++) == 0);
+        vc_fill(0, 0, 1);
+        CHECK(vc_misses(x, 1, k++) == all);
+        vc_fill(0, 0, 0);
+        rt_executor_close(x);
+    }
+    /* a set with room for four ranges (0x11000 bytes each: a page below the buffer to a page past its end
+       plus 16 bytes) is full after the corners and colours of tables 0 and 2. While its copies are read, table 3's
+       new colours (buffer 5, seen before table 2's copies) are read in place and the copies stay; once
+       none has been read for VERTEX_COPY_RECENT (256) submissions (table 5's draws read buffers under
+       64 KB), table 3 drops them: its corners (buffer 0) are then read in place, not from the set's start,
+       where its colours now are. Exactly half the bytes placed read recently still counts as in use (the
+       set's size is larger). */
+    vc_set_table(2, 2, 3, VC_RECORDS), vc_set_table(3, 0, 5, VC_RECORDS), vc_set_table(5, 0, 1, 3), vc_set_table(6, 4, 5, VC_RECORDS);
+    ((uint32_t *)(uintptr_t)at(vc_table(5)))[6] = 3;
+    k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", "0x48000");
+    if (x) {
+        vc_seen(x, 0);
+        CHECK(vc_misses(x, 3, k++) == 0); /* the colours seen */
+        CHECK(vc_misses(x, 6, k++) == 0); /* table 6's buffers seen */
+        vc_seen(x, 2);
+        CHECK(vc_misses(x, 3, k++) == 0); /* full and in use: the colours read in place */
+        vc_fill(0, 0, 1); /* not reported: the corners' copy stays */
+        CHECK(vc_misses(x, 0, k++) == 0);
+        vc_fill(0, 0, 0);
+        /* only table 2's copies (half the set) read in the last 256 submissions: still in use, so table 6's
+           buffers (both new) are read in place and the corners' copy stays */
+        for (int i = 0; i < 260; i++) CHECK(vc_draw(x, 2, 0, VC_TARGET_COUNT - 1) != 0);
+        CHECK(vc_misses(x, 6, k++) == 0);
+        vc_fill(0, 0, 1);
+        CHECK(vc_misses(x, 0, k++) == 0);
+        vc_fill(0, 0, 0);
+        for (int i = 0; i < 260; i++) CHECK(vc_draw(x, 5, 0, VC_TARGET_COUNT - 1) != 0);
+        CHECK(vc_misses(x, 3, k++) == 0); /* drops the copies */
+        vc_fill(0, 0, 1); /* the corners' copy was dropped: no longer read */
+        CHECK(vc_misses(x, 3, k++) == all);
+        vc_fill(0, 0, 0);
+        rt_executor_close(x);
+    }
+    /* no copies: the set too small for a range, none, or no watch; no guest addresses for them
+       (rt_executor_memory's copies_base), fewer than the set's 256 MB, ones meeting the guest memory's
+       end or start, passing or past 2^40, or off a dword; the write not reported shows at once */
+    enum { SET_BYTES = 256 << 20 };
+    const struct { int watched; const char *bytes; uint64_t window, window_bytes; } direct[] = {
+        {1, "0x40000", COPY_WINDOW, COPY_WINDOW_BYTES}, {1, "0", COPY_WINDOW, COPY_WINDOW_BYTES}, {0, NULL, COPY_WINDOW, COPY_WINDOW_BYTES},
+        {1, NULL, 0, COPY_WINDOW_BYTES}, {1, NULL, COPY_WINDOW, SET_BYTES - 4}, {1, NULL, GUEST_BASE + GUEST_SIZE - 4, COPY_WINDOW_BYTES},
+        {1, NULL, GUEST_BASE - SET_BYTES + 4, COPY_WINDOW_BYTES}, {1, NULL, (1ull << 40) - SET_BYTES + 4, COPY_WINDOW_BYTES},
+        {1, NULL, (1ull << 40) + (1ull << 32), COPY_WINDOW_BYTES}, {1, NULL, COPY_WINDOW + 2, COPY_WINDOW_BYTES}};
+    for (size_t i = 0; i < sizeof direct / sizeof *direct; i++) {
+        copy_window.base = direct[i].window, copy_window.bytes = direct[i].window_bytes;
+        k = 0, x = copy_executor(fd, direct[i].watched, "PB_VERTEX_COPY_BYTES", direct[i].bytes);
+        copy_window.base = COPY_WINDOW, copy_window.bytes = COPY_WINDOW_BYTES;
+        if (!x) continue;
+        vc_seen(x, 0);
+        CHECK(vc_misses(x, 0, k++) == 0);
+        vc_fill(0, 0, 1);
+        CHECK(vc_misses(x, 0, k++) == all);
+        vc_fill(0, 0, 0);
+        rt_executor_close(x);
+    }
+    /* copies at the nearest addresses that serve: just past the guest memory, ending at its start, ending
+       at 2^40, and with exactly the set's bytes; the write not reported does not show */
+    const uint64_t nearest[][2] = {{GUEST_BASE + GUEST_SIZE, COPY_WINDOW_BYTES}, {GUEST_BASE - SET_BYTES, COPY_WINDOW_BYTES},
+                                   {(1ull << 40) - SET_BYTES, COPY_WINDOW_BYTES}, {COPY_WINDOW, SET_BYTES}};
+    for (size_t i = 0; i < sizeof nearest / sizeof *nearest; i++) {
+        copy_window.base = nearest[i][0], copy_window.bytes = nearest[i][1];
+        k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+        copy_window.base = COPY_WINDOW, copy_window.bytes = COPY_WINDOW_BYTES;
+        if (!x) continue;
+        vc_seen(x, 0);
+        vc_fill(0, 0, 1), vc_fill(1, 1, 1);
+        CHECK(vc_misses(x, 0, k++) == 0);
+        vc_fill(0, 0, 0), vc_fill(1, 1, 0);
+        rt_executor_close(x);
+    }
+    /* a fetch shader loading table bytes 0-31 (the colours' descriptor at byte 0) and, apart, the corners'
+       descriptor at byte 8 (the colours' words 2 and 3 are the corners' base and stride): the first
+       snapshot entry holding the corners' words is the 32-byte load's, so rewriting their base there would
+       change the colours' descriptor too. The corners are read in place; the draw is the one without
+       copies */
+    {
+        static const uint32_t fetch_overlapping[] = {
+            0xc0c20300, /* s_load_dwordx8 s[4:11], s[2:3], 0x0 */
+            0xc0860302, /* s_load_dwordx4 s[12:15], s[2:3], 0x2 */
+            0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+            0xe00c2000, 0x80030100, /* buffer_load_format_xyzw v[1:4], v0, s[12:15], 0 idxen */
+            0xebf32000, 0x80010500, /* tbuffer_load_format_xyzw v[5:8], v0, s[4:7], 0 format:[32_32_32_32,FLOAT] idxen */
+            0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+            0xbe802000, /* s_setpc_b64 s[0:1] */
+        };
+        const uint32_t float_xyzw = 4 | 5 << 3 | 6 << 6 | 7 << 9 | 7u << 12 | 14u << 15;
+        uint32_t *table = (uint32_t *)(uintptr_t)at(vc_table(4));
+        descriptor(table, at(vc_buffer(1)), RECORD_STRIDE);  /* the colours: words 0-3, NUM_RECORDS and word 3 the corners' base and stride */
+        descriptor(table + 2, at(vc_buffer(0)), RECORD_STRIDE), table[4] = VC_RECORDS, table[5] = float_xyzw;
+        vc_fetch = fetch_overlapping, vc_fetch_bytes = sizeof fetch_overlapping;
+        uint32_t pixels[2][SIZE * SIZE];
+        for (int copies = 0; copies < 2; copies++) {
+            k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", copies ? NULL : "0");
+            memset(pixels[copies], copies ? 0xff : 0, sizeof pixels[copies]);
+            if (!x) continue;
+            vc_seen(x, 4);
+            const uint64_t target = vc_draw(x, 4, 0, k++);
+            char error[160] = "";
+            CHECK(target && rt_executor_read_target(x, target, pixels[copies], SIZE, SIZE, error, sizeof error) == 0);
+            rt_executor_close(x);
+        }
+        CHECK(memcmp(pixels[0], pixels[1], sizeof pixels[0]) == 0);
+        vc_fetch = fetch_position_color, vc_fetch_bytes = sizeof fetch_position_color;
+    }
+    /* a fetch shader whose indexed loads add an SOFFSET (s12, 0 here) other than the inline 0, which
+       range checking does not count (vertex_loads_bounded): its buffers are read in place, so the write
+       not reported shows at once */
+    {
+        static const uint32_t fetch_soffset[] = {
+            0xbe8c0380, /* s_mov_b32 s12, 0 */
+            0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+            0xc0840304, /* s_load_dwordx4 s[8:11], s[2:3], 0x4 */
+            0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+            0xe00c2000, 0x0c010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], s12 idxen */
+            0xe00c2000, 0x0c020500, /* buffer_load_format_xyzw v[5:8], v0, s[8:11], s12 idxen */
+            0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+            0xbe802000, /* s_setpc_b64 s[0:1] */
+        };
+        vc_fetch = fetch_soffset, vc_fetch_bytes = sizeof fetch_soffset;
+        k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+        if (x) {
+            vc_fill(0, 0, 0);
+            vc_seen(x, 0);
+            CHECK(vc_misses(x, 0, k++) == 0);
+            vc_fill(0, 0, 1);
+            CHECK(vc_misses(x, 0, k++) == all);
+            vc_fill(0, 0, 0);
+            rt_executor_close(x);
+        }
+        vc_fetch = fetch_position_color, vc_fetch_bytes = sizeof fetch_position_color;
+    }
+    /* a fetch shader that also loads the corners' base words alone (s_load_dwordx2, as data or a pointer,
+       which would see the rewritten base): its corners are read in place */
+    {
+        static const uint32_t fetch_base_words[] = {
+            0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+            0xc0840304, /* s_load_dwordx4 s[8:11], s[2:3], 0x4 */
+            0xc0460300, /* s_load_dwordx2 s[12:13], s[2:3], 0x0 */
+            0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+            0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+            0xe00c2000, 0x80020500, /* buffer_load_format_xyzw v[5:8], v0, s[8:11], 0 idxen */
+            0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+            0xbe802000, /* s_setpc_b64 s[0:1] */
+        };
+        vc_fetch = fetch_base_words, vc_fetch_bytes = sizeof fetch_base_words;
+        k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+        if (x) {
+            vc_fill(0, 0, 0);
+            vc_seen(x, 0);
+            CHECK(vc_misses(x, 0, k++) == 0);
+            vc_fill(0, 0, 1);
+            CHECK(vc_misses(x, 0, k++) == all);
+            vc_fill(0, 0, 0);
+            rt_executor_close(x);
+        }
+        vc_fetch = fetch_position_color, vc_fetch_bytes = sizeof fetch_position_color;
+    }
+    /* a fetch shader that also loads a dword through the corners' base as a pointer (which would be the
+       rewritten base): its buffers are read in place */
+    {
+        static const uint32_t fetch_base_pointer[] = {
+            0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+            0xc0840304, /* s_load_dwordx4 s[8:11], s[2:3], 0x4 */
+            0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+            0xc0060500, /* s_load_dword s12, s[4:5], 0x0 */
+            0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+            0xe00c2000, 0x80020500, /* buffer_load_format_xyzw v[5:8], v0, s[8:11], 0 idxen */
+            0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+            0xbe802000, /* s_setpc_b64 s[0:1] */
+        };
+        vc_fetch = fetch_base_pointer, vc_fetch_bytes = sizeof fetch_base_pointer;
+        k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+        if (x) {
+            vc_fill(0, 0, 0);
+            vc_seen(x, 0);
+            CHECK(vc_misses(x, 0, k++) == 0);
+            vc_fill(0, 0, 1);
+            CHECK(vc_misses(x, 0, k++) == all);
+            vc_fill(0, 0, 0);
+            rt_executor_close(x);
+        }
+        vc_fetch = fetch_position_color, vc_fetch_bytes = sizeof fetch_position_color;
+    }
+    /* a fetch shader loading table bytes 0-31 (both descriptors) and, apart, the colours' descriptor at
+       byte 16, which it reads the colours through: that second snapshot entry gets the rewritten base too,
+       so the colours are read from their copy (a write not reported leaves them as they were) */
+    {
+        static const uint32_t fetch_two_entries[] = {
+            0xc0c20300, /* s_load_dwordx8 s[4:11], s[2:3], 0x0 */
+            0xc0860304, /* s_load_dwordx4 s[12:15], s[2:3], 0x4 */
+            0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+            0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+            0xe00c2000, 0x80030500, /* buffer_load_format_xyzw v[5:8], v0, s[12:15], 0 idxen */
+            0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+            0xbe802000, /* s_setpc_b64 s[0:1] */
+        };
+        vc_fetch = fetch_two_entries, vc_fetch_bytes = sizeof fetch_two_entries;
+        k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+        if (x) {
+            vc_fill(0, 0, 0), vc_fill(1, 1, 0);
+            vc_seen(x, 0);
+            CHECK(vc_misses(x, 0, k++) == 0);
+            vc_fill(1, 1, 1); /* not reported */
+            CHECK(vc_misses(x, 0, k++) == 0);
+            vc_fill(1, 1, 0);
+            rt_executor_close(x);
+        }
+        vc_fetch = fetch_position_color, vc_fetch_bytes = sizeof fetch_position_color;
+    }
+    /* a fetch shader that loads the corners again through a descriptor it made from theirs (s_add_u32 on
+       the base: no known origin, which could move the base past the copy): its buffers are read in place */
+    {
+        static const uint32_t fetch_derived[] = {
+            0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+            0xc0840304, /* s_load_dwordx4 s[8:11], s[2:3], 0x4 */
+            0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+            0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+            0xe00c2000, 0x80020500, /* buffer_load_format_xyzw v[5:8], v0, s[8:11], 0 idxen */
+            0x80048004, /* s_add_u32 s4, s4, 0 */
+            0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+            0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+            0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+            0xbe802000, /* s_setpc_b64 s[0:1] */
+        };
+        vc_fetch = fetch_derived, vc_fetch_bytes = sizeof fetch_derived;
+        k = 0, x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+        if (x) {
+            vc_fill(0, 0, 0);
+            vc_seen(x, 0);
+            CHECK(vc_misses(x, 0, k++) == 0);
+            vc_fill(0, 0, 1);
+            CHECK(vc_misses(x, 0, k++) == all);
+            vc_fill(0, 0, 0);
+            rt_executor_close(x);
+        }
+        vc_fetch = fetch_position_color, vc_fetch_bytes = sizeof fetch_position_color;
+    }
+    /* a vertex shader storing through a descriptor based at the copies' guest addresses (COPY_WINDOW)
+       stops: the store goes to the sink, not into a copy */
+    x = copy_executor(fd, 1, "PB_VERTEX_COPY_BYTES", NULL);
+    if (x) {
+        static const uint32_t vertex_store[] = {
+            0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[32_32_32_32,FLOAT] idxen */
+            0xebf32000, 0x80010500, /* tbuffer_load_format_xyzw v[5:8], v0, s[4:7], 0 format:[32_32_32_32,FLOAT] idxen */
+            0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+            0xe0702000, 0x80020100, /* buffer_store_dword v1, v0, s[8:11], 0 idxen */
+            0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+            0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+            0xbf810000, /* s_endpgm */
+        };
+        enum { STORE_BUFFER = 0xc0eb8000 };
+        const uint64_t copies = COPY_WINDOW;
+        char error[256] = "";
+        memcpy((void *)(uintptr_t)at(VC_STORING_VERTEX), vertex_store, sizeof vertex_store);
+        rt_render_forget(), rt_executor_reset(x);
+        const uint64_t target = at(VC_TARGETS);
+        uint32_t offset = record_setup(STORE_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(VC_STORING_VERTEX);
+        const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 12 << 1, 0, 0x4, 0};
+        CHECK(rt_render_record_vertex_shader(STORE_BUFFER, offset, vertex, error, sizeof error) == 0);
+        uint32_t user[12];
+        descriptor(user, at(vc_buffer(0)), RECORD_STRIDE), descriptor(user + 4, at(vc_buffer(1)), RECORD_STRIDE);
+        descriptor(user + 8, copies, 4);
+        CHECK(rt_render_record_user_data(STORE_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(STORE_BUFFER, offset + 0x20, RT_STAGE_VERTEX, 8, user + 8, 4, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, STORE_BUFFER, record_triangle_draw(STORE_BUFFER, offset + 0x30), error, sizeof error);
+        if (ran == 0 || !strstr(error, "reached outside")) fprintf(stderr, "store into the copies: %d %s\n", ran, error);
+        CHECK(ran == -1 && strstr(error, "reached outside"));
+        rt_executor_close(x);
+    }
+    reported_write.length = 0;
+}
+
 /* With the CPU's writes watched and a guard: an image that took a guarded target's texels on the GPU
    (image_from_target) holds what the target's write-back puts in its memory, so it is not loaded again
    after it: memory changed behind the watch's back (not reported) still shows the draw, as it would for
@@ -4398,7 +4888,7 @@ static void copied_image_after_write_back(int fd)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory watched_guarded = {fd, GUEST_SIZE, GUEST_BASE, report_writes, test_guard, test_unguard, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&watched_guarded, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -4426,7 +4916,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0, NULL, 0, NULL, 0, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -4778,7 +5268,7 @@ static void async_pipelines(int fd)
 {
     enum { ASYNC_BUFFER = 0xc0e10000, ASYNC_TARGET = 0x3600000 };
     const int attempts = 3000;
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0, NULL, 1, NULL, 0, 0};
     rt_executor *x = NULL;
     char error[256] = "";
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
@@ -4821,7 +5311,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds, NULL, 0, NULL, 0, 0};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
@@ -4899,6 +5389,7 @@ int main(void)
     metadata_store_clears(x);
     watched_memory(fd);
     index_copies(fd);
+    vertex_copies(fd);
     collect_when_due(fd);
     watched_table_copy(fd);
     copied_image_after_write_back(fd);
