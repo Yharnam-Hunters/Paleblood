@@ -11,8 +11,9 @@
 // BB_TARGET_FPS (our option, not in the original; target_fps.h): unset keeps the original
 // behaviour exactly. 30, 60 and uncapped do what the community patches "30 FPS++", "60 FPS++" and
 // "Uncap FPS++" do to this function (checked against them: verify.py run --patch ... --env ...):
-// a fixed mode (interval 1/30, 1/60 or 1/240 s), no overrides, and the sync interval kept on late
-// frames. The frame step and the flipper constructor apply the rest of those patches.
+// a fixed mode (interval 1/30 s, 1/60 s, or 0 for uncapped, so the wait never runs), no
+// overrides, and the sync interval kept on late frames. The frame step and the flipper
+// constructor apply the rest of those patches.
 //
 // BB_LIMITER_WAIT=sleep (our option): use the sleeping wait the game carries but never selects,
 // instead of the spinning one: it sleeps until about 5 ms before the frame's end and spins only
@@ -32,15 +33,11 @@
 #include "flipper.h"
 #include "runtime/original.h"
 #include "target_fps.h"
+#include "time_of_day.h"
 
 namespace {
 
 using namespace frame_timing;
-
-struct Timeval {
-    int64_t seconds;
-    int64_t microseconds;
-};
 
 // An object told when the game runs at a 60 FPS target.
 struct FpsNotify {
@@ -56,16 +53,13 @@ RT_GLOBAL(0x05940500, window_instance, SprjWindow *);
 RT_GLOBAL(0x04d3b00c, window_name, const char);
 RT_GLOBAL(0x05940e00, notify_instance, FpsNotify *);
 RT_ORIGINAL(0x013e3980, spinning_wait_only, uint8_t());   // returns 1 in this build
-RT_ORIGINAL(0x02fbe728, c_gettimeofday, int(Timeval *, void *timezone));
-RT_ORIGINAL(0x02fbfe68, kernel_usleep, int(uint32_t microseconds));
 
 // Constants of the original (read-only data)
 constexpr float us_per_second = 1000000.0f, minus_us_per_second = -1000000.0f;
 constexpr double us_per_second_double = 1000000.0;
-constexpr uint64_t us_per_second_integer = 1000000;
 constexpr float min_wait = 0.001f, sleep_threshold = 0.005f, sleep_margin = -0.005f;
 constexpr float thousand = 1000.0f, late_tolerance = 0.01f, history_frames = 16.0f;
-constexpr uint32_t interval_240_bits = 0x3b888889;   // 1/240 s: the Uncap FPS++ patch's interval
+constexpr uint32_t uncapped_interval_bits = 0;        // 0.0f: "Uncap FPS++" writes interval 0 (0x02434840)
 constexpr uint64_t min_budget_divisor = 3;            // catching up never cuts below a third
 constexpr uint32_t ring_mask = frame_ring_size - 1;
 
@@ -108,13 +102,6 @@ bool sleeping_wait()
     return sleep;
 }
 
-uint64_t now_us()
-{
-    Timeval tv;
-    c_gettimeofday(&tv, nullptr);
-    return static_cast<uint64_t>(tv.seconds) * us_per_second_integer + static_cast<uint64_t>(tv.microseconds);
-}
-
 uint64_t seconds_to_us(float seconds) { return engine::double_to_u64(static_cast<double>(seconds) * us_per_second_double); }
 
 // Applies the flip mode, the option's fixed mode, the reset and the overrides. Returns whether
@@ -130,7 +117,7 @@ bool apply_mode(SprjFlipper *f, Target target)
         // while the real mode is in range), with no catch-up windows, and none of the overrides
         // below (the reset flag is neither honoured nor cleared).
         if (target == Target::uncapped)
-            set_mode(f, 1, 0, interval_240_bits, 0, 0);
+            set_mode(f, 1, 0, uncapped_interval_bits, 0, 0);
         else if (mode < flip_mode_count)
             set_mode(f, 1, 1, target == Target::fps30 ? k_interval_30 : k_interval_60, 0, 0);
         return false;
@@ -195,9 +182,9 @@ void wait(SprjFlipper *f, uint64_t budget_us, bool spin_only, uint64_t &now)
         if (!(wait_s > 0.0f)) return;
         if ((!spin_only || sleeping_wait()) && wait_s > min_wait && wait_s > sleep_threshold) {
             const int32_t us = engine::truncate(((wait_s + sleep_margin) * thousand) * thousand);
-            if (us > 0) kernel_usleep(static_cast<uint32_t>(us));
+            if (us > 0) time_of_day::kernel_usleep(static_cast<uint32_t>(us));
         }
-        now = now_us();
+        now = time_of_day::now_microseconds();
         f->frame_end_us = now;
         remaining = budget_s + engine::u64_to_float(now - f->frame_start_us) / minus_us_per_second;
         if (0.0f > remaining) return;
@@ -231,7 +218,7 @@ extern "C" void bb_frame_timing_pace_frame(SprjFlipper *f)
 
     // The previous frame's end is this frame's start.
     f->frame_start_us = f->frame_end_us;
-    uint64_t now = now_us();
+    uint64_t now = time_of_day::now_microseconds();
     f->frame_end_us = now;
 
     const uint32_t window = spin_only ? f->late_window_spin : f->late_window_sleep;

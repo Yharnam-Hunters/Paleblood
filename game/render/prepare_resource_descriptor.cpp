@@ -3,12 +3,15 @@
 // Original helpers own their effects; partial descriptor writes survive errors.
 #include "resource_descriptor_builder.h"
 
+#include <bit>
+
 namespace {
 constexpr uint32_t auxiliary_group_flag = 0x20;
 constexpr uint32_t auxiliary_descriptor_flag = 0x40;
 constexpr uint32_t first_auxiliary_flag = 0x200;
 constexpr uint32_t special_parameter_flag = 0x400;
 constexpr uint32_t reduced_quantity_flag = 4;
+constexpr uint32_t reduced_quantity_shift = std::countr_zero(reduced_quantity_flag);
 constexpr uint32_t first_auxiliary_shift = 9;
 constexpr uint32_t secondary_byte_shift = 8, secondary_byte_mask = 1;
 constexpr uint32_t second_descriptor_parameter = 0x20401;
@@ -19,22 +22,11 @@ constexpr uint64_t quantity_multiplier = 0xaaaaaaab;
 constexpr uint32_t quantity_shift = 34;
 constexpr size_t constructor_prefix_bytes = 0x20;
 
-uint32_t leading_zeroes(uint32_t value)
-{
-    if (value == 0) return word_bits;
-    uint32_t count = 0;
-    constexpr uint32_t high_bit = uint32_t(1) << last_leading_zero;
-    while ((value & high_bit) == 0) {
-        value <<= 1;
-        ++count;
-    }
-    return count;
-}
 uint32_t choose_level_count(uint32_t first, uint32_t second, uint32_t count)
 {
     if (count != 0) return count;
-    const uint32_t first_zeroes = leading_zeroes(first);
-    const uint32_t second_zeroes = leading_zeroes(second);
+    const uint32_t first_zeroes = uint32_t(std::countl_zero(first));
+    const uint32_t second_zeroes = uint32_t(std::countl_zero(second));
     uint32_t minimum = last_leading_zero;
     if (second_zeroes < minimum) minimum = second_zeroes;
     if (first_zeroes < minimum) minimum = first_zeroes;
@@ -70,12 +62,12 @@ QuantityChoice read_quantity(const render::ResourceDescriptorNormalized &record)
     return choose_quantity(secondary, option, quantity);
 }
 uint32_t combine_record_parameters(render::ResourceDescriptorNormalized &record,
-                            const QuantityChoice &choice)
+                                   const QuantityChoice &choice)
 {
     const uint32_t first = record.first_parameter.get();
     const uint32_t second = record.second_parameter.get();
     return render::resource_descriptor_calls::combine_record_parameters(first, second,
-                                                                 choice.special_parameter);
+                                                                        choice.special_parameter);
 }
 // Each call rereads these fields after the preceding original helper. Callers
 // choose the destination and derived argument at the native reload point.
@@ -115,16 +107,13 @@ AuxiliaryAccumulation accumulate_levels(render::ResourceDescriptorScratch &frame
 {
     uint32_t quantity = 0;
     uint32_t alignment = 0;
-    if (level_limit == 0) return {quantity, alignment, 0};
-    uint32_t level = 0;
-    do {
+    for (uint32_t level = 0; level < level_limit; ++level) {
         // Each level uses the current normalized quantity; helper writes can change it.
         const uint32_t multiplier = frame.normalized.quantity.get();
         uint32_t status = render::initialize_record_level_descriptor(
             level_descriptor, descriptor, level, 0);
         if (status == 0)
-            status = render::calculate_record_geometry(&frame.geometry,
-                                                                           level_descriptor);
+            status = render::calculate_record_geometry(&frame.geometry, level_descriptor);
         if (status == 0) {
             const uint64_t first_pair = render::Field<uint64_t>::read(frame.geometry.first_00.bytes);
             const uint64_t second = first_pair >> word_bits;
@@ -154,9 +143,22 @@ AuxiliaryAccumulation accumulate_levels(render::ResourceDescriptorScratch &frame
         const uint32_t unit = frame.optional_unit.get();
         if (unit != 0) quantity = align_quantity(quantity, unit) + low_total * multiplier;
         if (unit > alignment) alignment = unit;
-        ++level;
-    } while (level < level_limit);
+    }
     return {quantity, alignment, 0};
+}
+// Fold one auxiliary pair into the running requirements and publish them. The
+// pair's quantity is read only after its alignment admits it.
+void fold_pair(render::ResourceDescriptorRequirements *requirements,
+               const render::ResourceDescriptorPair &pair, uint32_t &total, uint32_t &alignment)
+{
+    uint32_t next_alignment = pair.alignment.get();
+    if (next_alignment != 0) {
+        total = align_quantity(total, next_alignment);
+        total += pair.quantity.get();
+    }
+    if (alignment > next_alignment) next_alignment = alignment;
+    alignment = next_alignment;
+    requirements->packed.set(pack_requirements(total, alignment));
 }
 }  // namespace
 
@@ -205,7 +207,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
 
     uint64_t primary_result;
     uint32_t secondary_alignment = 0;
-    uint64_t second_descriptor_result = 0, second_descriptor_alignment = 0;
+    uint64_t second_descriptor_result = 0;
     uint32_t second_auxiliary_total = 0;
     uint32_t second_auxiliary_alignment = 0;
     if (special_constructor) {
@@ -227,7 +229,8 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
         primary_result = resource_descriptor_calls::construct_record(
             &frame.geometry, first, second, quantity, first_derived, second_derived,
             first_parameter, combined, &frame.first_auxiliary_pair, &frame.constructor_pair);
-        const uint32_t conversion_flags = (record.secondary_flags.get() & reduced_quantity_flag) >> 2;
+        const uint32_t conversion_flags =
+            (record.secondary_flags.get() & reduced_quantity_flag) >> reduced_quantity_shift;
         resource_descriptor_calls::convert_constructor_record(descriptor, &frame.geometry,
                                                                conversion_flags);
     } else {
@@ -236,23 +239,14 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
         primary_result = initialize_descriptor(frame, descriptor, primary_quantity, combined, false);
 
         if (second_descriptor_enabled != 0) {
-            const uint32_t current_secondary = record.secondary_flags.get();
-            const uint8_t option = record.option_byte.get();
-            second_descriptor_alignment = 0;
-            const uint32_t quantity = record.quantity.get();
-            const QuantityChoice choice = choose_quantity(current_secondary, option, quantity);
+            const QuantityChoice choice = read_quantity(record);
             const uint32_t second_combined = combine_record_parameters(record, choice);
             const uint32_t selector = record.selector.get();
             const uint32_t current_flags = record.flags.get();
-            uint64_t second_result = 0;
             if (resource_descriptor_calls::record_auxiliary_predicate(current_flags, selector) != 0) {
-                second_result = initialize_descriptor(frame, descriptor, choice, second_combined, true);
-                second_descriptor_alignment = second_result >> word_bits;
+                second_descriptor_result = initialize_descriptor(frame, descriptor, choice, second_combined, true);
+                secondary_alignment = uint32_t(second_descriptor_result >> word_bits);
             }
-            second_descriptor_result = second_result;
-        } else {
-            second_descriptor_alignment = 0;
-            second_descriptor_result = 0;
         }
 
         if (first_auxiliary_enabled != 0) {
@@ -279,11 +273,9 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             second_auxiliary_total = accumulation.quantity;
             second_auxiliary_alignment = accumulation.alignment;
         }
-        secondary_alignment = uint32_t(second_descriptor_alignment);
         if (secondary_alignment != 0) {
             const uint32_t aligned = align_quantity(uint32_t(primary_result), secondary_alignment);
-            const uint64_t second_result = second_descriptor_result;
-            primary_result = pack_requirements(aligned + uint32_t(second_result),
+            primary_result = pack_requirements(aligned + uint32_t(second_descriptor_result),
                                                uint32_t(primary_result >> word_bits));
         }
     }
@@ -295,23 +287,8 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
 
     // Publish the four requirement folds in order. Each later fold reads the
     // corresponding auxiliary pair only after the previous output publication.
-    uint32_t next_alignment = frame.first_auxiliary_pair.alignment.get();
-    if (next_alignment != 0) {
-        total = align_quantity(total, next_alignment);
-        total += frame.first_auxiliary_pair.quantity.get();
-    }
-    if (alignment > next_alignment) next_alignment = alignment;
-    alignment = next_alignment;
-    requirements->packed.set(pack_requirements(total, alignment));
-
-    next_alignment = frame.constructor_pair.alignment.get();
-    if (next_alignment != 0) {
-        total = align_quantity(total, next_alignment);
-        total += frame.constructor_pair.quantity.get();
-    }
-    if (alignment > next_alignment) next_alignment = alignment;
-    alignment = next_alignment;
-    requirements->packed.set(pack_requirements(total, alignment));
+    fold_pair(requirements, frame.first_auxiliary_pair, total, alignment);
+    fold_pair(requirements, frame.constructor_pair, total, alignment);
 
     if (second_auxiliary_alignment != 0)
         total = align_quantity(total, second_auxiliary_alignment) + second_auxiliary_total;

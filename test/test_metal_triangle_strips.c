@@ -371,16 +371,21 @@ static void preserved_guards(Fixture *f)
     }
     for (unsigned guard = 0; guard < 7; ++guard) {
         geometry(f, SQUARE4); Calls c = {0}; scene(&c, 0, guard == 6 ? 7 : 15); reg(&c, PRIMITIVE, 6);
-        if (guard == 0) reg(&c, 0xa1e0, 1u<<30);
-        else if (guard < 4) reg(&c, 0xa200, 1u<<(guard-1));
+        if (guard == 0) reg(&c, 0xa1e0, (1u<<30)|2u); /* unsupported SRC_COLOR */
+        else if (guard < 4) reg(&c, 0xa200, guard == 3 ? 8u : 1u<<(guard-1));
         else if (guard == 4) color_target(&c, 1, 1);
         else if (guard == 5) c.call[3].u.pixel_shader.color_mask = 0xff;
         draw(&c, AUTO, 4);
-        const char *reason = guard == 0 ? "blending" : guard < 4 ? "depth or stencil" : guard == 4 ? "render targets beyond slot 0" : guard == 5 ? "CB_SHADER_MASK" : "colour write mask";
+        const char *reason = guard == 0 ? "blending" : guard == 3 ? "DEPTH_BOUNDS_ENABLE" : guard < 3 ? "depth or stencil" : guard == 4 ? "render targets beyond slot 0" : guard == 5 ? "CB_SHADER_MASK" : "colour write mask";
         char id[96]; snprintf(id, sizeof id, "profile/guard%u", guard); unchanged(f, id, &c, RUN, reason);
         rt_executor_reset(f->executor); snprintf(id, sizeof id, "profile/guard%u/recovery", guard);
         positive(f, id, SQUARE4, 6, AUTO, guard & 1, 15);
     }
+    /* Z_WRITE alone enables neither depth nor stencil testing. Keep a full strip draw,
+       fresh vertex writes, pixel readback and pool canaries as its admission witness. */
+    geometry(f, SQUARE4); Calls c = {0}; scene(&c, 1, 15);
+    reg(&c, PRIMITIVE, 6); reg(&c, 0xa200, 4);
+    success(f, "profile/z-write-without-test", &c, AUTO, 4, 1, 0, RUN);
 }
 int main(void)
 {
@@ -400,7 +405,7 @@ int main(void)
     CHECK(opened==0); if(opened)fprintf(stderr,"triangle-strips open: %s\n",error);
     if(!opened){
         shapes_and_cache(f); ordering(f); bad_indices(f); fresh_indices(f); preserved_guards(f);
-        CHECK(cases == 233); CHECK(data_draws == 160); CHECK(refusals == 72); CHECK(api_calls == cases); CHECK(pool_scans == cases);
+        CHECK(cases == 234); CHECK(data_draws == 161); CHECK(refusals == 72); CHECK(api_calls == cases); CHECK(pool_scans == cases);
         CHECK(readbacks == data_draws); CHECK(ticket_waits == 2); CHECK(explicit_submits == 1);
         const int finished=rt_executor_finish(f->executor,error,sizeof error);printf("triangle-strips FINISH actual=%d\n",finished);CHECK(finished==0);rt_executor_close(f->executor);
     }

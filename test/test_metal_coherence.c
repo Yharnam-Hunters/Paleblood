@@ -93,6 +93,62 @@ static void read_pixels(rt_executor *x, uint64_t address, uint32_t *pixels, unsi
     char error[256]="";
     CHECK(rt_executor_read_target(x,address,pixels,width,height,error,sizeof error)==0);
 }
+/* Exact-format guest memory witnesses for both attachment element sizes. */
+static void float_targets(rt_executor *x, uint8_t *pool)
+{
+    enum { WIDTH = 256, HEIGHT = 16, FLOAT_BASE = 0x320000, SLOT_BYTES = 0x30000 };
+    const float colors[3][4] = {{0.25f,0.5f,2,0.75f},{0.25f,0.5f,2,0.75f},{0.25f,0.5f,2,0.75f}};
+    memcpy(pool + COLORS,colors,sizeof colors);
+    const struct { unsigned format, bytes; uint64_t initial, drawn; } formats[] = {
+        {6,4,UINT64_C(0x781e03c0),UINT64_C(0x801c0340)},
+        {12,8,UINT64_C(0x3800380038003800),UINT64_C(0x3a00400038003400)},
+    };
+    const unsigned modes[] = {31,14};
+    for (unsigned f = 0; f < sizeof formats / sizeof *formats; ++f)
+        for (unsigned mode = 0; mode < sizeof modes / sizeof *modes; ++mode) {
+            char error[256] = "";
+            const unsigned offset = FLOAT_BASE + (2 * f + mode) * SLOT_BYTES;
+            const unsigned element = formats[f].bytes;
+            rt_tiling layout;
+            const int layout_error = rt_tiling_layout(modes[mode],element,WIDTH,HEIGHT,&layout,error,sizeof error);
+            CHECK(layout_error == 0);
+            if (layout_error) continue;
+            const size_t bytes = (size_t)rt_tiling_size(&layout,1) + 64;
+            CHECK(bytes <= SLOT_BYTES && offset + bytes <= POOL_BYTES);
+            if (bytes > SLOT_BYTES || offset + bytes > POOL_BYTES) continue;
+            uint8_t *want = malloc(bytes);
+            CHECK(want != NULL);
+            if (!want) continue;
+            memset(pool + offset,CANARY,bytes);
+            for (unsigned y = 0; y < HEIGHT; ++y)
+                for (unsigned col = 0; col < WIDTH; ++col)
+                    memcpy(pool + offset + rt_tiling_offset(&layout,col,y,0),&formats[f].initial,element);
+            memcpy(want,pool + offset,bytes);
+            for (unsigned y = 2; y < 8; ++y)
+                for (unsigned col = 3; col < 20; ++col)
+                    memcpy(want + rt_tiling_offset(&layout,col,y,0),&formats[f].drawn,element);
+
+            rt_color_target color = target(offset,WIDTH,HEIGHT,modes[mode],0,0);
+            color.format = formats[f].format; color.number_type = 7;
+            rt_render_call calls[10];
+            rt_executor_reset(x);
+            const unsigned n = scene(calls,color,15);
+            calls[6].u.reg.value = 2u << 16 | 3;
+            calls[7].u.reg.value = 8u << 16 | 20;
+            const int result = run(x,calls,n,NULL);
+            const int exact = !memcmp(pool + offset,want,bytes);
+            printf("float target format=%u mode=%u result=%d exact=%d\n",color.format,modes[mode],result,exact);
+            CHECK(exact);
+            if (!result) {
+                uint32_t guard[] = {0x13579bdf,0xfedcba98};
+                CHECK(rt_executor_read_target(x,color.address,guard,1,1,error,sizeof error) == -1);
+                CHECK(strstr(error,"BGRA") != NULL);
+                CHECK(guard[0] == 0x13579bdf && guard[1] == 0xfedcba98);
+            }
+            free(want);
+        }
+}
+
 int main(void)
 {
     char name[]="/tmp/paleblood-metal-coherence-XXXXXX", error[256]="";
@@ -103,7 +159,7 @@ int main(void)
     memcpy(pool+COPY_CODE,copy_words,sizeof copy_words); memcpy(pool+FORMAT_CODE,vertex_descriptor_format,sizeof vertex_descriptor_format);
     const float positions[12]={-1,-1,0,1,3,-1,0,1,-1,3,0,1}; memcpy(pool+POSITIONS,positions,sizeof positions);
     const float colors[12]={0.25f,0.5f,0.75f,1,0.25f,0.5f,0.75f,1,0.25f,0.5f,0.75f,1}; memcpy(pool+COLORS,colors,sizeof colors);
-    rt_executor *x=NULL; const rt_executor_memory memory={fd,POOL_BYTES,guest_base,NULL,NULL,NULL,NULL,0,NULL};
+    rt_executor *x=NULL; const rt_executor_memory memory={fd,POOL_BYTES,guest_base,NULL,NULL,NULL,NULL,0,NULL,0,NULL,0,0};
     CHECK(rt_executor_open(&memory,&x,error,sizeof error)==0); if(!x)return 1;
     CHECK(close(fd)==0); /* Executor and caller mappings keep their shared allocation alive. */
     rt_render_call calls[10];
@@ -181,6 +237,7 @@ int main(void)
     a.address=guest_base-256; n=scene(calls,a,15); run(x,calls,n,"outside the GPU-visible pool");
     a=target(0x1c0000,128,8,14,0,0); a.address=at(POOL_BYTES-4096); n=scene(calls,a,15); run(x,calls,n,"outside the GPU-visible pool");
     a=target(0x290000,16,16,8,0,0); n=scene(calls,a,15); run(x,calls,n,"changed size, format or tiling");
+    float_targets(x,pool);
     rt_executor_close(x); CHECK(munmap(pool,POOL_BYTES)==0);
     printf("metal coherence: %u scenarios, %u checks, %u failures\n",scenarios,checks,failures);
     return failures?1:0;

@@ -123,10 +123,13 @@ CopiedSpan copy_selected_span(const SecondaryBank &bank, PacketBuffer *commands,
     const uint64_t bytes = uint64_t(span.count) * stride;
     uint8_t *address = allocate_upload(commands, offset + bytes);
     if (address != nullptr) {
-        const void *input = bank.first->address(span.first);
-        if (source == SpanSource::second) input = bank.second->address(span.first);
-        else if (source == SpanSource::third) input = bank.third->address(span.first);
-        else if (source == SpanSource::fourth) input = bank.fourth->address(span.first);
+        const void *input = nullptr;
+        switch (source) {
+        case SpanSource::first: input = bank.first->address(span.first); break;
+        case SpanSource::second: input = bank.second->address(span.first); break;
+        case SpanSource::third: input = bank.third->address(span.first); break;
+        case SpanSource::fourth: input = bank.fourth->address(span.first); break;
+        }
         // Prefix slots below first remain uninitialized. Keep the real memcpy boundary.
         void *destination = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(address) + offset);
         copy_bytes(destination, input, bytes);
@@ -134,10 +137,16 @@ CopiedSpan copy_selected_span(const SecondaryBank &bank, PacketBuffer *commands,
     return {true, address};
 }
 
+// Scalar slots are numbered from scalar_origin; lower slots index before the array.
+int32_t scalar_index(uint32_t slot)
+{
+    return int32_t(slot) - int32_t(scalar_origin);
+}
+
 void store_address(const SecondaryBank &bank, uint32_t slot, const uint8_t *address)
 {
     const uint64_t bits = reinterpret_cast<uintptr_t>(address);
-    const int32_t first = int32_t(slot) - int32_t(scalar_origin);
+    const int32_t first = scalar_index(slot);
     bank.values->set_signed(first, static_cast<uint32_t>(bits));
     bank.values->set_signed(first + 1, static_cast<uint32_t>(bits >> word_bits));
 }
@@ -145,7 +154,7 @@ void store_address(const SecondaryBank &bank, uint32_t slot, const uint8_t *addr
 template <uint32_t Words> void copy_record_words(const SecondaryBank &bank,
     const ShaderSecondaryRecords<Words> *source, uint32_t index, uint32_t slot, uint32_t count)
 {
-    const int32_t first = int32_t(slot) - int32_t(scalar_origin);
+    const int32_t first = scalar_index(slot);
     for (uint32_t word = 0; word < count; ++word) {
         // Read each DWORD after the preceding publication; source and destination may overlap.
         const uint32_t value = source->word(index, word);
@@ -159,38 +168,51 @@ void process_entry(ShaderSecondaryState *state, PacketBuffer *commands,
     const uint8_t type = static_cast<uint8_t>(entry);
     const uint32_t slot = static_cast<uint8_t>(entry >> first_byte_shift);
     const uint32_t index = static_cast<uint8_t>(entry >> second_byte_shift);
-    switch (static_cast<SecondaryEntryKind>(type)) {
-    case SecondaryEntryKind::first_descriptor16: emit_shader_descriptor16(commands, bank.stage, slot, bank.first->address(index)); break;
-    case SecondaryEntryKind::first_descriptor32: emit_shader_descriptor32(commands, bank.stage, slot, bank.first->address(index)); break;
-    case SecondaryEntryKind::second_descriptor16: emit_shader_descriptor16(commands, bank.stage, slot, bank.second->address(index)); break;
-    case SecondaryEntryKind::second_descriptor32: emit_shader_descriptor32(commands, bank.stage, slot, bank.second->address(index)); break;
-    case SecondaryEntryKind::third_sampler16: emit_shader_sampler16(commands, bank.stage, slot, bank.third->address(index)); break;
-    case SecondaryEntryKind::fourth_descriptor16: emit_shader_descriptor16(commands, bank.stage, slot, bank.fourth->address(index)); break;
-    case SecondaryEntryKind::constant_word: emit_shader_word(commands, bank.stage, slot, constant_word); break;
-    case SecondaryEntryKind::cached_address: emit_shader_address(commands, bank.stage, slot, cached_upload(state, commands)); break;
-    case SecondaryEntryKind::first_address_span: case SecondaryEntryKind::second_address_span: case SecondaryEntryKind::third_address_span: case SecondaryEntryKind::fourth_address_span: {
-        constexpr uint8_t first_span_type = static_cast<uint8_t>(SecondaryEntryKind::first_address_span);
+    using Kind = SecondaryEntryKind;
+    switch (static_cast<Kind>(type)) {
+    case Kind::first_descriptor16:
+        emit_shader_descriptor16(commands, bank.stage, slot, bank.first->address(index));
+        break;
+    case Kind::first_descriptor32:
+        emit_shader_descriptor32(commands, bank.stage, slot, bank.first->address(index));
+        break;
+    case Kind::second_descriptor16:
+        emit_shader_descriptor16(commands, bank.stage, slot, bank.second->address(index));
+        break;
+    case Kind::second_descriptor32:
+        emit_shader_descriptor32(commands, bank.stage, slot, bank.second->address(index));
+        break;
+    case Kind::third_sampler16: emit_shader_sampler16(commands, bank.stage, slot, bank.third->address(index)); break;
+    case Kind::fourth_descriptor16:
+        emit_shader_descriptor16(commands, bank.stage, slot, bank.fourth->address(index));
+        break;
+    case Kind::constant_word: emit_shader_word(commands, bank.stage, slot, constant_word); break;
+    case Kind::cached_address: emit_shader_address(commands, bank.stage, slot, cached_upload(state, commands)); break;
+    case Kind::first_address_span: case Kind::second_address_span:
+    case Kind::third_address_span: case Kind::fourth_address_span: {
+        constexpr uint8_t first_span_type = static_cast<uint8_t>(Kind::first_address_span);
         const auto source = static_cast<SpanSource>(type - first_span_type);
         const CopiedSpan copy = copy_selected_span(bank, commands, source);
         if (copy.selected) emit_shader_address(commands, bank.stage, slot, copy.address);
         break;
     }
-    case SecondaryEntryKind::first_four_words: copy_record_words(bank, bank.first, index, slot, short_words); break;
-    case SecondaryEntryKind::first_eight_words: copy_record_words(bank, bank.first, index, slot, long_words); break;
-    case SecondaryEntryKind::second_four_words: copy_record_words(bank, bank.second, index, slot, short_words); break;
-    case SecondaryEntryKind::second_eight_words: copy_record_words(bank, bank.second, index, slot, long_words); break;
-    case SecondaryEntryKind::third_four_words: copy_record_words(bank, bank.third, index, slot, short_words); break;
-    case SecondaryEntryKind::fourth_four_words: copy_record_words(bank, bank.fourth, index, slot, short_words); break;
-    case SecondaryEntryKind::constant_scalar: bank.values->set_signed(int32_t(slot) - int32_t(scalar_origin), constant_word); break;
-    case SecondaryEntryKind::cached_pointer_words: store_address(bank, slot, cached_upload(state, commands)); break;
-    case SecondaryEntryKind::first_pointer_span: case SecondaryEntryKind::second_pointer_span: case SecondaryEntryKind::third_pointer_span: case SecondaryEntryKind::fourth_pointer_span: {
-        constexpr uint8_t first_pointer_span_type = static_cast<uint8_t>(SecondaryEntryKind::first_pointer_span);
+    case Kind::first_four_words: copy_record_words(bank, bank.first, index, slot, short_words); break;
+    case Kind::first_eight_words: copy_record_words(bank, bank.first, index, slot, long_words); break;
+    case Kind::second_four_words: copy_record_words(bank, bank.second, index, slot, short_words); break;
+    case Kind::second_eight_words: copy_record_words(bank, bank.second, index, slot, long_words); break;
+    case Kind::third_four_words: copy_record_words(bank, bank.third, index, slot, short_words); break;
+    case Kind::fourth_four_words: copy_record_words(bank, bank.fourth, index, slot, short_words); break;
+    case Kind::constant_scalar: bank.values->set_signed(scalar_index(slot), constant_word); break;
+    case Kind::cached_pointer_words: store_address(bank, slot, cached_upload(state, commands)); break;
+    case Kind::first_pointer_span: case Kind::second_pointer_span:
+    case Kind::third_pointer_span: case Kind::fourth_pointer_span: {
+        constexpr uint8_t first_pointer_span_type = static_cast<uint8_t>(Kind::first_pointer_span);
         const auto source = static_cast<SpanSource>(type - first_pointer_span_type);
         const CopiedSpan copy = copy_selected_span(bank, commands, source);
         if (copy.selected) store_address(bank, slot, copy.address);
         break;
     }
-    case SecondaryEntryKind::scalar_upload: {
+    case Kind::scalar_upload: {
         const uint64_t bytes = uint64_t(entry >> count_byte_shift) * sizeof(uint32_t);
         uint8_t *address = allocate_upload(commands, bytes);
         if (address != nullptr) copy_bytes(address, bank.values->address(index), bytes);

@@ -85,9 +85,12 @@ tools/capture_loop.py --captures "$BB_CAPTURES"
    data): a new game through character creation, each save checkpoint (`savedata_from`), with the
    input script and keyboard text that get there. Each boot holds the GPU lock;
 2. the edge cases of every function with recordings, written to `CAPTURES/NAME/edge` by the
-   generator beside its replacement;
+   generator beside its replacement (a generator for several functions is run with each variant
+   its usage line offers: `OUT_DIR a|b`, `OUT_DIR ADDRESS` with the function's address, or
+   `OUT_DIR MODE` with the modes listed after `MODE:` or described as `mode (0xADDRESS)`);
 3. `tools/promote.py --check-unreviewed`: reviewed functions whose recorded and edge cases all
-   pass become `verified`; those that pass without a review are listed as awaiting one (the
+   pass become `verified`; those that pass without a review are listed as awaiting one (failing
+   cases quarantined for that case set don't count, reviewed or not; the
    independent review, CONTRIBUTING.md); a failure is reported (a bug to fix, or a quarantine with
    its reason, below).
 
@@ -142,7 +145,9 @@ reused run ID and case number cannot silently replace an existing recording.
   NID is computed); `argc` arguments are recorded and compared. An import's write is made through an
   argument (`arg`, `offset`) or at a fixed place (`addr`: `buf:NAME+off` or an image address, as in
   `memory`), which recorded cases use for what an import changed in a buffer or the image, since
-  the register it was seen through need not be an argument. Both imports and stubs accept
+  the register it was seen through need not be an argument. An import's `rdx` (default 0) is
+  what it leaves in rdx, for a library function returning a 16-byte struct in rax and rdx
+  (`ldiv`: `ret` the quotient, `rdx` the remainder). Both imports and stubs accept
   `argi`, `argu8`, `argu32`, `argmem`, and `argf32` as described below. A write may give `size`: a
   write whose bytes do not have that length is reported as an error (a truncated capture).
   For long runs of the same call (a wait that polls the clock), one entry can stand for many
@@ -198,6 +203,20 @@ when the process crashed. Two results match when the return registers, the prese
 registers, the final value of every written byte, and the library calls with their recorded
 arguments are equal. Pointer arguments into the stack are recorded as `stack`, since frames
 differ. Write order is not compared.
+
+### Stack bytes the code never wrote
+
+Some originals copy bytes out of their own frame that they never wrote: a 32-bit field stored
+into an eight-byte slot, the padding of a struct, a field one path leaves unset (the load queue's
+request copies its event's four bytes after the kind into the queue). In the game those bytes are
+whatever the stack held. In the harness the original and the replacement run in two processes
+whose stacks hold different leftovers, so such a byte would differ although both copy "nothing".
+The harness therefore starts both runs with the same stack: its trampoline fills the
+`STACK_FILL_SIZE` bytes below the call with `STACK_FILL` (`0xa5`) before it loads the arguments
+(`tools/harness.py`). The bytes are still compared: a replacement that copies its own unwritten
+bytes (a struct with the same unset field) writes the fill too and passes; one that writes a
+value there (a zero-extended kind, say) fails, and its struct is corrected to leave the bytes
+unset, as the original's does. Nothing is excluded from the comparison and no case changes.
 
 ### The time-stamp counter
 

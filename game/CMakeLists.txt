@@ -24,7 +24,10 @@ add_custom_command(
 
 add_library(bbgame SHARED ${GAME_SOURCES} ${HOOKS_C})
 target_link_libraries(bbgame PRIVATE bbrt)
-target_link_options(bbgame PRIVATE -Wl,--no-undefined)
+# Mach-O dylibs reject unresolved symbols by default; --no-undefined is an ELF linker option.
+if(NOT APPLE)
+    target_link_options(bbgame PRIVATE -Wl,--no-undefined)
+endif()
 # Replacements reproduce the original's floating-point operations one by one: no fused
 # multiply-add and none of the fast-math licences (reassociation, reciprocals, assuming no NaN);
 # -fno-fast-math also overrides one that comes in through CXXFLAGS. tools/check_float_flags.py
@@ -139,6 +142,10 @@ add_test(NAME gs_ring_sizes_observer_failure COMMAND test_gs_ring_sizes_observer
 add_test(NAME camera_update_cases
          COMMAND ${Python3_EXECUTABLE}
                  "${CMAKE_CURRENT_SOURCE_DIR}/camera/tests/test_update_cases.py")
+
+add_test(NAME loading_tpfbnd_resource_cases
+         COMMAND ${Python3_EXECUTABLE}
+                 "${CMAKE_CURRENT_SOURCE_DIR}/loading/tests/test_tpfbnd_resource_cases.py")
 
 # The compute command buffer's user-data observers, against stubs of the record.
 add_executable(test_compute_user_data_observer render/tests/compute_user_data_observer.c render/observe_gpu_library.c)

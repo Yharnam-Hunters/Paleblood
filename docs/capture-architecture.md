@@ -41,7 +41,10 @@ path), a byte the traced code or a scripted import wrote that a later read sees 
 (another thread changed it between the write and the read, as when a heap's lock is released
 between two allocations; the replay would read the value written, so it would take another path:
 the tracer reads each written byte's value once the writing instruction has run), the instruction
-limit (`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
+limit (`BB_TRACE_STEP_LIMIT`, default 200,000), the byte-table limit or more than 4,096 import
+calls. A large call needs a higher instruction limit: a physics instance's construction
+(`physics_instance_construct_01c0c2b0`, about 2,000 import calls) was recorded with
+`BB_TRACE_STEP_LIMIT=20000000`.
 
 **Case** (`runtime/capture_trace.cpp`). A complete trace becomes a schema-1 case:
 

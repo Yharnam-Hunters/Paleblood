@@ -16,3 +16,9 @@ void rt_display_window_show(const uint32_t *pixels, uint32_t width, uint32_t hei
     (void)pixels, (void)width, (void)height;
     rt_fatal("rt_display_window_show", "this build has no window back end");
 }
+
+int rt_display_window_title(const char *status)
+{
+    (void)status;
+    return 1; /* no window, no title: nothing is left to show */
+}

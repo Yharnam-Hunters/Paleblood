@@ -2,14 +2,17 @@
 /* The renderer behind the runtime's GPU calls (runtime/renderer.h), using the selected executor. */
 #include "runtime/renderer.h"
 
+#include "runtime/display.h"
 #include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
 #include "runtime/render_executor.h"
 #include "runtime/render_placed.h"
+#include "runtime/table_snapshot.h"
 #include "runtime/write_watch.h"
 
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -67,6 +70,22 @@ static void resolve_guarded(uint64_t pool_offset, uint64_t length)
     unlock_renderer();
 }
 
+/* Whether the executor makes new pipelines on worker threads, leaving a draw out while its pipeline is
+   made (rt_executor_memory): on unless PB_ASYNC_PIPELINES=0 (one binary for an A/B run). */
+static int async_pipelines(void)
+{
+    const char *setting = getenv("PB_ASYNC_PIPELINES");
+    return !(setting && !strcmp(setting, "0"));
+}
+
+/* The shaders compiling at launch, in the window's title and gone once all are done. */
+static void launch_progress(size_t done, size_t count)
+{
+    char status[64];
+    snprintf(status, sizeof status, "compiling shaders %zu of %zu", done, count);
+    rt_display_set_status(done < count ? status : NULL);
+}
+
 /* The executor, opened once the title has GPU-visible memory; NULL before that or when off. */
 static rt_executor *executor_for(const char *function)
 {
@@ -76,8 +95,10 @@ static rt_executor *executor_for(const char *function)
     rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = watched ? collect_cpu_writes : NULL,
                                  .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL,
                                  .gds = rt_gpu_memory_gds(), .gds_bytes = RT_GPU_GDS_BYTES,
-                                 .cpu_writes_due = watched ? cpu_writes_due : NULL};
+                                 .cpu_writes_due = watched ? cpu_writes_due : NULL, .async_pipelines = async_pipelines(),
+                                 .launch_progress = launch_progress};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
+    memory.copies_base = rt_gpu_copies_window(&memory.copies_bytes);
     if (watched) rt_write_watch_set_resolver(resolve_guarded);
     char error[RENDER_ERROR_BYTES];
     if (rt_executor_open(&memory, &executor, error, sizeof error)) rt_fatal(function, error);
@@ -90,6 +111,7 @@ typedef struct batch {
     const char *function;
     unsigned queue;                  /* the GPU queue it went to (rt_renderer_submit) */
     rt_render_call *calls;
+    rt_table_words *tables;          /* each dispatch's tables, copied at submission (snapshot_tables); NULL: none */
     size_t call_count;
     rt_gpu_step *steps;
     size_t step_count;
@@ -105,8 +127,11 @@ static uint64_t submissions;        /* buffers submitted so far (queue_lock) */
 /* The CPU's writes (runtime/write_watch.h) are collected at most once for all the buffers submitted
    before the collect: running_submission is the buffer being run, collected_through the last buffer
    submitted before the last collect. Scanning the watched memory for each buffer would cost more than
-   the reloads it saves (the character creation screen submits 70 buffers at once). */
+   the reloads it saves (the character creation screen submits 70 buffers at once). A wait step the
+   renderer's thread performed (holds) makes the next collect due all the same: the game may write
+   what the work after the wait reads after submitting it (what it waits for is written last). */
 static uint64_t running_submission, collected_through;
+static int waited_since_collect;
 static pid_t thread_process;        /* a child after fork has no renderer thread: it starts its own */
 /* How far the game may submit ahead of the renderer's thread: a submission returns only once the
    renderer has taken a buffer at most RENDER_LAG_LIMIT before it (queue_lock). The console's GPU starts
@@ -174,6 +199,11 @@ static void defer_step(const rt_gpu_step *step, uint64_t ticket, const rt_execut
 {
     deferred *const d = malloc(sizeof *d);
     if (!d) rt_fatal(step->function, "no memory for a GPU step");
+    if (step->memory[1]) { /* it writes on the completion thread, at no point the work after it is ordered against */
+        lock_renderer();
+        if (executor) rt_executor_deferred_writes(executor, step->memory[0], step->memory[1]);
+        unlock_renderer();
+    }
     *d = (deferred){*step, ticket, NULL, snapshot != NULL, snapshot ? *snapshot : (rt_executor_snapshot){0, 0}};
     pthread_mutex_lock(&deferred_lock);
     if (deferred_started && deferred_process != getpid()) deferred_started = 0, deferred_busy = 0, deferred_head = deferred_tail = NULL;
@@ -201,6 +231,23 @@ static int deferred_satisfies(const rt_gpu_step *wait)
     return satisfied;
 }
 
+/* Whether a step's memory (rt_gpu_step) meets `bytes` of guest memory at `address`. */
+static int step_memory_over(const rt_gpu_step *step, uint64_t address, uint64_t bytes)
+{
+    if (step->memory[1] == RT_GPU_STEP_ANY_MEMORY) return 1;
+    return step->memory[1] && step->memory[0] < address + bytes && address < step->memory[0] + step->memory[1];
+}
+
+/* Whether a deferred step not yet performed writes memory there. */
+static int deferred_writes_over(uint64_t address, uint64_t bytes)
+{
+    pthread_mutex_lock(&deferred_lock);
+    int over = deferred_running && step_memory_over(&deferred_running->step, address, bytes);
+    for (const deferred *d = deferred_head; d && !over; d = d->next) over = step_memory_over(&d->step, address, bytes);
+    pthread_mutex_unlock(&deferred_lock);
+    return over;
+}
+
 /* Waits until every deferred step so far has been performed. */
 static void drain_deferred(void)
 {
@@ -225,7 +272,8 @@ static void run_calls(batch *b, size_t first, size_t last)
     char error[RENDER_ERROR_BYTES];
     uint64_t ticket = 0;
     if (x && (rt_executor_select_queue(x, b->queue, error, sizeof error) ||
-              rt_executor_record_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)))
+              rt_executor_record_calls_with_tables(x, b->calls + first, b->tables ? b->tables + first : NULL, last - first, &ticket, error,
+                                                   sizeof error)))
         rt_fatal(b->function, error);
     if (x) last_ticket = ticket, calls_unsubmitted += last - first;
     unlock_renderer();
@@ -255,6 +303,94 @@ static void show_later(const rt_gpu_step *step)
     defer_step(step, copied ? snapshot.ticket : last_ticket, copied ? &snapshot : NULL);
 }
 
+/* The fills and copies recorded into the GPU's work that may not have run yet (write_on_gpu), with the
+   guest memory they write and their tickets: a wait on memory one of them writes is not taken to hold
+   before it has run. Those whose submissions have run are dropped as the list fills; while it is
+   still full, the step is performed here instead (RECORDED_WRITES of them pending is far more than a
+   buffer's few). */
+enum { RECORDED_WRITES = 64 };
+typedef struct {
+    uint64_t address, bytes, ticket;
+} recorded_write;
+static recorded_write recorded_writes[RECORDED_WRITES];
+static size_t recorded_write_count;
+static uint64_t last_write_ticket; /* the latest recorded write's, for rt_renderer_wait_idle (atomic) */
+
+/* Drops the recorded writes whose submissions have run (renderer lock held). */
+static void forget_writes_run(void)
+{
+    const uint64_t done = executor ? rt_executor_done_ticket(executor) : 0;
+    size_t kept = 0;
+    for (size_t i = 0; i < recorded_write_count; i++)
+        if (recorded_writes[i].ticket > done) recorded_writes[kept++] = recorded_writes[i];
+    recorded_write_count = kept;
+}
+
+static int recorded_write_over(const rt_gpu_step *wait)
+{
+    if (!recorded_write_count) return 0;
+    lock_renderer();
+    forget_writes_run();
+    int over = 0;
+    for (size_t i = 0; i < recorded_write_count && !over; i++) over = step_memory_over(wait, recorded_writes[i].address, recorded_writes[i].bytes);
+    unlock_renderer();
+    return over;
+}
+
+/* A fill (RT_GPU_STEP_FILLS) or a copy (RT_GPU_STEP_COPIES) recorded into the executor's open batch in
+   the step's place, after the work before it and before the work after it, instead of performed here
+   once all that work has run: 1 when recorded. Not while a deferred step not yet performed writes the
+   memory it writes, or a copy's source (the GPU may get there before the completion thread performs
+   it), nor before the executor is open or for memory it declines. */
+static int write_on_gpu(const rt_gpu_step *step)
+{
+    const uint64_t address = step->memory[0], bytes = step->memory[1];
+    const int copy = (step->flags & RT_GPU_STEP_COPIES) != 0;
+    const uint64_t *w = step->words; /* a copy's: source, source in the GDS, destination, destination in the GDS, bytes */
+    if (deferred_writes_over(address, bytes) || (copy && !w[1] && deferred_writes_over(w[0], w[4]))) return 0;
+    lock_renderer();
+    if (recorded_write_count == RECORDED_WRITES) forget_writes_run();
+    char error[RENDER_ERROR_BYTES];
+    uint64_t ticket = 0;
+    int taken = 1;
+    if (executor && recorded_write_count < RECORDED_WRITES)
+        taken = copy ? rt_executor_copy(executor, w[2], w[3] != 0, w[0], w[1] != 0, w[4], &ticket, error, sizeof error)
+                     : rt_executor_fill(executor, address, bytes, (uint32_t)w[0], &ticket, error, sizeof error);
+    if (taken < 0) rt_fatal(step->function, error);
+    if (taken == 0) {
+        last_ticket = ticket; /* the deferred steps after it wait for it too */
+        recorded_writes[recorded_write_count++] = (recorded_write){address, bytes, ticket};
+        __atomic_store_n(&last_write_ticket, ticket, __ATOMIC_RELEASE);
+    }
+    unlock_renderer();
+    return taken == 0;
+}
+
+/* A CPU-ordered step (RT_GPU_STEP_CPU_ORDERED) performed here at once, in stream order, instead of
+   after all the GPU's work: 1 when it may be, so that no work still to run reads its memory in place or
+   may store there, and no deferred step or recorded fill or copy writes it. PB_CPU_ORDERED_STEPS=0
+   turns this off (one binary for an A/B run). PB_STEP_COUNTS=1 prints how many went each way. */
+static int cpu_ordered_now(const rt_gpu_step *step)
+{
+    static int enabled = -1, counting;
+    static uint64_t at_once, waited;
+    if (enabled < 0) {
+        const char *setting = getenv("PB_CPU_ORDERED_STEPS"), *counts = getenv("PB_STEP_COUNTS");
+        enabled = !(setting && !strcmp(setting, "0")), counting = counts && !strcmp(counts, "1");
+    }
+    const uint64_t address = step->memory[0], bytes = step->memory[1];
+    int ready = enabled && bytes != RT_GPU_STEP_ANY_MEMORY && !(bytes && (deferred_writes_over(address, bytes) || recorded_write_over(step)));
+    if (ready) {
+        lock_renderer();
+        ready = !executor || rt_executor_cpu_write_ready(executor, address, bytes);
+        unlock_renderer();
+    }
+    *(ready ? &at_once : &waited) += 1;
+    if (counting && (at_once + waited) % 4096 == 0)
+        fprintf(stderr, "renderer: CPU-ordered steps: %llu at once, %llu after the GPU\n", (unsigned long long)at_once, (unsigned long long)waited);
+    return ready;
+}
+
 /* Each step once the calls before its offset have run, and before the calls after it: a deferrable
    step is handed to the completion thread with the ticket of the work before it; a wait that holds
    already is performed at once, and one that a deferred step will satisfy is passed (the GPU runs the
@@ -279,6 +415,7 @@ static void perform_step(const rt_gpu_step *step)
     set_step_waiting(1);
     step->perform(step);
     set_step_waiting(0);
+    waited_since_collect = 1;
 }
 
 static void run_batch(batch *b)
@@ -297,16 +434,26 @@ static void run_batch(batch *b)
             show_later(&b->steps[i]);
             continue;
         }
-        if (b->steps[i].holds && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
+        if ((b->steps[i].flags & (RT_GPU_STEP_FILLS | RT_GPU_STEP_COPIES)) && write_on_gpu(&b->steps[i])) continue;
+        if ((b->steps[i].flags & RT_GPU_STEP_CPU_ORDERED) && cpu_ordered_now(&b->steps[i])) { /* CPU work in stream order */
             perform_step(&b->steps[i]);
             continue;
         }
-        if (b->steps[i].holds && deferred_satisfies(&b->steps[i])) continue; /* the work ahead of it on the GPU writes what it waits for */
+        const int early = b->steps[i].holds && !recorded_write_over(&b->steps[i]); /* a recorded write may change what it reads */
+        if (early && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
+            perform_step(&b->steps[i]);
+            continue;
+        }
+        if (early && deferred_satisfies(&b->steps[i])) continue; /* the work ahead of it on the GPU writes what it waits for */
         submit_open(b->steps[i].function); /* the deferred steps may wait for the open batch */
         drain_deferred();
         lock_renderer();
         char error[RENDER_ERROR_BYTES];
         if (executor && rt_executor_finish(executor, error, sizeof error)) rt_fatal(b->steps[i].function, error);
+        /* what it writes (a wait only reads; RT_GPU_STEP_ANY_MEMORY bytes when not known) */
+        _Static_assert(RT_GPU_STEP_ANY_MEMORY == UINT64_MAX, "rt_executor_cpu_writes takes UINT64_MAX bytes as memory of no known range");
+        if (executor && !b->steps[i].holds) rt_executor_cpu_writes(executor, b->steps[i].memory[0], b->steps[i].memory[1]);
+        recorded_write_count = 0; /* every recorded write has run */
         unlock_renderer();
         perform_step(&b->steps[i]);
     }
@@ -334,6 +481,7 @@ static void *renderer_thread(void *unused)
         pthread_mutex_unlock(&queue_lock);
         if (queue_dry || calls_unsubmitted >= SUBMIT_CALLS) submit_open(b->function); /* nothing to join it soon, or enough to start on */
         free(b->calls);
+        free(b->tables);
         free(b->steps);
         free(b);
         pthread_mutex_lock(&queue_lock);
@@ -351,6 +499,26 @@ void rt_renderer_wait_idle(void)
     while (queue_head || running) pthread_cond_wait(&queue_changed, &queue_lock);
     pthread_mutex_unlock(&queue_lock);
     drain_deferred(); /* the last batch's deferred steps (its work: their tickets) */
+    const uint64_t written = __atomic_load_n(&last_write_ticket, __ATOMIC_ACQUIRE); /* the fills and copies the GPU makes in the steps' place */
+    char error[RENDER_ERROR_BYTES];
+    if (written && executor && rt_executor_wait_ticket(executor, written, error, sizeof error)) rt_fatal("the renderer (a wait for its work)", error);
+}
+
+/* Copies the tables each dispatch of a submitted buffer reads through its user data, now, on the
+   submitting thread (runtime/table_snapshot.h): the renderer's thread records the buffer later, when
+   the game may have written the ring slot again. queue_lock held, so the tracker sees the buffers in
+   the order they queue. A buffer without dispatches still goes through the tracker, for the compute
+   shader and user data it sets. */
+static void snapshot_tables(batch *b)
+{
+    static rt_table_snapshots *tracker;
+    int fd;
+    uint64_t bytes;
+    if (!b->call_count || rt_gpu_memory_pool(&fd, &bytes)) return; /* no direct memory yet: no table to copy */
+    if (!tracker && !(tracker = rt_table_snapshots_new())) rt_fatal(b->function, "no memory for the table snapshots");
+    if (!(b->tables = malloc(b->call_count * sizeof *b->tables))) rt_fatal(b->function, "no memory for a submission's table snapshots");
+    const rt_table_memory memory = {rt_gpu_memory_base(), bytes};
+    rt_table_snapshots_take(tracker, b->queue, b->calls, b->call_count, &memory, b->tables);
 }
 
 void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,
@@ -382,6 +550,7 @@ void rt_renderer_submit(const char *function, unsigned queue, const void *buffer
         pthread_detach(thread);
         thread_started = 1, thread_process = getpid();
     }
+    snapshot_tables(b);
     if (queue_tail) queue_tail->next = b;
     else queue_head = b;
     queue_tail = b;
@@ -393,8 +562,9 @@ void rt_renderer_submit(const char *function, unsigned queue, const void *buffer
 }
 
 /* The executor's collect (on the renderer's thread): nothing new for a buffer submitted before the
-   last collect, whose writes before it that collect has reported. */
-static int cpu_writes_due(void) { return running_submission > collected_through; }
+   last collect, whose writes before it that collect has reported, unless a wait step was performed
+   since (waited_since_collect). */
+static int cpu_writes_due(void) { return running_submission > collected_through || waited_since_collect; }
 
 static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context)
@@ -404,7 +574,7 @@ static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*
     const uint64_t through = submissions;
     pthread_mutex_unlock(&queue_lock);
     if (rt_write_watch_collect(ranges, count, written, context)) return -1;
-    collected_through = through;
+    collected_through = through, waited_since_collect = 0;
     return 0;
 }
 
