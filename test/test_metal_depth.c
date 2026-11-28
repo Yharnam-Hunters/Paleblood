@@ -156,7 +156,8 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
     enum { METADATA = 0x440000, WIDTH = 256, HEIGHT = 24, BYTES = 16384 + 64 };
     const char *const reasons[] = {NULL,NULL,NULL,"partly fast-cleared HTILE","compressed HTILE depth tiles",
         "HTILE base is unaligned or outside","HTILE depth clear requires DB_DEPTH_CLEAR",
-        "HTILE overlaps a depth or stencil plane","HTILE requires tiled","HTILE depth clear value"};
+        "HTILE overlaps a depth or stencil plane","HTILE requires tiled","HTILE depth clear value",
+        "color target overlaps HTILE"};
     for (unsigned trial = 0; trial < sizeof reasons / sizeof *reasons; ++trial) {
         Scene s = scene();
         s.geometry = 0x001d0c40; s.width = WIDTH; s.height = HEIGHT; s.pixels = 65536; s.slice = 0;
@@ -182,6 +183,16 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
             memcpy(pool + METADATA + offset,&word,sizeof word);
             const uint32_t after = trial < 2 ? word | 15u : word;
             memcpy(want + offset,&after,sizeof after);
+        }
+        if (trial == 10) {
+            /* Slot zero is disjoint. Only the higher color attachment aliases HTILE. */
+            const unsigned slot = 5;
+            rt_render_call *higher = event(RT_CALL_COLOR_TARGET);
+            higher->u.color_target = calls[0].u.color_target;
+            higher->u.color_target.slot = slot;
+            higher->u.color_target.target.address = base + METADATA;
+            calls[3].u.pixel_shader.color_formats |= 4u << (4 * slot);
+            calls[3].u.pixel_shader.color_mask |= 15u << (4 * slot);
         }
         const int result = submit(x,reasons[trial]);
         if (!result) {
