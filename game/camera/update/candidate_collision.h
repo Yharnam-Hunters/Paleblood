@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera candidate collision stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Clamp the fulcrum with a sphere cast, derive camera distance, then cast the candidate.
 #include "query_calls.h"
@@ -11,9 +12,9 @@ namespace math = camera::update::math;
 namespace root = camera::update::root;
 namespace calls = camera::query_calls;
 
-RT_GLOBAL(0x04cf2660, unit_vector, const Vec4);
-RT_GLOBAL(0x04d25e6c, scalar_one, const float);
-RT_GLOBAL(0x04d25e88, distance_division_threshold, const float);
+using constants::unit_vector;
+using constants::scalar_one;
+inline constexpr auto distance_division_threshold = constants::distance_threshold;
 RT_GLOBAL(0x04d25e90, minimum_fulcrum_hit_distance, const float);
 
 void prepare_candidate_collision(FollowCamera &state, QueryWorld *queries, Vec4 fulcrum)

@@ -16,6 +16,7 @@ extern "C" uint32_t bb_audio_fmod_read_timing_value(const audio::FmodTimingStora
     if (output == nullptr)
         return missing_output_status;
     // Preserve the cached word's raw bits, including overlapping output ranges.
-    std::memmove(output, &state->cached_value_bits, sizeof(*output));
+    const uint32_t bits = state->cached_value_bits;
+    std::memcpy(output, &bits, sizeof(bits));
     return 0;
 }

@@ -100,6 +100,9 @@ RT_GLOBAL(0x057b1fb0, callback_base_vtable, const LoadCallbackVtable);
 
 RT_ORIGINAL(0x013e5c10, callback_base_construct, void(LoadCallback *));
 RT_ORIGINAL(0x02450490, callback_register, void *(LoadCallback *, uint32_t kind));
+// The constructor, for the code that creates loads (replaced in load.cpp): builds a load in place
+// with a kind, a job (null allowed) and a value.
+RT_ORIGINAL(0x01d55cb0, load_construct, void(Load *, uint32_t kind, LoadJob *job, uint32_t value));
 // The frame function the constructor points the callback at (replaced in load.cpp).
 RT_ORIGINAL(0x01d55c40, load_frame, void(Load *, const LoadFrame *));
 

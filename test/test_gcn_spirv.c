@@ -1118,6 +1118,87 @@ static void scalar_load_spans(void)
     gcn_spirv_set_span_checks(0);
 }
 
+/* A vertex shader's guest copies (gcn_guest_copies): its loads also reach the copies (one more range
+   check per access, and the SPIR-V still valid and cross-compiled to MSL, up to the copies' last dword),
+   its stores (one dword or four) and atomics never do (the same code as without copies); copies without the guest memory's range, meeting it, reaching past 2^40, or
+   for a copy shader are refused. */
+/* Whether the module has a 64-bit OpConstant of value v. */
+static int has_ulong_constant(const uint32_t *spirv, size_t words, uint64_t v)
+{
+    enum { OP_CONSTANT = 43, ULONG_CONSTANT_WORDS = 5 };
+    for (size_t i = 5; i < words && spirv[i] >> 16; i += spirv[i] >> 16)
+        if ((spirv[i] & 0xffff) == OP_CONSTANT && spirv[i] >> 16 == ULONG_CONSTANT_WORDS && i + 4 < words && spirv[i + 3] == (uint32_t)v &&
+            spirv[i + 4] == (uint32_t)(v >> 32))
+            return 1;
+    return 0;
+}
+
+static void vertex_guest_copies(void)
+{
+    static const uint32_t stored[] = {
+        0xe0702000, 0x80020100, /* buffer_store_dword v1, v0, s[8:11], 0 idxen */
+        0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+        0xbf810000,             /* s_endpgm */
+    };
+    static const uint32_t stored4[] = {
+        0xe0782000, 0x80020100, /* buffer_store_dwordx4 v[1:4], v0, s[8:11], 0 idxen */
+        0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+        0xbf810000,             /* s_endpgm */
+    };
+    static const uint32_t added[] = {
+        0xe0c82000, 0x80020100, /* buffer_atomic_add v1, v0, s[8:11], 0 idxen */
+        0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+        0xbf810000,             /* s_endpgm */
+    };
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[512];
+    gcn_vertex_layout checked = vertex_layout;
+    checked.guest = (gcn_guest_memory){.base = 0x100000, .bytes = 0x100000, .sink = 0x9000};
+    checked.error_address = 0x2000;
+    gcn_vertex_layout copied = checked;
+    copied.copies = (gcn_guest_copies){.base = 0x1000000, .bytes = 0x10000, .gpu = 0x7000000};
+    size_t compares[4][2] = {{0}};
+    for (int program = 0; program < 4; program++)
+        for (int copies = 0; copies < 2; copies++) {
+            const gcn_vertex_layout *l = copies ? &copied : &checked;
+            const int translated = program == 3   ? gcn_translate_vertex(PROGRAM(added), l, &spirv, &words, error, sizeof error)
+                                   : program == 2 ? gcn_translate_vertex(PROGRAM(stored4), l, &spirv, &words, error, sizeof error)
+                                   : program      ? gcn_translate_vertex(PROGRAM(stored), l, &spirv, &words, error, sizeof error)
+                                                  : gcn_translate_vertex(PROGRAM(vertex_position_color), l, &spirv, &words, error, sizeof error);
+            if (translated) fprintf(stderr, "vertex guest copies: %s\n", error);
+            CHECK(translated == 0 && spirv);
+            if (!spirv) continue;
+            compares[program][copies] = opcode_count(spirv, words, SPV_OP_U_LESS_THAN_EQUAL);
+            if (copies) CHECK(validate(spirv, words, program ? "vertex_copies_store" : "vertex_copies_load") != 0);
+            if (copies && !program) CHECK(to_metal(spirv, words, "vertex_copies_load") != 0);
+            /* a dword load reaches the copies up to their last dword, never past their end */
+            if (copies && !program) CHECK(has_ulong_constant(spirv, words, copied.copies.bytes - 4) && !has_ulong_constant(spirv, words, copied.copies.bytes));
+            free(spirv), spirv = NULL;
+        }
+    CHECK(compares[0][1] > compares[0][0] && compares[1][1] == compares[1][0] && compares[2][1] == compares[2][0] && compares[3][1] == compares[3][0]);
+    const struct {
+        gcn_guest_memory guest;
+        gcn_guest_copies copies;
+        uint64_t gsvs_ring;
+    } refused[] = {
+        {{0}, {.base = 0x1000000, .bytes = 0x10000, .gpu = 0x7000000}, 0},
+        {checked.guest, {.base = 0x1ff000, .bytes = 0x10000, .gpu = 0x7000000}, 0},
+        {checked.guest, {.base = 0xf0000, .bytes = 0x10001, .gpu = 0x7000000}, 0},
+        {checked.guest, {.base = (1ull << 40) - 0x8000, .bytes = 0x10000, .gpu = 0x7000000}, 0},
+        {checked.guest, {.base = (1ull << 40) + 0x1000, .bytes = 0x10, .gpu = 0x7000000}, 0},
+        {checked.guest, {.base = 0x1000000, .bytes = 0x10000, .gpu = 0x7000000}, 0x8000000},
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof *refused; i++) {
+        gcn_vertex_layout bad = copied;
+        bad.guest = refused[i].guest, bad.copies = refused[i].copies, bad.gsvs_ring = refused[i].gsvs_ring;
+        bad.gsvs_ring_bytes = refused[i].gsvs_ring ? 0x10000 : 0;
+        CHECK(gcn_translate_vertex(PROGRAM(vertex_position_color), &bad, &spirv, &words, error, sizeof error) == -1 && !spirv &&
+              strstr(error, "guest copies"));
+        free(spirv), spirv = NULL;
+    }
+}
+
 /* A program whose branches all go forward is a chain of selections with no loop; a branch back makes a
    structured loop around the blocks it spans. Neither needs the dispatch switch. */
 static void forward_blocks(void)
@@ -1164,6 +1245,7 @@ static void forward_blocks(void)
 int main(void)
 {
     scalar_load_spans();
+    vertex_guest_copies();
     forward_blocks();
     table_snapshots();
     submitted_table_snapshots();
