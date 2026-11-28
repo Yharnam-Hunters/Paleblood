@@ -57,7 +57,7 @@ Summary:
 - [ ] `symbols/functions.csv` and `game/hooks.csv` rows included; progress blocks left as main has them (main regenerates them: `tools/progress_pr.py`)
 - [ ] No game files, assets, binaries, decompiler projects or raw decompiler dumps; no screenshots or clips of the game; no links to game files (CONTRIBUTING.md, "Your own copy")
 - [ ] No `FUN_` / `DAT_` / `undefined8` / `local_` names left in the code
-- [ ] Readable ([STYLE.md](../STYLE.md)): `tools/check_readable.py` passes; no transcription (addresses, raw offsets, magic numbers, `_mm_` outside `game/engine/`, recording code) goes to `main`; `tools/readable_allowlist.txt` only shrinks
+- [ ] Readable ([STYLE.md](../STYLE.md)): `tools/check_readable.py` passes; no transcription (addresses, raw offsets or byte-pointer math with an offset, a second `RT_GLOBAL`/`RT_ORIGINAL` for an address, magic numbers, `_mm_` outside `game/engine/`, recording code) goes to `main`; `tools/readable_allowlist.txt` only shrinks
 - [ ] Independent review: <!-- who reviewed verification and readability (not the author), and the symbols/reviews.csv row; required before `verified` -->
 - [ ] `runtime/` stays generic
 - [ ] AI-assisted: <!-- yes / no. Every AI-assisted commit needs a Co-Authored-By trailer naming the actual tool; for Codex: Co-Authored-By: Codex <noreply@openai.com> -->

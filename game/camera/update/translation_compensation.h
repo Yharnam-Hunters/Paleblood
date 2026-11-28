@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera translation compensation stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 #include "math_calls.h"
 
@@ -10,9 +11,9 @@ inline constexpr uint32_t minimum_fulcrum_distance_bits = 0x3f000000;
 namespace math = camera::update::math;
 namespace root = camera::update::root;
 
-RT_GLOBAL(0x04d25e6c, scalar_one, const float);
-RT_GLOBAL(0x04d25e70, distance_floor, const float);
-RT_GLOBAL(0x04d25e88, distance_division_threshold, const float);
+using constants::scalar_one;
+inline constexpr auto distance_floor = constants::half_fov;
+inline constexpr auto distance_division_threshold = constants::distance_threshold;
 
 // Saved values from earlier stages. They remain independent of later camera field writes.
 struct TranslationCompensationInput

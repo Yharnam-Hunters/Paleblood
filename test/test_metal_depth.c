@@ -4,6 +4,7 @@
 #include "runtime/render_calls.h"
 #include "runtime/tiling.h"
 #include "gcn_programs.h"
+#include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +20,7 @@ static uint32_t bits(float f){uint32_t v;memcpy(&v,&f,4);return v;}
 typedef struct {
     unsigned format, stencil, geometry, width, height, pixels, slice, control, view_flags, render_control;
     unsigned ops, references[2], color, pixel, reverse;
-    float sy, z;
+    float sy, z, z_near, z_scale;
     rt_depth_layout layout[2];
     uint8_t *expected[2]; size_t span[2];
 } Scene;
@@ -29,7 +30,7 @@ static void reg(uint32_t address,uint32_t value){rt_render_call *c=event(RT_CALL
 static Scene scene(void)
 {
     Scene s={0};s.format=3;s.width=W;s.height=H;s.pixels=W*H;s.control=2|4|7<<4;
-    s.color=s.pixel=1;s.sy=4;s.z=0.25f;s.references[0]=s.references[1]=0x01ffff17;return s;
+    s.color=s.pixel=1;s.sy=4;s.z=0.25f;s.z_scale=1;s.references[0]=s.references[1]=0x01ffff17;return s;
 }
 static void descriptor(uint32_t *p,uint64_t address){p[0]=(uint32_t)address;p[1]=(uint32_t)(address>>32)|16u<<16;p[2]=3;p[3]=0;}
 static void setup(rt_executor *x,uint8_t *pool,Scene *s)
@@ -55,7 +56,7 @@ static void setup(rt_executor *x,uint8_t *pool,Scene *s)
     }
     rt_render_call *c=event(RT_CALL_COLOR_TARGET);c->u.color_target.enabled=s->color;
     c->u.color_target.target=(rt_color_target){.address=base+COLOR_BASE,.pitch=W,.height=H,.format=0xa,.component_swap=0,.tile_mode_index=31,.samples=1};
-    c=event(RT_CALL_VIEWPORT);c->u.viewport.zmax=1;c->u.viewport.scale[0]=8;c->u.viewport.scale[1]=s->sy;c->u.viewport.scale[2]=1;
+    c=event(RT_CALL_VIEWPORT);c->u.viewport.zmax=1;c->u.viewport.scale[0]=8;c->u.viewport.scale[1]=s->sy;c->u.viewport.scale[2]=s->z_scale;c->u.viewport.translate[2]=s->z_near;
     c->u.viewport.translate[0]=8;c->u.viewport.translate[1]=4;
     c=event(RT_CALL_VERTEX_SHADER);c->u.vertex_shader=(rt_vertex_shader){.code=base+VS,.vgprs=12,.sgprs=16,.user_sgprs=8,.parameter_count=1,.position_format=4};
     c=event(RT_CALL_PIXEL_SHADER);c->u.pixel_shader=(rt_pixel_shader){.code=s->pixel?base+PS:0,.vgprs=12,.sgprs=16,
@@ -151,6 +152,94 @@ static void depth_cases(rt_executor *x,uint8_t *pool)
     /* A previous depth-rejecting state must not leak into a disabled draw. */
     s=scene();s.control=2;setup(x,pool,&s);submit(x,NULL);count=0;reg(0xa200,0);if(!submit(x,NULL))check_color(pool,1);finish(pool,&s);
 }
+static void viewport_depth_cases(rt_executor *x, uint8_t *pool)
+{
+    static const struct {
+        float near_depth, scale, position, expected_depth;
+        unsigned rectangle, depth_only;
+    } cases[] = {
+        { 0.25f, 1.25f, 0.25f, 0.5625f, 0, 0 }, /* Clamping endpoints early gives 0.4375. */
+        { -0.5f, 1.0f, 0.25f, 0.0f, 0, 0 },
+        { 1.0f, -1.0f, 0.25f, 0.75f, 0, 0 },
+        { 1.0f, 1.0f, 0.25f, 1.0f, 1, 1 }, /* Depth-only rectangle. */
+        { 1.0f, 1.0f, 1.25f, 0.75f, 0, 0 }, /* Clip before the depth transform. */
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        Scene s = scene();
+        s.z = cases[i].position;
+        if (cases[i].depth_only) s.color = s.pixel = 0;
+        s.z_near = cases[i].near_depth;
+        s.z_scale = cases[i].scale;
+        setup(x, pool, &s);
+        if (cases[i].rectangle) reg(0xc242, 17);
+        if (!submit(x, NULL)) {
+            expected(&s, 0, bits(cases[i].expected_depth), W, H);
+            check_color(pool, s.color && cases[i].position <= 1.0f);
+        }
+        finish(pool, &s);
+    }
+
+    Scene s = scene();
+    s.z_near = FLT_MAX;
+    s.z_scale = FLT_MAX;
+    setup(x, pool, &s);
+    submit(x, "viewport depth endpoint is not finite");
+    finish(pool, &s);
+    check_color(pool, 0);
+}
+
+static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
+{
+    enum { METADATA = 0x440000, WIDTH = 256, HEIGHT = 24, BYTES = 16384 + 64 };
+    const char *const reasons[] = {NULL,NULL,NULL,"partly fast-cleared HTILE","compressed HTILE depth tiles",
+        "HTILE base is unaligned or outside","HTILE depth clear requires DB_DEPTH_CLEAR",
+        "HTILE overlaps a depth or stencil plane","HTILE requires tiled","HTILE depth clear value"};
+    for (unsigned trial = 0; trial < sizeof reasons / sizeof *reasons; ++trial) {
+        Scene s = scene();
+        s.geometry = 0x001d0c40; s.width = WIDTH; s.height = HEIGHT; s.pixels = 65536; s.slice = 0;
+        s.stencil = (1u << 29) | 1; s.control = 2 | 1 << 4 | 1 | 7 << 8;
+        if (trial == 1) s.control |= 4;
+        if (trial == 0) s.view_flags = 1u << 24;
+        setup(x,pool,&s);
+        reg(0xa010, s.format | 1u << 29);
+        reg(0xa2af, trial == 8 ? 1u : 8u);
+        const unsigned address = trial == 5 ? POOL - 2048 : trial == 7 ? Z_BASE : METADATA;
+        reg(0xa005,(uint32_t)((base + address) >> 8));
+        const uint32_t clear = trial == 1 ? bits(0.5f) : trial == 9 ? 0x7fc00000u : bits(0.125f);
+        if (trial != 6) reg(0xa00b,clear);
+        uint8_t want[BYTES];
+        memset(pool + METADATA,0x6d,BYTES);
+        memcpy(want,pool + METADATA,BYTES);
+        for (unsigned y = 0; y < HEIGHT; y += 8) for (unsigned col = 0; col < WIDTH; col += 8) {
+            const size_t offset = (size_t)rt_tiling_htile_offset(WIDTH,col,y);
+            uint32_t tag = trial == 2 ? 15u : 0u;
+            if (!col && !y && trial == 3) tag = 15;
+            if (!col && !y && trial == 4) tag = 7;
+            const uint32_t word = 0x4cb71000u | col << 4 | y << 16 | tag;
+            memcpy(pool + METADATA + offset,&word,sizeof word);
+            const uint32_t after = trial < 2 ? word | 15u : word;
+            memcpy(want + offset,&after,sizeof after);
+        }
+        const int result = submit(x,reasons[trial]);
+        if (!result) {
+            if (trial < 2) expected(&s,0,clear,WIDTH,HEIGHT);
+            if (trial == 1) expected(&s,0,bits(0.25f),W,H);
+            check_color(pool,trial != 0);
+        }
+        const int metadata_match = memcmp(pool + METADATA,want,BYTES) == 0;
+        CHECK(metadata_match);
+        if (!result && trial == 0) {
+            /* The clear was consumed. A changed clear value without new tags
+               leaves depth and color unchanged on the following draw. */
+            count = 0; reg(0xa00b,bits(0.875f));
+            if (!submit(x,NULL)) check_color(pool,0);
+            CHECK(memcmp(pool + METADATA,want,BYTES) == 0);
+        }
+        finish(pool,&s);
+        printf("HTILE depth trial %u result %d metadata_match=%d\n",trial,result,metadata_match);
+    }
+}
+
 static void stencil_cases(rt_executor *x,uint8_t *pool)
 {
     const unsigned formats[]={0,1,3};
@@ -569,7 +658,7 @@ int main(int argc,char **argv)
     const float colors[3][4]={{1,1,1,1},{1,1,1,1},{1,1,1,1}};memcpy(pool+COLORS,colors,sizeof colors);
     rt_executor *x=NULL;const rt_executor_memory memory={.fd=fd,.size=POOL,.guest_base=base};
     int rc=rt_executor_open(&memory,&x,error,sizeof error);if(rc)fprintf(stderr,"open: %s\n",error);CHECK(rc==0);if(rc)return 1;
-    if(!aspect_only&&!colorless_only&&!inactive_blend_only){depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);}
+    if(!aspect_only&&!colorless_only&&!inactive_blend_only){depth_cases(x,pool);viewport_depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);tiled_htile_cases(x,pool);}
     if(!colorless_only&&!inactive_blend_only)aspect_metadata_cases(x,pool);
     if(!aspect_only&&!inactive_blend_only)colorless_cases(x,pool);
     if(!aspect_only&&!colorless_only)inactive_blend_cases(x,pool);

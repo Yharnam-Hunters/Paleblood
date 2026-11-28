@@ -376,6 +376,33 @@ uint64_t bb_mutant_record_returns_owner(void *owner, uint64_t *record)
     return (uint64_t)(uintptr_t)owner;
 }
 
+/* Slot 0x68 of the object's virtual table (or of the whole object, from a base 0x20 into it) with
+ * the second argument as it came: the part offset 0xe8 left out. */
+typedef uint64_t (*bb_mutant_forwarded)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+uint64_t bb_mutant_virtual_0x68_without_part(void *object, uint64_t second, uint64_t third, uint64_t fourth,
+                                             uint64_t fifth, uint64_t sixth)
+{
+    const bb_mutant_forwarded *table = *(const bb_mutant_forwarded *const *)object;
+    return table[0x68 / 8](object, second, third, fourth, fifth, sixth);
+}
+
+uint64_t bb_mutant_base_virtual_0x68_without_part(uint8_t *base, uint64_t second, uint64_t third, uint64_t fourth,
+                                                  uint64_t fifth, uint64_t sixth)
+{
+    return bb_mutant_virtual_0x68_without_part(base - 0x20, second, third, fourth, fifth, sixth);
+}
+
+/* Tail-calls slot 8 of the object the pointer at +0x20 points at without storing that pointer
+ * through the second argument first. */
+uint64_t bb_mutant_tail_calls_member_at_0x20_without_export(uint8_t *object, uint64_t second, uint64_t third,
+                                                            uint64_t fourth, uint64_t fifth, uint64_t sixth)
+{
+    void *member = *(void **)(object + 0x20);
+    const bb_mutant_forwarded *table = *(const bb_mutant_forwarded *const *)member;
+    return table[1](member, second, third, fourth, fifth, sixth);
+}
+
 /* Stores the low 32 bits of its second argument at the start of its object: the wrong width for
    a 64-bit setter. */
 void bb_mutant_writes_first_dword(uint32_t *object, uint64_t value)
@@ -389,6 +416,25 @@ void bb_mutant_writes_first_qword(uint64_t *object, uint64_t value)
 {
     *object = value;
 }
+
+/* Delegates (object pointer at OBJECT, pointer to member function at METHOD) whose method is called
+ * as a plain function pointer, whatever the guard, with the arguments as they came. */
+typedef uint64_t (*bb_mutant_delegate_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+#define BB_MUTANT_DELEGATE_CALLED_DIRECTLY(name, object_at, method_at) \
+    uint64_t name(uint8_t *record, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, \
+                  uint64_t sixth) \
+    { \
+        uint8_t *object = *(uint8_t **)(record + (object_at)); \
+        const uint64_t *method = (const uint64_t *)(record + (method_at)); \
+        return ((bb_mutant_delegate_function)method[0])(object + method[1], second, third, fourth, fifth, \
+                                                        sixth); \
+    }
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x8_0x10_called_directly, 0x8, 0x10)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x10_0x18_called_directly, 0x10, 0x18)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x10_0x20_called_directly, 0x10, 0x20)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x18_0x20_called_directly, 0x18, 0x20)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x20_0x28_called_directly, 0x20, 0x28)
+BB_MUTANT_DELEGATE_CALLED_DIRECTLY(bb_mutant_delegate_0x50_0x58_called_directly, 0x50, 0x58)
 
 /* Clears its second argument register and returns: wrong for a body that must leave the
    argument registers alone (the cases compare them after the call). */
