@@ -286,7 +286,7 @@ typedef struct {
     int set_aside;                   /* a target of another size or format took its address (target_for): it holds
                                         nothing the memory lacks, and is taken back when the address has its shape again */
     uint64_t used_ticket;            /* the batch that last used it (its ticket once submitted) */
-    uint64_t used_call;              /* the draw that last used it (call_serial) */
+    uint64_t used_call;              /* the call during or after which it was last used (call_serial) */
 } target_entry;
 
 /* What a draw does with the depth target: its test and writes, as Vulkan state. No padding: it is
@@ -2962,10 +2962,11 @@ static target_entry *target_slot_to_free(rt_executor *x)
 {
     uint64_t done = 0;
     if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return NULL;
+    const uint64_t first = first_unfinished_image_call(x, done);
     target_entry *pick = NULL;
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *k = &x->targets[i];
-        if (k->drawn || k->used_ticket > done || k->used_call == x->call_serial) continue;
+        if (k->drawn || k->used_ticket > done || k->used_call >= first) continue;
         if (!pick || k->set_aside > pick->set_aside || (k->set_aside == pick->set_aside && k->used_ticket < pick->used_ticket)) pick = k;
     }
     if (!pick) return NULL;
@@ -3109,6 +3110,7 @@ static int record_target_copy(rt_executor *x, target_entry *t, int to_rows, char
 {
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
+    t->used_ticket = x->submitted + 1, t->used_call = x->call_serial;
     const VkImageLayout transfer = to_rows ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     const VkAccessFlags transfer_access = to_rows ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, transfer,
@@ -6288,6 +6290,7 @@ static int image_from_target(rt_executor *x, image_entry *e, const rt_image_desc
     if (e->copied_from == t && e->copied_serial == t->drawn_serial) return 1;
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
+    t->used_ticket = x->submitted + 1, t->used_call = x->call_serial;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -8431,6 +8434,7 @@ int rt_executor_snapshot_target(rt_executor *x, uint64_t address, rt_executor_sn
     if (staging_ready(x, &x->snapshots[slot].staging, bytes)) return failed(error, error_size, "no staging memory");
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
+    t->used_ticket = x->submitted + 1, t->used_call = x->call_serial;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
