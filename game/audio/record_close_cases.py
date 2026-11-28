@@ -59,6 +59,9 @@ def cases():
     for label, record in [('separate', 'buf:record+8'), ('same', 'buf:owner+8'),
                           ('overlap', 'buf:owner+12')]:
         rows.append(boundary('writes-' + label, 'buf:owner+64', record, 0x13579bdf, writes))
+    once = boundary('close-once', 'buf:owner+64', 'buf:record+8', 0x12345678)
+    once['stubs'].append({'address': '0x0111c240', 'argc': 2, 'ret': '0x87654321'})
+    rows.append(once)
     for slot in (-1, 0, 2):
         for count in (0, 1, 2, 0xffffffff):
             rows.append(close_port(f'port-{slot}-count-{count:x}', slot, count, 0))
