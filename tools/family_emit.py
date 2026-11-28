@@ -358,6 +358,155 @@ MATCHING_TEMPLATES = {
     },
 }
 
+# Forwarding thunks (symbols/families.csv; game/leaf/virtual_call.h).
+TEMPLATES['tail_calls_virtual_function'] = {
+    'header': "// Forwarding thunks: every member of the tail_calls_virtual_function family (symbols/families.csv) is\n// `48 8b 07 48 8b 40 {d8} ff e0`: it tail-calls slot K of its object's virtual table with the arguments it got.\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_virtual_function'] = {
+    'header': '// Forwarding thunks: tail_calls_virtual_function.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_jumps_through_virtual_slot'] = {
+    'header': "// Forwarding thunks: every member of the tail_jumps_through_virtual_slot family (symbols/families.csv) is\n// `48 8b 07 ff 60 {d8}`: it tail-calls slot K of its object's virtual table with the arguments it got (`jmp [rax+K]`).\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_jumps_through_virtual_slot'] = {
+    'header': '// Forwarding thunks: tail_jumps_through_virtual_slot.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['passes_flag_to_virtual_function'] = {
+    'header': "// Forwarding thunks: every member of the passes_flag_to_virtual_function family (symbols/families.csv) is\n// `48 8b 07 48 8b 40 {d8} ba 01 00 00 00 ff e0`: it tail-calls slot K of its object's virtual table with the third argument set to 1.\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n\nconstexpr uint64_t flag_argument = 1;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    (void)third;\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, flag_argument, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['passes_flag_to_virtual_function'] = {
+    'header': '// Forwarding thunks: passes_flag_to_virtual_function.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { flag_argument = 1 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    (void)third;\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, flag_argument, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['passes_part_at_0xe8_to_virtual_0x68'] = {
+    'header': '// Forwarding thunks: passes_part_at_0xe8_to_virtual_0x68.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { part_slot = 0x68, part_offset = 0xe8 };\n',
+    'single': 'uint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[part_slot / sizeof(forwarded_function)](object, second + part_offset, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['adjusts_base_and_passes_part_at_0xe8'] = {
+    'header': '// Forwarding thunks: adjusts_base_and_passes_part_at_0xe8.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { part_slot = 0x68, part_offset = 0xe8, base_offset = 0x20 };\n',
+    'single': 'uint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *whole = (struct object_with_virtual_table *)((uint8_t *)object - base_offset);\n    return whole->virtual_table[part_slot / sizeof(forwarded_function)](whole, second + part_offset, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_calls_member_at_0x10'] = {
+    'header': '// Forwarding thunks: every member of the tail_calls_member_at_0x10 family (symbols/families.csv) is\n// `48 8b 7f 10 48 8b 07 48 8b 40 {d8} ff e0`: it tail-calls slot K of the object the pointer at +0x10 points at, with the other arguments it got.\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 0x10;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *member = member_at<member_offset>(object);\n    BB_TAIL_CALL return virtual_function<slot_{name}>(member)(member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_member_at_0x10'] = {
+    'header': '// Forwarding thunks: tail_calls_member_at_0x10.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 0x10 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return member->virtual_table[slot_{name} / sizeof(forwarded_function)](member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['passes_dword_argument_to_member_at_8'] = {
+    'header': '// Forwarding thunks: every member of the passes_dword_argument_to_member_at_8 family (symbols/families.csv) is\n// `8b 36 48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0`: it tail-calls slot K of the object the pointer at +8 points at, with the dword its second argument points at.\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 8;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *member = member_at<member_offset>(object);\n    const uint64_t value = *reinterpret_cast<const uint32_t *>(second);\n    BB_TAIL_CALL return virtual_function<slot_{name}>(member)(member, value, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['passes_dword_argument_to_member_at_8'] = {
+    'header': '// Forwarding thunks: passes_dword_argument_to_member_at_8.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 8 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return member->virtual_table[slot_{name} / sizeof(forwarded_function)](member, *(const uint32_t *)second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['calls_member_at_8_with_constant'] = {
+    'header': '// Forwarding thunks: every member of the calls_member_at_8_with_constant family (symbols/families.csv) is\n// `55 48 89 e5 48 8b 7f 08 48 8b 07 be {u32} ff 50 40 5d c3`: it calls slot 0x40 of the object the pointer at +8 points at with the constant K and returns its result.\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 8;\nconstexpr std::size_t constant_call_slot = 0x40;\n// The slot takes the object and one 32-bit integer.\nusing MethodTakingConstant = uint64_t (*)(void *object, uint32_t constant);\n',
+    'per_value': 'constexpr uint32_t constant_{name} = {value};\nextern "C" uint64_t {symbol}(void *object)\n{{\n    void *member = member_at<member_offset>(object);\n    return virtual_function<constant_call_slot, MethodTakingConstant>(member)(member, constant_{name});\n}}\n',
+}
+MATCHING_TEMPLATES['calls_member_at_8_with_constant'] = {
+    'header': '// Forwarding thunks: calls_member_at_8_with_constant.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 8, constant_call_slot = 0x40 };\ntypedef uint64_t (*method_taking_constant)(void *, uint32_t);\n',
+    'per_value': 'enum {{ constant_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return ((method_taking_constant)member->virtual_table[constant_call_slot / sizeof(forwarded_function)])(member, constant_{name});\n}}\n',
+}
+MATCHING_TEMPLATES['exports_member_at_0x20_and_tail_calls_it'] = {
+    'header': '// Forwarding thunks: exports_member_at_0x20_and_tail_calls_it.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { exported_member_offset = 0x20, exported_slot = 8 };\n',
+    'single': 'uint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + exported_member_offset);\n    *(struct object_with_virtual_table **)second = member;\n    return member->virtual_table[exported_slot / sizeof(forwarded_function)](member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+
+# More forwarding thunks: null-checked, through members at 8 and 0x10, far slots and a table.
+TEMPLATES['tail_calls_virtual_unless_null'] = {
+    'header': "// Forwarding thunks: every member of the tail_calls_virtual_unless_null family (symbols/families.csv) is\n// `48 85 ff 74 09 48 8b 07 48 8b 40 {d8} ff e0 b8 25 00 00 00 c3`: it tail-calls slot K of its object's virtual table with the arguments it got, or returns 0x25 when the object is null.\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n\n// What a null object gets back.\nconstexpr uint64_t null_object_result = 0x25;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    if (object == nullptr) {{\n        return null_object_result;\n    }}\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_virtual_unless_null'] = {
+    'header': '// Forwarding thunks: tail_calls_virtual_unless_null.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { null_object_result = 0x25 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    if (object == 0) {{\n        return null_object_result;\n    }}\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_jumps_through_member_at_8'] = {
+    'header': '// Forwarding thunks: every member of the tail_jumps_through_member_at_8 family (symbols/families.csv) is\n// `48 8b 7f 08 48 8b 07 ff 60 {d8}`: it tail-calls slot K of the object the pointer at +8 points at, with the other arguments it got (`jmp [rax+K]`).\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 8;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *member = member_at<member_offset>(object);\n    BB_TAIL_CALL return virtual_function<slot_{name}>(member)(member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_jumps_through_member_at_8'] = {
+    'header': '// Forwarding thunks: tail_jumps_through_member_at_8.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 8 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return member->virtual_table[slot_{name} / sizeof(forwarded_function)](member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_jumps_through_member_at_0x10'] = {
+    'header': '// Forwarding thunks: every member of the tail_jumps_through_member_at_0x10 family (symbols/families.csv) is\n// `48 8b 7f 10 48 8b 07 ff 60 {d8}`: it tail-calls slot K of the object the pointer at +0x10 points at, with the other arguments it got (`jmp [rax+K]`).\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 0x10;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *member = member_at<member_offset>(object);\n    BB_TAIL_CALL return virtual_function<slot_{name}>(member)(member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_jumps_through_member_at_0x10'] = {
+    'header': '// Forwarding thunks: tail_jumps_through_member_at_0x10.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 0x10 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return member->virtual_table[slot_{name} / sizeof(forwarded_function)](member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_calls_member_at_8'] = {
+    'header': '// Forwarding thunks: every member of the tail_calls_member_at_8 family (symbols/families.csv) is\n// `48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0`: it tail-calls slot K of the object the pointer at +8 points at, with the other arguments it got.\n// One replacement per value of K.\n',
+    'shared': '#include "virtual_call.h"\n\nconstexpr std::size_t member_offset = 8;\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *member = member_at<member_offset>(object);\n    BB_TAIL_CALL return virtual_function<slot_{name}>(member)(member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_member_at_8'] = {
+    'header': '// Forwarding thunks: tail_calls_member_at_8.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '\nenum { member_offset = 8 };\n',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    struct object_with_virtual_table *member = *(struct object_with_virtual_table **)((uint8_t *)object + member_offset);\n    return member->virtual_table[slot_{name} / sizeof(forwarded_function)](member, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_calls_far_virtual_slot'] = {
+    'header': "// Forwarding thunks: every member of the tail_calls_far_virtual_slot family (symbols/families.csv) is\n// `48 8b 07 48 8b 80 {u32} ff e0`: it tail-calls slot K (a 32-bit offset) of its object's virtual table with the arguments it got.\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_calls_far_virtual_slot'] = {
+    'header': '// Forwarding thunks: tail_calls_far_virtual_slot.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_jumps_through_far_virtual_slot'] = {
+    'header': "// Forwarding thunks: every member of the tail_jumps_through_far_virtual_slot family (symbols/families.csv) is\n// `48 8b 07 ff a0 {u32}`: it tail-calls slot K (a 32-bit offset) of its object's virtual table with the arguments it got (`jmp [rax+K]`).\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    BB_TAIL_CALL return virtual_function<slot_{name}>(object)(object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_jumps_through_far_virtual_slot'] = {
+    'header': '// Forwarding thunks: tail_jumps_through_far_virtual_slot.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(struct object_with_virtual_table *object, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return object->virtual_table[slot_{name} / sizeof(forwarded_function)](object, second, third, fourth, fifth, sixth);\n}}\n',
+}
+TEMPLATES['tail_jumps_through_table_with_second_argument'] = {
+    'header': "// Forwarding thunks: every member of the tail_jumps_through_table_with_second_argument family (symbols/families.csv) is\n// `48 89 f8 48 89 f7 ff 60 {d8}`: it tail-calls entry K of the function table its first argument points at, with its second argument as that function's first and second.\n// One replacement per value of K.\n",
+    'shared': '#include "virtual_call.h"\n',
+    'per_value': 'constexpr std::size_t slot_{name} = {value};\nextern "C" uint64_t {symbol}(void *table, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    void *receiver = reinterpret_cast<void *>(second);\n    BB_TAIL_CALL return table_entry<slot_{name}>(table)(receiver, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['tail_jumps_through_table_with_second_argument'] = {
+    'header': '// Forwarding thunks: tail_jumps_through_table_with_second_argument.\n',
+    'shared': STDINT + '\n' + 'typedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nstruct object_with_virtual_table {\n    const forwarded_function *virtual_table;\n};\n' + '',
+    'per_value': 'enum {{ slot_{name} = {value} }};\nuint64_t {symbol}(const forwarded_function *table, uint64_t second, uint64_t third, uint64_t fourth, uint64_t fifth, uint64_t sixth)\n{{\n    return table[slot_{name} / sizeof(forwarded_function)]((void *)second, second, third, fourth, fifth, sixth);\n}}\n',
+}
+
 
 # The engine's deleting functions that hand an object back to the thread's allocator (a relative
 # family with the class size as its parameter; game/engine/thread_allocator_free.h).
@@ -409,6 +558,18 @@ TEMPLATES['allocates_from_thread_allocator'] = {
     'per_value': ('constexpr uint32_t size_{name} = {value};\n'
                   'extern "C" void *{symbol}()\n{{\n'
                   '    return engine::thread_allocator_free::allocate(size_{name});\n}}\n'),
+}
+
+
+# The arena page tables' page allocations: one page of K bytes into the table's slot.
+TEMPLATES['allocates_page_into_table_from_0x02795780'] = {
+    'header': ('// Every member of allocates_page_into_table_from_0x02795780 (symbols/families.csv) is a\n'
+               '// copy of the same function reaching the same arena allocate: it stores a new page of K\n'
+               '// bytes in the table\'s slot, growing the slots first. One replacement per page size K.\n'),
+    'shared': '#include "arena_page_table.h"\n',
+    'per_value': ('constexpr uint32_t page_bytes_{name} = {value};\n'
+                  'extern "C" void {symbol}(engine::arena_page_table::PageTable *table, uint64_t index)\n{{\n'
+                  '    engine::arena_page_table::add_page(table, index, page_bytes_{name});\n}}\n'),
 }
 
 
@@ -585,6 +746,58 @@ MATCHING_TEMPLATES['packs_first_dword_from_two_bit_fields'] = {
 def matching_source(family: dict) -> str:
     """The matching source relative to the repository, as symbols/families/<family>.matching.csv names it."""
     return f"game/matching/{family['system']}/{family['family']}.c"
+
+# Delegate calls (symbols/families.csv; replacements in game/leaf/delegates.cpp).
+MATCHING_TEMPLATES['calls_delegate_with_argument_field_0x10'] = {
+    'header': '// Delegate calls: when set: the delegate at +8 with the qword at +0x10 of the second argument and the dword at +0x28.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\n\nstruct record {\n    uint8_t unknown_0x0[0x8];\n    void *object;\n    struct member_function_pointer method;\n    uint8_t unknown_0x20[0x8];\n    uint32_t value;\n};\n\nstruct argument {\n    uint8_t unknown_0x0[0x10];\n    uint64_t value;\n};\n',
+    'single': 'void {symbol}(const struct record *record, const struct argument *argument, uint64_t third, uint64_t fourth,\n              uint64_t fifth, uint64_t sixth)\n{{\n    if (record->method.function == 0 || record->object == 0)\n        return;\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    function(target, argument->value, record->value, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['calls_delegate_with_argument_field_8'] = {
+    'header': '// Delegate calls: when set: the delegate at +8 with the qword at +8 of the second argument and the dword at +0x28.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\n\nstruct record {\n    uint8_t unknown_0x0[0x8];\n    void *object;\n    struct member_function_pointer method;\n    uint8_t unknown_0x20[0x8];\n    uint32_t value;\n};\n\nstruct argument {\n    uint8_t unknown_0x0[0x8];\n    uint64_t value;\n};\n',
+    'single': 'void {symbol}(const struct record *record, const struct argument *argument, uint64_t third, uint64_t fourth,\n              uint64_t fifth, uint64_t sixth)\n{{\n    if (record->method.function == 0 || record->object == 0)\n        return;\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    function(target, argument->value, record->value, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['calls_delegate_with_dword_at_0x20'] = {
+    'header': '// Delegate calls: when set: the delegate at +8 with the dword at +0x20.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\n\nstruct record {\n    uint8_t unknown_0x0[0x8];\n    void *object;\n    struct member_function_pointer method;\n    uint32_t value;\n};\n',
+    'single': 'void {symbol}(const struct record *record, uint64_t second, uint64_t third, uint64_t fourth,\n              uint64_t fifth, uint64_t sixth)\n{{\n    if (record->method.function == 0 || record->object == 0)\n        return;\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    function(target, record->value, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['calls_delegate_at_0x18_with_dword_at_0x40'] = {
+    'header': '// Delegate calls: when set: the delegate at +0x18 with the second argument and the dword at +0x40.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\n\nstruct record {\n    uint8_t unknown_0x0[0x18];\n    void *object;\n    struct member_function_pointer method;\n    uint8_t unknown_0x30[0x10];\n    uint32_t value;\n};\n',
+    'single': 'void {symbol}(const struct record *record, uint64_t second, uint64_t third, uint64_t fourth,\n              uint64_t fifth, uint64_t sixth)\n{{\n    if (record->method.function == 0)\n        return;\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    function(target, second, record->value, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['calls_flagged_delegate_with_dword_at_0x18'] = {
+    'header': '// Delegate calls: when the flag 0x40 at +0xb is set: the method at +0x20 on the object at +0x10 with the dword at +0x18.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\nenum { record_call_flag = 0x40 };\n\nstruct record {\n    uint8_t unknown_0x0[0xb];\n    uint8_t flags;\n    uint8_t unknown_0xc[0x4];\n    void *object;\n    uint32_t value;\n    uint8_t unknown_0x1c[0x4];\n    struct member_function_pointer method;\n};\n',
+    'single': 'void {symbol}(const struct record *record, uint64_t second, uint64_t third, uint64_t fourth,\n              uint64_t fifth, uint64_t sixth)\n{{\n    if ((record->flags & record_call_flag) == 0)\n        return;\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    function(target, record->value, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['calls_delegate_with_part_of_argument_target'] = {
+    'header': '// Delegate calls: when set: the delegate at +8 with the part 0x28 into what the second argument points at, and the dword at +0x20.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\nenum { argument_part_offset = 0x28 };\n\nstruct record {\n    uint8_t unknown_0x0[0x8];\n    void *object;\n    struct member_function_pointer method;\n    uint32_t value;\n};\n\nstruct argument {\n    uint8_t unknown_0x0[0x8];\n    uint8_t *target;\n};\n',
+    'single': 'void {symbol}(const struct record *record, const struct argument *argument, uint64_t third, uint64_t fourth,\n              uint64_t fifth, uint64_t sixth)\n{{\n    if (argument == 0 || argument->target == 0 || record->object == 0)\n        return;\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    function(target, (uint64_t)(argument->target + argument_part_offset), record->value, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['forwards_to_delegate_at_0x10'] = {
+    'header': '// Delegate calls: tail-call the delegate at +0x10 with the same other arguments.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\n\nstruct record {\n    uint8_t unknown_0x0[0x10];\n    void *object;\n    struct member_function_pointer method;\n};\n',
+    'single': 'uint64_t {symbol}(const struct record *record, uint64_t second, uint64_t third, uint64_t fourth,\n                  uint64_t fifth, uint64_t sixth)\n{{\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    return function(target, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['forwards_to_delegate_at_0x18'] = {
+    'header': '// Delegate calls: tail-call the delegate at +0x18 with the same other arguments.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\n\nstruct record {\n    uint8_t unknown_0x0[0x18];\n    void *object;\n    struct member_function_pointer method;\n};\n',
+    'single': 'uint64_t {symbol}(const struct record *record, uint64_t second, uint64_t third, uint64_t fourth,\n                  uint64_t fifth, uint64_t sixth)\n{{\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    return function(target, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['forwards_to_delegate_at_0x20'] = {
+    'header': '// Delegate calls: tail-call the delegate at +0x20 with the same other arguments.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\n\nstruct record {\n    uint8_t unknown_0x0[0x20];\n    void *object;\n    struct member_function_pointer method;\n};\n',
+    'single': 'uint64_t {symbol}(const struct record *record, uint64_t second, uint64_t third, uint64_t fourth,\n                  uint64_t fifth, uint64_t sixth)\n{{\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    return function(target, second, third, fourth, fifth, sixth);\n}}\n',
+}
+MATCHING_TEMPLATES['calls_delegate_at_0x50_when_argument_flagged'] = {
+    'header': '// Delegate calls: when the flag 0x10 at +0x3d of the second argument is set: the delegate at +0x50 with the dword at +0x68.\n',
+    'shared': STDINT + '\n' + 'struct member_function_pointer {\n    uintptr_t function;\n    intptr_t adjustment;\n};\n\ntypedef uint64_t (*forwarded_function)(void *, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);\n\nenum { virtual_member_function = 1 };\nenum { argument_call_flag = 0x10 };\n\nstruct record {\n    uint8_t unknown_0x0[0x50];\n    void *object;\n    struct member_function_pointer method;\n    uint32_t value;\n};\n\nstruct argument {\n    uint8_t unknown_0x0[0x3d];\n    uint8_t flags;\n};\n',
+    'single': 'void {symbol}(const struct record *record, const struct argument *argument, uint64_t third, uint64_t fourth,\n              uint64_t fifth, uint64_t sixth)\n{{\n    if ((argument->flags & argument_call_flag) == 0)\n        return;\n    uint8_t *target = (uint8_t *)record->object + record->method.adjustment;\n    forwarded_function function = (forwarded_function)record->method.function;\n    if (record->method.function & virtual_member_function)\n        function = *(forwarded_function *)(*(uint8_t **)target + record->method.function - virtual_member_function);\n    function(target, record->value, third, fourth, fifth, sixth);\n}}\n',
+}
 
 
 def matching_symbol(family: dict, value: str) -> str:

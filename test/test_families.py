@@ -114,12 +114,13 @@ class FakeImage:
         return off if 0 <= off < len(self.data) else None
 
 
-def scanner(code: bytes, functions, named=(), relocated=(), in_source=(), patched=()):
+def scanner(code: bytes, functions, named=(), relocated=(), in_source=(), patched=(), pointed=()):
     s = object.__new__(family_scan.Scanner)
     s.image = FakeImage(code)
     s.functions = list(functions)
     s.named = set(named)
     s.relocated = sorted(relocated)
+    s.pointed = sorted(pointed)
     s.in_source = set(in_source)
     s.patched = list(patched)
     s.libraries = []
@@ -159,6 +160,23 @@ class ScannerGates(unittest.TestCase):
         code = b'\xc3' + b'\x90' * 7 + b'\xc3' + PADDING_15
         reason, _ = scanner(code, [(0x401000, 1), (0x401008, 1), (0x401018, 1)]).classify(0, self.SHAPE)
         self.assertEqual(reason, 'extent under 14 bytes')
+
+    def test_pointed_address_ends_the_extent(self):
+        # code after the padding that Ghidra did not split off: a member only when a relocation
+        # points at it (a function reached through a pointer), and then the extent stops there
+        code, functions = self.layout(bytes.fromhex('9090909090909090909090909090') + b'\xc3')
+        self.assertEqual(scanner(code, functions).classify(0, self.SHAPE)[0],
+                         'code after it before the next function')
+        reason, row = scanner(code, functions, pointed={0x40100f}).classify(0, self.SHAPE)
+        self.assertEqual((reason, row['extent']), ('member', '15'))
+        # an address inside the member or past the next function changes nothing
+        code, functions = self.layout(b'\x90' * 15)
+        for pointed in ({0x401000}, {0x401010}, {0x401018}):
+            reason, row = scanner(code, functions, pointed=pointed).classify(0, self.SHAPE)
+            self.assertEqual((reason, row['extent']), ('member', '16'))
+        # pointed at inside the padding: the extent stops there (here under the hook's 14 bytes)
+        self.assertEqual(scanner(code, functions, pointed={0x401008}).classify(0, self.SHAPE)[0],
+                         'extent under 14 bytes')
 
     def test_relocation_slot_reaching_into_the_extent(self):
         code, functions = self.layout()
@@ -200,9 +218,14 @@ class Tables(unittest.TestCase):
         self.family(['returns_zero', 'leaf', '31 c0 c3', 'i64', '3', '9', 'xor eax, eax; ret'])
         self.assertTrue(any('registers 3' in e for e in self.errors()))
 
-    def test_extent_must_reach_the_next_function(self):
+    def test_extent_must_not_pass_the_next_function(self):
+        self.members([['0x00401000', '3', '18', '', 'replaced'], ['0x00401010', '3', '16', '', 'replaced']])
+        self.assertTrue(any('passes the next function' in e for e in self.errors()))
+
+    def test_extent_may_end_before_the_next_function(self):
+        # at a function the export misses (tools/family_scan.py check reads where from the executable)
         self.members([['0x00401000', '3', '14', '', 'replaced'], ['0x00401010', '3', '16', '', 'replaced']])
-        self.assertTrue(any('does not reach the next function' in e for e in self.errors()))
+        self.assertFalse(any('next function' in e for e in self.errors()))
 
     def test_member_cannot_also_be_named_or_hooked(self):
         self.assertTrue(any('functions.csv' in e for e in self.errors(named={'0x00401000'})))
