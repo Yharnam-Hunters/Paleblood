@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera validation margin stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Territory avoidance is the intervening continuation and is deliberately separate.
 #include "final_collision.h"
@@ -10,9 +11,9 @@ namespace camera::update::validation_margin
 namespace math = camera::update::math;
 namespace root = camera::update::root;
 namespace direction = camera::update::wing_escape;
-RT_GLOBAL(0x04cf2640, exponent_bits, const Vec4);
-RT_GLOBAL(0x04cf2660, unit_vector, const Vec4);
-RT_GLOBAL(0x04d25e88, distance_threshold, const float);
+using constants::exponent_bits;
+using constants::unit_vector;
+using constants::distance_threshold;
 RT_GLOBAL(0x04d25e98, margin_length_bias, const float);
 
 struct RollbackPreparation

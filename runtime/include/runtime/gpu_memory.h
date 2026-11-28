@@ -21,6 +21,13 @@ extern "C" {
    an address policy, not a permanent reservation: each actual map remains non-replacing. */
 uint64_t rt_gpu_memory_base(void);
 
+/* A span of guest addresses that no guest map ever has, for the renderer's copies of guest memory in
+   other GPU memory (rt_executor_memory's copies_base): the runtime reserves it, inaccessible, on the
+   first call, outside the window it places maps in, so the title's maps (placed by the system or at
+   an address hint) and the runtime's own never lie there. Returns its first address, below 2^40, and
+   its length in *bytes; 0 with *bytes 0 when the host cannot reserve it. */
+uint64_t rt_gpu_copies_window(uint64_t *bytes);
+
 /* The pool's host memory file and its size, for the renderer's own mapping; returns -1 before the
    title has allocated any direct memory (the file does not exist yet). */
 int rt_gpu_memory_pool(int *fd, uint64_t *size);

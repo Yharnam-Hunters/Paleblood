@@ -29,6 +29,18 @@ enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
    the error, one a line after the dword it was first met at ("@dword reason\n"). Process-wide. */
 void gcn_spirv_set_survey(int on);
 
+/* Span checks (the Vulkan executor turns them on when it opens): an s_load, and a buffer load or
+   s_buffer_load wholly inside its descriptor's range, checks its whole span against the guest memory
+   once instead of dword by dword. Off (the default), every dword is checked on its own, the shape the
+   Metal fragment path's dead-read analysis reads (metal_fragment_ir.hpp). Process-wide. */
+void gcn_spirv_set_span_checks(int on);
+/* Structured control flow (the Vulkan executor turns it on when it opens): a program's blocks run in order
+   as a chain of selections, each entered when the GCN program counter names it, and a branch back makes a
+   structured loop around the blocks it spans. Off (the default), every program is one loop around a switch
+   on the program counter, the shape the Metal fragment path normalizes (metal_fragment_control.hpp).
+   Process-wide. */
+void gcn_spirv_set_structured_control(int on);
+
 /* Every layout below also says where the shader finds its data:
      push_constant_offset  the byte offset of its user data (GCN_USER_SGPR_MAX words) in the push
                            constants, so that the stages of one draw keep theirs apart (a vertex
@@ -56,6 +68,19 @@ typedef struct {
     uint64_t base, bytes;
     uint64_t sink;
 } gcn_guest_memory;
+
+/* Copies of guest memory in other GPU memory, which a vertex shader's loads may reach: guest addresses
+   [base, base + bytes), wholly outside the guest memory (gcn_guest_memory) and below 2^40 (a buffer
+   descriptor's base is 40 bits), read from the GPU address gpu on. The executor rewrites a buffer
+   descriptor's base into this range when the bytes the descriptor reaches have a current copy there,
+   and the program's loads through it then read the copy (any load whose address falls in the range
+   does, where outside the guest memory it would stop). Only loads reach it: a store or an atomic
+   there goes to the sink with GCN_RUNTIME_STOP_GUEST_RANGE, as one outside the guest memory does, so a
+   copy only ever holds what the guest memory held. Needs the guest memory's range; bytes 0: none. */
+typedef struct {
+    uint64_t base, bytes;
+    uint64_t gpu;
+} gcn_guest_copies;
 
 /* The run-time stop channel. Some of what a shader does is only known when it runs: a buffer
    access's data format comes from its descriptor. A shader meeting such a case it cannot do exactly
@@ -321,6 +346,9 @@ typedef struct {
     const gcn_table_snapshot *table_snapshot; /* when not NULL, the program's plan (gcn_table_snapshot_plan):
                                                  its loads take the snapshot words after the user data, at
                                                  push-constant byte push_constant_offset + 4 * GCN_USER_SGPR_MAX */
+    unsigned thread_id_vgprs; /* 1=X, 2=XY, 3=XYZ; 0 preserves the existing XYZ default.
+                                 Other registers retain the translator's deterministic initial value,
+                                 not a hardware guarantee for disabled thread-ID inputs. */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
@@ -386,6 +414,7 @@ typedef struct {
        push-constant byte table_block_offset (Table snapshots, above) */
     const gcn_table_snapshot *table_snapshot;
     uint32_t table_block_offset;
+    gcn_guest_copies copies;  /* above; all 0: none (always for a copy shader) */
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:

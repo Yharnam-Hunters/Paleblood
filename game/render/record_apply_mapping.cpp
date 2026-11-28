@@ -22,9 +22,19 @@ struct ParameterTuple {
 // Indexed by derived parameter; rows 0/3 are unsupported. The first member selects
 // a classification, while first/second carry the flags and candidate selection.
 constexpr ParameterTuple tuple_by_derived[] = {
-    {0, 0, 0}, {4, 0, 0}, {4, 0, 1}, {0, 0, 0},
-    {4, 2, 2}, {4, 4, 2}, {4, 64, 1}, {2, 0, 1},
-    {3, 32, 4}, {2, 16, 1}, {2, 0, 1}, {3, 32, 4}, {2, 16, 1},
+    {unsupported_classification, 0, 0},
+    {fixed_classification, 0, 0},
+    {fixed_classification, 0, 1},
+    {unsupported_classification, 0, 0},
+    {fixed_classification, 2, 2},
+    {fixed_classification, 4, 2},
+    {fixed_classification, 64, 1},
+    {variable_classification_base, 0, 1},
+    {paired_classification, 32, 4},
+    {variable_classification_base, 16, 1},
+    {variable_classification_base, 0, 1},
+    {paired_classification, 32, 4},
+    {variable_classification_base, 16, 1},
 };
 }  // namespace
 

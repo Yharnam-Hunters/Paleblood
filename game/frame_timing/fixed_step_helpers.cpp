@@ -6,75 +6,18 @@
 //     method that waits for a dungeon mode asks it and ignores the answer.
 //   step_machine_count_step (0x01ec3000): the gate's step machine counts a step; when the next
 //     step would be past the gate's last one, it formats a debug message and passes it on.
-#include <cstddef>
 #include <cstdint>
 
 #include "../engine/allocator.h"
 #include "../engine/engine.h"
 #include "../engine/wide_string.h"
+#include "dungeon_gate.h"
 #include "runtime/original.h"
+
+using namespace frame_timing::dungeon_gate;
 
 namespace {
 
-// The two ritual modes of the gate's state (fixed_step_states.cpp's GateMode).
-enum GateMode : uint32_t {
-    mode_local_ritual = 2,
-    mode_server_ritual = 3,
-};
-
-// The owner's handle, as far as the query reads it: bit 0 of the byte at +0x10c stops the reset in
-// the server ritual mode.
-struct HandleObject {
-    uint8_t unknown_0x000[0x10c];
-    uint8_t flags_10c;
-};
-static_assert(offsetof(HandleObject, flags_10c) == 0x10c);
-constexpr uint8_t handle_blocks_reset = 1;
-
-// The gate's state (SprjDungeonGateIns +0x108), as far as the query reads it.
-struct StateOwner {
-    uint8_t unknown_0x000[0xd0];
-    const HandleObject *handle;
-    uint8_t unknown_0x0d8[0x184];
-    uint32_t state;  // a GateMode
-    uint32_t request;
-    int32_t busy;  // nonzero while the state is advancing
-};
-static_assert(offsetof(StateOwner, handle) == 0xd0 && offsetof(StateOwner, state) == 0x25c &&
-              offsetof(StateOwner, busy) == 0x264);
-
-// FrpgNetMan, the online manager: four of its bytes, each tested for zero (their meaning is not
-// known; fixed_step_states.cpp reads the same four).
-struct FrpgNetMan {
-    uint8_t unknown_0x000[0x8];
-    uint8_t flag_008;  // must be nonzero
-    uint8_t unknown_0x009[0x9ed];
-    uint8_t flag_9f6;  // must be zero
-    uint8_t unknown_0x9f7[0x1];
-    uint8_t flag_9f8;  // must be zero
-    uint8_t unknown_0x9f9[0x57];
-    uint8_t flag_a50;  // must be zero
-};
-static_assert(offsetof(FrpgNetMan, flag_008) == 0x8 && offsetof(FrpgNetMan, flag_9f6) == 0x9f6 &&
-              offsetof(FrpgNetMan, flag_9f8) == 0x9f8 && offsetof(FrpgNetMan, flag_a50) == 0xa50);
-RT_GLOBAL(0x0593b120, frpg_net_man_instance, FrpgNetMan *);
-RT_GLOBAL(0x04d3ad45, frpg_net_man_name, const char);
-
-// FrpgNetMan's four bytes, in the original's order. A missing FrpgNetMan is reported and the
-// singleton read again (engine::require).
-bool net_allows()
-{
-    const FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
-    return net->flag_008 != 0 && net->flag_9f8 == 0 && net->flag_9f6 == 0 && net->flag_a50 == 0;
-}
-
-// The gate's step machine (its base): the index of the current step, and a count of steps taken.
-struct StepMachine {
-    uint8_t unknown_0x00[0x50];
-    uint32_t step;
-    uint32_t steps_counted;  // what reads it is not known
-};
-static_assert(offsetof(StepMachine, step) == 0x50 && offsetof(StepMachine, steps_counted) == 0x54);
 // The gate's steps: the step after the current one must be below this (the comparison is unsigned).
 constexpr uint32_t gate_step_count = 27;
 
@@ -131,23 +74,18 @@ void report_next_step_missing()
 
 }  // namespace
 
-// Whether the gate's state allows a ritual reset: idle in the local ritual mode, or idle in the
-// server ritual mode with FrpgNetMan's bytes allowing it and no handle or one whose flag bit 0 is
-// clear. The original checks FrpgNetMan again before reading the handle, with the pointer the
-// bytes were just read through (so it cannot fail), and sets only al.
+// Whether the gate's state allows a ritual reset (ritual_reset_allowed in dungeon_gate.h). The
+// original sets only al.
 extern "C" bool bb_frame_timing_gate_state_query_01ea5570(const StateOwner *owner)
 {
-    if (owner->busy != 0) return false;
-    if (owner->state == mode_local_ritual) return true;
-    if (owner->state != mode_server_ritual || !net_allows()) return false;
-    return !owner->handle || (owner->handle->flags_10c & handle_blocks_reset) == 0;
+    return ritual_reset_allowed(owner);
 }
 
 // Counts a step; when the step after the current one is past the gate's last step, reports it with
 // a debug message. The gate's steps call it before their method at vtable +0x38.
-extern "C" void bb_frame_timing_step_machine_count_step_01ec3000(StepMachine *machine)
+extern "C" void bb_frame_timing_step_machine_count_step_01ec3000(DungeonGate *gate)
 {
-    ++machine->steps_counted;
-    if (machine->step + 1 < gate_step_count) return;
+    ++gate->steps_counted;
+    if (gate->step + 1 < gate_step_count) return;
     report_next_step_missing();
 }

@@ -129,8 +129,11 @@ XSTUB = 0x940000000
 # Library imports enter through a native wrapper (IMPSTUB_SIZE bytes each): it saves xmm0 and
 # xmm1 at +64 (float arguments, compared with "argf32"), calls the Python dispatcher and copies
 # its result into xmm0 too, so a float return is scripted as its bit pattern ("ret": "0x3f800000").
+# It then loads rdx from +64+RDX_SLOT, where the dispatcher puts the call's "rdx" (zero when the
+# script gives none), for a function returning a 16-byte struct in rax and rdx (ldiv).
 IMPSTUB = 0x950000000
 IMPSTUB_SIZE = 128
+RDX_SLOT = 40
 XSTUB_SIZE = 128
 ARCH_SET_GS, SYS_ARCH_PRCTL = 0x1001, 158
 NID_SALT = bytes.fromhex('518d64a635ded8c1e6b039b1c3e55230')
@@ -238,13 +241,16 @@ STUB_SLOTS = 64             # internal-function stubs per case
 
 
 def callback_wrapper(callback, save: int) -> bytes:
-    """Save incoming SSE arguments and entry RSP before aligning for Python."""
+    """Save incoming SSE arguments and entry RSP before aligning for Python; after it, rdx from
+    the slot at save + RDX_SLOT."""
     code = (b'\x49\xbb' + struct.pack('<Q', save) +
             b'\xf3\x41\x0f\x7f\x03' + b'\xf3\x41\x0f\x7f\x4b\x10' +
             b'\x49\x89\x63\x20' +  # mov [r11+32], rsp: overflow slot zero is [rsp+8]
             b'\x48\x83\xec\x08' + b'\x48\xb8' +
             struct.pack('<Q', ctypes.cast(callback, ctypes.c_void_p).value) +
-            b'\xff\xd0' + b'\x48\x83\xc4\x08' + b'\x66\x48\x0f\x6e\xc0' + b'\xc3')
+            b'\xff\xd0' + b'\x48\x83\xc4\x08' + b'\x66\x48\x0f\x6e\xc0' +
+            b'\x48\xba' + struct.pack('<Q', save + RDX_SLOT) + b'\x48\x8b\x12' +  # mov rdx, [slot]
+            b'\xc3')
     assert len(code) <= 64
     return code
 
@@ -561,6 +567,11 @@ class Run:
         raw = self.boot['names'][index]
         key = raw.split('#')[0]
         queue = self.scripts.get(key)
+        save = IMPSTUB + IMPSTUB_SIZE * index + 64
+        rdx = ctypes.c_uint64.from_address(save + RDX_SLOT)
+        rdx.value = 0
+        if queue and 'rdx' in queue[0]:
+            rdx.value = self.value(queue[0]['rdx']) & 0xffffffffffffffff
         if not queue:
             self.errors.append(f'unscripted library call {raw}')
             if len(self.errors) > RUNAWAY:
@@ -580,7 +591,6 @@ class Run:
                 queue.pop(0)
         else:
             queue.pop(0)
-        save = IMPSTUB + IMPSTUB_SIZE * index + 64
         args = self.call_arguments(entry, args, save)
         self.calls.append(self.call_record(entry, args, save, {'import': entry['name']}))
         if series:
@@ -630,7 +640,7 @@ class Run:
                 data = struct.pack('<Q', self.guest(hexint(w['guest'])))
             else:
                 data = bytes.fromhex(w['bytes'])
-            address = args[int(w['arg'])] + int(w.get('offset', 0))
+            address = self.location(w['addr']) if 'addr' in w else args[int(w['arg'])] + int(w.get('offset', 0))
             self.check_memory(address, len(data), write=True, source="stub_write")
             ctypes.memmove(address, data, len(data))
         return self.value(entry.get('ret', 0))
