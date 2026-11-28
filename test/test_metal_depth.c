@@ -194,7 +194,7 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
     const char *const reasons[] = {NULL,NULL,NULL,"partly fast-cleared HTILE","compressed HTILE depth tiles",
         "HTILE base is unaligned or outside","HTILE depth clear requires DB_DEPTH_CLEAR",
         "HTILE overlaps a depth or stencil plane","HTILE requires tiled","HTILE depth clear value",
-        "color target overlaps HTILE",NULL};
+        "color target overlaps HTILE",NULL,"CMASK overlaps HTILE"};
     for (unsigned trial = 0; trial < sizeof reasons / sizeof *reasons; ++trial) {
         Scene s = scene();
         s.geometry = 0x001d0c40; s.width = WIDTH; s.height = HEIGHT; s.pixels = 65536; s.slice = 0;
@@ -221,7 +221,7 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
             const uint32_t after = trial < 2 ? word | 15u : word;
             memcpy(want + offset,&after,sizeof after);
         }
-        if (trial >= 10) {
+        if (trial == 10 || trial == 11) {
             /* The two draws differ only in whether MRT5 aliases HTILE. */
             enum { MULTI_PS = PS + 256 };
             const uint32_t exports[] = {
@@ -241,6 +241,12 @@ static void tiled_htile_cases(rt_executor *x, uint8_t *pool)
             memset(pool + COLOR_BASE + 4096,0x55,W * H * 4);
             calls[3].u.pixel_shader.color_formats |= 4u << (4 * slot);
             calls[3].u.pixel_shader.color_mask |= 15u << (4 * slot);
+        }
+        if (trial == 12) {
+            rt_color_target *color = &calls[0].u.color_target.target;
+            color->fast_clear = 1;
+            color->cmask_address = base + METADATA;
+            color->cmask_bytes = 128;
         }
         const int result = submit(x,reasons[trial]);
         if (!result) {

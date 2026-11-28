@@ -347,14 +347,20 @@ static void cmask_cases(Fixture *f)
         }
     }
 
-    rt_executor_reset(f->executor);
-    for (unsigned trial = 0; trial < 4; ++trial) {
-        const char *const reason[] = {"CMASK range","partly cleared","unmodeled CMASK","CMASK overlaps"};
+    const char *const reason[] = {"CMASK range","partly cleared","unmodeled CMASK","CMASK overlaps",
+        "CMASK clear requires one 8_8_8_8 attachment","CMASK clear requires one 8_8_8_8 attachment"};
+    for (unsigned trial = 0; trial < sizeof reason / sizeof *reason; ++trial) {
+        rt_executor_reset(f->executor);
         Calls c = {0};
         scene(&c,0,15);
         rt_color_target *color = &c.call[0].u.color_target.target;
         color->fast_clear = 1; color->cmask_bytes = BYTES;
         color->cmask_address = at(trial == 0 ? POOL_BYTES : trial == 3 ? TARGET : METADATA);
+        if (trial == 4) {
+            color->format = 0xc;       /* COLOR_16_16_16_16 */
+            color->number_type = 7;    /* FLOAT */
+        }
+        if (trial == 5) color_target(&c,5,1);
         memset(f->pool + METADATA,trial == 2 ? 0x10 : 0,BYTES);
         if (trial == 1) f->pool[METADATA + 4] = 0xff;
         reg(&c,CLEAR_WORD0,texel); draw(&c,AUTO);
@@ -389,7 +395,7 @@ int main(void)
         CHECK(api_calls == cases); CHECK(pool_scans == cases); CHECK(readbacks == data_draws);
         CHECK(ticket_waits == 18); CHECK(explicit_submits == 9);
         cmask_cases(f);
-        CHECK(cases == 236); CHECK(api_calls == cases); CHECK(pool_scans == cases); CHECK(refusals == 32);
+        CHECK(cases == 238); CHECK(api_calls == cases); CHECK(pool_scans == cases); CHECK(refusals == 34);
         const int finished = rt_executor_finish(f->executor, error, sizeof error);
         printf("color-clear-words FINISH actual=%d\n", finished); CHECK(finished == 0); rt_executor_close(f->executor);
     }
