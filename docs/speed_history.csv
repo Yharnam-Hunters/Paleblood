@@ -1,0 +1,11 @@
+date,pr,merge_sha,avg_fps,low1_fps,before_avg_fps,source
+2026-11-18,1263,6a53fb41e81d2f81370a1f1428f0d07ef652cc75,12.58,6.10,10.64,"PR #1263 A/B frames 1350-2900, 3 rounds: B average as stated; 1% low is the mean of the three listed rounds (5.39 / 5.89 / 7.01)"
+2026-11-18,1269,30c2a545457a238103fdbf0e8980973f93d960dc,11.59,,10.93,"PR #1269 A/B frames 1350-2900, 3 rounds, measured on main without #1263; B average as stated; no 1% low stated (inside the noise)"
+2026-11-18,1270,1adda45d70021c1e48374f3de3b13cab1568e542,11.25,8.81,11.25,"PR #1270 warm-cache A/B frames 1350-2900 (its gain is on a first launch, not here); PB_ASYNC_PIPELINES=1"
+2026-11-19,1276,1234ccc74d263b49bd9465b0479575984f4ee0b7,11.61,8.61,11.24,"PR #1276 A/B frames 1350-2900, 3 rounds, B average and 1% low as stated"
+2026-11-19,1281,75e949b36747d8cd73c68c5a33056333e6221231,15.58,10.59,15.52,"PR #1281 A/B frames 1350-2900, 3 rounds, warm translation file; B as stated (no speed claim: load time)"
+2026-11-23,1331,749a0b81d1dade91294b36d81f1a0aaa6ca5d4be,15.64,10.40,15.49,"PR #1331 A/B frames 1350-2900, 3 rounds, B as stated (within the noise)"
+2026-11-24,1334,b332dab5b1199880e837639e609fabd16d81b0da,16.21,9.72,16.27,"PR #1334 frames 1350-2900, B as stated (load time gain only; in-game rate unchanged)"
+2026-11-25,1343,924f231f6998924f4662d7ac0fade63df1f25f1b,17.98,6.35,15.96,"PR #1343 A/B 1 frames 1350-2900, 2 rounds: B average as stated; 1% low is the mean of the two listed rounds (5.93 / 6.76)"
+2026-11-27,1350,9bc1b68f31a17d2f82ae17d384a41c0ffd315795,18.05,5.87,17.74,"PR #1350 A/B frames 1350-2900, mean of 3 runs, as stated"
+2026-11-28,1352,0b52bb3239c515a1d0098dada9e7e4a25aac0acb,21.01,6.58,17.96,"PR #1352 A/B frames 1350-2900, mean of 3 runs, as stated"
