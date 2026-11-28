@@ -421,7 +421,8 @@ uniform. It removes unread, nonvolatile, alias-free function state and assignmen
 reachable read before overwrite or function exit. Paths that cycle without an overwrite remain
 unproved. It
 only elides an EXECZ skip when always visiting its body with empty EXEC preserves all live state
-and external effects. It then removes the artificial dispatcher, exposing the actual physical
+and external effects. The proof admits typed scalar Float32 negation and GLSL NMax on that path.
+It then removes the artificial dispatcher, exposing the actual physical
 control flow to the quad-read checks. Observable wave results, real loops, escaping locals,
 atomics, volatile or coherent memory decorations, unknown extension instructions and unproved control
 remain explicit refusals. This does not
