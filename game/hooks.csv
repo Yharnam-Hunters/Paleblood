@@ -169,6 +169,8 @@ address,replacement,system,returns
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
 0x01474250,bb_render_emit_draw_opaque_auto,render,void
+0x014744d0,bb_render_emit_draw_indirect,render,void
+0x014746f0,bb_render_emit_draw_index_indirect,render,void
 0x014749c0,bb_render_set_gds_oa,render,void
 0x01474a30,bb_render_set_dispatch_draw_index,render,void
 0x01474f30,bb_render_set_vertex_reuse,render,void

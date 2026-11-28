@@ -180,6 +180,8 @@ address,size,name,system,status,notes
 0x01473fe0,90,render_set_vgt_primitive_type,render,verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
 0x014741b0,156,render_emit_draw_index_auto,render,verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
 0x01474250,157,render_emit_draw_opaque_auto,render,edge-verified,Emit the fixed opaque DRAW_INDEX_AUTO profile and query-selected trace marker or NOP. Preserve live flags and distinct cursor publications under overlapping packet stores.
+0x014744d0,246,render_emit_draw_indirect,render,edge-verified,Emit DRAW_INDIRECT with byte-selected register indices from the mapped bank and a query-selected event or NOP. Preserve the unconditional table read and live cursor additions.
+0x014746f0,246,render_emit_draw_index_indirect,render,edge-verified,Emit DRAW_INDEX_INDIRECT with byte-selected register indices from the mapped bank and a query-selected event or NOP. Preserve the unconditional table read and live cursor additions.
 0x014749c0,97,render_set_gds_oa,render,edge-verified,Writes a five-word SET_UCONFIG_REG packet with full DWORD GDS_OA_CNTL and cleared counter and address; byte-result callback admission; publishes the live cursor after all stores
 0x01474a30,86,render_set_dispatch_draw_index,render,edge-verified,Write the unmasked VGT_DISPATCH_DRAW_INDEX DWORD after three-word admission; publish from the captured cursor after the packet stores.
 0x01474f30,92,render_set_vertex_reuse,render,edge-verified,Write VGT_REUSE_OFF as the input byte XOR 1; reserve three DWORDs and publish from the captured cursor after ordered stores.
