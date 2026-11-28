@@ -1,0 +1,19 @@
+# Files under game/ that add a constant offset to a byte-pointer cast (STYLE.md "Structs, not offsets"), found when
+# the check was added. This list may only shrink: describe the object as a struct with named fields, then remove its line.
+game/engine/child_list_visit_family.cpp
+game/engine/delegate_record_event.cpp
+game/engine/deleting_destructor.cpp
+game/engine/scaleform_member_release.cpp
+game/engine/static_vtable_setters.cpp
+game/engine/variant_string_pool_families.cpp
+game/leaf/small_objects.cpp
+game/leaf/virtual_call.h
+game/leaf/virtual_records.cpp
+game/matching/leaf/calls_member_at_8_with_constant.c
+game/matching/leaf/exports_member_at_0x20_and_tail_calls_it.c
+game/matching/leaf/passes_dword_argument_to_member_at_8.c
+game/matching/leaf/tail_calls_member_at_0x10.c
+game/matching/leaf/tail_calls_member_at_8.c
+game/matching/leaf/tail_jumps_through_member_at_0x10.c
+game/matching/leaf/tail_jumps_through_member_at_8.c
+game/render/tests/depth_target_observer.cpp

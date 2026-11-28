@@ -1,0 +1,10 @@
+function,cases,option,total,passed,failed,quarantined,source,date
+engine_adopts_buffer_at_0x10_after_slot_0x78_02ae1b50,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02ae4f60,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02ae6400,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02ae76a0,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02b02760,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02b03170,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02b03b00,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02b04490,edge,,11,11,0,0,66889272be454ebd,2026-11-16
+engine_adopts_buffer_at_0x10_after_slot_0x78_02b04c80,edge,,11,11,0,0,66889272be454ebd,2026-11-16

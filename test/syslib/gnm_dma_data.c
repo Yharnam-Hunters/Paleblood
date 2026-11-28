@@ -9,6 +9,7 @@
 #include <string.h>
 
 typedef int32_t (*submit_fn)(uint32_t, void **, uint32_t *, void **, uint32_t *);
+size_t rt_renderer_none_step_memory(uint64_t (*memory)[2], size_t capacity);
 
 enum {
     DMA_DATA = 0xc0055000u, /* PM4 type 3, opcode 0x50: control, source low/high, destination low/high, command */
@@ -46,6 +47,8 @@ SYSLIB_TEST(gnm_dma_data)
     CHECK(destination[0] == COUNTER && destination[1] == 0);
     /* the packet's data into every dword of a GDS range, read back through L2 */
     submit_dma(FROM_DATA | TO_GDS, FILL, COUNTER_OFFSET, 8);
+    uint64_t memory[1][2] = {{1, 1}}; /* its step writes no guest memory: 0 bytes, not RT_GPU_STEP_ANY_MEMORY */
+    CHECK(rt_renderer_none_step_memory(memory, 1) == 1 && memory[0][0] == 0 && memory[0][1] == 0);
     submit_dma(FROM_GDS | TO_MEMORY_L2, COUNTER_OFFSET, address(destination), 12);
     CHECK(destination[0] == FILL && destination[1] == FILL && destination[2] == 0);
     /* memory to memory, and a fill of memory */

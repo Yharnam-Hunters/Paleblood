@@ -186,6 +186,32 @@ static unsigned pipe_of(uint32_t x, uint32_t y)
     return p0 | p1 << 1 | p2 << 2;
 }
 
+/* AMD AddrLib's tiled HTILE cache holds 512 words per pipe. On this
+   eight-pipe profile its square region covers 64 by 64 depth microtiles. */
+enum { HTILE_REGION = 512, HTILE_WORDS_PER_PIPE = 512 };
+static uint64_t htile_regions(uint32_t pixels)
+{
+    return ((uint64_t)pixels + HTILE_REGION - 1) / HTILE_REGION;
+}
+uint64_t rt_tiling_htile_size(uint32_t width, uint32_t height)
+{
+    return htile_regions(width) * htile_regions(height) * HTILE_WORDS_PER_PIPE *
+           P8_PIPES * sizeof(uint32_t);
+}
+
+uint64_t rt_tiling_htile_offset(uint32_t width, uint32_t x, uint32_t y)
+{
+    const uint64_t region = (uint64_t)(y / HTILE_REGION) * htile_regions(width) + x / HTILE_REGION;
+    const uint32_t tx = (x % HTILE_REGION) / MICRO, ty = (y % HTILE_REGION) / MICRO;
+    const unsigned block = ty / 4 * (HTILE_REGION / MICRO / 4) + tx / 4;
+    /* The two adjacent 4x4 blocks share four word positions per pipe.
+       Tile-coordinate bits select the word; pipe_of handles the XOR swizzle. */
+    const unsigned word = (block & ~1u) * 2 + (tx & 2u) + (bit(tx,1) ^ bit(ty,0));
+    const uint64_t in_pipe = (region * HTILE_WORDS_PER_PIPE + word) * sizeof(uint32_t);
+    return in_pipe / PIPE_INTERLEAVE * PIPE_INTERLEAVE * P8_PIPES +
+           pipe_of(x,y) * PIPE_INTERLEAVE + in_pipe % PIPE_INTERLEAVE;
+}
+
 /* ComputeBankFromCoord, with no bank swizzle: on the macro-tile column (in bank-width units of all the
    pipes) and row (in bank-height units), then rotated per slice for the 2D thin modes. */
 static unsigned bank_of(const rt_tiling *t, uint32_t x, uint32_t y, uint32_t slice)
