@@ -40,7 +40,7 @@ enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION =
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc,
        NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0, SWAP_ALT = 1,
-       PERSP_CENTER_ENA = 2, FRONT_FACE_ENA = 0x1000, FRONT_FACE_ALL_BITS = 1u << 24,
+       PERSP_CENTER_ENA = 2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000, FRONT_FACE_ALL_BITS = 1u << 24,
        PIXEL_BARYCENTRIC_VGPRS = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
        DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
@@ -404,11 +404,14 @@ static int shader_profile(const MetalState &state, unsigned &exports, char *erro
         return failed(error, size, "SPI_SHADER_POS_FORMAT must declare float4 position and enabled clip vectors");
     if (!state.pixel.code) return 0;
     const uint32_t inputs = state.pixel.input_address;
-    if (state.pixel.input_enable != inputs || !(inputs & PERSP_CENTER_ENA) ||
-        (inputs & ~(PERSP_CENTER_ENA | FRONT_FACE_ENA)))
-        return failed(error,size,"pixel-shader inputs must match perspective-center with optional front face");
-    if ((inputs & FRONT_FACE_ENA) && state.pixel.vgprs < PIXEL_BARYCENTRIC_VGPRS + 1)
-        return failed(error,size,"pixel shader front face requires a VGPR after the barycentric pair");
+    const uint32_t supported_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA | FRONT_FACE_ENA;
+    if (state.pixel.input_enable != inputs || !(inputs & PERSP_CENTER_ENA) || (inputs & ~supported_inputs) ||
+        ((inputs & FRONT_FACE_ENA) && (inputs & (POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA))))
+        return failed(error, size, "pixel inputs enable %#x/address %#x: expected matching perspective-center inputs with either window X/Y or front face",
+            state.pixel.input_enable, inputs);
+    const unsigned incoming_vgprs = PIXEL_BARYCENTRIC_VGPRS + ((inputs & POS_X_FLOAT_ENA) != 0) + ((inputs & POS_Y_FLOAT_ENA) != 0) + ((inputs & FRONT_FACE_ENA) != 0);
+    if (state.pixel.vgprs < incoming_vgprs)
+        return failed(error, size, "pixel shader incoming inputs require %u VGPRs; allocation declares %u", incoming_vgprs, state.pixel.vgprs);
     if (state.pixel.depth_format) return failed(error, size, "pixel depth exports are not modeled");
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; ++slot) {
         const unsigned format = color_nibble(state.pixel.color_formats,slot);
@@ -1036,6 +1039,9 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.front_face = (interface_control & FRONT_FACE_ENA) != 0;
         layout.front_face_all_bits = (interface_control & FRONT_FACE_ALL_BITS) != 0;
         layout.front_face_vgpr = PIXEL_BARYCENTRIC_VGPRS;
+        layout.position_enable = (interface_control & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+            (interface_control & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u);
+        layout.position_vgpr = PIXEL_BARYCENTRIC_VGPRS;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.images = pixel->images; layout.image_count = pixel->image_count;

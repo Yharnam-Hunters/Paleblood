@@ -214,7 +214,14 @@ color slots, perspective-center inputs and no depth export. The optional front-f
 follows the perspective-center pair in VGPR2.
 Metal supplies its winding through the native fragment built-in. The common translator encodes
 the result as signed floating-point one or integer zero/one according to
-`SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS`. Pixel-position X/Y inputs are rejected explicitly.
+`SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS`. Window X/Y may be selected separately from front face. They use the common translator's `FragCoord` mapping: enabled axes
+follow the two perspective-center VGPRs densely, so either axis alone occupies VGPR2 and
+both occupy VGPR2/3. Metal provides framebuffer coordinates with pixel-center values;
+viewport Y conversion affects geometry and does not add a fragment-coordinate Y flip.
+See [Apple's viewport and pixel coordinates](https://developer.apple.com/library/archive/documentation/Miscellaneous/Conceptual/MetalProgrammingGuide/Render-Ctx/Render-Ctx.html).
+Matching input-enable/address masks and enough incoming VGPRs are required, and the mask
+participates in shader-cache identity. Position-only pixel programs may declare zero ordinary
+interpolants.
 Whole-quad mask expansion has the restricted fragment-control profile described below.
 Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
