@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Tear down the ATRAC9 decoder. An AJM failure stops cleanup before the remaining resources are freed.
+#include <array>
+
 #include "fmod_ajm_cleanup.h"
 #include "../kernel/kernel_context.h"
 
@@ -30,9 +32,10 @@ extern "C" uint32_t bb_audio_fmod_cleanup_owner(audio::FmodCleanupOwner *owner)
             return kernel::kernel_error;
         // Cancellation can invalidate this same slot before the wait.
         if (batch->id != invalid_batch) {
-            alignas(16) std::byte error_output[0x20];
+            // AJM writes its diagnostic record into this caller-owned stack storage.
+            alignas(16) std::array<std::byte, 32> error_output;
             const auto result = ajm_batch_wait(codec_ajm_context.get(), batch->id,
-                                               wait_forever, error_output);
+                                               wait_forever, error_output.data());
             if (result != 0 && !(cancel && result == ajm_error_cancelled))
                 return kernel::kernel_error;
             batch->id = invalid_batch;
