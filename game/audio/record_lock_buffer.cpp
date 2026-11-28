@@ -5,6 +5,8 @@
 #include <cstring>
 
 namespace {
+constexpr uint32_t invalid_record_offset = 0x25;
+
 struct RecordDescriptor {
     std::byte unknown_0x0000[0x18];
     int32_t port_index;
@@ -53,7 +55,7 @@ extern "C" uint32_t bb_audio_fmod_record_lock_buffer(void *callback_context,
         write_output(first_pointer, uintptr_t{0});
         write_output(second_length, uint32_t{0});
         write_output(first_length, uint32_t{0});
-        return 0x25;
+        return invalid_record_offset;
     }
 
     if (length > capacity)
