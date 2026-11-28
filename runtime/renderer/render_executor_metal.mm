@@ -12,6 +12,7 @@
 #import <Metal/Metal.h>
 #include <dispatch/dispatch.h>
 #include "metal_fragment_quads.hpp"
+#include "metal_fragment_read_range.hpp"
 #include <cstddef>
 #include <set>
 
@@ -97,6 +98,7 @@ struct MetalShader {
     std::vector<uint32_t> program, fetch;
     std::vector<gcn_image_binding> images;
     std::vector<gcn_resource_origin> samplers;
+    std::vector<pb::MetalFragmentRead> removed_fragment_reads;
     id<MTLFunction> function;
 };
 struct MetalComputePipeline {
@@ -941,6 +943,18 @@ static bool fragment_control_needed(const uint32_t *words, size_t count)
     return broadcast && multiple_cases;
 }
 
+/* Check current draw state before every cached function return as well as compilation.
+   Only symbolic requirements are cached; no callback or borrowed user-data pointer escapes. */
+static int check_fragment_reads(rt_executor *x, const std::vector<pb::MetalFragmentRead> &reads,
+    const uint32_t *data, unsigned declared, uint32_t written, char *error, size_t size)
+{
+    for (const auto &read : reads)
+        if (!pb::metal_fragment_read_in_pool(read, data, declared, written, x->guest_base,
+            x->memory.gpuAddress, std::min<uint64_t>(x->size, x->memory.length)))
+            return failed(error, size, "pixel removed physical read lacks current declared, written and aligned pool coverage");
+    return 0;
+}
+
 /* Stage-specific interface controls are disjoint within each stage: VS output
    control, or PS input address with SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS. */
 static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned interface_control,
@@ -961,6 +975,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
             (!callee.dwords || std::equal(shader.fetch.begin(), shader.fetch.end(), callee.words)) && same_pixel_resources(shader,pixel)) {
             if (shader.required_parameters > parameter_capacity)
                 return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
+            if (check_fragment_reads(x, shader.removed_fragment_reads, data, user, written, error, error_size)) return nil;
             user_read = shader.user_read;
             if (rectangle) *rectangle = shader.rectangle;
             return shader.function;
@@ -998,6 +1013,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         const bool controlled = !vertex && fragment_control_needed(spirv,count);
         const uint64_t fault_address = x->stop.gpuAddress + offsetof(MetalShaderStops, fragment_quad);
         std::unique_ptr<MetalCompiler> compiler_owner;
+        std::vector<pb::MetalFragmentRead> removed_fragment_reads;
         if (controlled) {
             std::vector<pb::MetalDescriptorSpan> spans;
             const auto append = [&](const gcn_resource_origin &origin, unsigned words) {
@@ -1010,7 +1026,15 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
             for (unsigned i = 0; i < pixel->sampler_count; ++i) append(pixel->samplers[i],4);
             /* pixel_resources already checked every span on this draw. Cache equality keeps
                these origins fixed, while subsequent draws revalidate their actual pointers. */
-            const auto prepared = pb::prepare_metal_fragment(spirv,count,spans,x->address_offset,USER_BYTES);
+            const auto coverage = [&](const pb::MetalFragmentRead &read) {
+                if (!pb::metal_fragment_read_in_pool(read, data, user, written, x->guest_base,
+                    x->memory.gpuAddress, std::min<uint64_t>(x->size, x->memory.length)))
+                    throw std::runtime_error("pixel removed physical read lacks current declared, written and aligned pool coverage");
+                return true;
+            };
+            const auto prepared = pb::prepare_metal_fragment(spirv,count,spans,x->address_offset,USER_BYTES,coverage);
+            removed_fragment_reads = prepared.dce.removed_reads;
+            if (check_fragment_reads(x, removed_fragment_reads, data, user, written, error, error_size)) return nil;
             compiler_owner = std::make_unique<MetalCompiler>(prepared,fault_address);
         } else compiler_owner = std::make_unique<MetalCompiler>(spirv,count,fault_address);
         auto &compiler = *compiler_owner;
@@ -1069,7 +1093,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
             rectangle != nullptr, vertex_only, rectangle ? *rectangle : MetalRectangleShader{}, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
-            pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},function});
+            pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},std::move(removed_fragment_reads),function});
         return function;
     } catch (const std::exception &exception) { return failed(error, error_size, "SPIR-V to MSL: %s", exception.what()), nil; }
 }
