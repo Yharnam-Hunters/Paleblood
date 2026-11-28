@@ -852,10 +852,15 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
 static id<MTLSamplerState> sampler_for(rt_executor *x, const uint32_t words[4], bool &linear, char *error, size_t size)
 {
     const unsigned magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3;
-    /* These anisotropy fields do not affect the admitted point/bilinear filters. */
-    enum { clamp_fields = 0x1ff, anisotropy_fields = (7u << 9) | (7u << 16) | (0x3fu << 21) };
-    if ((words[0] & ~(clamp_fields | anisotropy_fields)) || magnify != minify || magnify > 1)
-        return failed(error,size,"sampler options exceed equal point/bilinear, normalized color sampling"), nil;
+    enum { clamp_fields = 0x1ff, ratio_shift = 9, ratio_mask = 7u << ratio_shift,
+           anisotropy_tuning = (7u << 16) | (0x3fu << 21), anisotropic_bilinear = 3, max_ratio = 4 };
+    const bool anisotropic = magnify == anisotropic_bilinear;
+    if ((words[0] & ~(clamp_fields | ratio_mask | anisotropy_tuning)) || magnify != minify ||
+        (magnify > 1 && !anisotropic))
+        return failed(error,size,"sampler options exceed matched point, bilinear or anisotropic bilinear sampling"), nil;
+    const unsigned ratio = (words[0] & ratio_mask) >> ratio_shift;
+    if (anisotropic && (ratio > max_ratio || (words[0] & anisotropy_tuning)))
+        return failed(error,size,"sampler anisotropy ratio or tuning is outside the Metal profile"), nil;
     const MTLSamplerAddressMode modes[] = {MTLSamplerAddressModeRepeat,MTLSamplerAddressModeMirrorRepeat,MTLSamplerAddressModeClampToEdge};
     MTLSamplerDescriptor *descriptor = [MTLSamplerDescriptor new];
     unsigned address[3];
@@ -869,6 +874,7 @@ static id<MTLSamplerState> sampler_for(rt_executor *x, const uint32_t words[4], 
     if (x->samplers.size() == MAX_SAMPLERS) return failed(error,size,"sampler cache is full"), nil;
     descriptor.sAddressMode = modes[address[0]]; descriptor.tAddressMode = modes[address[1]]; descriptor.rAddressMode = modes[address[2]];
     descriptor.minFilter = descriptor.magFilter = magnify ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+    descriptor.maxAnisotropy = anisotropic ? 1u << ratio : 1u;
     descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped; descriptor.normalizedCoordinates = YES;
     descriptor.lodMinClamp = descriptor.lodMaxClamp = 0;
     id<MTLSamplerState> state = [x->device newSamplerStateWithDescriptor:descriptor];
