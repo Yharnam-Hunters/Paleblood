@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera territory stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // The loop preserves the camera-transform backup, live callback reloads, and raw query ABI.
 #include "validation_margin.h"
@@ -33,12 +34,12 @@ static_assert(offsetof(Territory, position) == 0x0 && offsetof(Territory, extent
 static_assert(offsetof(Territory, flags) == 0x61 && offsetof(Territory, next) == 0x68);
 static_assert(offsetof(TerritoryOwner, first) == 0x8);
 RT_GLOBAL(0x0593e858, territory_owner, TerritoryOwner *);
-RT_GLOBAL(0x04cf24d0, xyz_bits, const Vec4);
-RT_GLOBAL(0x04cf2660, unit_vector, const Vec4);
-RT_GLOBAL(0x04cf2680, short_collision_displacement, const Vec4);
+using constants::xyz_bits;
+using constants::unit_vector;
+using constants::short_collision_displacement;
 RT_GLOBAL(0x04cf2690, debug_vector_comparison, const Vec4);
 RT_GLOBAL(0x04d24e50, debug_vector_write, const Vec4);
-RT_GLOBAL(0x04d25e88, distance_threshold, const float);
+using constants::distance_threshold;
 RT_GLOBAL(0x04d3b1e1, render_singleton_name, const char);
 
 ai::DebugRenderState *selected_state(ai::DebugRenderer *renderer)

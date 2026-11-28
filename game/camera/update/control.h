@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera control stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 // Continue from the compensated snapshots and stop before fresh subject-transform work.
 #include "subject.h"
@@ -36,7 +37,7 @@ static_assert(offsetof(SubjectControlContext, fallback) == 0x80);
 static_assert(offsetof(SubjectControlContext, preferred) == 0x280);
 static_assert(offsetof(SubjectControlPrefix, context) == 0x58);
 
-RT_GLOBAL(0x04d25e70, minimum_fulcrum_distance, const float);
+inline constexpr auto minimum_fulcrum_distance = constants::half_fov;
 
 struct ControlPreparation
 {

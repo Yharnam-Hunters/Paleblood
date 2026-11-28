@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Follow-camera final collision stage, included only by update.cpp.
 #pragma once
+#include "constants.h"
 #include "math.h"
 #include "orientation.h"
 
@@ -10,10 +11,10 @@ namespace math = camera::update::math;
 namespace root = camera::update::root;
 namespace direction = camera::update::wing_escape;
 namespace calls = camera::query_calls;
-RT_GLOBAL(0x04cf24d0, xyz_bits, const Vec4);
-RT_GLOBAL(0x04cf2660, unit_vector, const Vec4);
-RT_GLOBAL(0x04cf2680, short_collision_displacement, const Vec4);
-RT_GLOBAL(0x04d25e88, distance_threshold, const float);
+using constants::xyz_bits;
+using constants::unit_vector;
+using constants::short_collision_displacement;
+using constants::distance_threshold;
 
 void collide_final_camera(FollowCamera &state, QueryWorld *queries, Vec4 chased_candidate)
 {

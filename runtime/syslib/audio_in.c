@@ -2,7 +2,7 @@
 /* System call group: audio. The microphone input (libSceAudioIn), as a console with no microphone
    connected: a port opens and reads silence.
 
-   The executable's only user is FMOD's PS4 record driver. Its record start (0x0111c050) picks the
+   The executable's only user is FMOD's PS4 record driver. Its record start picks the
    Nth logged-in user, opens a port with sceAudioInOpen(user, type 0, 1 or 5, index 0, 256 samples,
    16000 Hz, param 0 = 16-bit mono) at 0x0111c11d and treats a negative answer as an FMOD error.
    Its update thread (0x0111be90) calls sceAudioInInput(handle, buffer) at 0x0111beee and uses the

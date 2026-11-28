@@ -21,15 +21,13 @@ constexpr uint32_t primary_resource_option = 0x08;
 constexpr uint32_t padded_storage_flag = 0x80;
 constexpr uint32_t resource_option_shift = 5;
 constexpr uint32_t primary_option_shift = 2;
-constexpr uint32_t state_info_words = 9;
-constexpr uint32_t curve_channel_count = 3;
 constexpr uint32_t address_slot_count = 16;
 constexpr uint32_t cached_descriptor_control_flags = 0x20;
 constexpr uint64_t curve_plane_bytes = setup_curve_entries * sizeof(float);
-constexpr uint64_t curve_storage_bytes = curve_plane_bytes * 3;
+constexpr uint64_t curve_storage_bytes = curve_plane_bytes * SetupCurveOutput::curve_channel_count;
 constexpr uint64_t allocation_tail_bytes = 8;
 
-struct SetupInfoWords { Field<uint64_t> words[state_info_words]; };
+struct SetupInfoWords { Field<uint64_t> words[SetupState::info_copy_qwords]; };
 struct SetupCurveHeap {
     Field<float> first[setup_curve_entries];
     Field<float> second[setup_curve_entries];
@@ -69,6 +67,16 @@ void release_owned(SetupOwner *owner, uintptr_t allocation)
     release(owner, allocation);
 }
 
+// Destroy and release the published object, if any; the caller-visible slot keeps its value.
+void release_output_object(SetupObjectSlot *output, SetupOwner *manager)
+{
+    SetupObject *const object = output->value.get();
+    if (object != nullptr) {
+        swap_setup_calls::destroy_object(object);
+        release_owned(manager, reinterpret_cast<uintptr_t>(object));
+    }
+}
+
 void copy_record(SetupRecord *destination, const SetupRecord &source)
 {
     destination->tail_28.set(source.tail_28.get());
@@ -87,10 +95,9 @@ uint64_t cleanup_video_setup(SetupState *state, SetupObjectSlot *output,
     swap_setup_calls::clear_curve(&state->curve);
     swap_setup_calls::clear_cached_record(&state->cached_record);
     const uint64_t queue = state->event_queue.get();
-    Field<uint64_t> *queue_slot = &state->event_queue;
     if (queue != 0) {
         swap_setup_calls::delete_event_queue(queue);
-        queue_slot->set(0);
+        state->event_queue.set(0);
     }
     const int32_t handle = state->video_handle.get();
     if (uint32_t(handle) != invalid_video_handle) {
@@ -105,12 +112,7 @@ uint64_t cleanup_video_setup(SetupState *state, SetupObjectSlot *output,
             state->storage_2d0.set(0);
         }
     }
-    SetupObject *const object = output->value.get();
-    if (object != nullptr) {
-        swap_setup_calls::destroy_object(object);
-        release_owned(manager, reinterpret_cast<uintptr_t>(object));
-    }
-    // Keep the caller-visible object slot unchanged after releasing the object.
+    release_output_object(output, manager);
     return construction_failed;
 }
 }  // namespace
@@ -129,7 +131,7 @@ extern "C" uint64_t bb_render_setup_swap_chain(
     SetupRecord descriptor;
     SetupVideoAttribute video_attribute;
     SetupParameters parameters;
-    SetupChannel channels[curve_channel_count];
+    SetupChannel channels[SetupCurveOutput::curve_channel_count];
     SetupTemporaryAllocator temporary;
     Field<uint64_t> addresses[address_slot_count];
     if (info->format_selector.get() != supported_format_selector) {
@@ -153,7 +155,6 @@ extern "C" uint64_t bb_render_setup_swap_chain(
     }
 
     const uint32_t unit = unit_output.get();
-    const uint8_t is_tiled = unit == tiled_unit;
     const uint32_t width = info->width.get();
     const uint32_t height = info->height.get();
     const uint32_t first = swap_setup_calls::first_parameter(info->first_constructor_parameter.get(), 0);
@@ -166,15 +167,11 @@ extern "C" uint64_t bb_render_setup_swap_chain(
     if (uint32_t(packed) == 0) {
         return construction_failed;
     }
-    const bool has_records = info->buffer_count.get() != 0;
-    uint32_t count = 0;
-    if (has_records) {
-        uint32_t index = 0;
-        do {
-            copy_record(record_at(state, index), descriptor);
-            ++index;
-            count = info->buffer_count.get();
-        } while (index < count);
+    // The buffer count is read again after each record copy.
+    uint32_t count = info->buffer_count.get();
+    for (uint32_t index = 0; index < count; ++index) {
+        copy_record(record_at(state, index), descriptor);
+        count = info->buffer_count.get();
     }
 
     const uint32_t alignment = uint32_t(packed >> high_word_shift);
@@ -185,35 +182,22 @@ extern "C" uint64_t bb_render_setup_swap_chain(
     const uintptr_t storage = allocate(allocator, uint64_t(allocation_bytes),
                                       uint64_t(alignment), uint64_t(rounding_sum));
     if (storage == 0) {
-        SetupObject *const existing = output->value.get();
-        if (existing != nullptr) {
-            swap_setup_calls::destroy_object(existing);
-            release_owned(manager, reinterpret_cast<uintptr_t>(existing));
-        }
+        release_output_object(output, manager);
         return allocation_failed;
     }
     if (swap_setup_calls::storage_admitted(storage) == 0) {
         release_owned(allocator, storage);
-        SetupObject *const existing = output->value.get();
-        if (existing != nullptr) {
-            swap_setup_calls::destroy_object(existing);
-            release_owned(manager, reinterpret_cast<uintptr_t>(existing));
-        }
+        release_output_object(output, manager);
         return unsupported_setup;
     }
     swap_setup_calls::fill_storage(storage, 0,
                                   uint64_t(allocation_bytes));
-    const bool has_address_records = info->buffer_count.get() != 0;
-    if (has_address_records) {
-        uint32_t index = 0;
-        uint32_t offset = 0;
-        do {
-            const uintptr_t address = storage + uint64_t(offset);
-            const uint32_t encoded = swap_setup_calls::encode_address(address);
-            swap_setup_calls::set_record_address(record_at(state, index), uintptr_t(encoded));
-            ++index;
-            offset += rounded;
-        } while (index < info->buffer_count.get());
+    uint32_t offset = 0;
+    for (uint32_t index = 0; index < info->buffer_count.get(); ++index) {
+        const uintptr_t address = storage + uint64_t(offset);
+        const uint32_t encoded = swap_setup_calls::encode_address(address);
+        swap_setup_calls::set_record_address(record_at(state, index), uintptr_t(encoded));
+        offset += rounded;
     }
 
     state->manager_2c0.set(manager);
@@ -223,10 +207,9 @@ extern "C" uint64_t bb_render_setup_swap_chain(
     state->zero_2e0.set(0);
     state->last_2e8.set(storage + uint64_t(allocation_bytes) - allocation_tail_bytes);
     state->video_handle.set(int32_t(invalid_video_handle));
-    Field<uint64_t> *const queue_slot = &state->event_queue;
-    queue_slot->set(0);
+    state->event_queue.set(0);
     auto *info_words = reinterpret_cast<SetupInfoWords *>(info);
-    for (uint32_t index = 0; index < state_info_words; ++index) {
+    for (uint32_t index = 0; index < SetupState::info_copy_qwords; ++index) {
         state->info_copy[index].set(info_words->words[index].get());
     }
     const int32_t handle = swap_setup_calls::video_open(0, 0, 0, 0);
@@ -239,7 +222,7 @@ extern "C" uint64_t bb_render_setup_swap_chain(
         return cleanup_video_setup(state, output, manager);
     }
     const int32_t queue_status = swap_setup_calls::create_event_queue(
-        queue_slot, swap_setup_calls::queue_name.address()->bytes);
+        &state->event_queue, swap_setup_calls::queue_name.address()->bytes);
     if (queue_status < 0) {
         return cleanup_video_setup(state, output, manager);
     }
@@ -249,21 +232,17 @@ extern "C" uint64_t bb_render_setup_swap_chain(
     if (event_status < 0) {
         return cleanup_video_setup(state, output, manager);
     }
-    const uint32_t tiled = is_tiled;
+    const uint32_t tiled = unit == tiled_unit;
     const uint32_t attribute_width = info->width.get();
     const uint32_t attribute_height = info->height.get();
     swap_setup_calls::set_video_attribute(&video_attribute, videoout_pixel_format, tiled, 0,
                                          attribute_width, attribute_height,
                                          attribute_width);
-    uint32_t registered_count = 0;
-    if (info->buffer_count.get() != 0) {
-        uint32_t index = 0;
-        do {
-            const uint32_t encoded = swap_setup_calls::get_record_address(record_at(state, index));
-            address_at(addresses, index)->set(uint64_t(encoded) << encoded_address_shift);
-            ++index;
-            registered_count = info->buffer_count.get();
-        } while (index < registered_count);
+    uint32_t registered_count = info->buffer_count.get();
+    for (uint32_t index = 0; index < registered_count; ++index) {
+        const uint32_t encoded = swap_setup_calls::get_record_address(record_at(state, index));
+        address_at(addresses, index)->set(uint64_t(encoded) << encoded_address_shift);
+        registered_count = info->buffer_count.get();
     }
     const int32_t register_handle = state->video_handle.get();
     const int32_t register_status = swap_setup_calls::register_video_buffers(
@@ -296,7 +275,6 @@ extern "C" uint64_t bb_render_setup_swap_chain(
         // This failure deliberately has no generalized rollback.
         return cached_status;
     }
-    uint32_t saved_final_status = construction_failed;
     SetupCachedRecord &cached = state->cached_record;
     cached.owner.set(nullptr);
     cached.storage.set(state->storage_2d0.get());
@@ -326,43 +304,31 @@ extern "C" uint64_t bb_render_setup_swap_chain(
         upload = fallback(manager, curve_storage_bytes);
         fallback_owner = manager;
     }
-    bool failed = false;
-    if (upload == 0) {
-        saved_final_status = allocation_failed;
-        failed = true;
-    } else {
-        const uintptr_t second_plane = upload + curve_plane_bytes;
-        const uintptr_t third_plane = upload + curve_plane_bytes + curve_plane_bytes;
+    uint32_t status = allocation_failed;
+    if (upload != 0) {
         auto *heap = reinterpret_cast<SetupCurveHeap *>(upload);
         const float multiplier = swap_setup_calls::curve_multiplier.get();
         for (uint32_t index = 0; index < setup_curve_entries; ++index) {
             const float value = engine::multiply(engine::u64_to_float(uint64_t(index)), multiplier);
-            state->curve.triplets[index][0].set(value);
-            state->curve.triplets[index][1].set(value);
-            state->curve.triplets[index][curve_channel_count - 1].set(value);
+            for (Field<float> &component : state->curve.triplets[index]) component.set(value);
             heap->first[index].set(value);
             heap->second[index].set(value);
             heap->third[index].set(value);
         }
-        channels[0].data.set(upload);
-        channels[0].bytes.set(uint32_t(curve_plane_bytes));
-        channels[0].zero.set(0);
-        channels[1].data.set(second_plane);
-        channels[1].bytes.set(uint32_t(curve_plane_bytes));
-        channels[1].zero.set(0);
-        channels[curve_channel_count - 1].data.set(third_plane);
-        channels[curve_channel_count - 1].bytes.set(uint32_t(curve_plane_bytes));
-        channels[curve_channel_count - 1].zero.set(0);
+        uintptr_t plane = upload;
+        for (SetupChannel &channel : channels) {
+            channel.data.set(plane);
+            channel.bytes.set(uint32_t(curve_plane_bytes));
+            channel.zero.set(0);
+            plane += curve_plane_bytes;
+        }
         const uintptr_t curve_service = swap_setup_calls::curve_service(services);
-        const uint32_t curve_status = swap_setup_calls::initialize_curve(
+        status = swap_setup_calls::initialize_curve(
             &state->curve, curve_service, swap_setup_calls::curve_settings.address(), channels,
             manager, allocator, 0);
-        failed = curve_status != 0;
-        if (failed) saved_final_status = curve_status;
         if (fallback_owner != nullptr) release_owned(fallback_owner, upload);
     }
     temporary.vtable.set(temporary_vtable);
     swap_setup_calls::release_upload_token(temporary.token.get());
-    const uint32_t final_status = failed ? saved_final_status : 0;
-    return final_status;
+    return status;
 }

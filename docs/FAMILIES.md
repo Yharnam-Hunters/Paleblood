@@ -37,7 +37,10 @@ extents in `symbols/ghidra_functions.csv`. A function is a member only when:
 - every byte after it up to the next function is the compiler's NOP padding, and that extent is
   at least 14 bytes, so the hook's absolute jump overwrites only padding (QUIRKS.md: a hook is a
   14-byte jump; a member shorter than that is hooked across its own padding, never into the next
-  function);
+  function). The next function is the next one in `symbols/ghidra_functions.csv`, or an earlier
+  address after the member that a relative relocation points at: Ghidra misses functions only
+  reached through a pointer, such as the `.init_array` entry that often follows a static
+  initializer;
 - no relocation writes into its extent, no community patch line (`--patches`) does, it has no row
   in `symbols/functions.csv` and no source file under `game/` names its address (a declared
   original or an observe hook).
@@ -141,6 +144,22 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `reads_byte_field` | `0f b6 47 {d8} c3` | getters of an 8-bit field, zero-extended (`mov al, [rdi+K]` is excluded) |
 | `reads_far_byte_field` | `0f b6 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `field_address` | `48 8d 47 {d8} c3` | the address of a member or base-class part, K bytes into the object |
+| `tail_calls_virtual_function` | `48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object's virtual table with the same arguments |
+| `tail_jumps_through_virtual_slot` | `48 8b 07 ff 60 {d8}` | tail-call slot K of the object's virtual table with the same arguments (`jmp [rax+K]`) |
+| `passes_flag_to_virtual_function` | `48 8b 07 48 8b 40 {d8} ba 01 00 00 00 ff e0` | tail-call slot K of the object's virtual table with the third argument 1 |
+| `passes_part_at_0xe8_to_virtual_0x68` | `48 8b 07 48 8b 40 68 48 81 c6 e8 00 00 00 ff e0` | tail-call slot 0x68 with the second argument plus 0xe8 |
+| `adjusts_base_and_passes_part_at_0xe8` | `48 8b 47 e0 48 83 c7 e0 48 8b 40 68 48 81 c6 e8 00 00 00 ff e0` | from a base 0x20 into the object: tail-call its slot 0x68 with the second argument plus 0xe8 |
+| `tail_calls_member_at_0x10` | `48 8b 7f 10 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +0x10 points at, with the same other arguments |
+| `passes_dword_argument_to_member_at_8` | `8b 36 48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +8 points at, with the dword the second argument points at |
+| `calls_member_at_8_with_constant` | `55 48 89 e5 48 8b 7f 08 48 8b 07 be {u32} ff 50 40 5d c3` | call slot 0x40 of the object the pointer at +8 points at with a constant, and return its result |
+| `exports_member_at_0x20_and_tail_calls_it` | `48 8b 47 20 48 89 06 48 8b 7f 20 48 8b 07 ff 60 08` | store the pointer at +0x20 through the second argument, then tail-call slot 8 of that object |
+| `tail_calls_virtual_unless_null` | `48 85 ff 74 09 48 8b 07 48 8b 40 {d8} ff e0 b8 25 00 00 00 c3` | tail-call slot K of the object's virtual table; a null object returns 0x25 |
+| `tail_jumps_through_member_at_8` | `48 8b 7f 08 48 8b 07 ff 60 {d8}` | tail-call slot K of the object the pointer at +8 points at (`jmp [rax+K]`) |
+| `tail_jumps_through_member_at_0x10` | `48 8b 7f 10 48 8b 07 ff 60 {d8}` | tail-call slot K of the object the pointer at +0x10 points at (`jmp [rax+K]`) |
+| `tail_calls_member_at_8` | `48 8b 7f 08 48 8b 07 48 8b 40 {d8} ff e0` | tail-call slot K of the object the pointer at +8 points at, with the same other arguments |
+| `tail_calls_far_virtual_slot` | `48 8b 07 48 8b 80 {u32} ff e0` | tail-call slot K (32-bit offset) of the object's virtual table with the same arguments |
+| `tail_jumps_through_far_virtual_slot` | `48 8b 07 ff a0 {u32}` | tail-call slot K (32-bit offset) of the object's virtual table (`jmp [rax+K]`) |
+| `tail_jumps_through_table_with_second_argument` | `48 89 f8 48 89 f7 ff 60 {d8}` | tail-call entry K of the function table the first argument points at, with the second argument first |
 | `far_field_address` | `48 8d 87 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `reads_first_qword` | `48 8b 07 c3` | getters of the 64-bit field at the start of the object |
 | `reads_first_dword` | `8b 07 c3` | getters of the 32-bit field at the start of the object |
@@ -167,6 +186,16 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_dword_field` | `89 77 {d8} c3` | setters of a 32-bit field |
 | `writes_far_dword_field` | `89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_word_field` | `66 89 77 {d8} c3` | setters of a 16-bit field |
+| `calls_delegate_with_argument_field_0x10` | 50 exact bytes | when set: the delegate at +8 with the qword at +0x10 of the second argument and the dword at +0x28 |
+| `calls_delegate_with_argument_field_8` | 50 exact bytes | when set: the delegate at +8 with the qword at +8 of the second argument and the dword at +0x28 |
+| `calls_delegate_with_dword_at_0x20` | 46 exact bytes | when set: the delegate at +8 with the dword at +0x20 |
+| `calls_delegate_at_0x18_with_dword_at_0x40` | 39 exact bytes | when set: the delegate at +0x18 with the second argument and the dword at +0x40 |
+| `calls_flagged_delegate_with_dword_at_0x18` | 40 exact bytes | when the flag 0x40 at +0xb is set: the method at +0x20 on the object at +0x10 with the dword at +0x18 |
+| `calls_delegate_with_part_of_argument_target` | 57 exact bytes | when set: the delegate at +8 with the part 0x28 into what the second argument points at, and the dword at +0x20 |
+| `forwards_to_delegate_at_0x10` | 30 exact bytes | tail-call the delegate at +0x10 with the same other arguments |
+| `forwards_to_delegate_at_0x18` | 30 exact bytes | tail-call the delegate at +0x18 with the same other arguments |
+| `forwards_to_delegate_at_0x20` | 30 exact bytes | tail-call the delegate at +0x20 with the same other arguments |
+| `calls_delegate_at_0x50_when_argument_flagged` | 40 exact bytes | when the flag 0x10 at +0x3d of the second argument is set: the delegate at +0x50 with the dword at +0x68 |
 | `writes_far_word_field` | `66 89 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
 | `writes_byte_field` | `40 88 77 {d8} c3` | setters of an 8-bit field (a bool or small enum) |
 | `writes_far_byte_field` | `40 88 b7 {d32} c3` | the same, with the field 0x80 bytes or more into the object |
@@ -195,6 +224,7 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `writes_low_ten_bits_of_first_dword` | 18 exact bytes | set bits 0..9 of the first dword |
 | `packs_first_dword_from_two_bit_fields` | 14 exact bytes | set the first dword to two bit fields (bits 0..9 and 28..31), the rest clear |
 | `returns_second_argument` | `48 89 f0 c3` | return the second argument |
+| `increments_dword_field` | `8b 47 08 ff c0 89 47 08 c3` | increment the DWORD at offset eight modulo 2^32, store it and return the zero-extended result; this family compares the defined machine result, while the original C++ declarations are unknown |
 | `atomically_increments_dword_at_8` | `b8 01 00 00 00 f0 0f c1 47 08 c3` | atomic increments of the 32-bit count 8 bytes into the object, returning the old count |
 | `reads_pointer_without_low_bit` | `48 8b 47 {d8} 48 83 e0 fe c3` | getters of a 64-bit field with its low bit (a tag) cleared |
 | `clears_first_two_qwords` | 16 exact bytes | clear the first 16 bytes of the object |
@@ -289,6 +319,93 @@ recorded evidence, and `tools/validate_functions.py` applies the same rule in CI
 | `frees_layout_block_align_4` | 147 bytes, two `{rel:...}` | the packed variant |
 | `allocates_layout_block_for_stored_count` | 150 bytes, two `{rel:...}` | allocate the block sized by the layout kind |
 | `allocates_layout_block_for_count` | 154 bytes, two `{rel:...}` | the same, storing a new count first |
+| `reallocates_array_of_4_byte_elements` | relative, 218 bytes (0x016da780's), five `{rel:...}` | an engine array's reallocation to a given capacity, 4-byte elements (`engine/array_reserve.h`) |
+| `reallocates_array_of_12_byte_elements` | relative, 279 bytes (0x01af3170's), five `{rel:...}` | the same for 12-byte elements |
+| `grows_full_array_of_16_byte_elements` | relative, 325 bytes (0x024bbfd0's), five `{rel:...}` | a full engine array of 16-byte elements grown as push_back grows it (`engine/array_push_back.h`); one with room is left alone |
+| `takes_and_erases_map_entry_at_0x3b0` | relative, 221 bytes (0x022a54d0's), three `{rel:...}` | take the counted object under an id out of the map at +0x3b0, with a new reference, and erase the entry |
+| `releases_slot_blocks_at_0x38` | relative, 331 bytes (0x02af24e0's), two `{rel:...}` | free the blocks of a table of parallel slot arrays, keeping the slots or moving the later ones down |
+| `sets_property_0x3ea_or_0x3eb_from_variant` | relative, 161 bytes, two `{rel:...}` | set an int property from a variant, holding an object variant meanwhile (`engine/variant_string_pool_families.cpp`) |
+| `copies_wide_string_at_0x28_on_thread_heap` | relative, 192 bytes, seven `{rel:...}` | copy a wide string member on the thread's temporary heap (`engine/variant_string_pool_families.cpp`) |
+| `appends_blocks_to_pool_slot_5_or_16` | relative, 248 bytes, seven `{rel:...}` | append two blocks of 4-byte elements to a pool slot and map each block to its copy (`engine/variant_string_pool_families.cpp`) |
+| `assigns_created_string_unless_exception` | relative, 207 bytes, seven `{rel:...}` | a scaleform thunk: make a string and assign it to the result unless the VM raised an exception (`engine/variant_string_pool_families.cpp`) |
+| `destroys_heap_buffer_owner_directly` | relative, 100 bytes (0x006d0c30's), three `{rel:...}` | a destructor body: store the vtable (0x055b5be0's address point), free the buffer at +0x20 to the heap the global at 0x057e7320 points at (slot 0x68), then drop the handle at +0x8, read after the free (null: nothing; low bit set: step it down by one; otherwise drop the low 22-bit count at +0x20 of the object it points at and call 0x027ee1e0, unless the count is zero) |
+| `destroys_heap_buffer_owner_through_base_at_0x38` | relative, 101 bytes (0x006d7f80's), three `{rel:...}` | the same destructor body entered through a pointer to a base 0x38 bytes into the owner |
+| `destroys_heap_buffer_owner_through_base_at_0x48` | relative, 101 bytes (0x006d7ff0's), three `{rel:...}` | the same entered through a base 0x48 bytes into the owner |
+| `frees_to_global_heap` | relative, 25 bytes (0x0278b7d0's), one `{rel:...}` | free the argument to the heap the global at 0x057e7320 points at (slot 0x68, a tail jump) |
+| `destroys_with_0x010f6190_then_deletes` | relative, 28 bytes (0x02bc7e50's), two `{rel:...}` | a deleting destructor: destroy through 0x010f6190, then delete |
+| `destroys_with_0x02af2b00_then_deletes` | relative, 28 bytes (0x02af1990's), two `{rel:...}` | a deleting destructor: destroy through 0x02af2b00, then delete |
+| `destroys_with_0x02af4240_then_deletes` | relative, 28 bytes (0x02af3290's), two `{rel:...}` | a deleting destructor: destroy through 0x02af4240, then delete |
+| `destroys_with_0x02af6d40_then_deletes` | relative, 28 bytes (0x02af5dd0's), two `{rel:...}` | a deleting destructor: destroy through 0x02af6d40, then delete |
+| `destroys_with_0x02af8220_then_deletes` | relative, 28 bytes (0x02af74a0's), two `{rel:...}` | a deleting destructor: destroy through 0x02af8220, then delete |
+| `destroys_with_0x02af9940_then_deletes` | relative, 28 bytes (0x02af89a0's), two `{rel:...}` | a deleting destructor: destroy through 0x02af9940, then delete |
+| `destroys_with_0x02afc240_then_deletes` | relative, 28 bytes (0x02afb2d0's), two `{rel:...}` | a deleting destructor: destroy through 0x02afc240, then delete |
+| `destroys_with_0x02afee40_then_deletes` | relative, 28 bytes (0x02afdea0's), two `{rel:...}` | a deleting destructor: destroy through 0x02afee40, then delete |
+| `dispatches_on_slot_match_with_member_0x68` | relative, 239 bytes, four `{rel:...}` | match a handle against two slots, then dispatch with the member at +0x68 or without a slot (`engine/scaleform_visit_dispatch.cpp`) |
+| `dispatches_on_slot_match_with_member_0x70` | relative, 239 bytes, four `{rel:...}` | the same with the member at +0x70 (`engine/scaleform_visit_dispatch.cpp`) |
+| `visits_base_pairs_and_entries_at_0x70` | relative, 225 bytes, three `{rel:...}` | visit the base, two pairs and an array of entries (+0x70, +0x88, +0xa0) (`engine/scaleform_visit_dispatch.cpp`) |
+| `visits_base_pairs_and_entries_at_0x78` | relative, 225 bytes, three `{rel:...}` | the same at +0x78, +0x90, +0xa8 (`engine/scaleform_visit_dispatch.cpp`) |
+| `stores_vtable_0x0579c8a0_releases_members_then_destroys` | relative, 355 bytes (0x01f75e50's), seven `{rel:...}` | the destructor of the class whose tables start at 0x0579c8a0: its members (a callable, a wide string, two held blocks and two destroyed out of line), then its base |
+| `stores_vtable_0x0579c8a0_releases_members_destroys_then_deletes` | relative, 363 bytes (0x01f75fc0's), eight `{rel:...}` | the deleting twin: the same, then delete the object |
+| `sorts_16_byte_elements_with_comparator` | relative, 421 bytes (0x0292d520's), three `{rel:...}` | a quicksort of 16-byte elements by a caller's comparator (pivot: a copy of the middle element) |
+| `finds_id_pair_in_nested_hash_maps` | relative, 394 bytes (0x01274eb0's), two `{rel:...}` | look a pair of ids up in a hash map of hash maps: true when the first id's map holds the second |
+| `reallocates_array_of_8_byte_4_aligned_elements` | relative, 236 bytes (0x016d5570's), five `{rel:...}` | an engine array's reallocation to a given capacity, 8-byte elements with 4-byte alignment (`engine/array_reserve.h`) |
+| `reallocates_array_of_16_byte_elements` | relative, 230 bytes (0x017ec240's), five `{rel:...}` | the same for 16-byte elements |
+| `reallocates_array_of_24_byte_handle_records` | relative, 320 bytes (0x02d117e0's), seven `{rel:...}` | the same for 24-byte records of a counted handle and a dword, copy-constructed and destroyed |
+| `erases_range_of_24_byte_handle_records` | relative, 300 bytes (0x02d116a0's), three `{rel:...}` | erase a range of those records: the later ones assigned down, the rest destroyed; returns the first in the result |
+| `resizes_heap_array_of_8_byte_elements` | relative, 303 bytes (0x0279d9f0's), six `{rel:...}` (four to the heap global) | set an array's count, shrinking or growing its buffer from the heap the global at 0x057e7320 points at |
+| `frees_kind_sized_vec4_storage_through_0x05ac8288` | 119 bytes, two `{rel:...}` | free a kind-sized buffer of 16-byte elements |
+| `allocates_kind_sized_dword_storage_through_0x05ac8288` | 142 bytes, two `{rel:...}` | allocate a kind-sized buffer of four-byte elements |
+| `sets_count_and_allocates_kind_sized_dword_storage_through_0x05ac8288` | 142 bytes, two `{rel:...}` | store the count, then allocate the buffer |
+| `removes_debug_menu_entry_keyed_by_object` | relative, 120 bytes (0x0184ee00's), seven `{rel:...}` | remove the debug menu entry keyed by the object and an interned name (`engine/debug_menu_entry_family.cpp`) |
+| `formats_one_of_three_texts_for_slot_0x80` | relative, 321 bytes (0x01871550's), twelve `{rel:...}` | format one of three texts on the thread heap and hand it to a virtual slot (`engine/text_for_slot_family.cpp`) |
+| `releases_counted_member_at_0x30_then_base` | relative, 176 bytes (0x0259c710's), one `{rel:...}` | drop a counted member and clear two members, then run the base release (`engine/counted_member_release_family.cpp`) |
+| `forwards_to_referenced_node_slot_0x28` | relative, 68 bytes (0x02efabc0's), one `{rel:...}` | return what the node a (kind, index) reference names returns from its slot 0x28 for the same arguments |
+| `posts_event_9_when_accepted` | relative, 88 bytes (0x01622140's), two `{rel:...}` | after the base handler, post event 9 when no stop flag is set and the handler accepts the event |
+| `syncs_selected_id_and_index` | relative, 115 bytes (0x02d11b10's), two `{rel:...}` | select the id the id slot holds when it changed, passing on the index of its first entry |
+| `selects_entry_id_by_index` | relative, 69 bytes (0x02d11ba0's), one `{rel:...}` | select the id of the list entry at an index, unless locked or out of range |
+| `releases_counted_reference_at_0x20` | relative, 176 bytes (0x02d0a9b0's), one `{rel:...}` | drop the strong and weak count of the counted object at +0x20, destroying or freeing it, then the base release |
+| `registers_new_entry_at_0x30` | relative, 93 bytes (0x02ae0c00's), four `{rel:...}` | make a 32-byte entry, keep it at +0x30, give it the value and register it with the owner kept at +0x28 |
+| `frees_kind_sized_dword_storage_through_0x05ac8288` | relative, 113 bytes (0x02eebf40's), two `{rel:...}` | free a kind-sized buffer of dword entries and elements through the sized free of the allocator 0x05ac8288 points at |
+| `deletes_work_holder` | relative, 127 bytes (0x01e640c0's), five `{rel:...}` | deleting destructor of a holder of shared work (the in-place one is in `menu/scaleform_glue.cpp`) |
+| `creates_0xe40_byte_object_with_0x020e9820` | relative, 58 bytes (0x020ea250's), one `{rel:...}` | allocate a 0xe40-byte object from the owner's allocator and construct it (0x020e9820) |
+| `frees_block_at_0xa0_then_destroys_base_0x00569a90` | relative, 69 bytes (0x02805bc0's), two `{rel:...}` | free the block at +0xa0 and its data through the global allocator, then the base destructor (0x00569a90) |
+| `destroys_owner_of_two_objects` | relative, 94 bytes (0x02eecf20's), one `{rel:...}` | destructor of an owner of two objects (+0x8, +0x10) released through their slot 0x18 |
+| `deletes_owner_of_two_objects` | relative, 121 bytes (0x02eed080's), three `{rel:...}` | the same, then the owner freed through the sized free of the allocator 0x05ac8288 points at |
+| `fills_owner_block_with_two_addresses` | relative, 128 bytes (0x01664680's), two `{rel:...}` | fill an owner's block: two fixed addresses in its first three pointers, the rest cleared, the owner at +0x78 |
+| `fills_owner_block_with_one_address` | relative, 121 bytes (0x01666820's), one `{rel:...}` | fill an owner's block: one fixed address in its first three pointers, the rest cleared, the owner at +0x78 |
+| `updates_and_calls_slot_0x38_unless_refused` | relative, 67 bytes (0x020c75d0's), two `{rel:...}` | unless the source's target is refused, update the object and call its slot 0x38 |
+| `adopts_buffer_at_0x10_after_slot_0x78` | relative, 76 bytes (0x02ae1b50's), one `{rel:...}` | call slot 0x78, then free the old buffer through the global 0x056c45d0's function and keep the new one and its count |
+| `destroys_with_0x0139bf90_then_deletes` | relative, 28 bytes (0x018293b0's), two `{rel:...}` | a deleting destructor: destroy through 0x0139bf90, then delete |
+| `clears_0x28_and_passes_0x18_to_0x027286b0` | relative, 23 bytes (0x0259c830's), one `{rel:...}` | clear +0x28 and pass the object at +0x18, when there is one, to 0x027286b0 |
+| `passes_float_to_0x01b5f7f0_when_0x010edc70_agrees` | relative, 49 bytes (0x01a00c50's), two `{rel:...}` | pass the object and a float to 0x01b5f7f0 when 0x010edc70 agrees |
+| `destroys_holder_of_shared_work` | relative, 128 bytes (0x01e64140's), 4 `{rel:...}` | in-place destructor of a holder of shared work (two more are in `menu/scaleform_glue.cpp`) |
+| `destroys_owner_of_wide_string_then_base_0x0139b630` | relative, 135 bytes (0x018d7d10's), 3 `{rel:...}` | destructor of an object owning a heap wide string (+0x30, flag +0x44), then the base destructor |
+| `deletes_owner_of_wide_string_after_base_0x0139b630` | relative, 143 bytes (0x018d7da0's), 4 `{rel:...}` | the deleting form of the same destructor |
+| `visits_children_of_list_at_0x40` | relative, 159 bytes (0x02e12d30's), 2 `{rel:...}` | walk the children of the list at +0x40 through 0x00b69e20 and the own slot 0x28 |
+| `secondary_base_visits_children_of_list_at_0x40` | relative, 159 bytes (0x02e13170's), 2 `{rel:...}` | the same walk entered through the secondary base at +0x48 |
+| `selects_index_of_changed_id_with_0x01348fe0` | relative, 103 bytes (0x0260f7f0's), one `{rel:...}` | when a followed id changes, pass its table index to 0x01348fe0 with the owner's target |
+| `initializes_owner_block_six_pointers_to_0x05ac5cac` | relative, 109 bytes (0x01663160's), one `{rel:...}` | fill an owner's block: one fixed address in its first six pointers, the rest cleared, the owner at +0x78 |
+| `initializes_owner_block_pointers_to_0x05acd45c_and_0x05acd1bc` | relative, 132 bytes (0x01667730's), two `{rel:...}` | fill an owner's block: two fixed addresses in its first two pointers, the rest cleared, the owner at +0x78 |
+| `initializes_owner_block_first_pointer_to_0x05ac74a3` | relative, 129 bytes (0x0166f510's), one `{rel:...}` | fill an owner's block: one fixed address in its first pointer, the rest cleared, the owner at +0x78 |
+| `destroys_pair_owner_with_vtable_0x0570fb90` | relative, 94 bytes (0x02eee0e0's), one `{rel:...}` | destructor of an owner of two objects (+0x8, +0x10) released through their slot 0x18 |
+| `destroys_entry_storage_with_vtable_0x057045e0` | relative, 79 bytes (0x02e074a0's), two `{rel:...}` | destructor that frees 16-byte entry storage through the global allocator object 0x058018b0 |
+| `releases_counted_object_at_0x10` | relative, 192 bytes (0x02d05810's), two `{rel:...}` | pass the counted object at +0x10 to 0x027286b0, then drop its strong and weak count, destroying or freeing it |
+| `frees_8_byte_block_through_0x05ac8288` | relative, 31 bytes (0x02eee000's), two `{rel:...}` | free an 8-byte block through the sized free of the allocator 0x05ac8288 points at |
+| `frees_sized_block_aligned_8_through_0x05ac8288` | relative, 32 bytes (0x02c85c20's), two `{rel:...}` | free a block of the size given through the sized free of the allocator 0x05ac8288 points at |
+| `allocates_aligned_8_through_0x05ac8288` | relative, 26 bytes (0x02c85bd0's), two `{rel:...}` | allocate the size given, alignment 8, from the allocator 0x05ac8288 points at |
+| `allocates_with_alignment_through_0x05ac8288` | relative, 27 bytes (0x02c85bf0's), two `{rel:...}` | allocate the size and alignment given from the allocator 0x05ac8288 points at |
+| `resets_with_0x02c375e0_and_returns_object` | relative, 24 bytes (0x02c3c990's), one `{rel:...}` | reset the object through 0x02c375e0 and return it |
+| `releases_value_at_0x8_with_0x005c14d0_then_clears_kind` | relative, 28 bytes (0x005a6820's), one `{rel:...}` | release the value at +0x8 through 0x005c14d0, then clear its kind byte |
+| `equals_by_kind_and_16_bytes_at_0x10` | relative, 75 bytes (0x02b05be0's), one `{rel:...}` | two objects are equal when their kinds (slot 0) and the 16 bytes at their +0x10 are |
+| `destroys_second_argument_then_frees_it_to_owning_heap` | 58 bytes, one `{rel:...}` | destroy the second argument, then free it through the heap that owns it |
+| `stores_vtable_0x05541c80_releases_members_0x10_and_0x8` | 80 bytes, two `{rel:...}` | destructor: release the derived and then the base counted member |
+| `stores_vtable_0x05541c80_releases_members_then_deletes` | 81 bytes, three `{rel:...}` | the deleting twin |
+| `stores_vtable_0x05541b90_releases_member_at_8_then_deletes` | 52 bytes, two `{rel:...}` | the base class's deleting destructor |
+| `frees_string_at_0x10_through_allocator_at_0x30_then_deletes` | 44 bytes, one `{rel:...}` | free a string's heap buffer through its allocator, then delete the object |
+| `stores_minus_2_at_0x10_through_setter_then_returns_zero` | 18 bytes, one `{rel:...}` | set the dword at +0x10 to -2 through a setter, return 0 |
+| `calls_0x022dc040_then_sets_byte_0x60` | 25 bytes, one `{rel:...}` | a call, then a flag |
+| `frees_0x10_bytes_through_0x05ac8288` | 31 bytes, two `{rel:...}` | free a 0x10-byte block through the allocator a global points at |
+| `allocates_page_into_table_from_0x02795780` | 138 bytes, four `{rel:...}` and `{u32}` | allocate a page of K bytes from the table's arena into its slot, growing the table first |
 
 A parameterized family's source is generated by `tools/family_emit.py FAMILY` from its member
 table and a template (one named constant and one replacement per value); the validator refuses a

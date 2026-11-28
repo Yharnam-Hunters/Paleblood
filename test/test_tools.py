@@ -1481,6 +1481,94 @@ class Readable(unittest.TestCase):
         self.assertEqual(self.c.problems('game/x/f.cpp', code), [])
         self.assertEqual(self.c.problems('game/engine/vector.h', 'inline V add(V a, V b) { return _mm_add_ps(a, b); }\n'), [])
 
+    def test_byte_pointer_offset_arithmetic_fails(self):
+        # #1277: a field read through a byte cast plus a scalar offset, then memmove'd out
+        issue_1277 = (
+            'constexpr size_t field_offset = 0x40;\n'
+            'void read(const State *state, Value *out) {\n'
+            '    std::memmove(out, reinterpret_cast<const std::byte *>(state) + field_offset, sizeof(*out));\n'
+            '}\n')
+        bad = {
+            'issue_1277': issue_1277,
+            'literal': 'int f(S *s) { return *reinterpret_cast<int *>(reinterpret_cast<uint8_t *>(s) + 0x2c); }\n',
+            'c cast': 'int *f(S *s) { return (int *)((unsigned char *)s + 16); }\n',
+            'variable': 'void f(S *s) {\n    auto *bytes = reinterpret_cast<char *>(s);\n    g(*(int *)(bytes + 8));\n}\n',
+            'template': 'template <size_t Offset> int f(S *s) { return *(int *)(static_cast<uint8_t *>(s->p) + Offset); }\n',
+        }
+        for name, code in bad.items():
+            out = self.c.offset_problems('game/x/f.cpp', code)
+            self.assertTrue(out and 'STYLE.md' in out[0] and 'Structs, not offsets' in out[0], (name, out))
+
+    def test_genuine_byte_buffers_pass(self):
+        good = (
+            'constexpr size_t header = 0x40;\n'
+            'constexpr size_t header_size = 0x20;\n'
+            'uint8_t buffer[0x100];\n'
+            'void f(const State *state, State *out, size_t n, size_t i) {\n'
+            '    std::memcpy(out, state, sizeof(*out));\n'
+            '    uint8_t *p = buffer + header;\n'                              # an array declared as bytes
+            '    auto *payload = reinterpret_cast<uint8_t *>(out) + sizeof(State);\n'   # sizeof layout
+            '    auto *tail = reinterpret_cast<const char *>(state) + n;\n'    # a runtime length
+            '    auto *rows = reinterpret_cast<const Row *>(reinterpret_cast<const uint8_t *>(state) + header_size);\n'
+            '    auto *next = reinterpret_cast<const uint8_t *>(state) + 1;\n'
+            '    auto *name = reinterpret_cast<const char *>(state) + offsetof(State, name);\n'
+            '    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(state);\n'
+            '    int v = bytes[i] + header;\n'
+            '}\n')
+        self.assertEqual(self.c.offset_problems('game/x/f.cpp', good), [])
+        self.assertEqual(self.c.offset_problems('game/x/f.cpp', '// reinterpret_cast<uint8_t *>(p) + 0x10\n'), [])
+
+    def test_duplicate_declarations(self):
+        # #1271: allocation_count already declared in a shared header, declared again in a .cpp
+        header = 'RT_GLOBAL(0x00001000, allocation_count, int32_t);\n'
+        again = 'RT_GLOBAL(0x00001000, allocation_count, int32_t);\nvoid f();\n'
+        d = self.c.duplicate_declarations({'game/render/yebis_allocator_free.h': header, 'game/render/other.cpp': again})
+        self.assertEqual(list(d), [0x00001000])
+        self.assertEqual([x[:2] for x in d[0x00001000]], [('game/render/yebis_allocator_free.h', 1), ('game/render/other.cpp', 1)])
+        # case of the hex digits does not hide it, and RT_ORIGINAL counts too
+        d = self.c.duplicate_declarations({'a.h': 'RT_ORIGINAL(0x00002000, f, void());\n', 'b.cpp': 'RT_ORIGINAL(0x00002000, g, void());\n'})
+        self.assertEqual(list(d), [0x00002000])
+        # different addresses, a comment and one declaration per address are fine
+        self.assertEqual(self.c.duplicate_declarations({
+            'a.h': 'RT_GLOBAL(0x1000, a, int);\nRT_ORIGINAL(0x2000, f, void());\n',
+            'b.cpp': '// RT_GLOBAL(0x1000, a, int);\nRT_GLOBAL(0x3000, c, int);\n'}), {})
+
+    def test_checks_run_on_the_tree_with_their_lists(self):
+        offset_bad = ('constexpr size_t field_offset = 0x40;\n'
+                      'void *f(S *s) { return reinterpret_cast<uint8_t *>(s) + field_offset; }\n')
+        dup = 'RT_GLOBAL(0x00001000, allocation_count, int32_t);\n'
+        d = self.make_root({'game/a/a.cpp': offset_bad, 'game/a/b.h': dup, 'game/a/c.cpp': dup}, [])
+        try:
+            r = self.run_check(d)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('offset in disguise', r.stderr)
+            self.assertIn('0x00001000 is declared more than once', r.stderr)
+            self.assertIn('game/a/b.h:1 (allocation_count), game/a/c.cpp:1 (allocation_count)', r.stderr)
+            self.assertEqual(self.run_check(d, 'game/a/a.cpp').returncode, 1)
+            self.assertEqual(self.run_check(d, 'game/a/c.cpp').returncode, 1)       # a changed file with a duplicate
+            for name, line in (('tools/offset_arithmetic_allowlist.txt', 'game/a/a.cpp\n'),
+                               ('game/duplicate_declarations_allowlist.txt', '0x00001000  # allocation_count\n')):
+                with open(os.path.join(d, name), 'w') as f:
+                    f.write('# list\n' + line)
+            self.assertEqual(self.run_check(d).returncode, 0)                        # grandfathered
+            base = os.path.join(d, 'base')
+            os.makedirs(os.path.join(base, 'tools'))
+            for name in ('tools/offset_arithmetic_allowlist.txt', 'game/duplicate_declarations_allowlist.txt'):
+                os.makedirs(os.path.dirname(os.path.join(base, name)), exist_ok=True)
+                with open(os.path.join(base, name), 'w') as f:
+                    f.write('')                                                      # the base had none
+            r = self.run_check(d, '--base-dir', base)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr.count('may only shrink'), 2)
+            with open(os.path.join(d, 'game/a/c.cpp'), 'w') as f:
+                f.write('void f();\n')                                              # fixed: the entry must go
+            self.assertIn('declared once now; remove it', self.run_check(d).stderr)
+            with open(os.path.join(d, 'game/a/a.cpp'), 'w') as f:
+                f.write('void f();\n')
+            self.assertIn('has no offset arithmetic now; remove it', self.run_check(d).stderr)
+        finally:
+            shutil.rmtree(d)
+
     def make_root(self, files, allow, funcs=None, reviews=None):
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, 'tools'))
